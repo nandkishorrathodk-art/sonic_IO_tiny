@@ -1,0 +1,612 @@
+"""
+SONIC-REDA — Custom LLM Provider
+====================================
+ONE universal provider that works with ANY OpenAI-compatible API endpoint.
+
+Instead of separate Claude/OpenAI/Grok/DeepSeek providers, the team simply
+configures instances with:
+    - base_url: Any API endpoint (OpenAI, Grok, DeepSeek, local Ollama, custom)
+    - api_key: Authentication key
+    - model: Default model to use
+    - name: Human-readable label for this provider
+
+This covers 99% of LLM APIs because most providers now offer OpenAI-compatible
+endpoints. For Anthropic Claude (which uses a different API format), a separate
+adapter handles the conversion internally.
+
+Usage:
+    # OpenAI
+    openai = CustomLLMProvider(
+        name="openai",
+        base_url="https://api.openai.com/v1",
+        api_key="sk-...",
+        default_model="gpt-4o",
+    )
+
+    # Grok (OpenAI-compatible)
+    grok = CustomLLMProvider(
+        name="grok",
+        base_url="https://api.x.ai/v1",
+        api_key="xai-...",
+        default_model="grok-3",
+    )
+
+    # DeepSeek (OpenAI-compatible)
+    deepseek = CustomLLMProvider(
+        name="deepseek",
+        base_url="https://api.deepseek.com",
+        api_key="sk-...",
+        default_model="deepseek-coder",
+    )
+
+    # Local Ollama
+    local = CustomLLMProvider(
+        name="local",
+        base_url="http://localhost:11434/v1",
+        api_key="ollama",
+        default_model="llama3.1:70b",
+    )
+
+    # Claude (auto-detected, uses Anthropic SDK internally)
+    claude = CustomLLMProvider(
+        name="claude",
+        base_url="https://api.anthropic.com",
+        api_key="sk-ant-...",
+        default_model="claude-sonnet-4-20250514",
+    )
+
+    # Any custom endpoint your team runs
+    custom = CustomLLMProvider(
+        name="my-fine-tuned",
+        base_url="https://my-company.com/llm/v1",
+        api_key="my-key",
+        default_model="ft-model-v3",
+    )
+"""
+
+from __future__ import annotations
+
+import json
+import time
+import uuid
+from typing import Any, AsyncIterator, Optional
+
+from sonic.logger import get_logger
+from sonic.llm.base import LLMProvider
+
+logger = get_logger(__name__)
+from sonic.llm.schemas import (
+    LLMChunk,
+    LLMRequest,
+    LLMResponse,
+    MessageRole,
+    ModelInfo,
+    ProviderName,
+    SpeedTier,
+    TokenUsage,
+    ToolCall,
+    ToolDefinition,
+)
+
+
+def _is_anthropic_endpoint(base_url: str) -> bool:
+    """Check if this is an Anthropic Claude endpoint (needs different API format)."""
+    return "anthropic.com" in base_url.lower()
+
+
+class CustomLLMProvider(LLMProvider):
+    """
+    Universal LLM Provider — works with ANY OpenAI-compatible API.
+    
+    For Anthropic endpoints, automatically switches to Claude's API format.
+    For everything else (OpenAI, Grok, DeepSeek, Ollama, custom), uses
+    the standard OpenAI chat completions format.
+    
+    Config needed:
+        - name: Label for this provider (e.g., "grok", "my-model")
+        - base_url: API endpoint URL
+        - api_key: API key for authentication
+        - default_model: Model ID to use by default
+    """
+
+    def __init__(
+        self,
+        name: str,
+        base_url: str,
+        api_key: str,
+        default_model: str,
+        cost_per_1k_input: float = 0.0,
+        cost_per_1k_output: float = 0.0,
+        max_context_tokens: int = 128000,
+        capabilities: list[str] | None = None,
+        speed_tier: SpeedTier = SpeedTier.MEDIUM,
+        timeout_seconds: int = 120,
+    ):
+        # Map name to ProviderName enum if possible, else use CLAUDE as fallback
+        try:
+            provider_name = ProviderName(name.lower())
+        except ValueError:
+            provider_name = ProviderName.LOCAL  # Custom providers mapped as "local"
+
+        super().__init__(
+            provider_name=provider_name,
+            api_key=api_key,
+            base_url=base_url.rstrip("/"),
+        )
+
+        self.name = name
+        self.default_model = default_model
+        self.cost_per_1k_input = cost_per_1k_input
+        self.cost_per_1k_output = cost_per_1k_output
+        self.max_context_tokens = max_context_tokens
+        self.capabilities = capabilities or ["general"]
+        self.speed_tier = speed_tier
+        self.timeout_seconds = timeout_seconds
+        self.is_anthropic = _is_anthropic_endpoint(base_url)
+
+        # Try to use the official SDKs if available, otherwise fall back to httpx
+        self._openai_client = None
+        self._anthropic_client = None
+
+        if self.is_anthropic:
+            try:
+                if api_key:
+                    from anthropic import AsyncAnthropic
+                    self._anthropic_client = AsyncAnthropic(api_key=api_key)
+                    logger.info("provider_init_anthropic_sdk", name=name)
+                else:
+                    self._anthropic_client = None
+            except Exception:
+                self._anthropic_client = None
+        else:
+            try:
+                if api_key:
+                    from openai import AsyncOpenAI
+                    self._openai_client = AsyncOpenAI(
+                        api_key=api_key,
+                        base_url=self.base_url,
+                        timeout=timeout_seconds,
+                    )
+                    logger.info("provider_init_openai_sdk", name=name, base_url=base_url)
+                else:
+                    self._openai_client = None
+            except Exception:
+                self._openai_client = None
+
+
+    # ============================================
+    # Message Conversion
+    # ============================================
+
+    def _to_openai_messages(self, request: LLMRequest) -> list[dict]:
+        """Convert SONIC messages to OpenAI format."""
+        return [
+            {"role": msg.role.value, "content": msg.content}
+            for msg in request.messages
+        ]
+
+    def _to_anthropic_messages(self, request: LLMRequest) -> tuple[str, list[dict]]:
+        """Convert SONIC messages to Anthropic format (separate system prompt)."""
+        system_prompt = ""
+        messages = []
+        for msg in request.messages:
+            if msg.role == MessageRole.SYSTEM:
+                system_prompt = msg.content
+            else:
+                messages.append({"role": msg.role.value, "content": msg.content})
+        return system_prompt, messages
+
+    def _to_openai_tools(self, tools: list[ToolDefinition] | None) -> list[dict] | None:
+        """Convert SONIC tools to OpenAI function calling format."""
+        if not tools:
+            return None
+        return [
+            {
+                "type": "function",
+                "function": {
+                    "name": tool.name,
+                    "description": tool.description,
+                    "parameters": tool.parameters,
+                },
+            }
+            for tool in tools
+        ]
+
+    def _to_anthropic_tools(self, tools: list[ToolDefinition] | None) -> list[dict] | None:
+        """Convert SONIC tools to Anthropic tool format."""
+        if not tools:
+            return None
+        return [
+            {
+                "name": tool.name,
+                "description": tool.description,
+                "input_schema": tool.parameters,
+            }
+            for tool in tools
+        ]
+
+    def _calculate_cost(self, usage: TokenUsage) -> float:
+        """Calculate cost in USD based on configured rates."""
+        return (
+            (usage.prompt_tokens / 1000) * self.cost_per_1k_input
+            + (usage.completion_tokens / 1000) * self.cost_per_1k_output
+        )
+
+    # ============================================
+    # Complete (Single Response)
+    # ============================================
+
+    async def complete(self, request: LLMRequest) -> LLMResponse:
+        """Send a completion request. Auto-detects Anthropic vs OpenAI format."""
+        if self.is_anthropic:
+            return await self._complete_anthropic(request)
+        else:
+            return await self._complete_openai(request)
+
+    async def _complete_openai(self, request: LLMRequest) -> LLMResponse:
+        """Complete via OpenAI-compatible API (works for most providers)."""
+        model = request.model or self.default_model
+        messages = self._to_openai_messages(request)
+        tools = self._to_openai_tools(request.tools)
+
+        if self._openai_client:
+            # Use official SDK
+            kwargs: dict[str, Any] = {
+                "model": model,
+                "messages": messages,
+                "max_tokens": request.max_tokens,
+                "temperature": request.temperature,
+                "top_p": request.top_p,
+            }
+            if tools:
+                kwargs["tools"] = tools
+            if request.stop_sequences:
+                kwargs["stop"] = request.stop_sequences
+
+            response = await self._openai_client.chat.completions.create(**kwargs)
+            choice = response.choices[0]
+
+            # Extract tool calls
+            tool_calls = []
+            if choice.message.tool_calls:
+                for tc in choice.message.tool_calls:
+                    tool_calls.append(ToolCall(
+                        id=tc.id,
+                        name=tc.function.name,
+                        arguments=(
+                            json.loads(tc.function.arguments)
+                            if tc.function.arguments else {}
+                        ),
+                    ))
+
+            usage = TokenUsage(
+                prompt_tokens=response.usage.prompt_tokens if response.usage else 0,
+                completion_tokens=response.usage.completion_tokens if response.usage else 0,
+                total_tokens=response.usage.total_tokens if response.usage else 0,
+            )
+
+            return LLMResponse(
+                content=choice.message.content or "",
+                model=model,
+                provider=self.provider_name,
+                tool_calls=tool_calls,
+                usage=usage,
+                finish_reason=choice.finish_reason or "stop",
+                cost_usd=self._calculate_cost(usage),
+            )
+        else:
+            # Fallback to raw httpx
+            return await self._complete_httpx_openai(model, messages, request, tools)
+
+    async def _complete_httpx_openai(
+        self,
+        model: str,
+        messages: list[dict],
+        request: LLMRequest,
+        tools: list[dict] | None,
+    ) -> LLMResponse:
+        """Fallback: raw HTTP request for OpenAI-compatible APIs."""
+        payload: dict[str, Any] = {
+            "model": model,
+            "messages": messages,
+            "max_tokens": request.max_tokens,
+            "temperature": request.temperature,
+        }
+        if tools:
+            payload["tools"] = tools
+
+        async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
+            resp = await client.post(
+                f"{self.base_url}/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {self.api_key}",
+                    "Content-Type": "application/json",
+                },
+                json=payload,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+
+        choice = data["choices"][0]
+        usage_data = data.get("usage", {})
+        usage = TokenUsage(
+            prompt_tokens=usage_data.get("prompt_tokens", 0),
+            completion_tokens=usage_data.get("completion_tokens", 0),
+            total_tokens=usage_data.get("total_tokens", 0),
+        )
+
+        return LLMResponse(
+            content=choice["message"].get("content", ""),
+            model=model,
+            provider=self.provider_name,
+            usage=usage,
+            finish_reason=choice.get("finish_reason", "stop"),
+            cost_usd=self._calculate_cost(usage),
+        )
+
+    async def _complete_anthropic(self, request: LLMRequest) -> LLMResponse:
+        """Complete via Anthropic's Claude API."""
+        model = request.model or self.default_model
+        system_prompt, messages = self._to_anthropic_messages(request)
+        tools = self._to_anthropic_tools(request.tools)
+
+        if self._anthropic_client:
+            kwargs: dict[str, Any] = {
+                "model": model,
+                "messages": messages,
+                "max_tokens": request.max_tokens,
+                "temperature": request.temperature,
+            }
+            if system_prompt:
+                kwargs["system"] = system_prompt
+            if tools:
+                kwargs["tools"] = tools
+
+            response = await self._anthropic_client.messages.create(**kwargs)
+
+            content = ""
+            tool_calls = []
+            for block in response.content:
+                if block.type == "text":
+                    content += block.text
+                elif block.type == "tool_use":
+                    tool_calls.append(ToolCall(
+                        id=block.id,
+                        name=block.name,
+                        arguments=block.input if isinstance(block.input, dict) else {},
+                    ))
+
+            usage = TokenUsage(
+                prompt_tokens=response.usage.input_tokens,
+                completion_tokens=response.usage.output_tokens,
+                total_tokens=response.usage.input_tokens + response.usage.output_tokens,
+            )
+
+            return LLMResponse(
+                content=content,
+                model=model,
+                provider=self.provider_name,
+                tool_calls=tool_calls,
+                usage=usage,
+                finish_reason=response.stop_reason or "stop",
+                cost_usd=self._calculate_cost(usage),
+            )
+        else:
+            # Fallback to raw httpx for Anthropic
+            return await self._complete_httpx_anthropic(
+                model, system_prompt, messages, request, tools
+            )
+
+    async def _complete_httpx_anthropic(
+        self,
+        model: str,
+        system_prompt: str,
+        messages: list[dict],
+        request: LLMRequest,
+        tools: list[dict] | None,
+    ) -> LLMResponse:
+        """Fallback: raw HTTP request for Anthropic API."""
+        payload: dict[str, Any] = {
+            "model": model,
+            "messages": messages,
+            "max_tokens": request.max_tokens,
+            "temperature": request.temperature,
+        }
+        if system_prompt:
+            payload["system"] = system_prompt
+        if tools:
+            payload["tools"] = tools
+
+        async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
+            resp = await client.post(
+                f"{self.base_url}/v1/messages",
+                headers={
+                    "x-api-key": self.api_key,
+                    "anthropic-version": "2023-06-01",
+                    "Content-Type": "application/json",
+                },
+                json=payload,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+
+        content = ""
+        for block in data.get("content", []):
+            if block.get("type") == "text":
+                content += block.get("text", "")
+
+        usage_data = data.get("usage", {})
+        usage = TokenUsage(
+            prompt_tokens=usage_data.get("input_tokens", 0),
+            completion_tokens=usage_data.get("output_tokens", 0),
+            total_tokens=(
+                usage_data.get("input_tokens", 0) + usage_data.get("output_tokens", 0)
+            ),
+        )
+
+        return LLMResponse(
+            content=content,
+            model=model,
+            provider=self.provider_name,
+            usage=usage,
+            finish_reason=data.get("stop_reason", "stop"),
+            cost_usd=self._calculate_cost(usage),
+        )
+
+    # ============================================
+    # Stream (Async Generator)
+    # ============================================
+
+    async def stream(self, request: LLMRequest) -> AsyncIterator[LLMChunk]:
+        """Stream a completion. Auto-detects Anthropic vs OpenAI format."""
+        if self.is_anthropic:
+            async for chunk in self._stream_anthropic(request):
+                yield chunk
+        else:
+            async for chunk in self._stream_openai(request):
+                yield chunk
+
+    async def _stream_openai(self, request: LLMRequest) -> AsyncIterator[LLMChunk]:
+        """Stream via OpenAI-compatible API."""
+        model = request.model or self.default_model
+
+        if self._openai_client:
+            messages = self._to_openai_messages(request)
+            stream = await self._openai_client.chat.completions.create(
+                model=model,
+                messages=messages,
+                max_tokens=request.max_tokens,
+                temperature=request.temperature,
+                stream=True,
+            )
+
+            async for chunk in stream:
+                if chunk.choices and chunk.choices[0].delta.content:
+                    yield LLMChunk(content=chunk.choices[0].delta.content)
+                if chunk.choices and chunk.choices[0].finish_reason:
+                    yield LLMChunk(
+                        is_final=True,
+                        finish_reason=chunk.choices[0].finish_reason,
+                    )
+        else:
+            # httpx streaming fallback
+            messages = self._to_openai_messages(request)
+            payload = {
+                "model": model,
+                "messages": messages,
+                "max_tokens": request.max_tokens,
+                "temperature": request.temperature,
+                "stream": True,
+            }
+            async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
+                async with client.stream(
+                    "POST",
+                    f"{self.base_url}/chat/completions",
+                    headers={
+                        "Authorization": f"Bearer {self.api_key}",
+                        "Content-Type": "application/json",
+                    },
+                    json=payload,
+                ) as resp:
+                    async for line in resp.aiter_lines():
+                        if line.startswith("data: ") and line != "data: [DONE]":
+                            data = json.loads(line[6:])
+                            if data.get("choices"):
+                                delta = data["choices"][0].get("delta", {})
+                                if delta.get("content"):
+                                    yield LLMChunk(content=delta["content"])
+                                if data["choices"][0].get("finish_reason"):
+                                    yield LLMChunk(
+                                        is_final=True,
+                                        finish_reason=data["choices"][0]["finish_reason"],
+                                    )
+
+    async def _stream_anthropic(self, request: LLMRequest) -> AsyncIterator[LLMChunk]:
+        """Stream via Anthropic API."""
+        model = request.model or self.default_model
+
+        if self._anthropic_client:
+            system_prompt, messages = self._to_anthropic_messages(request)
+            kwargs: dict[str, Any] = {
+                "model": model,
+                "messages": messages,
+                "max_tokens": request.max_tokens,
+                "temperature": request.temperature,
+            }
+            if system_prompt:
+                kwargs["system"] = system_prompt
+
+            async with self._anthropic_client.messages.stream(**kwargs) as stream:
+                async for text in stream.text_stream:
+                    yield LLMChunk(content=text)
+
+                final = await stream.get_final_message()
+                yield LLMChunk(
+                    is_final=True,
+                    finish_reason=final.stop_reason,
+                    usage=TokenUsage(
+                        prompt_tokens=final.usage.input_tokens,
+                        completion_tokens=final.usage.output_tokens,
+                        total_tokens=final.usage.input_tokens + final.usage.output_tokens,
+                    ),
+                )
+        else:
+            # Anthropic httpx streaming would go here
+            # For now, fall back to non-streaming
+            response = await self._complete_anthropic(request)
+            yield LLMChunk(content=response.content, is_final=True)
+
+    # ============================================
+    # Model Info & Health
+    # ============================================
+
+    def list_models(self) -> list[ModelInfo]:
+        """Return model info for this provider's configured model."""
+        return [
+            ModelInfo(
+                id=self.default_model,
+                provider=self.provider_name,
+                name=f"{self.name} / {self.default_model}",
+                speed_tier=self.speed_tier,
+                cost_per_1k_input=self.cost_per_1k_input,
+                cost_per_1k_output=self.cost_per_1k_output,
+                max_context_tokens=self.max_context_tokens,
+                capabilities=self.capabilities,
+                is_available=True,
+            )
+        ]
+
+    async def health_check(self) -> bool:
+        """Verify this provider is reachable with a minimal request."""
+        try:
+            test_request = LLMRequest(
+                messages=[{"role": "user", "content": "ping"}],
+                model=self.default_model,
+                max_tokens=5,
+                temperature=0,
+            )
+            # Use a quick httpx call instead of full completion
+            if self.is_anthropic:
+                async with httpx.AsyncClient(timeout=10) as client:
+                    resp = await client.get(
+                        f"{self.base_url}",
+                        headers={"x-api-key": self.api_key},
+                    )
+                    return resp.status_code < 500
+            else:
+                async with httpx.AsyncClient(timeout=10) as client:
+                    resp = await client.get(
+                        f"{self.base_url}/models",
+                        headers={"Authorization": f"Bearer {self.api_key}"},
+                    )
+                    return resp.status_code < 500
+        except Exception as e:
+            logger.warning("health_check_failed", provider=self.name, error=str(e))
+            return False
+
+    def __repr__(self) -> str:
+        return (
+            f"<CustomLLMProvider name={self.name!r} "
+            f"base_url={self.base_url!r} "
+            f"model={self.default_model!r}>"
+        )

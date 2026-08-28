@@ -1,0 +1,1 @@
+"""SONIC-REDA Core Tests."""

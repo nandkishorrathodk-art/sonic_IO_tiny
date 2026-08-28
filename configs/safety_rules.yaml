@@ -1,0 +1,97 @@
+# ============================================
+# SONIC-REDA — Immutable Safety Rules
+# ============================================
+# CRITICAL: These rules are NON-NEGOTIABLE.
+# No agent or self-development process can modify these.
+# Changes require human admin access + system restart.
+# ============================================
+
+version: "1.0"
+last_updated: "2026-08-27"
+
+# ---- Risk Level Definitions ----
+risk_levels:
+  L0:
+    name: "Safe"
+    description: "No approval needed. Non-intrusive actions."
+    auto_approve: true
+    examples:
+      - "Passive reconnaissance (DNS, WHOIS, certificate transparency)"
+      - "Static code analysis"
+      - "Reading public documentation"
+      - "Graph memory queries"
+      - "Evidence compilation"
+
+  L1:
+    name: "Needs Approval"
+    description: "Potentially impactful. Requires human approval before execution."
+    auto_approve: false
+    examples:
+      - "Active port scanning"
+      - "Web application fuzzing"
+      - "PoC exploit execution (even in sandbox)"
+      - "Sending crafted HTTP requests to live targets"
+      - "Running Nuclei/sqlmap against targets"
+      - "Browser automation against live targets"
+
+  L2:
+    name: "Forbidden"
+    description: "NEVER allowed. Will be blocked and logged as violation."
+    auto_approve: false
+    blocked: true
+    examples:
+      - "Data exfiltration from targets"
+      - "Destructive operations (DELETE, DROP, format)"
+      - "Attacking out-of-scope targets"
+      - "Credential stuffing / brute force against production"
+      - "Modifying safety rules"
+      - "Disabling audit logging"
+      - "Social engineering actions"
+      - "Accessing secrets of other users/systems"
+
+# ---- Forbidden Actions (Hard Block) ----
+forbidden_actions:
+  - pattern: "rm -rf /"
+    description: "Destructive filesystem wipe"
+  - pattern: "DROP DATABASE"
+    description: "Database destruction"
+  - pattern: "exfiltrate"
+    description: "Data exfiltration attempt"
+  - pattern: "disable.*logging"
+    description: "Audit log tampering"
+  - pattern: "modify.*safety_rules"
+    description: "Safety rule modification attempt"
+
+# ---- Network Egress Rules ----
+network_policy:
+  default: deny
+  description: "All outbound traffic blocked except to allowlisted targets"
+  always_allowed:
+    - "*.anthropic.com"          # LLM API
+    - "*.openai.com"             # LLM API
+    - "*.x.ai"                   # LLM API
+    - "*.deepseek.com"           # LLM API
+    - "localhost"                 # Local services
+    - "127.0.0.1"                # Local services
+  # Target-specific allows are defined in scope.yaml per engagement
+
+# ---- Kill Switch ----
+kill_switch:
+  enabled: true
+  triggers:
+    - "API endpoint: POST /admin/kill"
+    - "CLI command: sonic kill --all"
+    - "Dashboard: Emergency Stop button"
+  actions:
+    - "Immediately halt all running agents"
+    - "Terminate all sandbox processes"
+    - "Preserve all logs and evidence"
+    - "Send notification to admin"
+
+# ---- Audit Requirements ----
+audit:
+  log_every_action: true
+  log_inter_agent_messages: true
+  log_llm_requests: true
+  retention_days: 365
+  tamper_protection: true

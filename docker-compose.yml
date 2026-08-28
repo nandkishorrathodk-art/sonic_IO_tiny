@@ -1,0 +1,106 @@
+# ==========================================================
+# SONIC-REDA — Multi-Container Runtime (Dev & Isolated Sandboxes)
+# ==========================================================
+# Architecture:
+#   • Control Plane Database: Neo4j 5 (Graph Memory)
+#   • Task Bus / Cache: Redis 7
+#   • Isolated Pentest Compute: Kali Linux Workspace (sonic-sandbox-kali)
+#   • Isolated General Compute: Debian 12 Workspace (sonic-sandbox-debian)
+# ==========================================================
+
+services:
+  # ---- Neo4j (Agent-to-Agent Graph Memory) ----
+  neo4j:
+    image: neo4j:5-community
+    container_name: sonic-neo4j
+    ports:
+      - "7474:7474"   # Browser UI
+      - "7687:7687"   # Bolt protocol
+    environment:
+      NEO4J_AUTH: neo4j/sonic-reda-dev
+      NEO4J_PLUGINS: '["apoc", "graph-data-science"]'
+      NEO4J_server_memory_heap_initial__size: "512m"
+      NEO4J_server_memory_heap_max__size: "1g"
+    volumes:
+      - neo4j_data:/data
+      - neo4j_logs:/logs
+    networks:
+      - sonic-control-net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:7474 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ---- Redis (Task Queue & Cache) ----
+  redis:
+    image: redis:7-alpine
+    container_name: sonic-redis
+    ports:
+      - "6379:6379"
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+    volumes:
+      - redis_data:/data
+    networks:
+      - sonic-control-net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ---- Isolated Kali Linux Security Sandbox ----
+  sandbox-kali:
+    image: kalilinux/kali-rolling
+    container_name: sonic-sandbox-kali
+    command: ["tail", "-f", "/dev/null"]
+    security_opt:
+      - no-new-privileges:true
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 2048M
+    volumes:
+      - kali_workspace:/workspace
+    networks:
+      - sonic-sandbox-net
+    restart: unless-stopped
+
+  # ---- Isolated Debian 12 General Workspace (Browser/Scripts) ----
+  sandbox-debian:
+    image: debian:12-slim
+    container_name: sonic-sandbox-debian
+    command: ["tail", "-f", "/dev/null"]
+    security_opt:
+      - no-new-privileges:true
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 2048M
+    volumes:
+      - debian_workspace:/workspace
+    networks:
+      - sonic-sandbox-net
+    restart: unless-stopped
+
+networks:
+  sonic-control-net:
+    driver: bridge
+  sonic-sandbox-net:
+    driver: bridge
+
+volumes:
+  neo4j_data:
+    driver: local
+  neo4j_logs:
+    driver: local
+  redis_data:
+    driver: local
+  kali_workspace:
+    driver: local
+  debian_workspace:
+    driver: local

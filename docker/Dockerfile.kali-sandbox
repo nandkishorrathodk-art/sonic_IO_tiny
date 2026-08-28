@@ -1,0 +1,32 @@
+# ==============================================================================
+# SONIC-REDA — Isolated Kali Linux Sandbox (Security Tool Plane)
+# ==============================================================================
+
+FROM kalilinux/kali-rolling
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Install core security toolchain
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    curl \
+    git \
+    nmap \
+    nuclei \
+    ffuf \
+    wordlists \
+    python3 \
+    python3-pip \
+    iproute2 \
+    iptables \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create non-root sonic operator user
+RUN useradd -m -s /bin/bash -u 1000 sonic \
+    && mkdir -p /workspace \
+    && chown -R sonic:sonic /workspace
+
+WORKDIR /workspace
+USER sonic
+
+CMD ["tail", "-f", "/dev/null"]

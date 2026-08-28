@@ -1,0 +1,71 @@
+# ============================================
+# SONIC-REDA — Scope Configuration Template
+# ============================================
+# Define the target scope for an engagement.
+# Copy this file and customize for each project:
+#   cp scope.example.yaml my-engagement-scope.yaml
+# ============================================
+
+engagement:
+  name: "Example Engagement"
+  created: "2026-08-27"
+  created_by: "operator@team.com"
+  description: "Bug bounty engagement for example.com"
+
+# ---- In-Scope Targets ----
+targets:
+  domains:
+    - "*.example.com"
+    - "api.example.com"
+    - "staging.example.com"
+  
+  ips:
+    - "192.168.1.0/24"
+  
+  # Specific URLs / endpoints to focus on
+  urls:
+    - "https://example.com/api/v1/*"
+    - "https://example.com/admin/*"
+  
+  # Git repositories to analyze
+  repositories:
+    - "https://github.com/example/webapp"
+    - "https://github.com/example/api-server"
+
+# ---- Explicitly Out-of-Scope ----
+exclusions:
+  domains:
+    - "*.third-party-service.com"
+    - "payment-gateway.example.com"
+  
+  ips:
+    - "10.0.0.0/8"
+  
+  paths:
+    - "/logout"
+    - "/delete-account"
+    - "/admin/destroy-*"
+
+# ---- Engagement Rules ----
+rules:
+  max_requests_per_second: 10
+  max_concurrent_scans: 3
+  testing_hours: "00:00-23:59"  # 24/7 or restrict to specific hours
+  auto_approve_L1: false         # Require manual approval for L1 actions
+  notify_on_high_finding: true   # Alert operator on high/critical findings
+
+# ---- Bug Bounty Program Details (if applicable) ----
+bounty_program:
+  platform: "HackerOne"  # or Bugcrowd, Intigriti, etc.
+  program_url: "https://hackerone.com/example"
+  severity_focus:
+    - critical
+    - high
+  # Bug classes to prioritize
+  priority_classes:
+    - "Remote Code Execution"
+    - "SQL Injection"
+    - "Authentication Bypass"
+    - "IDOR"
+    - "SSRF"
+    - "XSS (Stored)"

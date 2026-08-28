@@ -1,0 +1,34 @@
+# ==============================================================================
+# SONIC-REDA — Isolated Debian 12 Sandbox (Browser & General Compute Workspace)
+# ==============================================================================
+
+FROM debian:12-slim
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV PYTHONUNBUFFERED=1
+
+# Install system utilities, python, node, and chromium dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    curl \
+    git \
+    python3 \
+    python3-pip \
+    python3-venv \
+    nodejs \
+    npm \
+    chromium \
+    procps \
+    iproute2 \
+    iptables \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create non-root sonic operator user
+RUN useradd -m -s /bin/bash -u 1000 sonic \
+    && mkdir -p /workspace \
+    && chown -R sonic:sonic /workspace
+
+WORKDIR /workspace
+USER sonic
+
+CMD ["tail", "-f", "/dev/null"]

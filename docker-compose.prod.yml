@@ -1,0 +1,135 @@
+# ==========================================================
+# SONIC-REDA — Production Cloud Compose Stack (6-Plane Topology)
+# ==========================================================
+
+services:
+  # 1. Neo4j Graph Memory Brain
+  neo4j:
+    image: neo4j:5.20-community
+    container_name: sonic-neo4j-prod
+    restart: always
+    ports:
+      - "127.0.0.1:7474:7474"
+      - "127.0.0.1:7687:7687"
+    environment:
+      - NEO4J_AUTH=neo4j/sonic_secret_password_2026
+      - NEO4J_PLUGINS=["apoc"]
+      - NEO4J_dbms_memory_heap_initial__size=1G
+      - NEO4J_dbms_memory_heap_max__size=4G
+    volumes:
+      - neo4j_data_prod:/data
+      - neo4j_logs_prod:/logs
+    networks:
+      - sonic-control-net
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:7474 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # 2. Redis Ephemeral State & Cache
+  redis:
+    image: redis:7-alpine
+    container_name: sonic-redis-prod
+    restart: always
+    ports:
+      - "127.0.0.1:6379:6379"
+    volumes:
+      - redis_data_prod:/data
+    networks:
+      - sonic-control-net
+    command: ["redis-server", "--appendonly", "yes"]
+
+  # 3. SONIC-REDA Core Control Plane API
+  sonic-core:
+    build:
+      context: ./sonic-core
+      dockerfile: Dockerfile
+    container_name: sonic-core-prod
+    restart: always
+    depends_on:
+      neo4j:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    ports:
+      - "127.0.0.1:8000:8000"
+    environment:
+      - APP_ENV=production
+      - NEO4J_URI=bolt://neo4j:7687
+      - NEO4J_USER=neo4j
+      - NEO4J_PASSWORD=sonic_secret_password_2026
+      - REDIS_URL=redis://redis:6379/0
+      - SECRET_KEY=prod_super_secret_jwt_key_sonic_2026
+    volumes:
+      - ./configs:/app/configs:ro
+      - ./evidence_store:/app/evidence_store
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - sonic-control-net
+
+  # 4. Operator Dashboard Frontend (Next.js)
+  sonic-dashboard:
+    build:
+      context: ./sonic-dashboard
+      dockerfile: Dockerfile
+    container_name: sonic-dashboard-prod
+    restart: always
+    depends_on:
+      - sonic-core
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=production
+      - NEXT_PUBLIC_API_URL=http://sonic-core:8000
+    networks:
+      - sonic-control-net
+
+  # 5. Isolated Kali Linux Security Sandbox (Sandbox Plane)
+  sandbox-kali:
+    image: kalilinux/kali-rolling
+    container_name: sonic-sandbox-kali-prod
+    command: ["tail", "-f", "/dev/null"]
+    security_opt:
+      - no-new-privileges:true
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 2048M
+    volumes:
+      - kali_workspace_prod:/workspace
+    networks:
+      - sonic-sandbox-net
+    restart: always
+
+  # 6. Isolated Debian 12 General Workspace (Browser/Playwright)
+  sandbox-debian:
+    image: debian:12-slim
+    container_name: sonic-sandbox-debian-prod
+    command: ["tail", "-f", "/dev/null"]
+    security_opt:
+      - no-new-privileges:true
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 2048M
+    volumes:
+      - debian_workspace_prod:/workspace
+    networks:
+      - sonic-sandbox-net
+    restart: always
+
+networks:
+  sonic-control-net:
+    driver: bridge
+  sonic-sandbox-net:
+    driver: bridge
+
+volumes:
+  neo4j_data_prod:
+  neo4j_logs_prod:
+  redis_data_prod:
+  kali_workspace_prod:
+  debian_workspace_prod:

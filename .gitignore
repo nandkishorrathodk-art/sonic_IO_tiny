@@ -1,0 +1,62 @@
+# ============================================
+# SONIC-REDA — .gitignore
+# ============================================
+
+# ---- Environment & Secrets ----
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+*.egg
+dist/
+build/
+.eggs/
+*.whl
+.venv/
+venv/
+env/
+.uv/
+.python-version
+
+# ---- Node.js / Next.js ----
+node_modules/
+.next/
+out/
+.turbo/
+*.tsbuildinfo
+
+# ---- IDE ----
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# ---- Docker ----
+docker-data/
+
+# ---- Testing ----
+.coverage
+htmlcov/
+.pytest_cache/
+.mypy_cache/
+
+# ---- Logs ----
+*.log
+logs/
+
+# ---- Evidence & Artifacts (large files) ----
+evidence_store/
+*.har
+*.pcap
+*.db
+sonic_data.db

@@ -1,0 +1,25 @@
+[project]
+name = "sonic-reda"
+version = "0.1.0"
+description = "SONIC-REDA — Next-Generation Autonomous AI Bug Hunting System"
+readme = "README.md"
+requires-python = ">=3.12"
+license = {text = "Proprietary"}
+
+[tool.uv.workspace]
+members = ["sonic-core", "sonic-cli"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["sonic-core/tests", "sonic-cli/tests"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W", "UP"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true

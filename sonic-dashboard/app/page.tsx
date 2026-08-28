@@ -37,7 +37,7 @@ export default function SonicDevinWorkstation() {
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [thinkingOpen, setThinkingOpen] = useState(true);
   const [rightView, setRightView] = useState<"code" | "desktop" | "changes" | "pr66" | "pr67">("code");
-  const [activeTab, setActiveTab] = useState<"worklog" | "changes" | "pr66" | "pr67">("worklog");
+  const [activeTab, setActiveTab] = useState<"worklog" | "desktop" | "changes" | "pr66" | "pr67">("worklog");
   const [promptText, setPromptText] = useState("");
   const [copied, setCopied] = useState(false);
   const [activeFile, setActiveFile] = useState("index.html");
@@ -406,6 +406,21 @@ export default function SonicDevinWorkstation() {
                 >
                   <FileText className="w-3.5 h-3.5" />
                   <span>Worklog</span>
+                </button>
+
+                <button
+                  onClick={() => {
+                    setActiveTab("desktop");
+                    setRightView("desktop");
+                  }}
+                  className={`px-3 py-1 rounded text-xs font-medium flex items-center gap-1.5 transition ${
+                    activeTab === "desktop" || rightView === "desktop"
+                      ? "bg-[#21262D] text-white font-semibold"
+                      : "text-[#8B949E] hover:text-white"
+                  }`}
+                >
+                  <Monitor className="w-3.5 h-3.5 text-[#3FB950]" />
+                  <span>Desktop</span>
                 </button>
 
                 <button

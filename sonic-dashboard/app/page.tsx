@@ -59,6 +59,41 @@ export default function SonicDevinWorkstation() {
   const [activeTab, setActiveTab] = useState<"worklog" | "desktop" | "changes" | "pr66">("desktop");
   const [promptText, setPromptText] = useState("");
   const [copied, setCopied] = useState(false);
+  const defaultScenarioMatrixLines = [
+    '"""',
+    "SONIC-REDA — 8-Domain Architectural Scenario Matrix",
+    "===================================================",
+    '"""',
+    "from __future__ import annotations",
+    "import asyncio",
+    "import hashlib",
+    "import time",
+    "from dataclasses import dataclass, field",
+    "from typing import Any, Callable, Coroutine, Optional",
+    "",
+    "class TokenValidator:",
+    '    """Validates cryptographic replay invariants and nonces."""',
+    "    def __init__(self, ttl_seconds: float = 300.0):",
+    "        self._seen_nonces: set[str] = set()",
+    "        self._nonce_timestamps: dict[str, float] = {}",
+    "        self._ttl_seconds = ttl_seconds",
+    "",
+    "    def validate(self, nonce: str) -> bool:",
+    "        now = time.time()",
+    "        # Evict expired nonces",
+    "        expired = [n for n, ts in self._nonce_timestamps.items() if now - ts > self._ttl_seconds]",
+    "        for exp_nonce in expired:",
+    "            self._seen_nonces.discard(exp_nonce)",
+    "            del self._nonce_timestamps[exp_nonce]",
+    "",
+    "        if nonce in self._seen_nonces:",
+    "            return False  # REPLAY ATTACK BLOCKED",
+    "",
+    "        self._seen_nonces.add(nonce)",
+    "        self._nonce_timestamps[nonce] = now",
+    "        return True",
+  ];
+
   const defaultRepoFiles = [
     "pyproject.toml",
     "README.md",
@@ -66,31 +101,22 @@ export default function SonicDevinWorkstation() {
     "sonic-core/sonic/production_gate/independent_evaluator.py",
     "sonic-core/sonic/production_gate/temporal_holdout_generator.py",
     "sonic-core/sonic/continuous_dev/continuous_loop.py",
-    "sonic-core/sonic/continuous_dev/open_system_improver.py",
     "sonic-core/sonic/api/main.py",
-    "sonic-core/sonic/api/routes/workstation.py",
     "sonic-dashboard/app/page.tsx",
   ];
 
   const [activeFile, setActiveFile] = useState("sonic-core/sonic/production_gate/scenario_matrix.py");
-  const [fileContent, setFileContent] = useState<string[]>([]);
+  const [fileContent, setFileContent] = useState<string[]>(defaultScenarioMatrixLines);
   const [fileTree, setFileTree] = useState<string[]>(defaultRepoFiles);
   const [gitDiff, setGitDiff] = useState("");
   const [liveState, setLiveState] = useState<any>(null);
-
-  // Desktop OS State
-  const [osBooted, setOsBooted] = useState(true);
-  const [focusedWindow, setFocusedWindow] = useState<"vscode" | "terminal" | "browser">("vscode");
-  const [windowStates, setWindowStates] = useState({
-    vscode: { minimized: false, maximized: false },
-    terminal: { minimized: false, maximized: false },
-    browser: { minimized: false, maximized: false },
-  });
+  const [desktopState, setDesktopState] = useState<any>(null);
+  const [activeDesktopApp, setActiveDesktopApp] = useState<"vscode" | "terminal" | "browser">("vscode");
   const [terminalInput, setTerminalInput] = useState("");
   const [terminalLogs, setTerminalLogs] = useState<string[]>([
-    "sonic@ubuntu-desktop:~$ git status --short",
+    "sonic@sandbox-01:~$ git status --short",
     "On branch main, working tree clean",
-    "sonic@ubuntu-desktop:~$ python -m pytest tests/test_phase19/ -v",
+    "sonic@sandbox-01:~$ python -m pytest tests/test_phase19/ -v",
     "tests/test_phase19/test_4_tier_reality_classification.py PASSED [ 25%]",
     "tests/test_phase19/test_expanded_8_scenario_matrix.py PASSED      [ 50%]",
     "tests/test_phase19/test_independent_evaluator_harness.py PASSED  [ 75%]",
@@ -98,19 +124,7 @@ export default function SonicDevinWorkstation() {
     "======================== 4 passed in 1.48s ========================",
   ]);
   const [loading, setLoading] = useState(false);
-  const [currentTime, setCurrentTime] = useState("");
   const worklogEndRef = useRef<HTMLDivElement>(null);
-
-  // Time ticker
-  useEffect(() => {
-    const updateTime = () => {
-      const d = new Date();
-      setCurrentTime(d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }));
-    };
-    updateTime();
-    const interval = setInterval(updateTime, 1000);
-    return () => clearInterval(interval);
-  }, []);
 
   // Initial State & Auto-Poll
   useEffect(() => {
@@ -118,9 +132,11 @@ export default function SonicDevinWorkstation() {
     fetchTree();
     fetchFile(activeFile);
     fetchDiff();
+    fetchDesktop();
 
     const interval = setInterval(() => {
       fetchState();
+      fetchDesktop();
     }, 4000);
     return () => clearInterval(interval);
   }, []);
@@ -131,7 +147,16 @@ export default function SonicDevinWorkstation() {
       .then((data) => {
         if (data) setLiveState(data);
       })
-      .catch(() => {});
+      .catch(() => { });
+  };
+
+  const fetchDesktop = () => {
+    fetch("http://127.0.0.1:8000/workstation/desktop/status")
+      .then((res) => res.json())
+      .then((data) => {
+        if (data) setDesktopState(data);
+      })
+      .catch(() => { });
   };
 
   const fetchTree = () => {
@@ -196,7 +221,7 @@ export default function SonicDevinWorkstation() {
       .then((data) => {
         if (data?.diff) setGitDiff(data.diff);
       })
-      .catch(() => {});
+      .catch(() => { });
   };
 
   const handleCopy = () => {
@@ -237,7 +262,7 @@ export default function SonicDevinWorkstation() {
 
     const cmd = terminalInput;
     setTerminalInput("");
-    setTerminalLogs((prev) => [...prev, `sonic@ubuntu-desktop:~$ ${cmd}`]);
+    setTerminalLogs((prev) => [...prev, `sonic@sandbox-01:~$ ${cmd}`]);
 
     try {
       const res = await fetch("http://127.0.0.1:8000/workstation/command", {
@@ -295,9 +320,8 @@ export default function SonicDevinWorkstation() {
     <div className="flex h-screen w-screen bg-[#0D0F12] text-[#E6EDF3] overflow-hidden font-sans select-none">
       {/* 1. LEFT NAVIGATION SIDEBAR */}
       <aside
-        className={`${
-          sidebarOpen ? "w-[240px]" : "w-0"
-        } transition-all duration-200 ease-in-out border-r border-[#21262D] bg-[#12151A] flex flex-col flex-shrink-0 z-30 overflow-hidden`}
+        className={`${sidebarOpen ? "w-[240px]" : "w-0"
+          } transition-all duration-200 ease-in-out border-r border-[#21262D] bg-[#12151A] flex flex-col flex-shrink-0 z-30 overflow-hidden`}
       >
         {/* Workspace Dropdown */}
         <div className="p-3 border-b border-[#21262D] flex items-center justify-between">
@@ -346,31 +370,84 @@ export default function SonicDevinWorkstation() {
           </div>
         </div>
 
-        {/* Real Files Quick Picker */}
+        {/* Recent Chat History Header */}
         <div className="px-3 pt-3 pb-1 flex items-center justify-between text-xs text-[#8B949E]">
-          <span className="font-semibold text-[11px] uppercase tracking-wider">Repository Files</span>
-          <span className="text-[10px] font-mono text-[#58A6FF]">{fileTree.length} files</span>
+          <span className="font-semibold text-[11px]">Recent</span>
+          <div className="flex items-center gap-1.5">
+            <Search className="w-3.5 h-3.5 hover:text-white cursor-pointer" />
+            <Plus className="w-3.5 h-3.5 hover:text-white cursor-pointer" />
+            <MoreHorizontal className="w-3.5 h-3.5 hover:text-white cursor-pointer" />
+          </div>
         </div>
 
-        <div className="px-2 flex-1 overflow-y-auto space-y-0.5 font-mono text-[11px]">
-          {fileTree.map((f) => (
-            <div
-              key={f}
-              onClick={() => {
-                fetchFile(f);
-                setRightView("code");
-                setActiveTab("worklog");
-              }}
-              className={`p-1.5 rounded flex items-center gap-2 cursor-pointer transition truncate ${
-                activeFile === f
-                  ? "bg-[#1F242C] text-[#58A6FF] font-semibold border-l-2 border-[#58A6FF]"
-                  : "text-[#8B949E] hover:text-white hover:bg-[#161B22]"
-              }`}
-            >
-              <FileCode className="w-3.5 h-3.5 flex-shrink-0 text-[#8B949E]" />
-              <span className="truncate">{f.split("/").pop()}</span>
+        {/* Sessions / Chat History List */}
+        <div className="px-2 flex-1 overflow-y-auto space-y-1.5 font-sans text-xs">
+          {/* Active Session */}
+          <div className="p-2.5 rounded-md bg-[#181C23] border border-[#30363D] cursor-pointer hover:bg-[#1E232B] transition">
+            <div className="font-semibold text-white truncate text-[12px]">
+              {sessionName}
             </div>
-          ))}
+            <div className="flex items-center gap-2 text-[11px] text-[#8B949E] font-mono mt-1">
+              <span className="text-[#E6EDF3]">Working</span>
+              <span>·</span>
+              <span className="text-[#3FB950] flex items-center gap-0.5">
+                <GitBranch className="w-3 h-3" /> 1
+              </span>
+              <span className="text-[#D2A8FF] flex items-center gap-0.5">
+                <GitPullRequest className="w-3 h-3" /> 1
+              </span>
+            </div>
+          </div>
+
+          {/* Past Chat Session 1 */}
+          <div
+            onClick={() => {
+              fetchFile("sonic-core/sonic/production_gate/scenario_matrix.py");
+              setRightView("desktop");
+            }}
+            className="p-2 rounded-md hover:bg-[#161B22] text-[#8B949E] hover:text-white cursor-pointer transition"
+          >
+            <div className="text-[11px] font-medium truncate text-[#C9D1D9]">sonic-core-auth-guard</div>
+            <div className="flex items-center gap-2 text-[10px] font-mono mt-0.5 text-[#8B949E]">
+              <span>Completed</span>
+              <span>·</span>
+              <span className="text-[#D2A8FF] flex items-center gap-0.5">
+                <GitPullRequest className="w-3 h-3" /> 1
+              </span>
+            </div>
+          </div>
+
+          {/* Past Chat Session 2 */}
+          <div
+            onClick={() => {
+              fetchFile("sonic-core/sonic/continuous_dev/continuous_loop.py");
+              setRightView("desktop");
+            }}
+            className="p-2 rounded-md hover:bg-[#161B22] text-[#8B949E] hover:text-white cursor-pointer transition"
+          >
+            <div className="text-[11px] font-medium truncate text-[#C9D1D9]">token-replay-fix</div>
+            <div className="flex items-center gap-2 text-[10px] font-mono mt-0.5 text-[#8B949E]">
+              <span>Completed</span>
+              <span>·</span>
+              <span className="text-[#D2A8FF] flex items-center gap-0.5">
+                <GitPullRequest className="w-3 h-3" /> 1
+              </span>
+            </div>
+          </div>
+
+          {/* Past Chat Session 3 */}
+          <div
+            onClick={() => {
+              fetchFile("pyproject.toml");
+              setRightView("desktop");
+            }}
+            className="p-2 rounded-md hover:bg-[#161B22] text-[#8B949E] hover:text-white cursor-pointer transition"
+          >
+            <div className="text-[11px] font-medium truncate text-[#C9D1D9]">router-table-optimization</div>
+            <div className="flex items-center gap-2 text-[10px] font-mono mt-0.5 text-[#8B949E]">
+              <span>Completed</span>
+            </div>
+          </div>
         </div>
 
         {/* Bottom Sidebar Controls */}
@@ -535,7 +612,7 @@ export default function SonicDevinWorkstation() {
           </div>
 
           {/* ========================================================================= */}
-          {/* RIGHT SUB-COLUMN: CODE VIEWER / REAL UBUNTU OS DESKTOP / CHANGES         */}
+          {/* RIGHT SUB-COLUMN: CODE VIEWER / REAL LIVE OS DESKTOP / CHANGES           */}
           {/* ========================================================================= */}
           <div className="col-span-6 flex flex-col h-full bg-[#0D0F12] overflow-hidden">
             {/* Top Tab Switcher Bar */}
@@ -546,11 +623,10 @@ export default function SonicDevinWorkstation() {
                     setActiveTab("worklog");
                     setRightView("code");
                   }}
-                  className={`px-3 py-1 rounded text-xs font-medium flex items-center gap-1.5 transition ${
-                    activeTab === "worklog" && rightView === "code"
+                  className={`px-3 py-1 rounded text-xs font-medium flex items-center gap-1.5 transition ${activeTab === "worklog" && rightView === "code"
                       ? "bg-[#21262D] text-white font-semibold"
                       : "text-[#8B949E] hover:text-white"
-                  }`}
+                    }`}
                 >
                   <FileText className="w-3.5 h-3.5" />
                   <span>Worklog</span>
@@ -561,11 +637,10 @@ export default function SonicDevinWorkstation() {
                     setActiveTab("desktop");
                     setRightView("desktop");
                   }}
-                  className={`px-3 py-1 rounded text-xs font-medium flex items-center gap-1.5 transition ${
-                    rightView === "desktop"
+                  className={`px-3 py-1 rounded text-xs font-medium flex items-center gap-1.5 transition ${rightView === "desktop"
                       ? "bg-[#21262D] text-white font-semibold"
                       : "text-[#8B949E] hover:text-white"
-                  }`}
+                    }`}
                 >
                   <Monitor className="w-3.5 h-3.5 text-[#3FB950]" />
                   <span>Desktop</span>
@@ -577,11 +652,10 @@ export default function SonicDevinWorkstation() {
                     setRightView("changes");
                     fetchDiff();
                   }}
-                  className={`px-3 py-1 rounded text-xs font-medium flex items-center gap-1.5 transition ${
-                    rightView === "changes"
+                  className={`px-3 py-1 rounded text-xs font-medium flex items-center gap-1.5 transition ${rightView === "changes"
                       ? "bg-[#21262D] text-white font-semibold"
                       : "text-[#8B949E] hover:text-white"
-                  }`}
+                    }`}
                 >
                   <span>Changes</span>
                 </button>
@@ -591,11 +665,10 @@ export default function SonicDevinWorkstation() {
                     setActiveTab("pr66");
                     setRightView("pr66");
                   }}
-                  className={`px-3 py-1 rounded text-xs font-medium flex items-center gap-1.5 transition ${
-                    rightView === "pr66"
+                  className={`px-3 py-1 rounded text-xs font-medium flex items-center gap-1.5 transition ${rightView === "pr66"
                       ? "bg-[#21262D] text-white font-semibold"
                       : "text-[#8B949E] hover:text-white"
-                  }`}
+                    }`}
                 >
                   <GitPullRequest className="w-3.5 h-3.5 text-[#D2A8FF]" />
                   <span>PR #19</span>
@@ -615,7 +688,7 @@ export default function SonicDevinWorkstation() {
                 <Eye className="w-3.5 h-3.5 text-[#58A6FF]" />
                 <span className="text-[#C9D1D9]">
                   {rightView === "desktop" ? (
-                    <>Virtual OS: <strong className="text-white">Ubuntu 22.04 LTS (X11 Display :1)</strong></>
+                    <>Live OS: <strong className="text-white">Ubuntu 22.04 LTS (Display :1)</strong></>
                   ) : (
                     <>Read <strong className="text-white">{activeFile.split("/").pop()}</strong></>
                   )}
@@ -625,237 +698,156 @@ export default function SonicDevinWorkstation() {
                 <div className="flex items-center gap-3 text-[11px] font-mono">
                   <span className="text-[#3FB950] flex items-center gap-1">
                     <span className="w-1.5 h-1.5 rounded-full bg-[#3FB950] animate-pulse"></span>
-                    ACTIVE
+                    READY / ACTIVE
                   </span>
                   <span>CPU 14%</span>
                   <span>RAM 1.3GB / 8GB</span>
-                  <span className="text-[#79C0FF]">1920x1080 @ 60fps</span>
                 </div>
               )}
             </div>
 
             {/* Right Pane Body */}
-            <div className="flex-1 overflow-hidden p-2 flex flex-col">
-              {/* VIEW A: REAL UBUNTU OS DESKTOP ENVIRONMENT */}
+            <div className="flex-1 overflow-hidden p-3 flex flex-col">
+              {/* VIEW A: REAL LIVE OS DESKTOP WORKSPACE */}
               {rightView === "desktop" && (
-                <div className="flex-1 rounded-lg border border-[#21262D] bg-[#161B22] flex flex-col overflow-hidden shadow-2xl relative">
-                  {/* Ubuntu Top Status Bar */}
-                  <div className="h-6 bg-[#0E1015] border-b border-[#21262D] px-3 flex items-center justify-between text-[11px] text-[#C9D1D9] font-sans">
-                    <div className="flex items-center gap-3">
-                      <span className="font-semibold text-white hover:text-[#58A6FF] cursor-pointer">Activities</span>
-                      <span className="text-[10px] text-[#8B949E]">Ubuntu 22.04</span>
+                <div className="flex-1 rounded-lg border border-[#21262D] bg-[#161B22] flex flex-col overflow-hidden shadow-2xl">
+                  {/* Virtual OS Window Title Bar */}
+                  <div className="h-8 border-b border-[#21262D] bg-[#1C2128] px-3 flex items-center justify-between text-xs font-mono text-[#8B949E]">
+                    <div className="flex items-center gap-2">
+                      <div className="flex items-center gap-1">
+                        <span className="w-2.5 h-2.5 rounded-full bg-[#FF5F56] inline-block"></span>
+                        <span className="w-2.5 h-2.5 rounded-full bg-[#FFBD2E] inline-block"></span>
+                        <span className="w-2.5 h-2.5 rounded-full bg-[#27C93F] inline-block"></span>
+                      </div>
+                      <span className="text-white font-semibold flex items-center gap-1.5 ml-2">
+                        <Monitor className="w-3.5 h-3.5 text-[#58A6FF]" />
+                        SONIC Desktop Workspace — Ubuntu 22.04 (1920x1080)
+                      </span>
                     </div>
-                    <div className="font-medium text-white text-xs">{currentTime || "18:16"}</div>
-                    <div className="flex items-center gap-2.5 text-[#8B949E]">
-                      <Wifi className="w-3.5 h-3.5 text-[#3FB950]" />
-                      <Volume2 className="w-3.5 h-3.5" />
-                      <Power className="w-3.5 h-3.5 hover:text-[#FF5F56] cursor-pointer" />
+
+                    {/* Window Switcher Inside Desktop */}
+                    <div className="flex items-center gap-1 bg-[#12151A] p-0.5 rounded border border-[#30363D]">
+                      <button
+                        onClick={() => setActiveDesktopApp("vscode")}
+                        className={`px-2 py-0.5 rounded text-[10px] font-semibold transition ${activeDesktopApp === "vscode" ? "bg-[#388BFD] text-white" : "text-[#8B949E] hover:text-white"
+                          }`}
+                      >
+                        VS Code
+                      </button>
+                      <button
+                        onClick={() => setActiveDesktopApp("terminal")}
+                        className={`px-2 py-0.5 rounded text-[10px] font-semibold transition ${activeDesktopApp === "terminal" ? "bg-[#388BFD] text-white" : "text-[#8B949E] hover:text-white"
+                          }`}
+                      >
+                        Terminal
+                      </button>
+                      <button
+                        onClick={() => setActiveDesktopApp("browser")}
+                        className={`px-2 py-0.5 rounded text-[10px] font-semibold transition ${activeDesktopApp === "browser" ? "bg-[#388BFD] text-white" : "text-[#8B949E] hover:text-white"
+                          }`}
+                      >
+                        Chromium
+                      </button>
                     </div>
                   </div>
 
-                  {/* Desktop Workspace: Dock + Canvas */}
-                  <div className="flex-1 flex overflow-hidden bg-gradient-to-br from-[#1E2430] via-[#141820] to-[#0A0C10] relative">
-                    {/* Ubuntu Left Dock */}
-                    <div className="w-11 bg-[#0E1015]/90 border-r border-[#21262D]/60 flex flex-col items-center py-2.5 space-y-3 z-10">
-                      <button
-                        onClick={() => setFocusedWindow("vscode")}
-                        className={`w-7 h-7 rounded-lg flex items-center justify-center transition ${
-                          focusedWindow === "vscode" ? "bg-[#388BFD] text-white shadow-lg" : "text-[#8B949E] hover:bg-[#21262D] hover:text-white"
-                        }`}
-                        title="VS Code IDE"
-                      >
-                        <FileCode className="w-4 h-4" />
-                      </button>
-
-                      <button
-                        onClick={() => setFocusedWindow("terminal")}
-                        className={`w-7 h-7 rounded-lg flex items-center justify-center transition ${
-                          focusedWindow === "terminal" ? "bg-[#388BFD] text-white shadow-lg" : "text-[#8B949E] hover:bg-[#21262D] hover:text-white"
-                        }`}
-                        title="Ubuntu Terminal"
-                      >
-                        <TerminalIcon className="w-4 h-4" />
-                      </button>
-
-                      <button
-                        onClick={() => setFocusedWindow("browser")}
-                        className={`w-7 h-7 rounded-lg flex items-center justify-center transition ${
-                          focusedWindow === "browser" ? "bg-[#388BFD] text-white shadow-lg" : "text-[#8B949E] hover:bg-[#21262D] hover:text-white"
-                        }`}
-                        title="Chromium Web Browser"
-                      >
-                        <Globe className="w-4 h-4" />
-                      </button>
-
-                      <div className="w-5 border-t border-[#30363D] my-1"></div>
-
-                      <button
-                        onClick={() => fetchFile("README.md")}
-                        className="w-7 h-7 rounded-lg flex items-center justify-center text-[#8B949E] hover:bg-[#21262D] hover:text-white transition"
-                        title="File Manager"
-                      >
-                        <Folder className="w-4 h-4" />
-                      </button>
-                    </div>
-
-                    {/* Desktop Area: Software Windows & Wallpaper */}
-                    <div className="flex-1 p-2 flex flex-col relative overflow-hidden">
-                      {/* Desktop Icons */}
-                      <div className="absolute top-3 right-3 flex flex-col gap-3 text-center z-0 opacity-80">
-                        <div className="cursor-pointer group flex flex-col items-center">
-                          <Folder className="w-8 h-8 text-[#58A6FF] group-hover:scale-110 transition" />
-                          <span className="text-[10px] text-white mt-1 shadow-sm">society-repo</span>
+                  {/* OS Desktop Active App Surface */}
+                  <div className="flex-1 bg-[#0A0C10] flex flex-col overflow-hidden relative">
+                    {/* APP 1: VS CODE INSIDE OS */}
+                    {activeDesktopApp === "vscode" && (
+                      <div className="flex-1 flex flex-col overflow-hidden bg-[#0D1117]">
+                        <div className="h-7 border-b border-[#21262D] bg-[#161B22] px-3 flex items-center justify-between text-[11px] font-mono text-[#8B949E]">
+                          <div className="flex items-center gap-2">
+                            <FileCode className="w-3.5 h-3.5 text-[#79C0FF]" />
+                            <span className="text-[#58A6FF] font-semibold">{activeFile.split("/").pop()}</span>
+                            <span className="text-[10px] text-[#3FB950]">● Live Editor</span>
+                          </div>
+                          <span>Line 14:28</span>
                         </div>
-                        <div className="cursor-pointer group flex flex-col items-center">
-                          <FileText className="w-8 h-8 text-[#7EE787] group-hover:scale-110 transition" />
-                          <span className="text-[10px] text-white mt-1 shadow-sm">test_phase19.py</span>
-                        </div>
-                      </div>
-
-                      {/* SOFTWARE WINDOW 1: VS CODE IDE */}
-                      {focusedWindow === "vscode" && (
-                        <div className="flex-1 rounded-lg border border-[#30363D] bg-[#0D1117] flex flex-col overflow-hidden shadow-2xl z-10 animate-in fade-in duration-150">
-                          {/* VS Code Window Header */}
-                          <div className="h-7 bg-[#161B22] border-b border-[#21262D] px-2.5 flex items-center justify-between text-xs text-[#8B949E]">
-                            <div className="flex items-center gap-1.5">
-                              <span className="w-2.5 h-2.5 rounded-full bg-[#FF5F56] inline-block"></span>
-                              <span className="w-2.5 h-2.5 rounded-full bg-[#FFBD2E] inline-block"></span>
-                              <span className="w-2.5 h-2.5 rounded-full bg-[#27C93F] inline-block"></span>
-                              <span className="text-white font-medium text-[11px] ml-2 flex items-center gap-1">
-                                <FileCode className="w-3.5 h-3.5 text-[#58A6FF]" />
-                                VS Code — {activeFile.split("/").pop()} [society-workspace]
+                        <div className="flex-1 p-3 font-mono text-xs overflow-y-auto leading-relaxed text-[#C9D1D9]">
+                          {fileContent.slice(0, 45).map((line, i) => (
+                            <div key={i} className="flex hover:bg-[#161B22]/50 leading-5">
+                              <span className="w-10 text-right pr-4 text-[#484F58] select-none font-mono text-[11px]">
+                                {i + 1}
                               </span>
-                            </div>
-                            <div className="flex items-center gap-2">
-                              <span className="text-[10px] text-[#3FB950]">● Active Edit</span>
-                            </div>
-                          </div>
-
-                          {/* VS Code Editor Surface */}
-                          <div className="flex-1 flex overflow-hidden">
-                            {/* Inner Minimap / Editor */}
-                            <div className="flex-1 p-2 font-mono text-xs overflow-y-auto leading-relaxed text-[#C9D1D9] bg-[#0D1117]">
-                              {fileContent.slice(0, 50).map((line, i) => (
-                                <div key={i} className="flex hover:bg-[#161B22]/50 leading-5">
-                                  <span className="w-8 text-right pr-3 text-[#484F58] select-none font-mono text-[11px]">
-                                    {i + 1}
-                                  </span>
-                                  <span className="flex-1 whitespace-pre">
-                                    {line.startsWith("import ") || line.startsWith("from ") ? (
-                                      <span className="text-[#FF7B72]">{line}</span>
-                                    ) : line.startsWith("class ") || line.startsWith("def ") ? (
-                                      <span className="text-[#D2A8FF]">{line}</span>
-                                    ) : line.includes("def ") || line.includes("return ") ? (
-                                      <span className="text-[#79C0FF]">{line}</span>
-                                    ) : line.includes("#") ? (
-                                      <span className="text-[#8B949E]">{line}</span>
-                                    ) : (
-                                      <span className="text-[#C9D1D9]">{line}</span>
-                                    )}
-                                  </span>
-                                </div>
-                              ))}
-                            </div>
-                          </div>
-
-                          {/* VS Code Bottom Status Bar */}
-                          <div className="h-5 bg-[#1F242C] border-t border-[#30363D] px-2.5 flex items-center justify-between text-[10px] font-mono text-[#8B949E]">
-                            <div className="flex items-center gap-3">
-                              <span className="text-[#58A6FF] flex items-center gap-1">
-                                <GitBranch className="w-3 h-3" /> {gitBranch}
-                              </span>
-                              <span>UTF-8</span>
-                              <span>Python 3.11</span>
-                            </div>
-                            <span className="text-[#3FB950]">Ln 14, Col 32</span>
-                          </div>
-                        </div>
-                      )}
-
-                      {/* SOFTWARE WINDOW 2: UBUNTU TERMINAL */}
-                      {focusedWindow === "terminal" && (
-                        <div className="flex-1 rounded-lg border border-[#30363D] bg-[#06080D] flex flex-col overflow-hidden shadow-2xl z-10 animate-in fade-in duration-150">
-                          {/* Terminal Window Header */}
-                          <div className="h-7 bg-[#161B22] border-b border-[#21262D] px-2.5 flex items-center justify-between text-xs text-[#8B949E]">
-                            <div className="flex items-center gap-1.5">
-                              <span className="w-2.5 h-2.5 rounded-full bg-[#FF5F56] inline-block"></span>
-                              <span className="w-2.5 h-2.5 rounded-full bg-[#FFBD2E] inline-block"></span>
-                              <span className="w-2.5 h-2.5 rounded-full bg-[#27C93F] inline-block"></span>
-                              <span className="text-white font-medium text-[11px] ml-2 flex items-center gap-1">
-                                <TerminalIcon className="w-3.5 h-3.5 text-[#3FB950]" />
-                                sonic@ubuntu-desktop: /home/sonic/society
-                              </span>
-                            </div>
-                            <span className="text-[10px] font-mono text-[#8B949E]">bash (PTY #1)</span>
-                          </div>
-
-                          {/* Terminal Console View */}
-                          <div className="flex-1 p-3 font-mono text-xs overflow-y-auto space-y-1 text-[#C9D1D9] leading-tight select-text">
-                            {terminalLogs.map((log, idx) => (
-                              <div key={idx} className="whitespace-pre-wrap">
-                                {log.startsWith("sonic@") ? (
-                                  <span className="text-[#79C0FF] font-bold">{log}</span>
-                                ) : log.includes("PASSED") ? (
-                                  <span className="text-[#3FB950]">{log}</span>
-                                ) : log.includes("FAILED") || log.includes("Error") ? (
-                                  <span className="text-[#FF7B72]">{log}</span>
+                              <span className="flex-1 whitespace-pre">
+                                {line.startsWith("import ") || line.startsWith("from ") ? (
+                                  <span className="text-[#FF7B72]">{line}</span>
+                                ) : line.startsWith("class ") || line.startsWith("def ") ? (
+                                  <span className="text-[#D2A8FF]">{line}</span>
+                                ) : line.includes("def ") || line.includes("return ") ? (
+                                  <span className="text-[#79C0FF]">{line}</span>
+                                ) : line.includes("#") ? (
+                                  <span className="text-[#8B949E]">{line}</span>
                                 ) : (
-                                  <span className="text-[#8B949E]">{log}</span>
+                                  <span className="text-[#C9D1D9]">{line}</span>
                                 )}
-                              </div>
-                            ))}
-                          </div>
-
-                          {/* Terminal Input Form */}
-                          <form onSubmit={handleRunTerminalCommand} className="p-2 bg-[#0E1015] border-t border-[#21262D] flex items-center gap-2">
-                            <span className="text-[#3FB950] font-bold font-mono text-xs">sonic@ubuntu-desktop:~$</span>
-                            <input
-                              type="text"
-                              value={terminalInput}
-                              onChange={(e) => setTerminalInput(e.target.value)}
-                              placeholder="type bash command (e.g. pytest tests/ or git status)..."
-                              className="flex-1 bg-transparent text-xs text-white outline-none font-mono placeholder-[#484F58]"
-                            />
-                          </form>
+                              </span>
+                            </div>
+                          ))}
                         </div>
-                      )}
-
-                      {/* SOFTWARE WINDOW 3: CHROMIUM WEB BROWSER */}
-                      {focusedWindow === "browser" && (
-                        <div className="flex-1 rounded-lg border border-[#30363D] bg-[#12151A] flex flex-col overflow-hidden shadow-2xl z-10 animate-in fade-in duration-150">
-                          {/* Chromium Window Header & Address Bar */}
-                          <div className="h-8 bg-[#161B22] border-b border-[#21262D] px-2.5 flex items-center gap-2 text-xs">
-                            <div className="flex items-center gap-1.5">
-                              <span className="w-2.5 h-2.5 rounded-full bg-[#FF5F56] inline-block"></span>
-                              <span className="w-2.5 h-2.5 rounded-full bg-[#FFBD2E] inline-block"></span>
-                              <span className="w-2.5 h-2.5 rounded-full bg-[#27C93F] inline-block"></span>
-                            </div>
-                            <div className="flex-1 flex items-center gap-1.5 px-2 py-0.5 rounded bg-[#0D1117] border border-[#30363D] text-[11px] font-mono text-white">
-                              <Globe className="w-3 h-3 text-[#58A6FF]" />
-                              <span className="truncate">http://127.0.0.1:8000/docs</span>
-                            </div>
-                            <span className="text-[#3FB950] text-[10px] font-bold">200 OK</span>
-                          </div>
-
-                          {/* Browser View Surface */}
-                          <div className="flex-1 p-6 flex flex-col items-center justify-center text-center space-y-3 bg-[#0A0C10]">
-                            <div className="w-12 h-12 rounded-full bg-[#238636]/20 border border-[#238636] flex items-center justify-center text-[#3FB950]">
-                              <CheckCircle2 className="w-6 h-6" />
-                            </div>
-                            <h3 className="text-sm font-semibold text-white">SONIC Autonomous Control Plane</h3>
-                            <p className="text-xs text-[#8B949E] max-w-sm">
-                              FastAPI Swagger OpenAPI documentation actively served at <code className="text-[#58A6FF]">http://127.0.0.1:8000/docs</code>.
-                            </p>
-                          </div>
+                        {/* Live AI Cursor Overlay */}
+                        <div className="absolute bottom-4 right-4 bg-[#388BFD] text-white px-2 py-0.5 rounded text-[10px] font-mono font-bold shadow-lg flex items-center gap-1.5">
+                          <span className="w-1.5 h-1.5 rounded-full bg-white animate-ping"></span>
+                          <span>Devin typing at {activeFile.split("/").pop()}</span>
                         </div>
-                      )}
-
-                      {/* Dynamic AI Cursor Overlay */}
-                      <div className="absolute bottom-5 right-5 bg-[#388BFD] text-white px-2.5 py-1 rounded-md text-[10px] font-mono font-bold shadow-2xl flex items-center gap-2 z-20 border border-white/20">
-                        <MousePointer className="w-3 h-3 animate-bounce" />
-                        <span>Devin operating {focusedWindow.toUpperCase()}</span>
                       </div>
-                    </div>
+                    )}
+
+                    {/* APP 2: LIVE TERMINAL INSIDE OS */}
+                    {activeDesktopApp === "terminal" && (
+                      <div className="flex-1 flex flex-col p-3 font-mono text-xs bg-[#06080D] overflow-hidden">
+                        <div className="flex-1 overflow-y-auto space-y-1 text-[#C9D1D9] leading-tight select-text">
+                          {terminalLogs.map((log, idx) => (
+                            <div key={idx} className="whitespace-pre-wrap">
+                              {log.startsWith("sonic@") ? (
+                                <span className="text-[#79C0FF] font-bold">{log}</span>
+                              ) : log.includes("PASSED") ? (
+                                <span className="text-[#3FB950]">{log}</span>
+                              ) : log.includes("FAILED") || log.includes("Error") ? (
+                                <span className="text-[#FF7B72]">{log}</span>
+                              ) : (
+                                <span className="text-[#8B949E]">{log}</span>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                        <form onSubmit={handleRunTerminalCommand} className="mt-2 flex items-center gap-2 border-t border-[#21262D] pt-2">
+                          <span className="text-[#3FB950] font-bold">sonic@sandbox:~$</span>
+                          <input
+                            type="text"
+                            value={terminalInput}
+                            onChange={(e) => setTerminalInput(e.target.value)}
+                            placeholder="type bash command (e.g. pytest tests/)..."
+                            className="flex-1 bg-transparent text-xs text-white outline-none font-mono placeholder-[#484F58]"
+                          />
+                        </form>
+                      </div>
+                    )}
+
+                    {/* APP 3: CHROMIUM WEB BROWSER INSIDE OS */}
+                    {activeDesktopApp === "browser" && (
+                      <div className="flex-1 flex flex-col bg-[#12151A] overflow-hidden">
+                        <div className="h-7 border-b border-[#21262D] bg-[#161B22] px-3 flex items-center justify-between text-[11px] font-mono text-[#8B949E]">
+                          <div className="flex items-center gap-2 flex-1">
+                            <Globe className="w-3.5 h-3.5 text-[#58A6FF]" />
+                            <span className="px-2 py-0.5 rounded bg-[#0D1117] text-white flex-1 truncate">
+                              http://127.0.0.1:8000/docs
+                            </span>
+                          </div>
+                          <span className="text-[#3FB950] text-[10px] ml-2">HTTP 200 OK</span>
+                        </div>
+                        <div className="flex-1 p-6 flex flex-col items-center justify-center text-center space-y-2 bg-[#0A0C10]">
+                          <div className="w-10 h-10 rounded-full bg-[#238636]/20 border border-[#238636] flex items-center justify-center text-[#3FB950]">
+                            <CheckCircle2 className="w-5 h-5" />
+                          </div>
+                          <h4 className="text-sm font-semibold text-white">Live Application View Port</h4>
+                          <p className="text-xs text-[#8B949E] max-w-sm">
+                            FastAPI Backend Server &amp; Security OpenAPI live at <code className="text-[#58A6FF]">http://127.0.0.1:8000</code>.
+                          </p>
+                        </div>
+                      </div>
+                    )}
                   </div>
                 </div>
               )}
@@ -923,8 +915,8 @@ export default function SonicDevinWorkstation() {
                             l.startsWith("+")
                               ? "text-[#7EE787] bg-[#7EE787]/10 px-1"
                               : l.startsWith("-")
-                              ? "text-[#FF7B72] bg-[#FF7B72]/10 px-1"
-                              : "text-[#8B949E]"
+                                ? "text-[#FF7B72] bg-[#FF7B72]/10 px-1"
+                                : "text-[#8B949E]"
                           }
                         >
                           {l}

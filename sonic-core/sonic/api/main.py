@@ -19,7 +19,7 @@ from sonic.config import get_settings
 from sonic.memory.graph import get_graph_memory
 from sonic.safety.scope import get_scope_checker
 
-from sonic.api.routes import auth, health, llm, engagements, agents, graph, experiments, terminal, live, jobs
+from sonic.api.routes import auth, health, llm, engagements, agents, graph, experiments, terminal, live, jobs, workstation
 from sonic.logger import get_logger
 
 logger = get_logger(__name__)
@@ -90,6 +90,7 @@ app.include_router(experiments.router, prefix="/experiments", tags=["Experiments
 app.include_router(terminal.router, prefix="/terminal", tags=["Terminal"])
 app.include_router(live.router, prefix="/live", tags=["Live Dashboard"])
 app.include_router(jobs.router, prefix="/jobs", tags=["Async Jobs"])
+app.include_router(workstation.router, tags=["Workstation"])
 
 
 # CORS — Allow Dashboard to fetch from API

@@ -65,15 +65,34 @@ export async function apiClient<T>(endpoint: string, options: RequestOptions = {
 
 // Workstation Specific API Endpoints
 export const api = {
-  // Workstation
   getWorkstationState: (sessionId = "default") =>
     apiClient<any>(`/workstation/state?session_id=${encodeURIComponent(sessionId)}`),
-  
+
+  listSessions: () =>
+    apiClient<Array<{
+      session_id: string;
+      mission_name: string;
+      status: string;
+      git_branch: string;
+      log_count: number;
+      last_action: string;
+    }>>("/workstation/sessions"),
+
+  deleteSession: (sessionId: string) =>
+    apiClient<any>(`/workstation/session?session_id=${encodeURIComponent(sessionId)}`, {
+      method: "DELETE",
+    }),
+
   getDesktopStatus: (sessionId = "default") =>
     apiClient<any>(`/workstation/desktop/status?session_id=${encodeURIComponent(sessionId)}`),
 
   getDesktopScreenshot: (sessionId = "default") =>
     apiClient<any>(`/workstation/desktop/screenshot?session_id=${encodeURIComponent(sessionId)}`),
+
+  getDesktopStream: (sessionId = "default") =>
+    apiClient<{ status: string; vnc_url: string | null; tenant_id: string }>(
+      `/workstation/desktop/stream?session_id=${encodeURIComponent(sessionId)}`
+    ),
 
   executeDesktopAction: (actionData: {
     action: string;

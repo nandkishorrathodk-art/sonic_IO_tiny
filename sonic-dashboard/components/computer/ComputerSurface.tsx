@@ -15,6 +15,8 @@ import {
   Play,
   Layers,
   Sparkles,
+  Wifi,
+  WifiOff,
 } from "lucide-react";
 import { DesktopState, CommandResult } from "../../types/workstation";
 import { api } from "../../lib/api";
@@ -27,6 +29,7 @@ interface ComputerSurfaceProps {
     display?: string;
     resolution?: { width: number; height: number };
     active_services?: Array<{ name: string; status: string; port: number }>;
+    vnc_url?: string;
   };
   onRunCommand: (cmd: string) => Promise<CommandResult | null>;
   commandLogs: string[];
@@ -45,6 +48,7 @@ export function ComputerSurface({
   const [activeWindow, setActiveWindow] = useState("XFCE Desktop");
   const [fullscreen, setFullscreen] = useState(false);
   const [loadingScreen, setLoadingScreen] = useState(false);
+  const [vncUrl, setVncUrl] = useState<string | null>(null);
 
   const sshCmd =
     desktopState?.ssh_command ||
@@ -61,12 +65,31 @@ export function ComputerSurface({
     process.env.NEXT_PUBLIC_DAYTONA_IMAGE ||
     "";
 
+  // Resolve VNC URL from desktopState or fetch it from stream endpoint
+  useEffect(() => {
+    const stateUrl = desktopState?.vnc_url;
+    if (stateUrl) {
+      setVncUrl(stateUrl);
+    } else {
+      // Try fetching from the stream endpoint
+      api.getDesktopStream().then((data) => {
+        if (data?.vnc_url) {
+          setVncUrl(data.vnc_url);
+        }
+      }).catch(() => {
+        // Stream endpoint unavailable — keep null
+      });
+    }
+  }, [desktopState?.vnc_url]);
+
   const fetchScreenshot = async () => {
     try {
       setLoadingScreen(true);
       const data = await api.getDesktopScreenshot();
       if (data?.image_base64) {
         setScreenshotBase64(data.image_base64);
+      } else if (data?.screenshot_base64) {
+        setScreenshotBase64(data.screenshot_base64);
       }
       if (data?.active_window) {
         setActiveWindow(data.active_window);
@@ -79,10 +102,12 @@ export function ComputerSurface({
   };
 
   useEffect(() => {
-    fetchScreenshot();
-    const interval = setInterval(fetchScreenshot, 10000);
-    return () => clearInterval(interval);
-  }, []);
+    if (!vncUrl) {
+      fetchScreenshot();
+      const interval = setInterval(fetchScreenshot, 10000);
+      return () => clearInterval(interval);
+    }
+  }, [vncUrl]);
 
   const handleLaunchApp = async (appName: string) => {
     try {
@@ -91,13 +116,18 @@ export function ComputerSurface({
         action: "open_app",
         target: appName,
       });
-      await fetchScreenshot();
+      if (!vncUrl) {
+        await fetchScreenshot();
+      }
     } catch (err: any) {
       alert(`Launch error: ${err.message}`);
     }
   };
 
   const handleDesktopClick = async (e: React.MouseEvent<HTMLDivElement>) => {
+    // Only dispatch click coordinates in screenshot-fallback mode (not iframe)
+    if (vncUrl) return;
+
     const rect = e.currentTarget.getBoundingClientRect();
     const x = Math.round((e.clientX - rect.left) * (1280 / rect.width));
     const y = Math.round((e.clientY - rect.top) * (800 / rect.height));
@@ -121,7 +151,9 @@ export function ComputerSurface({
     setRunning(true);
     await onRunCommand(cmd);
     setRunning(false);
-    await fetchScreenshot();
+    if (!vncUrl) {
+      await fetchScreenshot();
+    }
   };
 
   const handleCopySsh = () => {
@@ -149,6 +181,18 @@ export function ComputerSurface({
               </span>
             )}
           </span>
+          {/* Live/Disconnected status badge */}
+          {vncUrl ? (
+            <span className="flex items-center gap-1 text-[10px] text-[#3FB950] font-semibold">
+              <Wifi className="w-3 h-3" />
+              <span>LIVE</span>
+            </span>
+          ) : (
+            <span className="flex items-center gap-1 text-[10px] text-[#8B949E]">
+              <WifiOff className="w-3 h-3" />
+              <span>OFFLINE</span>
+            </span>
+          )}
         </div>
 
         <div className="flex items-center gap-2">
@@ -161,7 +205,7 @@ export function ComputerSurface({
               }`}
             >
               <Monitor className="w-3 h-3 text-[#3FB950]" />
-              <span>XFCE GUI</span>
+              <span>{vncUrl ? "noVNC Stream" : "Desktop"}</span>
             </button>
             <button
               onClick={() => setViewMode("terminal")}
@@ -218,50 +262,64 @@ export function ComputerSurface({
         )}
       </div>
 
-      {/* App Quick Launcher Bar */}
-      <div className="bg-[#0A0D14] border-b border-[#21262D] px-3 py-1.5 flex items-center justify-between gap-2 text-xs font-mono overflow-x-auto">
-        <div className="flex items-center gap-1.5">
-          <span className="text-[10px] text-[#8B949E] uppercase font-bold mr-1">Launch:</span>
+      {/* App Quick Launcher Bar (hidden in noVNC mode — noVNC handles interaction) */}
+      {!vncUrl && (
+        <div className="bg-[#0A0D14] border-b border-[#21262D] px-3 py-1.5 flex items-center justify-between gap-2 text-xs font-mono overflow-x-auto">
+          <div className="flex items-center gap-1.5">
+            <span className="text-[10px] text-[#8B949E] uppercase font-bold mr-1">Launch:</span>
+            <button
+              onClick={() => handleLaunchApp("xfce4-terminal")}
+              className="px-2 py-0.5 rounded bg-[#1F242C] hover:bg-[#2D333B] text-[#C9D1D9] hover:text-white border border-[#30363D] transition text-[10px] flex items-center gap-1"
+            >
+              <TerminalIcon className="w-2.5 h-2.5 text-[#58A6FF]" />
+              <span>Terminal</span>
+            </button>
+            <button
+              onClick={() => handleLaunchApp("code-server")}
+              className="px-2 py-0.5 rounded bg-[#1F242C] hover:bg-[#2D333B] text-[#C9D1D9] hover:text-white border border-[#30363D] transition text-[10px] flex items-center gap-1"
+            >
+              <Cpu className="w-2.5 h-2.5 text-[#3FB950]" />
+              <span>VS Code</span>
+            </button>
+            <button
+              onClick={() => handleLaunchApp("chromium")}
+              className="px-2 py-0.5 rounded bg-[#1F242C] hover:bg-[#2D333B] text-[#C9D1D9] hover:text-white border border-[#30363D] transition text-[10px] flex items-center gap-1"
+            >
+              <ExternalLink className="w-2.5 h-2.5 text-purple-400" />
+              <span>Browser</span>
+            </button>
+          </div>
+
           <button
-            onClick={() => handleLaunchApp("xfce4-terminal")}
-            className="px-2 py-0.5 rounded bg-[#1F242C] hover:bg-[#2D333B] text-[#C9D1D9] hover:text-white border border-[#30363D] transition text-[10px] flex items-center gap-1"
+            onClick={fetchScreenshot}
+            className="text-[#8B949E] hover:text-white text-[10px] flex items-center gap-1 transition"
           >
-            <TerminalIcon className="w-2.5 h-2.5 text-[#58A6FF]" />
-            <span>Terminal</span>
-          </button>
-          <button
-            onClick={() => handleLaunchApp("code-server")}
-            className="px-2 py-0.5 rounded bg-[#1F242C] hover:bg-[#2D333B] text-[#C9D1D9] hover:text-white border border-[#30363D] transition text-[10px] flex items-center gap-1"
-          >
-            <Cpu className="w-2.5 h-2.5 text-[#3FB950]" />
-            <span>VS Code</span>
-          </button>
-          <button
-            onClick={() => handleLaunchApp("chromium")}
-            className="px-2 py-0.5 rounded bg-[#1F242C] hover:bg-[#2D333B] text-[#C9D1D9] hover:text-white border border-[#30363D] transition text-[10px] flex items-center gap-1"
-          >
-            <ExternalLink className="w-2.5 h-2.5 text-purple-400" />
-            <span>Browser</span>
+            <RefreshCw className={`w-3 h-3 ${loadingScreen ? "animate-spin text-[#58A6FF]" : ""}`} />
+            <span>Sync Screen</span>
           </button>
         </div>
+      )}
 
-        <button
-          onClick={fetchScreenshot}
-          className="text-[#8B949E] hover:text-white text-[10px] flex items-center gap-1 transition"
-        >
-          <RefreshCw className={`w-3 h-3 ${loadingScreen ? "animate-spin text-[#58A6FF]" : ""}`} />
-          <span>Sync Screen</span>
-        </button>
-      </div>
-
-      {/* Main Surface Body: Graphical Desktop Viewport vs PTY Shell */}
+      {/* Main Surface Body: noVNC Stream / Screenshot Fallback / Disconnected / PTY Shell */}
       {viewMode === "desktop" ? (
         <div
           onClick={handleDesktopClick}
-          className="flex-1 bg-[#06080D] relative flex items-center justify-center overflow-hidden cursor-crosshair select-none p-3"
+          className="flex-1 bg-[#06080D] relative flex items-center justify-center overflow-hidden cursor-crosshair select-none"
+          style={{ minHeight: 0 }}
         >
-          {screenshotBase64 && screenshotBase64.length > 100 ? (
-            <div className="w-full h-full max-w-[1280px] max-h-[800px] aspect-[16/10] rounded border border-[#21262D] bg-[#000000] relative shadow-2xl overflow-hidden flex items-center justify-center">
+          {/* Priority 1: Real interactive noVNC desktop via iframe */}
+          {vncUrl ? (
+            <iframe
+              src={vncUrl}
+              title="Daytona noVNC Desktop"
+              className="w-full h-full border-0"
+              style={{ minHeight: "400px" }}
+              allow="clipboard-read; clipboard-write; fullscreen"
+              sandbox="allow-same-origin allow-scripts allow-popups allow-forms"
+            />
+          ) : screenshotBase64 && screenshotBase64.length > 100 ? (
+            /* Priority 2: Non-interactive screenshot fallback with click dispatch */
+            <div className="w-full h-full max-w-[1280px] max-h-[800px] aspect-[16/10] rounded border border-[#21262D] bg-[#000000] relative shadow-2xl overflow-hidden flex items-center justify-center m-3">
               <img
                 src={`data:image/png;base64,${screenshotBase64}`}
                 alt="Daytona Graphical Desktop"
@@ -269,16 +327,18 @@ export function ComputerSurface({
               />
             </div>
           ) : (
-            <div className="w-full h-full max-w-[1280px] max-h-[800px] aspect-[16/10] rounded border border-[#21262D] bg-[#0A0D14] flex flex-col items-center justify-center p-6 text-center space-y-3">
+            /* Priority 3: Explicit disconnected state — zero fake data */
+            <div className="w-full h-full max-w-[1280px] max-h-[800px] aspect-[16/10] rounded border border-[#21262D] bg-[#0A0D14] flex flex-col items-center justify-center p-6 text-center space-y-3 m-3">
               <div className="w-12 h-12 rounded-full bg-[#161B22] border border-[#30363D] flex items-center justify-center text-[#8B949E]">
                 <Monitor className="w-6 h-6" />
               </div>
               <div className="space-y-1">
                 <h3 className="text-sm font-semibold text-white font-mono">
-                  No live display — sandbox screenshot unavailable
+                  No live display — sandbox disconnected
                 </h3>
                 <p className="text-xs text-[#8B949E] font-mono max-w-md">
-                  The graphical desktop session is not currently streaming or Xvfb framebuffer is inactive. Click Sync Screen to refresh.
+                  The graphical desktop session is not currently streaming. Provision a Daytona sandbox
+                  with DAYTONA_API_KEY to enable the live noVNC desktop. Click Sync Screen to retry screenshot capture.
                 </p>
               </div>
               <button
@@ -299,8 +359,8 @@ export function ComputerSurface({
         <div className="flex-1 bg-[#06080D] p-3 flex flex-col font-mono text-xs overflow-hidden">
           <div className="flex-1 overflow-y-auto space-y-1 text-[#C9D1D9] leading-tight select-text">
             <div className="text-[#8B949E] pb-2 border-b border-[#21262D] space-y-0.5">
-              <div># Attached to Daytona Cloud Linux Container: {sandboxId}</div>
-              <div># Snapshot: {image} | Direct host command execution is permanently prohibited.</div>
+              <div># Attached to Daytona Cloud Linux Container: {sandboxId || "not connected"}</div>
+              <div># Snapshot: {image || "none"} | Direct host command execution is permanently prohibited.</div>
             </div>
             {commandLogs.map((log, idx) => (
               <div key={idx} className="whitespace-pre-wrap">

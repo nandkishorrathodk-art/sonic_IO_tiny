@@ -173,15 +173,19 @@ class HealthChecker:
 
     @classmethod
     async def check_llm(cls) -> ComponentHealth:
+        has_nvidia = bool(os.environ.get("NVIDIA_API_KEY"))
         has_gemini = bool(os.environ.get("GEMINI_API_KEY"))
         has_openai = bool(os.environ.get("OPENAI_API_KEY"))
         has_anthropic = bool(os.environ.get("ANTHROPIC_API_KEY"))
+        has_deepseek = bool(os.environ.get("DEEPSEEK_API_KEY"))
 
-        if has_gemini or has_openai or has_anthropic:
+        if has_nvidia or has_gemini or has_openai or has_anthropic or has_deepseek:
             active = []
+            if has_nvidia: active.append("NVIDIA NIM")
             if has_gemini: active.append("Gemini")
             if has_openai: active.append("OpenAI")
             if has_anthropic: active.append("Anthropic")
+            if has_deepseek: active.append("DeepSeek")
             return ComponentHealth(
                 name="llm_router",
                 status=HealthStatus.HEALTHY,

@@ -8,6 +8,8 @@ Tests and proves:
     4. Sandbox-Bound PTY Command Execution & Fail-Closed Guarantee
     5. Closed-Loop ComputerUseAgent (Observe -> Reason -> Act -> Observe)
     6. Multi-Tenant Scoping & Security Invariants.
+    7. VNC URL retrieval (get_vnc_url returns None when no sandbox connected)
+    8. Real process list returns empty when no sandbox connected (no fake PIDs)
 """
 
 import asyncio
@@ -82,32 +84,43 @@ def test_daytona_computer_lifecycle(daytona_computer):
 def test_daytona_screenshot_observation(daytona_computer):
     """
     Proves screenshot behavior:
-    1. Returns NO_DISPLAY and empty payload when no cloud sandbox is connected (no dummy PNG fabrication).
-    2. Correctly decodes and validates authentic PNG magic bytes and length when a live frame is present.
+    1. Returns NO_DISPLAY and empty screenshot_base64 when no cloud sandbox is connected.
+    2. Correctly handles ScreenshotResponse from Daytona SDK (base64 .screenshot field).
     """
     async def run():
         ws = await daytona_computer.create("tenant-alpha", "eng-01")
 
-        # 1. Unconnected / Offline Sandbox State -> NO_DISPLAY, no fake 1x1 PNG
+        # 1. Unconnected / Offline Sandbox State -> NO_DISPLAY, empty base64
         obs = await daytona_computer.screenshot(ws.id)
         assert obs.width == 1280
         assert obs.height == 800
         assert obs.desktop_state == "NO_DISPLAY"
         assert obs.screenshot_base64 == ""
 
-        # 2. Genuine Frame Processing Simulation
-        class MockScreenshot:
-            async def take_full_screen(self):
-                # Valid PNG header + payload (> 1000 bytes)
-                return b"\x89PNG\r\n\x1a\n" + b"\x00" * 1200
+        # 2. Simulate a real Daytona SDK ScreenshotResponse (base64 string, not raw bytes)
+        class MockScreenshotResponse:
+            """Mimics daytona ScreenshotResponse with .screenshot (base64) and .size_bytes"""
+            def __init__(self):
+                # Build a valid PNG and encode to base64
+                png_bytes = b"\x89PNG\r\n\x1a\n" + b"\x00" * 1200
+                self.screenshot = base64.b64encode(png_bytes).decode("utf-8")
+                self.size_bytes = len(png_bytes)
+
+        class MockScreenshotService:
+            async def take_full_screen(self, **kwargs):
+                return MockScreenshotResponse()
+
+        class MockComputerUse:
+            screenshot = MockScreenshotService()
 
         class MockSandbox:
-            screenshot = MockScreenshot()
+            computer_use = MockComputerUse()
 
         daytona_computer._sandboxes[ws.id] = MockSandbox()
         live_obs = await daytona_computer.screenshot(ws.id)
         assert live_obs.desktop_state == "INTERACTIVE"
         assert len(live_obs.screenshot_base64) > 1000
+        # The screenshot_base64 should decode to valid PNG bytes
         raw_bytes = base64.b64decode(live_obs.screenshot_base64)
         assert raw_bytes.startswith(b"\x89PNG")
         assert len(raw_bytes) > 1000
@@ -170,8 +183,32 @@ def test_computer_use_agent_closed_loop(daytona_computer):
     asyncio.run(run())
 
 
+def test_vnc_url_returns_none_when_no_sandbox(daytona_computer):
+    """Proves get_vnc_url returns None when no sandbox is connected."""
+    async def run():
+        ws = await daytona_computer.create("tenant-alpha", "eng-01")
+        # No real sandbox connected, get_vnc_url should return None
+        vnc_url = await daytona_computer.get_vnc_url(ws.id)
+        assert vnc_url is None
+        await daytona_computer.destroy(ws.id)
+
+    asyncio.run(run())
+
+
+def test_process_list_returns_empty_when_no_sandbox(daytona_computer):
+    """Proves process_list returns empty list when no sandbox is connected (no fake PIDs)."""
+    async def run():
+        ws = await daytona_computer.create("tenant-alpha", "eng-01")
+        processes = await daytona_computer.process_list(ws.id)
+        assert isinstance(processes, list)
+        assert len(processes) == 0  # No hardcoded fake processes
+        await daytona_computer.destroy(ws.id)
+
+    asyncio.run(run())
+
+
 def test_workstation_desktop_api_endpoints(client, auth_headers):
-    """Proves /workstation/desktop/status, /action, and /screenshot endpoints return valid data."""
+    """Proves /workstation/desktop/status, /action, /screenshot, and /stream endpoints return valid data."""
     # 1. Status
     res_status = client.get("/workstation/desktop/status", headers=auth_headers)
     assert res_status.status_code == 200
@@ -187,6 +224,7 @@ def test_workstation_desktop_api_endpoints(client, auth_headers):
     assert screen_data["width"] == 1280
     assert screen_data["height"] == 800
     assert screen_data["desktop_state"] == "NO_DISPLAY"
+    assert screen_data["screenshot_base64"] == ""
 
     # 3. GUI Action
     res_act = client.post(
@@ -196,3 +234,10 @@ def test_workstation_desktop_api_endpoints(client, auth_headers):
     )
     assert res_act.status_code == 200
     assert res_act.json()["status"] == "success"
+
+    # 4. Stream URL endpoint
+    res_stream = client.get("/workstation/desktop/stream", headers=auth_headers)
+    assert res_stream.status_code == 200
+    stream_data = res_stream.json()
+    assert stream_data["status"] == "NO_ACTIVE_WORKSPACE"
+    assert stream_data["vnc_url"] is None

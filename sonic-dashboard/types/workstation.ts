@@ -28,6 +28,9 @@ export interface DesktopState {
   status: string;
   active_window?: string;
   running_apps: DesktopApp[];
+  vnc_url?: string;
+  novnc_url?: string;
+  running_processes?: string[];
 }
 
 export interface WorkstationState {

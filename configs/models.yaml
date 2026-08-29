@@ -6,11 +6,33 @@
 # ============================================
 
 # Default provider when no task-specific rule matches
-default_provider: claude
-default_model: claude-sonnet-4-20250514
+default_provider: nvidia
+default_model: meta/llama-3.2-11b-vision-instruct
 
 # ---- Provider Definitions ----
 providers:
+  nvidia:
+    name: NVIDIA NIM API
+    api_key_env: NVIDIA_API_KEY
+    base_url_env: NVIDIA_BASE_URL
+    base_url: https://integrate.api.nvidia.com/v1
+    models:
+      - id: meta/llama-3.2-11b-vision-instruct
+        speed_tier: fast
+        cost_per_1k_input: 0.0003
+        cost_per_1k_output: 0.0006
+        capabilities: [reasoning, coding, planning, tool_use, vision, general]
+      - id: meta/llama-3.2-90b-vision-instruct
+        speed_tier: medium
+        cost_per_1k_input: 0.0009
+        cost_per_1k_output: 0.0018
+        capabilities: [reasoning, coding, architecture, vision]
+      - id: meta/codellama-70b
+        speed_tier: fast
+        cost_per_1k_input: 0.0007
+        cost_per_1k_output: 0.0009
+        capabilities: [coding, static_analysis, fix_generation]
+
   claude:
     name: Anthropic Claude
     api_key_env: ANTHROPIC_API_KEY
@@ -85,49 +107,50 @@ providers:
 routing_rules:
   planning:
     description: "High-level planning, task decomposition, strategy"
-    provider: claude
-    model: claude-sonnet-4-20250514
-    fallback: [openai/gpt-4o, grok/grok-3]
+    provider: nvidia
+    model: meta/llama-3.2-90b-vision-instruct
+    fallback: [claude/claude-sonnet-4-20250514, openai/gpt-4o]
 
   reasoning:
     description: "Code analysis, dataflow tracing, pattern matching"
-    provider: deepseek
-    model: deepseek-coder
-    fallback: [claude/claude-sonnet-4-20250514]
+    provider: nvidia
+    model: meta/llama-3.2-90b-vision-instruct
+    fallback: [claude/claude-sonnet-4-20250514, deepseek/deepseek-coder]
 
   fast_recon:
     description: "Quick reconnaissance, asset discovery, tech detection"
-    provider: grok
-    model: grok-3
-    fallback: [openai/gpt-4o-mini, claude/claude-haiku-3]
+    provider: nvidia
+    model: meta/llama-3.2-11b-vision-instruct
+    fallback: [openai/gpt-4o-mini, grok/grok-3]
 
   coding:
     description: "Code generation, fix generation, test writing"
-    provider: claude
-    model: claude-sonnet-4-20250514
-    fallback: [deepseek/deepseek-coder]
+    provider: nvidia
+    model: meta/codellama-70b
+    fallback: [claude/claude-sonnet-4-20250514, deepseek/deepseek-coder]
 
   verification:
     description: "Evidence checking, confidence scoring, FP filtering"
-    provider: openai
-    model: gpt-4o
-    fallback: [claude/claude-sonnet-4-20250514]
+    provider: nvidia
+    model: meta/llama-3.2-11b-vision-instruct
+    fallback: [openai/gpt-4o, claude/claude-sonnet-4-20250514]
 
   hypothesis:
     description: "Novel bug class ideation, creative reasoning"
-    provider: claude
-    model: claude-sonnet-4-20250514
-    fallback: [grok/grok-3]
+    provider: nvidia
+    model: meta/llama-3.2-90b-vision-instruct
+    fallback: [claude/claude-sonnet-4-20250514]
 
   classification:
     description: "Quick labeling, triage, categorization"
-    provider: openai
-    model: gpt-4o-mini
-    fallback: [claude/claude-haiku-3]
+    provider: nvidia
+    model: meta/llama-3.2-11b-vision-instruct
+    fallback: [openai/gpt-4o-mini]
 
 # ---- Global Fallback Chain ----
 # If the preferred provider for a task fails, try these in order
 global_fallback_chain:
+  - nvidia
   - claude
   - openai
   - deepseek

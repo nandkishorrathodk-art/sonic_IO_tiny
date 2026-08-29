@@ -142,6 +142,13 @@ class DaytonaComputerProvider(ComputerProvider):
                     self._sandboxes[workspace_id] = sandbox
                     ws.status = ComputerWorkspaceStatus.READY
                     logger.info("daytona_sandbox_provisioned", workspace_id=workspace_id)
+
+                    # Start the VNC desktop stack (Xvfb + XFCE + x11vnc + noVNC)
+                    try:
+                        await sandbox.computer_use.start()
+                        logger.info("daytona_computer_use_started", workspace_id=workspace_id)
+                    except Exception as cu_err:
+                        logger.warning("daytona_computer_use_start_deferred", error=str(cu_err))
             except Exception as e:
                 logger.warning("daytona_cloud_provision_deferred", error=str(e))
                 ws.status = ComputerWorkspaceStatus.READY
@@ -178,11 +185,61 @@ class DaytonaComputerProvider(ComputerProvider):
             return True
         return False
 
+    async def get_vnc_url(self, workspace_id: str) -> Optional[str]:
+        """Obtains the Daytona preview/public URL for the noVNC port (6080).
+
+        Uses the Daytona SDK get_preview_link API. Returns None if unavailable.
+        """
+        sandbox = self._sandboxes.get(workspace_id)
+        if not sandbox:
+            client = self._get_client()
+            if client:
+                try:
+                    sandbox = await client.get(workspace_id)
+                    if sandbox:
+                        self._sandboxes[workspace_id] = sandbox
+                except Exception:
+                    pass
+
+        if sandbox and hasattr(sandbox, "get_preview_link"):
+            try:
+                preview = await sandbox.get_preview_link(6080)
+                url = getattr(preview, "url", None)
+                token = getattr(preview, "token", None)
+                if url:
+                    # Append token for private sandbox access
+                    full_url = f"{url}?token={token}" if token else url
+                    return full_url
+            except Exception as e:
+                logger.warning("daytona_vnc_preview_url_failed", error=str(e))
+        return None
+
     async def status(self, workspace_id: str) -> ComputerState:
         """Returns the real-time operational state of the graphical desktop."""
         ws = self.workspaces.get(workspace_id)
         tenant_id = ws.tenant_id if ws else "default"
         active_app = self._active_windows.get(workspace_id, "None")
+
+        # Query real running processes from sandbox
+        real_processes = []
+        resource_usage = {"cpu_pct": 0.0, "memory_mb": 0.0}
+        sandbox = self._sandboxes.get(workspace_id)
+        if sandbox and hasattr(sandbox, "computer_use"):
+            try:
+                cu_status = await sandbox.computer_use.get_status()
+                if cu_status and hasattr(cu_status, "status"):
+                    real_processes = [str(cu_status.status)]
+            except Exception:
+                pass
+            try:
+                metrics = await sandbox.get_metrics_latest()
+                if metrics:
+                    resource_usage = {
+                        "cpu_pct": getattr(metrics, "cpu_usage_percent", 0.0) or 0.0,
+                        "memory_mb": getattr(metrics, "mem_usage_bytes", 0) / (1024 * 1024) if getattr(metrics, "mem_usage_bytes", None) else 0.0,
+                    }
+            except Exception:
+                pass
 
         return ComputerState(
             workspace_id=workspace_id,
@@ -191,30 +248,32 @@ class DaytonaComputerProvider(ComputerProvider):
             open_applications=[active_app] if active_app != "None" else [],
             active_window=active_app,
             working_directory="/home/sonic/workspace",
-            running_processes=[],
+            running_processes=real_processes,
             installed_applications=["xfce4", "chromium", "code-server", "git", "python3"],
             current_project="sonic",
             git_branch="main",
-            resource_usage={"cpu_pct": 0.0, "memory_mb": 0.0},
+            resource_usage=resource_usage,
         )
 
     # -------------------------------------------------------------
-    # 2. Real Graphical Screen & Vision (No Fabricated Frames)
+    # 2. Real Graphical Screen & Vision (Zero Fabricated Frames)
     # -------------------------------------------------------------
 
     async def screenshot(self, workspace_id: str) -> ScreenObservation:
         """
         Captures a real pixel observation of the sandbox desktop.
-        Routes via Daytona AsyncScreenshot when sandbox is active.
-        When no real display is available, returns NO_DISPLAY state.
+        Routes via Daytona computer_use.screenshot when sandbox is active.
+        When no real display is available, returns NO_DISPLAY state with empty screenshot.
         """
         sandbox = self._sandboxes.get(workspace_id)
-        if sandbox and hasattr(sandbox, "screenshot"):
+        if sandbox and hasattr(sandbox, "computer_use"):
             try:
-                # Capture real live screenshot from Daytona
-                raw_bytes = await sandbox.screenshot.take_full_screen()
-                if raw_bytes and len(raw_bytes) > 100:
-                    b64 = base64.b64encode(raw_bytes).decode("utf-8")
+                # Capture real live screenshot from Daytona computer_use API
+                # ScreenshotResponse has .screenshot (base64 str) and .size_bytes
+                response = await sandbox.computer_use.screenshot.take_full_screen()
+                b64 = getattr(response, "screenshot", None) or ""
+                size = getattr(response, "size_bytes", 0) or 0
+                if b64 and (size > 100 or len(b64) > 100):
                     return ScreenObservation(
                         screenshot_base64=b64,
                         width=1280,
@@ -227,7 +286,7 @@ class DaytonaComputerProvider(ComputerProvider):
             except Exception as e:
                 logger.warning("daytona_direct_screenshot_failed", error=str(e))
 
-        # Explicitly return NO_DISPLAY when no live desktop frame exists (no dummy PNG fabrication)
+        # NO_DISPLAY: no live desktop frame exists — never fabricate a pixel
         return ScreenObservation(
             screenshot_base64="",
             width=1280,
@@ -254,25 +313,28 @@ class DaytonaComputerProvider(ComputerProvider):
         sandbox = self._sandboxes.get(workspace_id)
         action_type = action.action
 
-        if sandbox:
+        if sandbox and hasattr(sandbox, "computer_use"):
             try:
+                cu = sandbox.computer_use
                 if action_type in [GUIActionType.CLICK, GUIActionType.DOUBLE_CLICK]:
                     x = action.x or 100
                     y = action.y or 100
-                    if hasattr(sandbox, "mouse"):
-                        await sandbox.mouse.move(x, y)
-                        await sandbox.mouse.click(button="left")
+                    await cu.mouse.move(x, y)
+                    await cu.mouse.click(button="left")
 
                 elif action_type == GUIActionType.TYPE and action.text:
-                    if hasattr(sandbox, "keyboard"):
-                        await sandbox.keyboard.type(action.text)
+                    await cu.keyboard.type(action.text)
 
                 elif action_type == GUIActionType.KEYPRESS and action.key:
-                    if hasattr(sandbox, "keyboard"):
-                        await sandbox.keyboard.press(action.key)
+                    await cu.keyboard.press(action.key)
 
                 elif action_type == GUIActionType.OPEN_APP and action.app_name:
                     self._active_windows[workspace_id] = action.app_name
+                    # Launch the app on DISPLAY :99 via process exec
+                    try:
+                        await sandbox.process.exec(f"DISPLAY=:99 {action.app_name} &")
+                    except Exception:
+                        pass
 
             except Exception as e:
                 logger.warning("daytona_gui_action_dispatch_error", error=str(e))
@@ -419,13 +481,59 @@ class DaytonaComputerProvider(ComputerProvider):
         return entries
 
     async def process_list(self, workspace_id: str) -> list[ProcessInfo]:
-        """Lists running processes inside the sandbox."""
-        return [
-            ProcessInfo(pid=101, name="Xvfb", cpu_percent=0.5, memory_mb=45.0, user="sonic", command="Xvfb :99"),
-            ProcessInfo(pid=102, name="xfce4-session", cpu_percent=0.8, memory_mb=68.0, user="sonic", command="xfce4-session"),
-            ProcessInfo(pid=103, name="x11vnc", cpu_percent=0.4, memory_mb=32.0, user="sonic", command="x11vnc :99"),
-            ProcessInfo(pid=104, name="websockify", cpu_percent=0.2, memory_mb=28.0, user="sonic", command="websockify 6080"),
-        ]
+        """Lists running processes inside the sandbox by querying real process state."""
+        processes: list[ProcessInfo] = []
+        sandbox = self._sandboxes.get(workspace_id)
+
+        # Query real processes via computer_use status API
+        if sandbox and hasattr(sandbox, "computer_use"):
+            try:
+                for proc_name in ["xvfb", "xfce4", "x11vnc", "novnc"]:
+                    try:
+                        pstatus = await sandbox.computer_use.get_process_status(proc_name)
+                        if pstatus and hasattr(pstatus, "status"):
+                            processes.append(
+                                ProcessInfo(
+                                    pid=getattr(pstatus, "pid", 0) or 0,
+                                    name=proc_name,
+                                    cpu_percent=0.0,
+                                    memory_mb=0.0,
+                                    user="daytona",
+                                    command=f"{proc_name} (status: {pstatus.status})",
+                                )
+                            )
+                    except Exception:
+                        pass
+                if processes:
+                    return processes
+            except Exception:
+                pass
+
+        # Fallback: query via ps command inside sandbox
+        if sandbox and hasattr(sandbox, "process"):
+            try:
+                res = await sandbox.process.exec("ps aux --no-headers 2>/dev/null | head -20")
+                stdout = getattr(res, "result", "") or ""
+                for line in stdout.splitlines():
+                    parts = line.split(None, 10)
+                    if len(parts) >= 11:
+                        try:
+                            processes.append(
+                                ProcessInfo(
+                                    pid=int(parts[1]),
+                                    name=parts[10].split()[0].split("/")[-1],
+                                    cpu_percent=float(parts[2]),
+                                    memory_mb=float(parts[5]) / 1024.0 if parts[5].isdigit() else 0.0,
+                                    user=parts[0],
+                                    command=parts[10],
+                                )
+                            )
+                        except (ValueError, IndexError):
+                            pass
+            except Exception:
+                pass
+
+        return processes
 
     async def application_list(self, workspace_id: str) -> list[str]:
         """Lists installed applications in the sandbox."""

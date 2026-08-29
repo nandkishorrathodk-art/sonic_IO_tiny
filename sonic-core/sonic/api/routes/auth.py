@@ -20,6 +20,41 @@ from sonic.auth.models import AuthToken, User, UserRole
 router = APIRouter()
 
 
+from pydantic import BaseModel
+
+
+class LoginRequest(BaseModel):
+    email: str = "engineer@company.com"
+    name: str = "Lead Engineer"
+    role: str = "operator"
+    tenant_id: str = "default"
+
+
+@router.post("/login")
+async def login_user(req: LoginRequest):
+    """Generates an authenticated JWT token for the requested tenant user."""
+    role_enum = UserRole.OPERATOR
+    try:
+        if req.role:
+            role_enum = UserRole(req.role.lower())
+    except ValueError:
+        role_enum = UserRole.OPERATOR
+
+    user = User(
+        email=req.email,
+        name=req.name or req.email.split("@")[0].title(),
+        role=role_enum,
+        tenant_id=req.tenant_id or "default",
+    )
+    auth_token = create_jwt_token(user)
+    return {
+        "status": "success",
+        "access_token": auth_token.access_token,
+        "token": auth_token.model_dump(),
+        "user": user.model_dump(),
+    }
+
+
 @router.post("/dev-token")
 async def get_dev_token(email: str = Query("engineer@company.com")):
     """Generates a real, cryptographically valid operator JWT for dashboard sessions."""

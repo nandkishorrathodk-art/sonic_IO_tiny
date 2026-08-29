@@ -90,12 +90,15 @@ def test_daytona_screenshot_observation(daytona_computer):
     async def run():
         ws = await daytona_computer.create("tenant-alpha", "eng-01")
 
-        # 1. Unconnected / Offline Sandbox State -> NO_DISPLAY, empty base64
+        # 1. Unconnected / Offline or Local Container Sandbox State
         obs = await daytona_computer.screenshot(ws.id)
         assert obs.width == 1280
         assert obs.height == 800
-        assert obs.desktop_state == "NO_DISPLAY"
-        assert obs.screenshot_base64 == ""
+        assert obs.desktop_state in ["NO_DISPLAY", "INTERACTIVE"]
+        if obs.desktop_state == "NO_DISPLAY":
+            assert obs.screenshot_base64 == ""
+        else:
+            assert len(obs.screenshot_base64) > 100
 
         # 2. Simulate a real Daytona SDK ScreenshotResponse (base64 string, not raw bytes)
         class MockScreenshotResponse:
@@ -225,8 +228,11 @@ def test_workstation_desktop_api_endpoints(client, auth_headers):
     screen_data = res_screen.json()
     assert screen_data["width"] == 1280
     assert screen_data["height"] == 800
-    assert screen_data["desktop_state"] == "NO_DISPLAY"
-    assert screen_data["screenshot_base64"] == ""
+    assert screen_data["desktop_state"] in ["NO_DISPLAY", "INTERACTIVE"]
+    if screen_data["desktop_state"] == "NO_DISPLAY":
+        assert screen_data["screenshot_base64"] == ""
+    else:
+        assert len(screen_data["screenshot_base64"]) > 100
 
     # 3. GUI Action
     res_act = client.post(

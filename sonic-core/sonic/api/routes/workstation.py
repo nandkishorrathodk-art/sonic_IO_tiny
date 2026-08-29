@@ -95,10 +95,11 @@ def _get_or_create_session(tenant_id: str, session_id: str = "default") -> dict[
     if tenant_id not in _tenant_workstations:
         _tenant_workstations[tenant_id] = {}
 
-    daytona_id = os.environ.get("DAYTONA_SANDBOX_ID", "d1654904-ec6d-40ad-9713-dceba7682147")
-    daytona_ssh = os.environ.get("DAYTONA_SSH_USER", "Mnbgd9ZivsOicPxxuHpF2PC5cM3IyjGX")
-    daytona_host = os.environ.get("DAYTONA_SSH_HOST", "ssh.app.daytona.io")
-    daytona_img = os.environ.get("DAYTONA_IMAGE", "daytonaio/sandbox:0.8.0")
+    daytona_id = os.environ.get("DAYTONA_SANDBOX_ID", "")
+    daytona_ssh = os.environ.get("DAYTONA_SSH_USER", "")
+    daytona_host = os.environ.get("DAYTONA_SSH_HOST", "")
+    daytona_img = os.environ.get("DAYTONA_IMAGE", "")
+    ssh_cmd = f"ssh {daytona_ssh}@{daytona_host}" if (daytona_ssh and daytona_host) else ""
 
     if session_id not in _tenant_workstations[tenant_id]:
         _tenant_workstations[tenant_id][session_id] = {
@@ -114,28 +115,19 @@ def _get_or_create_session(tenant_id: str, session_id: str = "default") -> dict[
             "current_action": "Idle — Ready for task assignment",
             "worklog": [],
             "desktop": {
-                "os_name": f"Daytona Linux Workstation ({daytona_img})",
+                "os_name": f"Daytona Linux Workstation ({daytona_img})" if daytona_img else "Linux Workstation",
                 "sandbox_id": daytona_id,
                 "image": daytona_img,
-                "ssh_command": f"ssh {daytona_ssh}@{daytona_host}",
+                "ssh_command": ssh_cmd,
                 "display": ":99 (1280x800x24 Xvfb + XFCE4)",
                 "vnc_port": 5900,
                 "novnc_port": 6080,
-                "novnc_url": "ws://localhost:6080/websockify",
+                "novnc_url": "",
                 "status": "READY / ACTIVE",
-                "active_window": "XFCE Desktop",
+                "active_window": "None",
                 "resolution": {"width": 1280, "height": 800},
-                "running_apps": [
-                    {"name": "XFCE Desktop Environment", "icon": "monitor", "status": "active"},
-                    {"name": "XFCE Terminal", "icon": "terminal", "status": "running"},
-                    {"name": "VS Code Workspace Editor", "icon": "code", "status": "running"},
-                    {"name": "Chromium Browser", "icon": "globe", "status": "idle"},
-                ],
-                "active_services": [
-                    {"name": "Xvfb Virtual Framebuffer", "status": "RUNNING", "port": 99},
-                    {"name": "x11vnc Server", "status": "RUNNING", "port": 5900},
-                    {"name": "noVNC WebSocket Bridge", "status": "RUNNING", "port": 6080},
-                ],
+                "running_apps": [],
+                "active_services": [],
             },
         }
 

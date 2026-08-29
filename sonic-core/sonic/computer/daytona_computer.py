@@ -182,65 +182,60 @@ class DaytonaComputerProvider(ComputerProvider):
         """Returns the real-time operational state of the graphical desktop."""
         ws = self.workspaces.get(workspace_id)
         tenant_id = ws.tenant_id if ws else "default"
-        active_app = self._active_windows.get(workspace_id, "XFCE Desktop")
+        active_app = self._active_windows.get(workspace_id, "None")
 
         return ComputerState(
             workspace_id=workspace_id,
             tenant_id=tenant_id,
             active_application=active_app,
-            open_applications=[active_app, "Terminal", "VS Code Editor"],
+            open_applications=[active_app] if active_app != "None" else [],
             active_window=active_app,
             working_directory="/home/sonic/workspace",
-            running_processes=["Xvfb :99", "xfce4-session", "x11vnc :99", "websockify 6080"],
-            installed_applications=["xfce4", "x11vnc", "websockify", "chromium", "code-server", "git", "python3"],
+            running_processes=[],
+            installed_applications=["xfce4", "chromium", "code-server", "git", "python3"],
             current_project="sonic",
             git_branch="main",
-            resource_usage={"cpu_pct": 2.5, "memory_mb": 180.0},
+            resource_usage={"cpu_pct": 0.0, "memory_mb": 0.0},
         )
 
     # -------------------------------------------------------------
-    # 2. Real Graphical Screen & Vision (No Placeholders)
+    # 2. Real Graphical Screen & Vision (No Fabricated Frames)
     # -------------------------------------------------------------
 
     async def screenshot(self, workspace_id: str) -> ScreenObservation:
         """
         Captures a real pixel observation of the sandbox desktop.
-        Routes via Daytona AsyncScreenshot or container X11 capture.
+        Routes via Daytona AsyncScreenshot when sandbox is active.
+        When no real display is available, returns NO_DISPLAY state.
         """
         sandbox = self._sandboxes.get(workspace_id)
         if sandbox and hasattr(sandbox, "screenshot"):
             try:
                 # Capture real live screenshot from Daytona
                 raw_bytes = await sandbox.screenshot.take_full_screen()
-                if raw_bytes:
+                if raw_bytes and len(raw_bytes) > 100:
                     b64 = base64.b64encode(raw_bytes).decode("utf-8")
                     return ScreenObservation(
                         screenshot_base64=b64,
                         width=1280,
                         height=800,
                         active_window=self._active_windows.get(workspace_id, "XFCE Desktop"),
-                        visible_text="XFCE Desktop | Terminal | VS Code",
+                        visible_text="Active Desktop Session",
                         detected_controls=["panel", "terminal_icon", "editor_icon", "browser_icon"],
                         desktop_state="INTERACTIVE",
                     )
             except Exception as e:
                 logger.warning("daytona_direct_screenshot_failed", error=str(e))
 
-        # Authentic fallback: Return high-fidelity valid PNG structure with live timestamp
-        dummy_png_header = (
-            b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x05\x00\x00\x00\x03 "
-            b"\x08\x06\x00\x00\x00k\x1f\xb5\xc4\x00\x00\x00\x0bIDATx\x9cc`\x00\x00"
-            b"\x00\x02\x00\x01H\xaf\xa4q\x00\x00\x00\x00IEND\xaeB`\x82"
-        )
-        b64 = base64.b64encode(dummy_png_header).decode("utf-8")
+        # Explicitly return NO_DISPLAY when no live desktop frame exists (no dummy PNG fabrication)
         return ScreenObservation(
-            screenshot_base64=b64,
+            screenshot_base64="",
             width=1280,
             height=800,
-            active_window=self._active_windows.get(workspace_id, "XFCE Desktop"),
-            visible_text=f"Live XFCE Desktop :99 [{datetime.now(timezone.utc).strftime('%H:%M:%S')}]",
-            detected_controls=["app_menu", "terminal", "editor", "browser", "workspace_switcher"],
-            desktop_state="INTERACTIVE",
+            active_window=self._active_windows.get(workspace_id, "None"),
+            visible_text="",
+            detected_controls=[],
+            desktop_state="NO_DISPLAY",
         )
 
     # -------------------------------------------------------------

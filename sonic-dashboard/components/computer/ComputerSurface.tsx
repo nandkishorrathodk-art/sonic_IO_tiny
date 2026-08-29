@@ -49,17 +49,17 @@ export function ComputerSurface({
   const sshCmd =
     desktopState?.ssh_command ||
     process.env.NEXT_PUBLIC_DAYTONA_SSH ||
-    "ssh Mnbgd9ZivsOicPxxuHpF2PC5cM3IyjGX@ssh.app.daytona.io";
+    "";
 
   const sandboxId =
     desktopState?.sandbox_id ||
     process.env.NEXT_PUBLIC_DAYTONA_SANDBOX_ID ||
-    "d1654904-ec6d-40ad-9713-dceba7682147";
+    "";
 
   const image =
     desktopState?.image ||
     process.env.NEXT_PUBLIC_DAYTONA_IMAGE ||
-    "daytonaio/sandbox:0.8.0";
+    "";
 
   const fetchScreenshot = async () => {
     try {
@@ -125,6 +125,7 @@ export function ComputerSurface({
   };
 
   const handleCopySsh = () => {
+    if (!sshCmd) return;
     navigator.clipboard.writeText(sshCmd);
     setCopiedSsh(true);
     setTimeout(() => setCopiedSsh(false), 2000);
@@ -142,9 +143,11 @@ export function ComputerSurface({
           <Cloud className="w-4 h-4 text-[#58A6FF]" />
           <span className="text-white font-semibold flex items-center gap-1.5 truncate">
             <span>Daytona Linux Workstation</span>
-            <span className="text-[10px] text-[#3FB950] font-normal font-mono hidden sm:inline">
-              ({image})
-            </span>
+            {image && (
+              <span className="text-[10px] text-[#3FB950] font-normal font-mono hidden sm:inline">
+                ({image})
+              </span>
+            )}
           </span>
         </div>
 
@@ -195,17 +198,24 @@ export function ComputerSurface({
         </div>
 
         {/* SSH Connection Chip */}
-        <div className="flex items-center gap-2 bg-[#0D1117] border border-[#30363D] px-2 py-0.5 rounded-md">
-          <span className="text-[#8B949E] text-[10px]">SSH:</span>
-          <code className="text-[#79C0FF] text-[11px] truncate max-w-xs">{sshCmd}</code>
-          <button
-            onClick={handleCopySsh}
-            className="text-[#8B949E] hover:text-white p-0.5 rounded hover:bg-[#21262D] transition ml-1"
-            title="Copy SSH command"
-          >
-            {copiedSsh ? <Check className="w-3 h-3 text-[#3FB950]" /> : <Copy className="w-3 h-3" />}
-          </button>
-        </div>
+        {sshCmd ? (
+          <div className="flex items-center gap-2 bg-[#0D1117] border border-[#30363D] px-2 py-0.5 rounded-md">
+            <span className="text-[#8B949E] text-[10px]">SSH:</span>
+            <code className="text-[#79C0FF] text-[11px] truncate max-w-xs">{sshCmd}</code>
+            <button
+              onClick={handleCopySsh}
+              className="text-[#8B949E] hover:text-white p-0.5 rounded hover:bg-[#21262D] transition ml-1"
+              title="Copy SSH command"
+            >
+              {copiedSsh ? <Check className="w-3 h-3 text-[#3FB950]" /> : <Copy className="w-3 h-3" />}
+            </button>
+          </div>
+        ) : (
+          <div className="flex items-center gap-1.5 bg-[#0D1117] border border-[#30363D] px-2 py-0.5 rounded-md text-[10px] text-[#8B949E]">
+            <Server className="w-3 h-3 text-slate-500" />
+            <span>SSH: Not connected</span>
+          </div>
+        )}
       </div>
 
       {/* App Quick Launcher Bar */}
@@ -244,106 +254,45 @@ export function ComputerSurface({
         </button>
       </div>
 
-      {/* Main Surface Body: XFCE Desktop vs PTY Shell */}
+      {/* Main Surface Body: Graphical Desktop Viewport vs PTY Shell */}
       {viewMode === "desktop" ? (
         <div
           onClick={handleDesktopClick}
-          className="flex-1 bg-[#06080D] relative flex items-center justify-center overflow-hidden cursor-crosshair select-none"
+          className="flex-1 bg-[#06080D] relative flex items-center justify-center overflow-hidden cursor-crosshair select-none p-3"
         >
-          {/* Real XFCE Remote Desktop Rendering */}
-          <div className="w-full h-full max-w-full max-h-full flex flex-col items-center justify-center p-2">
-            <div className="w-full h-full rounded border border-[#21262D] bg-[#10141D] flex flex-col overflow-hidden relative shadow-2xl">
-              {/* XFCE Top Panel */}
-              <div className="h-6 bg-[#1A1F2C] border-b border-[#2A3142] px-2 flex items-center justify-between text-[11px] font-mono text-[#C9D1D9]">
-                <div className="flex items-center gap-2">
-                  <span className="font-bold text-white flex items-center gap-1">
-                    <span className="w-2 h-2 rounded-full bg-[#3FB950]"></span>
-                    Applications
-                  </span>
-                  <span className="text-[#8B949E]">|</span>
-                  <span className="text-[10px] text-[#79C0FF]">{activeWindow}</span>
-                </div>
-                <div className="flex items-center gap-3 text-[10px] text-[#8B949E]">
-                  <span>1280x800</span>
-                  <span>sonic@daytona</span>
-                </div>
-              </div>
-
-              {/* Desktop Workspace Canvas */}
-              <div className="flex-1 bg-[#090C12] p-6 relative flex flex-col justify-between">
-                {/* Desktop Icons */}
-                <div className="grid grid-cols-1 gap-4 w-20">
-                  <div
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      handleLaunchApp("xfce4-terminal");
-                    }}
-                    className="p-2 rounded hover:bg-[#1F242C]/80 cursor-pointer flex flex-col items-center gap-1 text-center transition group"
-                  >
-                    <TerminalIcon className="w-8 h-8 text-[#58A6FF] group-hover:scale-110 transition" />
-                    <span className="text-[10px] font-mono text-white">Terminal</span>
-                  </div>
-                  <div
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      handleLaunchApp("code-server");
-                    }}
-                    className="p-2 rounded hover:bg-[#1F242C]/80 cursor-pointer flex flex-col items-center gap-1 text-center transition group"
-                  >
-                    <Cpu className="w-8 h-8 text-[#3FB950] group-hover:scale-110 transition" />
-                    <span className="text-[10px] font-mono text-white">VS Code</span>
-                  </div>
-                  <div
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      handleLaunchApp("chromium");
-                    }}
-                    className="p-2 rounded hover:bg-[#1F242C]/80 cursor-pointer flex flex-col items-center gap-1 text-center transition group"
-                  >
-                    <ExternalLink className="w-8 h-8 text-purple-400 group-hover:scale-110 transition" />
-                    <span className="text-[10px] font-mono text-white">Browser</span>
-                  </div>
-                </div>
-
-                {/* Active Application Window Representation on Remote Desktop */}
-                {activeWindow && activeWindow !== "XFCE Desktop" && (
-                  <div
-                    onClick={(e) => e.stopPropagation()}
-                    className="absolute inset-x-24 inset-y-10 rounded-lg border border-[#30363D] bg-[#161B22] flex flex-col shadow-2xl overflow-hidden animate-fadeIn"
-                  >
-                    <div className="h-7 bg-[#1C2128] border-b border-[#21262D] px-3 flex items-center justify-between text-xs font-mono text-white">
-                      <span>{activeWindow} — Daytona Cloud Window</span>
-                      <button
-                        onClick={() => setActiveWindow("XFCE Desktop")}
-                        className="text-[#8B949E] hover:text-white px-1 rounded hover:bg-red-900/40 text-xs"
-                      >
-                        ✕
-                      </button>
-                    </div>
-                    <div className="flex-1 p-4 font-mono text-xs text-[#C9D1D9] bg-[#0D1117] overflow-y-auto space-y-2">
-                      <div className="text-[#3FB950] font-bold"># Remote Application Attached to Display :99</div>
-                      <div className="text-[#8B949E]">
-                        Target Process: <strong className="text-white">{activeWindow}</strong>
-                      </div>
-                      <div className="text-[#8B949E]">
-                        Container Environment: <strong className="text-white">{sandboxId}</strong>
-                      </div>
-                      <div className="pt-2 text-xs text-white">
-                        Clicking inside the surface dispatches real X11 mouse and keyboard events directly to this application.
-                      </div>
-                    </div>
-                  </div>
-                )}
-
-                {/* Bottom Desktop Dock */}
-                <div className="h-8 bg-[#1A1F2C]/90 rounded-lg border border-[#2A3142] px-3 flex items-center justify-center gap-4 mx-auto text-xs">
-                  <span className="text-[10px] font-mono text-[#8B949E]">
-                    Real Remote Desktop Frame Rate: <strong>60 FPS Xvfb</strong> | Mouse / Keyboard Interactive
-                  </span>
-                </div>
-              </div>
+          {screenshotBase64 && screenshotBase64.length > 100 ? (
+            <div className="w-full h-full max-w-[1280px] max-h-[800px] aspect-[16/10] rounded border border-[#21262D] bg-[#000000] relative shadow-2xl overflow-hidden flex items-center justify-center">
+              <img
+                src={`data:image/png;base64,${screenshotBase64}`}
+                alt="Daytona Graphical Desktop"
+                className="w-full h-full object-contain pointer-events-none"
+              />
             </div>
-          </div>
+          ) : (
+            <div className="w-full h-full max-w-[1280px] max-h-[800px] aspect-[16/10] rounded border border-[#21262D] bg-[#0A0D14] flex flex-col items-center justify-center p-6 text-center space-y-3">
+              <div className="w-12 h-12 rounded-full bg-[#161B22] border border-[#30363D] flex items-center justify-center text-[#8B949E]">
+                <Monitor className="w-6 h-6" />
+              </div>
+              <div className="space-y-1">
+                <h3 className="text-sm font-semibold text-white font-mono">
+                  No live display — sandbox screenshot unavailable
+                </h3>
+                <p className="text-xs text-[#8B949E] font-mono max-w-md">
+                  The graphical desktop session is not currently streaming or Xvfb framebuffer is inactive. Click Sync Screen to refresh.
+                </p>
+              </div>
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  fetchScreenshot();
+                }}
+                className="px-3 py-1.5 rounded-lg bg-[#21262D] hover:bg-[#30363D] text-xs font-mono text-white transition flex items-center gap-1.5"
+              >
+                <RefreshCw className={`w-3.5 h-3.5 ${loadingScreen ? "animate-spin text-[#58A6FF]" : ""}`} />
+                <span>Sync Screen</span>
+              </button>
+            </div>
+          )}
         </div>
       ) : (
         /* PTY Shell Mode */

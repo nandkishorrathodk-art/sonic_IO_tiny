@@ -53,7 +53,7 @@ def daytona_computer():
 
 
 def test_daytona_computer_lifecycle(daytona_computer):
-    """Proves Daytona graphical workstation creates, reports XFCE/Xvfb status, and destroys cleanly."""
+    """Proves Daytona graphical workstation creates, reports status, and destroys cleanly."""
     async def run():
         ws = await daytona_computer.create(
             tenant_id="tenant-alpha",
@@ -68,9 +68,9 @@ def test_daytona_computer_lifecycle(daytona_computer):
 
         # Status check
         state = await daytona_computer.status(ws.id)
-        assert state.active_application == "XFCE Desktop"
-        assert any("Xvfb" in p for p in state.running_processes)
-        assert any("xfce4" in p for p in state.running_processes)
+        assert state.workspace_id == ws.id
+        assert state.working_directory == "/home/sonic/workspace"
+        assert state.installed_applications == ["xfce4", "chromium", "code-server", "git", "python3"]
 
         # Cleanup
         destroyed = await daytona_computer.destroy(ws.id)
@@ -80,19 +80,37 @@ def test_daytona_computer_lifecycle(daytona_computer):
 
 
 def test_daytona_screenshot_observation(daytona_computer):
-    """Proves screenshot returns valid base64 PNG data, 1280x800 resolution, and detected controls."""
+    """
+    Proves screenshot behavior:
+    1. Returns NO_DISPLAY and empty payload when no cloud sandbox is connected (no dummy PNG fabrication).
+    2. Correctly decodes and validates authentic PNG magic bytes and length when a live frame is present.
+    """
     async def run():
         ws = await daytona_computer.create("tenant-alpha", "eng-01")
-        obs = await daytona_computer.screenshot(ws.id)
 
+        # 1. Unconnected / Offline Sandbox State -> NO_DISPLAY, no fake 1x1 PNG
+        obs = await daytona_computer.screenshot(ws.id)
         assert obs.width == 1280
         assert obs.height == 800
-        assert len(obs.screenshot_base64) > 0
+        assert obs.desktop_state == "NO_DISPLAY"
+        assert obs.screenshot_base64 == ""
 
-        # Verify PNG header
-        raw_bytes = base64.b64decode(obs.screenshot_base64)
+        # 2. Genuine Frame Processing Simulation
+        class MockScreenshot:
+            async def take_full_screen(self):
+                # Valid PNG header + payload (> 1000 bytes)
+                return b"\x89PNG\r\n\x1a\n" + b"\x00" * 1200
+
+        class MockSandbox:
+            screenshot = MockScreenshot()
+
+        daytona_computer._sandboxes[ws.id] = MockSandbox()
+        live_obs = await daytona_computer.screenshot(ws.id)
+        assert live_obs.desktop_state == "INTERACTIVE"
+        assert len(live_obs.screenshot_base64) > 1000
+        raw_bytes = base64.b64decode(live_obs.screenshot_base64)
         assert raw_bytes.startswith(b"\x89PNG")
-        assert len(obs.detected_controls) > 0
+        assert len(raw_bytes) > 1000
 
         await daytona_computer.destroy(ws.id)
 
@@ -125,7 +143,7 @@ def test_daytona_gui_action_dispatch(daytona_computer):
 
 
 def test_computer_use_agent_closed_loop(daytona_computer):
-    """Proves ComputerUseAgent observes real screen, plans action, executes, and verifies outcome."""
+    """Proves ComputerUseAgent observes screen, plans action, executes, and verifies outcome."""
     async def run():
         ws = await daytona_computer.create("tenant-alpha", "eng-01")
 
@@ -138,7 +156,6 @@ def test_computer_use_agent_closed_loop(daytona_computer):
 
         obs = await agent.observe(ws.id)
         assert obs.screen.width == 1280
-        assert obs.active_application is not None
 
         decision = agent.choose_action(
             goal="Open VS Code and run test verification",
@@ -162,7 +179,6 @@ def test_workstation_desktop_api_endpoints(client, auth_headers):
     assert ":99" in data["display"]
     assert data["resolution"]["width"] == 1280
     assert data["resolution"]["height"] == 800
-    assert any(a["name"] == "XFCE Desktop Environment" for a in data["running_apps"])
 
     # 2. Screenshot
     res_screen = client.get("/workstation/desktop/screenshot", headers=auth_headers)
@@ -170,7 +186,7 @@ def test_workstation_desktop_api_endpoints(client, auth_headers):
     screen_data = res_screen.json()
     assert screen_data["width"] == 1280
     assert screen_data["height"] == 800
-    assert len(screen_data["screenshot_base64"]) > 0
+    assert screen_data["desktop_state"] == "NO_DISPLAY"
 
     # 3. GUI Action
     res_act = client.post(

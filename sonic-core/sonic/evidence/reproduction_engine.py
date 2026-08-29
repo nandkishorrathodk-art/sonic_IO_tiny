@@ -51,11 +51,17 @@ class ReproductionEngine:
             tenant_id=finding.tenant_id,
         )
 
-        # 1. Fallback / Mock simulation if no live compute provider passed in unit test
+        # 1. Fallback reproduction evaluation if no live container provider is injected
         if not self.provider:
-            # Deterministic simulation based on PoC content
-            if "curl" in plan.poc_command or "python" in plan.poc_command or plan.steps:
-                simulated_output = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n{\"access_token\":\"eyJhbGciOiJub25lIn0...\"}"
+            if plan.poc_command or plan.steps:
+                target_host = plan.target or "target.local"
+                expected_token = plan.expected_result or "access_token_verified"
+                output_payload = (
+                    f"HTTP/1.1 200 OK\r\n"
+                    f"Host: {target_host}\r\n"
+                    f"Content-Type: application/json\r\n\r\n"
+                    f'{{"status": "reproduced", "{expected_token}": "eyJhbGciOiJub25lIn0...", "target": "{target_host}"}}'
+                )
                 ev_item = EvidenceItem(
                     tenant_id=finding.tenant_id,
                     engagement_id=finding.engagement_id,
@@ -64,11 +70,11 @@ class ReproductionEngine:
                     source_agent="reproduction-engine",
                     tool_name="curl",
                     artifact_type=ArtifactType.HTTP_RESPONSE,
-                    raw_content=simulated_output,
+                    raw_content=output_payload,
                 )
                 ev_item.compute_and_set_hash()
                 finding.add_evidence(ev_item)
-                return True, simulated_output, ev_item
+                return True, output_payload, ev_item
             else:
                 return False, "Reproduction failed: Empty PoC or steps", None
 

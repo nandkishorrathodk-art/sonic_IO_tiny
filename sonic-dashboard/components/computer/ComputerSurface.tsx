@@ -95,6 +95,8 @@ export function ComputerSurface({
     }
   };
 
+  const isLive = Boolean(vncUrl || desktopState?.vnc_url || desktopState?.status === "LIVE");
+
   return (
     <div
       className={`flex-1 rounded-lg border border-[#21262D] bg-[#161B22] flex flex-col overflow-hidden shadow-2xl ${
@@ -109,10 +111,17 @@ export function ComputerSurface({
             <span>Daytona Linux Workstation</span>
             <span className="text-[10px] text-slate-400 font-normal font-mono">(:99 1280x800)</span>
           </span>
-          <span className="flex items-center gap-1 text-[10px] text-[#3FB950] font-semibold bg-[#238636]/15 border border-[#238636]/30 px-1.5 py-0.5 rounded">
-            <span className="w-1.5 h-1.5 rounded-full bg-[#3FB950] animate-pulse"></span>
-            <span>LIVE DESKTOP</span>
-          </span>
+          {isLive ? (
+            <span className="flex items-center gap-1 text-[10px] text-[#3FB950] font-semibold bg-[#238636]/15 border border-[#238636]/30 px-1.5 py-0.5 rounded">
+              <span className="w-1.5 h-1.5 rounded-full bg-[#3FB950] animate-pulse"></span>
+              <span>LIVE DESKTOP</span>
+            </span>
+          ) : (
+            <span className="flex items-center gap-1 text-[10px] text-[#8B949E] font-semibold bg-[#21262D]/60 border border-[#30363D] px-1.5 py-0.5 rounded">
+              <span className="w-1.5 h-1.5 rounded-full bg-[#8B949E]"></span>
+              <span>DISCONNECTED</span>
+            </span>
+          )}
         </div>
 
         <div className="flex items-center gap-2">

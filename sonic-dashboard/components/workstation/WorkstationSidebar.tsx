@@ -6,6 +6,8 @@ import {
   Plus,
   GitBranch,
   Monitor,
+  Terminal,
+  Compass,
   Share2,
   FileCheck2,
   Dna,
@@ -68,10 +70,34 @@ export function WorkstationSidebar({
 
       {/* Primary Nav Links */}
       <div className="p-2 space-y-0.5 text-xs font-medium border-b border-[#21262D]/60">
-        <div className="flex items-center gap-2.5 px-3 py-1.5 rounded-md bg-[#1F242C] text-white cursor-pointer font-semibold">
+        <Link
+          href="/"
+          className="flex items-center gap-2.5 px-3 py-1.5 rounded-md bg-[#1F242C] text-white cursor-pointer font-semibold"
+        >
           <MessageSquare className="w-4 h-4 text-[#58A6FF]" />
           <span>Workstation</span>
-        </div>
+        </Link>
+        <Link
+          href="/computer"
+          className="flex items-center gap-2.5 px-3 py-1.5 rounded-md text-[#8B949E] hover:text-white hover:bg-[#1A1F26] transition"
+        >
+          <Monitor className="w-4 h-4 text-emerald-400" />
+          <span>Daytona Desktop</span>
+        </Link>
+        <Link
+          href="/terminal"
+          className="flex items-center gap-2.5 px-3 py-1.5 rounded-md text-[#8B949E] hover:text-white hover:bg-[#1A1F26] transition"
+        >
+          <Terminal className="w-4 h-4 text-amber-400" />
+          <span>PTY Terminal</span>
+        </Link>
+        <Link
+          href="/missions"
+          className="flex items-center gap-2.5 px-3 py-1.5 rounded-md text-[#8B949E] hover:text-white hover:bg-[#1A1F26] transition"
+        >
+          <Compass className="w-4 h-4 text-cyan-400" />
+          <span>Missions</span>
+        </Link>
         <Link
           href="/graph"
           className="flex items-center gap-2.5 px-3 py-1.5 rounded-md text-[#8B949E] hover:text-white hover:bg-[#1A1F26] transition"

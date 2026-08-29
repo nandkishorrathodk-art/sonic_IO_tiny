@@ -15,7 +15,7 @@ import {
   Loader2
 } from "lucide-react";
 
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+import { api } from "../../lib/api";
 
 interface Experiment {
   experiment_id: string;
@@ -36,7 +36,7 @@ interface BenchmarkResult {
   precision: number;
   recall: number;
   passed: boolean;
-  results: Record<string, any>;
+  results?: Record<string, any>;
 }
 
 export default function ExperimentLab() {
@@ -48,9 +48,8 @@ export default function ExperimentLab() {
 
   const fetchExperiments = async () => {
     try {
-      const res = await fetch(`${API_BASE}/live/experiments`);
-      if (res.ok) {
-        const data = await res.json();
+      const data = await api.getExperiments();
+      if (data) {
         setExperiments(data.experiments || []);
         setChallenges(data.challenges || []);
       }
@@ -69,19 +68,25 @@ export default function ExperimentLab() {
     setBenchmarking(true);
     setBenchmarkResult(null);
     try {
-      const res = await fetch(`${API_BASE}/live/experiments/benchmark`, {
-        method: "POST",
-      });
-      if (res.ok) {
-        const data = await res.json();
+      const data = await api.runBenchmark();
+      if (data) {
         setBenchmarkResult(data);
       }
-    } catch {
-      // Failed
+    } catch (err: any) {
+      alert(`Benchmark failed: ${err.message}`);
     } finally {
       setBenchmarking(false);
     }
   };
+
+  const activeVersion = experiments.length > 0 ? (experiments[0].target_component || "v1.3.0") : "v1.3.0";
+  const rolledBackCount = experiments.filter((e) => e.status === "ROLLED_BACK").length;
+  const regressionRate = experiments.length > 0 ? ((rolledBackCount / experiments.length) * 100).toFixed(1) : "0.0";
+  const displayF1 = benchmarkResult
+    ? `${(benchmarkResult.f1_score * 100).toFixed(1)}%`
+    : experiments.length > 0 && experiments[0].candidate_f1
+    ? `${(experiments[0].candidate_f1 * 100).toFixed(1)}%`
+    : "Live Ready";
 
   return (
     <div className="space-y-6">
@@ -117,11 +122,11 @@ export default function ExperimentLab() {
       {benchmarkResult && (
         <div className="glass-card p-4 rounded-xl border border-emerald-800/80 bg-emerald-950/30 text-xs font-mono space-y-2">
           <div className="flex items-center justify-between text-emerald-400 font-bold">
-            <span>✅ Canary Benchmark Passed: F1 {(benchmarkResult.f1_score * 100).toFixed(1)}%</span>
+            <span>✅ Canary Benchmark Completed: F1 {(benchmarkResult.f1_score * 100).toFixed(1)}%</span>
             <span>Precision: {(benchmarkResult.precision * 100).toFixed(1)}% | Recall: {(benchmarkResult.recall * 100).toFixed(1)}%</span>
           </div>
           <p className="text-slate-300 text-[11px]">
-            Validated on 5 ground-truth challenges (SQLi, XSS, SSRF, IDOR, JWT). Zero regressions detected.
+            Validated on {challenges.length || 5} ground-truth challenges. Zero regressions detected.
           </p>
         </div>
       )}
@@ -130,12 +135,12 @@ export default function ExperimentLab() {
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
         <div className="glass-card p-4 rounded-xl border border-slate-800">
           <div className="flex items-center justify-between text-xs text-slate-400 mb-1">
-            <span>Swarm Intelligence Version</span>
+            <span>Active Skill Architecture</span>
             <Sparkles className="w-4 h-4 text-amber-400" />
           </div>
-          <div className="text-2xl font-bold font-mono text-white">v1.2.0</div>
+          <div className="text-2xl font-bold font-mono text-white">{activeVersion}</div>
           <div className="text-[11px] text-emerald-400 mt-1 flex items-center gap-1">
-            <TrendingUp className="w-3 h-3" /> Baseline F1: 0.85
+            <TrendingUp className="w-3 h-3" /> F1 Metric: {displayF1}
           </div>
         </div>
 
@@ -144,7 +149,7 @@ export default function ExperimentLab() {
             <span>Canary Regression Rate</span>
             <Activity className="w-4 h-4 text-cyan-400" />
           </div>
-          <div className="text-2xl font-bold font-mono text-cyan-400">0.0%</div>
+          <div className="text-2xl font-bold font-mono text-cyan-400">{regressionRate}%</div>
           <div className="text-[11px] text-slate-400 mt-1">100% Regressions Auto-Rolled Back</div>
         </div>
 
@@ -154,7 +159,7 @@ export default function ExperimentLab() {
             <FlaskConical className="w-4 h-4 text-purple-400" />
           </div>
           <div className="text-2xl font-bold font-mono text-purple-400">{challenges.length || 5} Active</div>
-          <div className="text-[11px] text-slate-400 mt-1">SQLi, XSS, SSRF, IDOR, JWT</div>
+          <div className="text-[11px] text-slate-400 mt-1">Ground-truth verification suite</div>
         </div>
       </div>
 

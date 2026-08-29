@@ -73,9 +73,17 @@ export default function ComputerWorkspacePage() {
               <h2 className="text-base font-bold text-white tracking-wide">
                 DAYTONA GRAPHICAL WORKSTATION
               </h2>
-              <span className="px-2 py-0.5 text-[10px] font-mono bg-blue-950 text-blue-300 border border-blue-800/60 rounded-full font-semibold">
-                Xvfb :99 + XFCE4
-              </span>
+              {desktopState?.vnc_url || desktopState?.status === "LIVE" ? (
+                <span className="px-2 py-0.5 text-[10px] font-mono bg-emerald-950 text-emerald-300 border border-emerald-800/60 rounded-full font-semibold flex items-center gap-1">
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
+                  LIVE (:99)
+                </span>
+              ) : (
+                <span className="px-2 py-0.5 text-[10px] font-mono bg-slate-900 text-slate-400 border border-slate-800 rounded-full font-semibold flex items-center gap-1">
+                  <span className="w-1.5 h-1.5 rounded-full bg-slate-500"></span>
+                  OFFLINE / DISCONNECTED
+                </span>
+              )}
             </div>
             <p className="text-xs text-slate-400 mt-0.5 font-mono">
               Real Cloud Sandbox Execution: X11 GUI Desktop, PTY Shell, Filesystem, and Native Computer Use.

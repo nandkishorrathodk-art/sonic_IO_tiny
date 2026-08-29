@@ -245,6 +245,13 @@ class DaytonaComputerProvider(ComputerProvider):
             except Exception:
                 pass
 
+        # Query installed applications in the sandbox (empty if sandbox unavailable)
+        installed_apps = await self.application_list(workspace_id)
+
+        # Query real git branch if repository is present
+        git_res = await self.terminal(workspace_id, "git branch --show-current 2>/dev/null")
+        git_branch = git_res.stdout.strip() if (git_res.exit_code == 0 and git_res.stdout.strip()) else "main"
+
         return ComputerState(
             workspace_id=workspace_id,
             tenant_id=tenant_id,
@@ -253,9 +260,9 @@ class DaytonaComputerProvider(ComputerProvider):
             active_window=active_app,
             working_directory="/home/sonic/workspace",
             running_processes=real_processes,
-            installed_applications=["xfce4", "chromium", "code-server", "git", "python3"],
+            installed_applications=installed_apps,
             current_project="sonic",
-            git_branch="main",
+            git_branch=git_branch,
             resource_usage=resource_usage,
         )
 
@@ -341,13 +348,16 @@ class DaytonaComputerProvider(ComputerProvider):
         sandbox = self._sandboxes.get(workspace_id)
         action_type = action.action
 
+        if action_type in [GUIActionType.CLICK, GUIActionType.DOUBLE_CLICK]:
+            if action.x is None or action.y is None:
+                logger.warning("daytona_gui_click_missing_coordinates", action=action_type.value, x=action.x, y=action.y)
+                return await self.screenshot(workspace_id)
+
         if sandbox and hasattr(sandbox, "computer_use"):
             try:
                 cu = sandbox.computer_use
                 if action_type in [GUIActionType.CLICK, GUIActionType.DOUBLE_CLICK]:
-                    x = action.x or 100
-                    y = action.y or 100
-                    await cu.mouse.move(x, y)
+                    await cu.mouse.move(action.x, action.y)
                     await cu.mouse.click(button="left")
 
                 elif action_type == GUIActionType.TYPE and action.text:
@@ -371,11 +381,9 @@ class DaytonaComputerProvider(ComputerProvider):
         try:
             import subprocess
             if action_type in [GUIActionType.CLICK, GUIActionType.DOUBLE_CLICK]:
-                x = action.x or 100
-                y = action.y or 100
-                cmd = f"DISPLAY=:99 xdotool mousemove {x} {y} click 1"
+                cmd = f"DISPLAY=:99 xdotool mousemove {action.x} {action.y} click 1"
                 if action_type == GUIActionType.DOUBLE_CLICK:
-                    cmd = f"DISPLAY=:99 xdotool mousemove {x} {y} click --repeat 2 1"
+                    cmd = f"DISPLAY=:99 xdotool mousemove {action.x} {action.y} click --repeat 2 1"
                 subprocess.run(["docker", "exec", "sonic-sandbox", "/bin/bash", "-c", cmd], timeout=4)
 
             elif action_type == GUIActionType.TYPE and action.text:
@@ -591,8 +599,39 @@ class DaytonaComputerProvider(ComputerProvider):
         return processes
 
     async def application_list(self, workspace_id: str) -> list[str]:
-        """Lists installed applications in the sandbox."""
-        return ["xfce4-terminal", "code-server", "chromium", "git", "python3", "bash"]
+        """Lists installed applications in the sandbox by querying real binaries."""
+        apps: list[str] = []
+        sandbox = self._sandboxes.get(workspace_id)
+        if sandbox and hasattr(sandbox, "process"):
+            try:
+                res = await sandbox.process.exec("which xfce4-terminal code-server chromium git python3 bash 2>/dev/null")
+                stdout = getattr(res, "result", "") or ""
+                for line in stdout.splitlines():
+                    line = line.strip()
+                    if line:
+                        app_name = line.split("/")[-1]
+                        if app_name and app_name not in apps:
+                            apps.append(app_name)
+                if apps:
+                    return apps
+            except Exception:
+                pass
+
+        try:
+            res = await self.terminal(workspace_id, "which xfce4-terminal code-server chromium git python3 bash 2>/dev/null")
+            if res.exit_code == 0 and res.stdout:
+                for line in res.stdout.splitlines():
+                    line = line.strip()
+                    if line:
+                        app_name = line.split("/")[-1]
+                        if app_name and app_name not in apps:
+                            apps.append(app_name)
+                if apps:
+                    return apps
+        except Exception:
+            pass
+
+        return apps
 
     async def launch_application(self, workspace_id: str, app_name: str, actor: str = "operator") -> bool:
         """Launches a GUI application on display :99."""
@@ -626,15 +665,28 @@ class DaytonaComputerProvider(ComputerProvider):
         """Executes Git operations against the sandbox workspace."""
         if action == "status":
             res = await self.terminal(workspace_id, "git status --porcelain")
+            branch_res = await self.terminal(workspace_id, "git branch --show-current")
+            branch = branch_res.stdout.strip() if (branch_res.exit_code == 0 and branch_res.stdout.strip()) else "main"
             return GitStatusInfo(
-                branch="main",
+                branch=branch,
                 is_clean=(len(res.stdout.strip()) == 0),
                 untracked_files=[line[3:] for line in res.stdout.splitlines() if line.startswith("??")],
                 modified_files=[line[3:] for line in res.stdout.splitlines() if not line.startswith("??")],
                 staged_files=[],
             )
+        elif action == "commit":
+            msg = kwargs.get("message", "chore: automated commit")
+            safe_msg = msg.replace("'", "'\\''")
+            res = await self.terminal(workspace_id, f"git add -A && git commit -m '{safe_msg}'")
+            return res.exit_code == 0
+        elif action in ["branch", "checkout"]:
+            branch_name = kwargs.get("branch_name") or kwargs.get("branch") or "main"
+            res = await self.terminal(workspace_id, f"git checkout -B '{branch_name}'")
+            return res.exit_code == 0
         elif action == "diff":
-            res = await self.terminal(workspace_id, "git diff HEAD")
+            branch_res = await self.terminal(workspace_id, "git branch --show-current")
+            branch = branch_res.stdout.strip() if (branch_res.exit_code == 0 and branch_res.stdout.strip()) else "HEAD"
+            res = await self.terminal(workspace_id, f"git diff {branch}")
             return res.stdout or "Working tree clean."
         return ""
 

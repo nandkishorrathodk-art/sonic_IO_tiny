@@ -299,13 +299,13 @@ async def execute_desktop_action(
     )
     obs = await comp.gui_action(workspace_id=req.session_id or "default", action=gui_act, actor=user.email)
     state = _get_or_create_session(user.email, req.session_id or "default")
-    if req.target:
-        state["desktop"]["active_window"] = req.target
+    real_active_window = obs.active_window or "None"
+    state["desktop"]["active_window"] = real_active_window
 
     return {
         "status": "success",
         "action": req.action,
-        "active_window": state["desktop"]["active_window"],
+        "active_window": real_active_window,
         "observation": obs.model_dump(),
     }
 
@@ -571,10 +571,20 @@ async def send_workstation_prompt(
                 ai_log = {
                     "id": f"wl-{len(state['worklog']) + 1}",
                     "type": "thought",
-                    "title": "AI Autonomous Response",
+                    "title": "AI Task Analysis",
                     "content": llm_res.content,
                 }
                 state["worklog"].append(ai_log)
+        else:
+            fallback_msg = f"Objective registered: '{req.prompt}'. LLM key not configured (NVIDIA_API_KEY unset) — direct execution mode active."
+            state["thought_summary"] = fallback_msg
+            ai_log = {
+                "id": f"wl-{len(state['worklog']) + 1}",
+                "type": "thought",
+                "title": "Objective Registered",
+                "content": fallback_msg,
+            }
+            state["worklog"].append(ai_log)
     except Exception as llm_err:
         logger.warning("workstation_llm_reasoning_deferred", error=str(llm_err))
         ai_fallback = {

@@ -72,7 +72,7 @@ def test_daytona_computer_lifecycle(daytona_computer):
         state = await daytona_computer.status(ws.id)
         assert state.workspace_id == ws.id
         assert state.working_directory == "/home/sonic/workspace"
-        assert state.installed_applications == ["xfce4", "chromium", "code-server", "git", "python3"]
+        assert state.installed_applications == []
 
         # Cleanup
         destroyed = await daytona_computer.destroy(ws.id)
@@ -212,6 +212,31 @@ def test_process_list_returns_empty_when_no_sandbox(daytona_computer):
     asyncio.run(run())
 
 
+def test_application_list_returns_empty_when_no_sandbox(daytona_computer):
+    """Proves application_list returns empty list when no sandbox is connected (no hardcoded apps)."""
+    async def run():
+        ws = await daytona_computer.create("tenant-alpha", "eng-01")
+        apps = await daytona_computer.application_list(ws.id)
+        assert isinstance(apps, list)
+        assert len(apps) == 0  # No hardcoded fake apps
+        await daytona_computer.destroy(ws.id)
+
+    asyncio.run(run())
+
+
+def test_gui_action_missing_coords_does_not_click(daytona_computer):
+    """Proves CLICK with missing coords logs warning and returns current observation without clicking."""
+    async def run():
+        ws = await daytona_computer.create("tenant-alpha", "eng-01")
+        click_act = GUIAction(action=GUIActionType.CLICK, x=None, y=None)
+        obs = await daytona_computer.gui_action(ws.id, click_act)
+        assert obs is not None
+        assert obs.width == 1280
+        await daytona_computer.destroy(ws.id)
+
+    asyncio.run(run())
+
+
 def test_workstation_desktop_api_endpoints(client, auth_headers):
     """Proves /workstation/desktop/status, /action, /screenshot, and /stream endpoints return valid data."""
     # 1. Status
@@ -234,7 +259,7 @@ def test_workstation_desktop_api_endpoints(client, auth_headers):
     else:
         assert len(screen_data["screenshot_base64"]) > 100
 
-    # 3. GUI Action
+    # 3. GUI Action (proves active_window reflects real observation)
     res_act = client.post(
         "/workstation/desktop/action",
         headers=auth_headers,
@@ -242,6 +267,7 @@ def test_workstation_desktop_api_endpoints(client, auth_headers):
     )
     assert res_act.status_code == 200
     assert res_act.json()["status"] == "success"
+    assert "active_window" in res_act.json()
 
     # 4. Stream URL endpoint
     res_stream = client.get("/workstation/desktop/stream", headers=auth_headers)

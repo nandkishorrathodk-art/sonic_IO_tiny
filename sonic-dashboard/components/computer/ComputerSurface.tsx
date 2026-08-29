@@ -95,7 +95,14 @@ export function ComputerSurface({
     }
   };
 
-  const isLive = Boolean(vncUrl || desktopState?.vnc_url || desktopState?.status === "LIVE");
+  const isLive = Boolean(
+    vncUrl ||
+    desktopState?.vnc_url ||
+    desktopState?.status === "LIVE" ||
+    desktopState?.status === "ACTIVE" ||
+    desktopState?.status === "READY / ACTIVE" ||
+    (screenshotBase64 && screenshotBase64.length > 100)
+  );
 
   return (
     <div
@@ -114,7 +121,7 @@ export function ComputerSurface({
           {isLive ? (
             <span className="flex items-center gap-1 text-[10px] text-[#3FB950] font-semibold bg-[#238636]/15 border border-[#238636]/30 px-1.5 py-0.5 rounded">
               <span className="w-1.5 h-1.5 rounded-full bg-[#3FB950] animate-pulse"></span>
-              <span>LIVE DESKTOP</span>
+              <span>{vncUrl ? "LIVE DESKTOP (noVNC)" : "LIVE DESKTOP (:99)"}</span>
             </span>
           ) : (
             <span className="flex items-center gap-1 text-[10px] text-[#8B949E] font-semibold bg-[#21262D]/60 border border-[#30363D] px-1.5 py-0.5 rounded">

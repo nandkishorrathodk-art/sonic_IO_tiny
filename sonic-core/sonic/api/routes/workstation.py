@@ -199,6 +199,27 @@ async def get_workstation_state(
     git_info = _get_live_git_info()
     state["git_branch"] = git_info["branch"]
     state["latest_commit"] = git_info["latest_commit"]
+
+    # Ensure desktop status reflects live Daytona / X11 stream
+    try:
+        comp = get_daytona_computer()
+        env_sandbox_id = os.environ.get("DAYTONA_SANDBOX_ID")
+        target_id = None
+        for ws_id, ws in comp.workspaces.items():
+            if ws.tenant_id == user.email:
+                target_id = ws_id
+                break
+        if not target_id and env_sandbox_id:
+            target_id = env_sandbox_id
+        if target_id:
+            vnc_url = await comp.get_vnc_url(target_id)
+            if vnc_url:
+                state["desktop"]["vnc_url"] = vnc_url
+                state["desktop"]["novnc_url"] = vnc_url
+                state["desktop"]["status"] = "LIVE"
+    except Exception:
+        pass
+
     return state
 
 

@@ -94,6 +94,36 @@ class DaytonaComputerProvider(ComputerProvider):
                 self._client = None
         return self._client
 
+    async def _resolve_sandbox(self, workspace_id: str) -> Optional[Any]:
+        """Resolves the live AsyncDaytona sandbox instance for workspace or environment sandbox."""
+        if workspace_id and workspace_id in self._sandboxes:
+            return self._sandboxes[workspace_id]
+
+        env_id = os.environ.get("DAYTONA_SANDBOX_ID", "")
+        target_id = workspace_id if (workspace_id and workspace_id != "default" and len(workspace_id) > 10) else env_id
+
+        if target_id:
+            if target_id in self._sandboxes:
+                return self._sandboxes[target_id]
+
+            client = self._get_client()
+            if client:
+                try:
+                    sandbox = await client.get(target_id)
+                    if sandbox:
+                        self._sandboxes[workspace_id] = sandbox
+                        self._sandboxes[target_id] = sandbox
+                        # Ensure computer_use VNC stack is started
+                        if hasattr(sandbox, "computer_use"):
+                            try:
+                                await sandbox.computer_use.start()
+                            except Exception:
+                                pass
+                        return sandbox
+                except Exception as e:
+                    logger.warning("daytona_resolve_sandbox_failed", target_id=target_id, error=str(e))
+        return None
+
     # -------------------------------------------------------------
     # 1. Lifecycle (Create, Start, Stop, Destroy)
     # -------------------------------------------------------------
@@ -190,17 +220,7 @@ class DaytonaComputerProvider(ComputerProvider):
 
         Uses the Daytona SDK get_preview_link API. Returns None if unavailable.
         """
-        sandbox = self._sandboxes.get(workspace_id)
-        if not sandbox:
-            client = self._get_client()
-            if client:
-                try:
-                    sandbox = await client.get(workspace_id)
-                    if sandbox:
-                        self._sandboxes[workspace_id] = sandbox
-                except Exception:
-                    pass
-
+        sandbox = await self._resolve_sandbox(workspace_id)
         if sandbox and hasattr(sandbox, "get_preview_link"):
             try:
                 preview = await sandbox.get_preview_link(6080)
@@ -227,7 +247,7 @@ class DaytonaComputerProvider(ComputerProvider):
         # Query real running processes from sandbox
         real_processes = []
         resource_usage = {"cpu_pct": 0.0, "memory_mb": 0.0}
-        sandbox = self._sandboxes.get(workspace_id)
+        sandbox = await self._resolve_sandbox(workspace_id)
         if sandbox and hasattr(sandbox, "computer_use"):
             try:
                 cu_status = await sandbox.computer_use.get_status()
@@ -277,7 +297,7 @@ class DaytonaComputerProvider(ComputerProvider):
         or via local container X11 frame grabber (scrot).
         When no real display is available, returns NO_DISPLAY state with empty screenshot.
         """
-        sandbox = self._sandboxes.get(workspace_id)
+        sandbox = await self._resolve_sandbox(workspace_id)
         if sandbox and hasattr(sandbox, "computer_use"):
             try:
                 # Capture real live screenshot from Daytona computer_use API
@@ -290,7 +310,7 @@ class DaytonaComputerProvider(ComputerProvider):
                         width=1280,
                         height=800,
                         active_window=self._active_windows.get(workspace_id, "XFCE Desktop"),
-                        visible_text="Active Desktop Session",
+                        visible_text="Active Daytona Desktop Session",
                         detected_controls=["panel", "terminal_icon", "editor_icon", "browser_icon"],
                         desktop_state="INTERACTIVE",
                     )
@@ -345,7 +365,7 @@ class DaytonaComputerProvider(ComputerProvider):
         """
         Dispatches authentic mouse and keyboard events directly into the remote X11 desktop.
         """
-        sandbox = self._sandboxes.get(workspace_id)
+        sandbox = await self._resolve_sandbox(workspace_id)
         action_type = action.action
 
         if action_type in [GUIActionType.CLICK, GUIActionType.DOUBLE_CLICK]:

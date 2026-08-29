@@ -5,6 +5,7 @@ import {
   Minimize2,
   RefreshCw,
   Monitor,
+  ExternalLink,
 } from "lucide-react";
 import { DesktopState, CommandResult } from "../../types/workstation";
 import { api } from "../../lib/api";
@@ -132,6 +133,18 @@ export function ComputerSurface({
         </div>
 
         <div className="flex items-center gap-2">
+          {vncUrl && (
+            <a
+              href={vncUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="p-1 hover:bg-[#21262D] rounded text-[#8B949E] hover:text-white transition flex items-center gap-1 text-[11px]"
+              title="Open Daytona noVNC Desktop in new tab"
+            >
+              <ExternalLink className="w-3.5 h-3.5" />
+              <span className="hidden sm:inline">Open Tab</span>
+            </a>
+          )}
           <button
             onClick={fetchScreenshot}
             className="p-1 hover:bg-[#21262D] rounded text-[#8B949E] hover:text-white transition"

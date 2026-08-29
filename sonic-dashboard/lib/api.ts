@@ -1,0 +1,126 @@
+// SONIC-REDA — Unified API Client
+
+import { getAuthToken, ensureAuthToken } from "./auth";
+
+export const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+
+interface RequestOptions extends RequestInit {
+  timeout?: number;
+}
+
+export async function apiClient<T>(endpoint: string, options: RequestOptions = {}): Promise<T> {
+  const { timeout = 15000, headers = {}, ...rest } = options;
+
+  // Ensure an authenticated token exists
+  let token = getAuthToken();
+  if (!token && typeof window !== "undefined" && !endpoint.includes("/auth/")) {
+    token = await ensureAuthToken(API_BASE);
+  }
+
+  const controller = new AbortController();
+  const id = setTimeout(() => controller.abort(), timeout);
+
+  const requestHeaders: Record<string, string> = {
+    "Content-Type": "application/json",
+    ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    ...(headers as Record<string, string>),
+  };
+
+  const url = endpoint.startsWith("http") ? endpoint : `${API_BASE}${endpoint.startsWith("/") ? "" : "/"}${endpoint}`;
+
+  try {
+    const res = await fetch(url, {
+      ...rest,
+      headers: requestHeaders,
+      signal: controller.signal,
+    });
+
+    clearTimeout(id);
+
+    if (res.status === 401) {
+      // Re-provision token if expired and retry once
+      const newToken = await ensureAuthToken(API_BASE);
+      if (newToken && newToken !== token) {
+        requestHeaders.Authorization = `Bearer ${newToken}`;
+        const retryRes = await fetch(url, { ...rest, headers: requestHeaders });
+        if (retryRes.ok) return (await retryRes.json()) as T;
+      }
+      throw new Error("Authentication required (401 Unauthorized)");
+    }
+
+    if (!res.ok) {
+      const errorData = await res.json().catch(() => ({ detail: res.statusText }));
+      throw new Error(errorData.detail || `API error ${res.status}: ${res.statusText}`);
+    }
+
+    return (await res.json()) as T;
+  } catch (err: any) {
+    clearTimeout(id);
+    if (err.name === "AbortError") {
+      throw new Error(`Request timeout (${timeout}ms) on ${endpoint}`);
+    }
+    throw err;
+  }
+}
+
+// Workstation Specific API Endpoints
+export const api = {
+  // Workstation
+  getWorkstationState: (sessionId = "default") =>
+    apiClient<any>(`/workstation/state?session_id=${encodeURIComponent(sessionId)}`),
+  
+  getDesktopStatus: (sessionId = "default") =>
+    apiClient<any>(`/workstation/desktop/status?session_id=${encodeURIComponent(sessionId)}`),
+
+  getFileTree: () =>
+    apiClient<{ files: string[] }>("/workstation/tree"),
+
+  getFileContent: (path: string) =>
+    apiClient<any>(`/workstation/file?path=${encodeURIComponent(path)}`),
+
+  saveFileContent: (path: string, content: string) =>
+    apiClient<any>("/workstation/file", {
+      method: "POST",
+      body: JSON.stringify({ path, content }),
+    }),
+
+  getGitDiff: () =>
+    apiClient<{ diff: string; success: boolean }>("/workstation/git-diff"),
+
+  sendPrompt: (prompt: string, sessionId = "default") =>
+    apiClient<any>("/workstation/prompt", {
+      method: "POST",
+      body: JSON.stringify({ prompt, session_id: sessionId }),
+    }),
+
+  executeCommand: (command: string, sessionId = "default") =>
+    apiClient<any>("/workstation/command", {
+      method: "POST",
+      body: JSON.stringify({ command, session_id: sessionId }),
+    }),
+
+  // Graph Memory
+  getGraph: () =>
+    apiClient<any>("/live/graph"),
+
+  // Evidence
+  getEvidence: () =>
+    apiClient<any>("/live/evidence"),
+
+  // Experiments / Self-Evolution
+  getExperiments: () =>
+    apiClient<any>("/live/experiments"),
+
+  runBenchmark: () =>
+    apiClient<any>("/live/experiments/benchmark", { method: "POST" }),
+
+  // Settings
+  getSettings: () =>
+    apiClient<any>("/live/settings"),
+
+  updateSettings: (config: any) =>
+    apiClient<any>("/live/settings", {
+      method: "POST",
+      body: JSON.stringify(config),
+    }),
+};

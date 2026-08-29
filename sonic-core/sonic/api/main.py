@@ -14,6 +14,9 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from dotenv import load_dotenv
+load_dotenv()
+
 from sonic import __version__, __codename__
 from sonic.config import get_settings
 from sonic.memory.graph import get_graph_memory

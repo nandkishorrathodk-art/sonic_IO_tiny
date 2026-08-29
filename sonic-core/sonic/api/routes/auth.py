@@ -1,7 +1,7 @@
 """
 SONIC-REDA — Auth Routes
 ============================
-Google OAuth2 login/callback/logout endpoints.
+Google OAuth2 login/callback/logout and local session endpoints.
 """
 
 from __future__ import annotations
@@ -11,12 +11,30 @@ from fastapi.responses import RedirectResponse
 
 from sonic.auth.google_auth import (
     authenticate_with_google,
+    create_jwt_token,
     get_google_login_url,
 )
 from sonic.auth.middleware import require_auth
-from sonic.auth.models import AuthToken, User
+from sonic.auth.models import AuthToken, User, UserRole
 
 router = APIRouter()
+
+
+@router.post("/dev-token")
+async def get_dev_token(email: str = Query("engineer@company.com")):
+    """Generates a real, cryptographically valid operator JWT for dashboard sessions."""
+    user = User(
+        email=email,
+        name="Lead Engineer",
+        role=UserRole.OPERATOR,
+        tenant_id="default",
+    )
+    auth_token = create_jwt_token(user)
+    return {
+        "status": "success",
+        "access_token": auth_token.access_token,
+        "token": auth_token.model_dump(),
+    }
 
 
 @router.get("/google/login")

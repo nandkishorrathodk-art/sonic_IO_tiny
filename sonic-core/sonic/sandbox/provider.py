@@ -41,6 +41,7 @@ class WorkspaceState(StrEnum):
 class WorkspaceType(StrEnum):
     MISSION_COMPUTER = "mission_computer"  # Persistent long-term environment
     RESEARCH_LAB = "research_lab"          # Disposable single-task sandbox
+    TARGET_SANDBOX = "target_sandbox"      # Disposable authorized target environment
 
 
 @dataclass

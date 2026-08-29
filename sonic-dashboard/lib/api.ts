@@ -86,6 +86,65 @@ export const api = {
   getDesktopStatus: (sessionId = "default") =>
     apiClient<any>(`/workstation/desktop/status?session_id=${encodeURIComponent(sessionId)}`),
 
+  provisionDesktop: (sessionId = "default") =>
+    apiClient<any>(`/workstation/desktop/provision?session_id=${encodeURIComponent(sessionId)}`, {
+      method: "POST",
+      timeout: 120000,
+    }),
+
+  provisionResearchLab: (sessionId = "default") =>
+    apiClient<any>(`/workstation/research-lab/provision?session_id=${encodeURIComponent(sessionId)}`, {
+      method: "POST",
+      timeout: 120000,
+    }),
+
+  getResearchLabStatus: (sessionId = "default") =>
+    apiClient<any>(`/workstation/research-lab/status?session_id=${encodeURIComponent(sessionId)}`),
+
+  destroyResearchLab: (sessionId = "default") =>
+    apiClient<any>(`/workstation/research-lab?session_id=${encodeURIComponent(sessionId)}`, {
+      method: "DELETE",
+    }),
+
+  provisionTargetSandbox: (target: string, scopeConfig: Record<string, unknown>, sessionId = "default") =>
+    apiClient<any>(`/workstation/target-sandbox/provision?session_id=${encodeURIComponent(sessionId)}`, {
+      method: "POST",
+      body: JSON.stringify({ target, scope_config: scopeConfig }),
+      timeout: 120000,
+    }),
+
+  getTargetSandboxStatus: (sessionId = "default") =>
+    apiClient<any>(`/workstation/target-sandbox/status?session_id=${encodeURIComponent(sessionId)}`),
+
+  destroyTargetSandbox: (sessionId = "default") =>
+    apiClient<any>(`/workstation/target-sandbox?session_id=${encodeURIComponent(sessionId)}`, {
+      method: "DELETE",
+    }),
+
+  executeTargetSandboxCommand: (command: string, sessionId = "default", approved = false) =>
+    apiClient<any>(`/workstation/target-sandbox/command?session_id=${encodeURIComponent(sessionId)}`, {
+      method: "POST",
+      body: JSON.stringify({ command, approved }),
+    }),
+
+  startMission: (objective: string, sessionId = "default") =>
+    apiClient<any>(`/workstation/mission/start?session_id=${encodeURIComponent(sessionId)}`, {
+      method: "POST",
+      body: JSON.stringify({ objective }),
+    }),
+
+  getMissionEvents: (sessionId = "default", after = 0) =>
+    apiClient<any>(`/workstation/mission/events?session_id=${encodeURIComponent(sessionId)}&after=${after}`),
+
+  getMissionEvidence: (sessionId = "default") =>
+    apiClient<any>(`/workstation/mission/evidence?session_id=${encodeURIComponent(sessionId)}`),
+
+  openMissionBrowser: (url: string, sessionId = "default", approved = false) =>
+    apiClient<any>(`/workstation/mission/browser-open?session_id=${encodeURIComponent(sessionId)}`, {
+      method: "POST",
+      body: JSON.stringify({ url, approved }),
+    }),
+
   getDesktopScreenshot: (sessionId = "default") =>
     apiClient<any>(`/workstation/desktop/screenshot?session_id=${encodeURIComponent(sessionId)}`),
 
@@ -110,24 +169,24 @@ export const api = {
         coordinates: actionData.coordinates,
         text: actionData.text,
         key: actionData.key,
-        session_id: actionData.sessionId || "default",
+      session_id: actionData.sessionId || "default",
       }),
     }),
 
-  getFileTree: () =>
-    apiClient<{ files: string[] }>("/workstation/tree"),
+  getFileTree: (sessionId = "default") =>
+    apiClient<{ files: string[] }>(`/workstation/tree?session_id=${encodeURIComponent(sessionId)}`),
 
-  getFileContent: (path: string) =>
-    apiClient<any>(`/workstation/file?path=${encodeURIComponent(path)}`),
+  getFileContent: (path: string, sessionId = "default") =>
+    apiClient<any>(`/workstation/file?path=${encodeURIComponent(path)}&session_id=${encodeURIComponent(sessionId)}`),
 
-  saveFileContent: (path: string, content: string) =>
-    apiClient<any>("/workstation/file", {
+  saveFileContent: (path: string, content: string, sessionId = "default") =>
+    apiClient<any>(`/workstation/file?session_id=${encodeURIComponent(sessionId)}`, {
       method: "POST",
       body: JSON.stringify({ path, content }),
     }),
 
-  getGitDiff: () =>
-    apiClient<{ diff: string; success: boolean }>("/workstation/git-diff"),
+  getGitDiff: (sessionId = "default") =>
+    apiClient<{ diff: string; success: boolean }>(`/workstation/git-diff?session_id=${encodeURIComponent(sessionId)}`),
 
   sendPrompt: (prompt: string, sessionId = "default") =>
     apiClient<any>("/workstation/prompt", {

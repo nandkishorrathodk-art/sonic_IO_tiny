@@ -12,6 +12,7 @@ import { api } from "../../lib/api";
 
 interface ComputerSurfaceProps {
   desktopState?: DesktopState & {
+    workspace_id?: string;
     sandbox_id?: string;
     image?: string;
     ssh_command?: string;
@@ -22,12 +23,16 @@ interface ComputerSurfaceProps {
   };
   onRunCommand: (cmd: string) => Promise<CommandResult | null>;
   commandLogs: string[];
+  onProvision?: () => Promise<void>;
+  sessionId?: string;
 }
 
 export function ComputerSurface({
   desktopState,
   onRunCommand,
   commandLogs,
+  onProvision,
+  sessionId = "default",
 }: ComputerSurfaceProps) {
   const [screenshotBase64, setScreenshotBase64] = useState<string | null>(null);
   const [fullscreen, setFullscreen] = useState(false);
@@ -40,8 +45,9 @@ export function ComputerSurface({
     if (stateUrl) {
       setVncUrl(stateUrl);
     } else {
+      setVncUrl(null);
       api
-        .getDesktopStream()
+        .getDesktopStream(sessionId)
         .then((data) => {
           if (data?.vnc_url) {
             setVncUrl(data.vnc_url);
@@ -51,12 +57,13 @@ export function ComputerSurface({
           // Stream endpoint unavailable
         });
     }
-  }, [desktopState?.vnc_url]);
+  }, [desktopState?.vnc_url, sessionId]);
 
   const fetchScreenshot = async () => {
     try {
       setLoadingScreen(true);
-      const data = await api.getDesktopScreenshot();
+      setScreenshotBase64(null);
+      const data = await api.getDesktopScreenshot(sessionId);
       if (data?.image_base64) {
         setScreenshotBase64(data.image_base64);
       } else if (data?.screenshot_base64) {
@@ -69,13 +76,27 @@ export function ComputerSurface({
     }
   };
 
+  const refreshStream = async () => {
+    try {
+      setLoadingScreen(true);
+      const data = await api.getDesktopStream(sessionId);
+      if (data?.vnc_url) {
+        setVncUrl(data.vnc_url);
+      }
+    } catch {
+      // Keep the current live URL if the preview refresh is temporarily unavailable.
+    } finally {
+      setLoadingScreen(false);
+    }
+  };
+
   useEffect(() => {
     if (!vncUrl) {
       fetchScreenshot();
       const interval = setInterval(fetchScreenshot, 5000);
       return () => clearInterval(interval);
     }
-  }, [vncUrl]);
+  }, [vncUrl, sessionId]);
 
   const handleDesktopClick = async (e: React.MouseEvent<HTMLDivElement>) => {
     // Only dispatch click coordinates in screenshot mode (not iframe)
@@ -86,9 +107,10 @@ export function ComputerSurface({
     const y = Math.round((e.clientY - rect.top) * (800 / rect.height));
 
     try {
-      await api.executeDesktopAction({
-        action: "click",
-        coordinates: [x, y],
+        await api.executeDesktopAction({
+          action: "click",
+          coordinates: [x, y],
+          sessionId,
       });
       await fetchScreenshot();
     } catch {
@@ -96,14 +118,18 @@ export function ComputerSurface({
     }
   };
 
-  const isLive = Boolean(
-    vncUrl ||
-    desktopState?.vnc_url ||
-    desktopState?.status === "LIVE" ||
-    desktopState?.status === "ACTIVE" ||
-    desktopState?.status === "READY / ACTIVE" ||
-    (screenshotBase64 && screenshotBase64.length > 100)
-  );
+  // A provider-reported LIVE status without a usable stream is not a live
+  // display from the operator's point of view. Keep the surface fail-closed
+  // instead of presenting a green badge for a disconnected/expired URL.
+  const hasScreenshot = Boolean(screenshotBase64 && screenshotBase64.length > 100);
+  const isLive = Boolean(vncUrl || desktopState?.vnc_url || hasScreenshot);
+  const resolution = desktopState?.resolution;
+  const displayLabel = [
+    desktopState?.display,
+    resolution?.width && resolution?.height ? `${resolution.width}x${resolution.height}` : "",
+  ]
+    .filter(Boolean)
+    .join(" ");
 
   return (
     <div
@@ -115,14 +141,16 @@ export function ComputerSurface({
       <div className="h-9 border-b border-[#21262D] bg-[#161B22] px-3 flex items-center justify-between text-xs font-mono text-[#8B949E]">
         <div className="flex items-center gap-2">
           <Cloud className="w-3.5 h-3.5 text-[#58A6FF]" />
-          <span className="text-white font-semibold flex items-center gap-1.5 truncate text-[12px]">
+            <span className="text-white font-semibold flex items-center gap-1.5 truncate text-[12px]">
             <span>Daytona Linux Workstation</span>
-            <span className="text-[10px] text-slate-400 font-normal font-mono">(:99 1280x800)</span>
+            {displayLabel && (
+              <span className="text-[10px] text-slate-400 font-normal font-mono">({displayLabel})</span>
+            )}
           </span>
           {isLive ? (
             <span className="flex items-center gap-1 text-[10px] text-[#3FB950] font-semibold bg-[#238636]/15 border border-[#238636]/30 px-1.5 py-0.5 rounded">
               <span className="w-1.5 h-1.5 rounded-full bg-[#3FB950] animate-pulse"></span>
-              <span>{vncUrl ? "LIVE DESKTOP (noVNC)" : "LIVE DESKTOP (:99)"}</span>
+              <span>{vncUrl ? "LIVE DESKTOP (noVNC)" : "LIVE DESKTOP (screenshot)"}</span>
             </span>
           ) : (
             <span className="flex items-center gap-1 text-[10px] text-[#8B949E] font-semibold bg-[#21262D]/60 border border-[#30363D] px-1.5 py-0.5 rounded">
@@ -146,9 +174,9 @@ export function ComputerSurface({
             </a>
           )}
           <button
-            onClick={fetchScreenshot}
+            onClick={refreshStream}
             className="p-1 hover:bg-[#21262D] rounded text-[#8B949E] hover:text-white transition"
-            title="Sync Display"
+            title="Refresh live display session"
           >
             <RefreshCw className={`w-3.5 h-3.5 ${loadingScreen ? "animate-spin text-[#58A6FF]" : ""}`} />
           </button>
@@ -176,7 +204,11 @@ export function ComputerSurface({
             className="w-full h-full border-0"
             style={{ minHeight: "400px" }}
             allow="clipboard-read; clipboard-write; fullscreen"
-            sandbox="allow-same-origin allow-scripts allow-popups allow-forms"
+            // Daytona's private preview performs an auth callback and sets a
+            // session cookie. A sandboxed iframe blocks that callback/storage
+            // flow and renders the proxy's 400 verification page instead of
+            // the real noVNC desktop.
+            referrerPolicy="no-referrer"
           />
         ) : screenshotBase64 && screenshotBase64.length > 100 ? (
           /* Priority 2: Live interactive X11 desktop canvas with coordinate click dispatch */
@@ -194,24 +226,37 @@ export function ComputerSurface({
               <Monitor className="w-6 h-6" />
             </div>
             <div className="space-y-1">
-              <h3 className="text-sm font-semibold text-white font-mono">
+            <h3 className="text-sm font-semibold text-white font-mono">
                 No live display — sandbox disconnected
               </h3>
               <p className="text-xs text-[#8B949E] font-mono max-w-md">
-                The graphical desktop session is not currently streaming. Provision a Daytona sandbox
-                with DAYTONA_API_KEY to enable the live noVNC desktop. Click Sync Display to retry screenshot capture.
+                No tenant-owned Daytona workstation is attached to this session. Provision one to create a real
+                remote desktop; display streaming will remain unavailable until the provider returns a live URL.
               </p>
             </div>
-            <button
-              onClick={(e) => {
-                e.stopPropagation();
-                fetchScreenshot();
-              }}
-              className="px-3 py-1.5 rounded-lg bg-[#21262D] hover:bg-[#30363D] text-xs font-mono text-white transition flex items-center gap-1.5"
-            >
-              <RefreshCw className={`w-3.5 h-3.5 ${loadingScreen ? "animate-spin text-[#58A6FF]" : ""}`} />
-              <span>Sync Display</span>
-            </button>
+            <div className="flex items-center gap-2">
+              {onProvision && !desktopState?.workspace_id && (
+                <button
+                  onClick={async (e) => {
+                    e.stopPropagation();
+                    await onProvision();
+                  }}
+                  className="px-3 py-1.5 rounded-lg bg-blue-600/25 hover:bg-blue-600/40 border border-blue-500/40 text-xs font-mono text-blue-200 transition"
+                >
+                  Provision Daytona Desktop
+                </button>
+              )}
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  fetchScreenshot();
+                }}
+                className="px-3 py-1.5 rounded-lg bg-[#21262D] hover:bg-[#30363D] text-xs font-mono text-white transition flex items-center gap-1.5"
+              >
+                <RefreshCw className={`w-3.5 h-3.5 ${loadingScreen ? "animate-spin text-[#58A6FF]" : ""}`} />
+                <span>Sync Display</span>
+              </button>
+            </div>
           </div>
         )}
       </div>

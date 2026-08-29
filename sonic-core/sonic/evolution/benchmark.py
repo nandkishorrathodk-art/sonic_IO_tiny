@@ -7,7 +7,7 @@ Tracks empirical performance progression across evolutionary generations:
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Optional
 from pydantic import BaseModel, Field
 from sonic.evolution.models import CandidateMetrics
 
@@ -33,122 +33,41 @@ class MultiGenerationReport(BaseModel):
 
 class MultiGenerationEvolutionRunner:
     """
-    Simulates and evaluates multi-generation self-evolution benchmark runs.
+    Aggregates real, already-recorded self-evolution benchmark runs.
     """
 
     @classmethod
-    def run_multi_generation_benchmark(cls) -> MultiGenerationReport:
-        """
-        Execute benchmark across 4 sequential generations:
-            Gen 1: v1.0.0 (Baseline - Basic linear scanning)
-            Gen 2: v1.1.0 (Evolved Domain Skills - JWT & IDOR specialization)
-            Gen 3: v1.2.0 (Evolved Differential Testing Strategy)
-            Gen 4: v1.3.0 (Evolved Model Routing & Verified Heuristics)
-        """
-        # Gen 1: v1.0.0 (Baseline)
-        gen1 = GenerationSnapshot(
-            generation_version="v1.0.0",
-            description="Initial Baseline: Basic pattern scanning without specialized reasoning",
-            metrics=CandidateMetrics(
-                precision=0.75,
-                recall=0.60,
-                f1_score=0.667,
-                false_positives=4,
-                false_negatives=4,
-                evidence_completeness=0.55,
-                verification_success_rate=0.65,
-                prediction_accuracy=0.50,
-                execution_count=10,
-                latency_ms=320.0,
-                token_cost=0.080,
-                resource_usage=0.60,
-                safety_violations=0,
-            ),
-        )
+    def run_multi_generation_benchmark(
+        cls,
+        generations: Optional[list[GenerationSnapshot]] = None,
+    ) -> MultiGenerationReport:
+        """Aggregate snapshots produced by real EvolutionLab executions."""
+        if not generations:
+            return MultiGenerationReport(
+                summary="No real generation snapshots supplied; synthetic evolution metrics are disabled."
+            )
 
-        # Gen 2: v1.1.0 (Domain Skills Added)
-        gen2 = GenerationSnapshot(
-            generation_version="v1.1.0",
-            description="Evolved Domain Skills: Specialized JWT & IDOR analysis heuristics",
-            metrics=CandidateMetrics(
-                precision=0.85,
-                recall=0.75,
-                f1_score=0.797,
-                false_positives=2,
-                false_negatives=2,
-                evidence_completeness=0.75,
-                verification_success_rate=0.80,
-                prediction_accuracy=0.70,
-                execution_count=10,
-                latency_ms=280.0,
-                token_cost=0.070,
-                resource_usage=0.50,
-                safety_violations=0,
-            ),
-        )
-
-        # Gen 3: v1.2.0 (Differential Authorization Testing)
-        gen3 = GenerationSnapshot(
-            generation_version="v1.2.0",
-            description="Evolved Differential Testing: Multi-header authorization state probing",
-            metrics=CandidateMetrics(
-                precision=0.95,
-                recall=0.90,
-                f1_score=0.924,
-                false_positives=1,
-                false_negatives=1,
-                evidence_completeness=0.90,
-                verification_success_rate=0.92,
-                prediction_accuracy=0.88,
-                execution_count=10,
-                latency_ms=240.0,
-                token_cost=0.060,
-                resource_usage=0.42,
-                safety_violations=0,
-            ),
-        )
-
-        # Gen 4: v1.3.0 (Optimized Router + Cryptographic Verification)
-        gen4 = GenerationSnapshot(
-            generation_version="v1.3.0",
-            description="Optimized Routing & Verification: Fast tier model routing + strict SHA-256 verification",
-            metrics=CandidateMetrics(
-                precision=1.00,
-                recall=0.95,
-                f1_score=0.974,
-                false_positives=0,
-                false_negatives=0,
-                evidence_completeness=1.00,
-                verification_success_rate=1.00,
-                prediction_accuracy=0.95,
-                execution_count=10,
-                latency_ms=180.0,
-                token_cost=0.045,
-                resource_usage=0.35,
-                safety_violations=0,
-            ),
-        )
-
-        generations = [gen1, gen2, gen3, gen4]
-        initial_f1 = gen1.metrics.f1_score
-        final_f1 = gen4.metrics.f1_score
+        generations = list(generations)
+        initial_f1 = generations[0].metrics.f1_score
+        final_f1 = generations[-1].metrics.f1_score
         f1_gain = round(((final_f1 - initial_f1) / initial_f1) * 100, 1)
-        cost_red = round(((gen1.metrics.token_cost - gen4.metrics.token_cost) / gen1.metrics.token_cost) * 100, 1)
+        initial_cost = generations[0].metrics.token_cost
+        final_cost = generations[-1].metrics.token_cost
+        cost_red = round(((initial_cost - final_cost) / initial_cost) * 100, 1) if initial_cost else 0.0
+        safety_total = sum(g.metrics.safety_violations for g in generations)
 
         summary = (
-            f"Multi-generation benchmark across 4 generations (v1.0.0 → v1.3.0): "
+            f"Real multi-generation benchmark across {len(generations)} generations: "
             f"F1 score increased from {initial_f1:.3f} to {final_f1:.3f} (+{f1_gain}%), "
-            f"False positives dropped from {gen1.metrics.false_positives} to {gen4.metrics.false_positives} (100% elimination), "
-            f"Token cost reduced by {cost_red}%, with 0 safety violations maintained across all generations."
+            f"safety violations observed: {safety_total}."
         )
-
         return MultiGenerationReport(
             generations=generations,
             initial_f1=initial_f1,
             final_f1=final_f1,
             overall_f1_gain_percent=f1_gain,
-            total_false_positives_eliminated=gen1.metrics.false_positives - gen4.metrics.false_positives,
+            total_false_positives_eliminated=generations[0].metrics.false_positives - generations[-1].metrics.false_positives,
             token_cost_reduction_percent=cost_red,
-            safety_violations_total=0,
+            safety_violations_total=safety_total,
             summary=summary,
         )

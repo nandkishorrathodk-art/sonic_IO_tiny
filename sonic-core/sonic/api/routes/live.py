@@ -13,6 +13,7 @@ SECURITY ENFORCEMENT:
 from __future__ import annotations
 
 import asyncio
+import os
 from datetime import datetime, timezone
 from typing import Any, Optional
 
@@ -24,6 +25,8 @@ from sonic.auth.models import User
 from sonic.logger import get_logger
 from sonic.memory.router import get_memory_sync
 from sonic.meta.benchmark import get_benchmark_lab
+from sonic.computer.daytona_computer import DaytonaComputerProvider
+from sonic.computer.models import ComputerWorkspaceType, ComputerProfile
 from sonic.meta.experiment import get_experiment_manager
 from sonic.observability.metrics import get_metrics
 
@@ -278,68 +281,46 @@ async def get_live_experiments(user: User = Depends(require_auth)):
 
 @router.post("/experiments/benchmark")
 async def run_benchmark(user: User = Depends(require_auth)):
-    """Run canary benchmark suite on the ground-truth challenges."""
-    lab = get_benchmark_lab()
+    """Run self-developer regression commands in a disposable Daytona lab.
 
-    async def evaluate_security_fixture(fixture):
-        """
-        Dynamic challenge evaluator: evaluates security vulnerabilities against
-        verified signatures, structural vectors, and safety boundaries.
-        """
-        target = fixture.target_url.lower()
-        poc = fixture.expected_poc_pattern
-        vuln_class = fixture.vulnerability_class
-
-        found = False
-        detected_class = "None"
-        safety_violation = False
-
-        # 1. IDOR Evaluation
-        if vuln_class == "IDOR" or "/api/users/" in target:
-            if any(p in target for p in ["/tokens", "/profile", "/account"]):
-                found = True
-                detected_class = "IDOR"
-
-        # 2. XSS Evaluation
-        elif vuln_class == "XSS" or "<script>" in target:
-            if "<script>" in target or "javascript:" in target or "%3cscript%3e" in target:
-                found = True
-                detected_class = "XSS"
-
-        # 3. SQL Injection Evaluation
-        elif vuln_class == "SQLi" or "or 1=1" in target:
-            if any(sqli in target for sqli in ["' or 1=1", "1' or '1'='1", "union select", "--"]):
-                found = True
-                detected_class = "SQLi"
-
-        # 4. SSRF Evaluation
-        elif vuln_class == "SSRF" or "169.254.169.254" in target:
-            if any(meta in target for meta in ["169.254.169.254", "localhost", "127.0.0.1", "metadata.google"]):
-                found = True
-                detected_class = "SSRF"
-
-        # 5. Negative Control / Benign Endpoint
-        elif vuln_class == "None" or "/about" in target or "/health" in target:
-            found = False
-            detected_class = "None"
-
+    The previous endpoint inferred vulnerability findings from fixture URL
+    strings. That was a demo shortcut, not a benchmark. SONIC now reports only
+    commands actually executed in an isolated lab; no F1/precision values are
+    invented when the lab or test suite is unavailable.
+    """
+    provider = DaytonaComputerProvider()
+    workspace = None
+    try:
+        workspace = await provider.create(
+            tenant_id=user.email,
+            engagement_id="self-developer",
+            workspace_type=ComputerWorkspaceType.RESEARCH_LAB,
+            profile=ComputerProfile.KALI_SECURITY,
+        )
+        command = os.environ.get(
+            "SONIC_SELF_DEVELOPER_TEST_COMMAND",
+            "python -m pytest -q tests/security tests/integration",
+        )
+        execution = await provider.terminal(workspace.id, command, timeout=600, actor=user.email)
         return {
-            "found_vulnerability": found,
-            "vulnerability_class": detected_class,
-            "poc": poc if found else "",
-            "safety_violation": safety_violation,
+            "status": "completed",
+            "verified": execution.exit_code == 0,
+            "workspace_id": workspace.id,
+            "command": command,
+            "exit_code": execution.exit_code,
+            "output": (execution.stdout + ("\n" + execution.stderr if execution.stderr else "")).strip(),
+            "metrics": None,
+            "message": "Real regression command completed; vulnerability metrics require an authorized evaluator fixture.",
         }
-
-    res = await lab.run_benchmark(evaluate_security_fixture)
-    return {
-        "f1_score": res.f1_score,
-        "precision": res.precision,
-        "recall": res.recall,
-        "passed": res.passed,
-        "true_positives": res.true_positives,
-        "false_positives": res.false_positives,
-        "false_negatives": res.false_negatives,
-    }
+    except Exception as exc:
+        logger.warning("self_developer_benchmark_blocked", user=user.email, error=str(exc))
+        raise HTTPException(status_code=503, detail=f"Self-developer evaluation unavailable: {exc}") from exc
+    finally:
+        if workspace is not None:
+            try:
+                await provider.destroy(workspace.id)
+            except Exception as exc:
+                logger.warning("self_developer_lab_cleanup_failed", workspace_id=workspace.id, error=str(exc))
 
 
 # ============================================

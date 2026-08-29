@@ -34,12 +34,14 @@ export function WorkstationHeader({
         )}
         <span className="font-semibold text-white truncate max-w-xs">{sessionName}</span>
         
-        {/* Real Git Branch Badge */}
-        <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-[#1F242C] text-[#3FB950] border border-[#30363D] flex items-center gap-1">
-          <GitBranch className="w-3 h-3 text-[#3FB950]" />
-          <span>{gitBranch}</span>
-          {latestCommit && <span className="text-[#8B949E] ml-1">({latestCommit.slice(0, 7)})</span>}
-        </span>
+        {/* Real Git metadata only appears after the backend returns it. */}
+        {(gitBranch || latestCommit) && (
+          <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-[#1F242C] text-[#3FB950] border border-[#30363D] flex items-center gap-1">
+            <GitBranch className="w-3 h-3 text-[#3FB950]" />
+            <span>{gitBranch || "detached"}</span>
+            {latestCommit && <span className="text-[#8B949E] ml-1">({latestCommit.slice(0, 7)})</span>}
+          </span>
+        )}
 
         {/* Real Connection Status */}
         <StatusBadge status={connectionStatus} />

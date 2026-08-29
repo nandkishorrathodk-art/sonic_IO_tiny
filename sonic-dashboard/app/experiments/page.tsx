@@ -79,14 +79,14 @@ export default function ExperimentLab() {
     }
   };
 
-  const activeVersion = experiments.length > 0 ? (experiments[0].target_component || "v1.3.0") : "v1.3.0";
+  const activeVersion = experiments.length > 0 ? (experiments[0].target_component || "Unknown") : "Not available";
   const rolledBackCount = experiments.filter((e) => e.status === "ROLLED_BACK").length;
   const regressionRate = experiments.length > 0 ? ((rolledBackCount / experiments.length) * 100).toFixed(1) : "0.0";
   const displayF1 = benchmarkResult
     ? `${(benchmarkResult.f1_score * 100).toFixed(1)}%`
     : experiments.length > 0 && experiments[0].candidate_f1
     ? `${(experiments[0].candidate_f1 * 100).toFixed(1)}%`
-    : "Live Ready";
+    : "Not measured";
 
   return (
     <div className="space-y-6">
@@ -126,7 +126,7 @@ export default function ExperimentLab() {
             <span>Precision: {(benchmarkResult.precision * 100).toFixed(1)}% | Recall: {(benchmarkResult.recall * 100).toFixed(1)}%</span>
           </div>
           <p className="text-slate-300 text-[11px]">
-            Validated on {challenges.length || 5} ground-truth challenges. Zero regressions detected.
+            Validated on {challenges.length} ground-truth challenges returned by the backend.
           </p>
         </div>
       )}
@@ -149,8 +149,8 @@ export default function ExperimentLab() {
             <span>Canary Regression Rate</span>
             <Activity className="w-4 h-4 text-cyan-400" />
           </div>
-          <div className="text-2xl font-bold font-mono text-cyan-400">{regressionRate}%</div>
-          <div className="text-[11px] text-slate-400 mt-1">100% Regressions Auto-Rolled Back</div>
+          <div className="text-2xl font-bold font-mono text-cyan-400">{experiments.length ? `${regressionRate}%` : "Not measured"}</div>
+          <div className="text-[11px] text-slate-400 mt-1">Based on recorded experiments only</div>
         </div>
 
         <div className="glass-card p-4 rounded-xl border border-slate-800">
@@ -158,7 +158,7 @@ export default function ExperimentLab() {
             <span>Benchmark Challenges</span>
             <FlaskConical className="w-4 h-4 text-purple-400" />
           </div>
-          <div className="text-2xl font-bold font-mono text-purple-400">{challenges.length || 5} Active</div>
+          <div className="text-2xl font-bold font-mono text-purple-400">{challenges.length} Active</div>
           <div className="text-[11px] text-slate-400 mt-1">Ground-truth verification suite</div>
         </div>
       </div>

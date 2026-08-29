@@ -27,9 +27,11 @@ export default function SonicDevinWorkstation() {
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [activeTab, setActiveTab] = useState<WorkstationTab>("desktop");
   const [connectionStatus, setConnectionStatus] = useState<SystemStatus>("CONNECTING");
-  const [sessionId, setSessionId] = useState("default");
+  // Keep the landing view isolated from the legacy/default history. A fresh
+  // session is intentionally empty until the operator sends the first prompt.
+  const [sessionId, setSessionId] = useState("fresh");
   const [workstationState, setWorkstationState] = useState<WorkstationState | null>(null);
-  const [activeFile, setActiveFile] = useState("sonic-core/sonic/production_gate/scenario_matrix.py");
+  const [activeFile, setActiveFile] = useState("");
   const [fileContent, setFileContent] = useState<string[]>([]);
   const [gitDiff, setGitDiff] = useState("");
   const [commandLogs, setCommandLogs] = useState<string[]>([]);
@@ -43,7 +45,7 @@ export default function SonicDevinWorkstation() {
     git_branch: string;
     log_count?: number;
     last_action?: string;
-  }>>([{ session_id: "default", mission_name: "Autonomous Mission", status: "IDLE", git_branch: "main" }]);
+  }>>([]);
 
   const fetchWorkstationData = async (targetSession = sessionId) => {
     try {
@@ -78,8 +80,8 @@ export default function SonicDevinWorkstation() {
     try {
       await api.deleteSession(delSessionId);
       if (sessionId === delSessionId) {
-        setSessionId("default");
-        await fetchWorkstationData("default");
+        setSessionId("fresh");
+        await fetchWorkstationData("fresh");
       } else {
         await fetchWorkstationData(sessionId);
       }
@@ -89,9 +91,14 @@ export default function SonicDevinWorkstation() {
   };
 
   const fetchFile = async (path: string) => {
+    if (!path) {
+      setActiveFile("");
+      setFileContent([]);
+      return;
+    }
     setActiveFile(path);
     try {
-      const data = await api.getFileContent(path);
+      const data = await api.getFileContent(path, sessionId);
       if (data?.lines) {
         setFileContent(data.lines);
       } else if (data?.content) {
@@ -104,7 +111,7 @@ export default function SonicDevinWorkstation() {
 
   const fetchDiff = async () => {
     try {
-      const data = await api.getGitDiff();
+      const data = await api.getGitDiff(sessionId);
       if (data?.diff) setGitDiff(data.diff);
     } catch {
       setGitDiff("");
@@ -113,7 +120,6 @@ export default function SonicDevinWorkstation() {
 
   useEffect(() => {
     fetchWorkstationData(sessionId);
-    fetchFile(activeFile);
     fetchDiff();
 
     const interval = setInterval(() => {
@@ -158,7 +164,7 @@ export default function SonicDevinWorkstation() {
 
   const handleSaveFile = async (content: string) => {
     try {
-      await api.saveFileContent(activeFile, content);
+      await api.saveFileContent(activeFile, content, sessionId);
       await fetchFile(activeFile);
       await fetchDiff();
     } catch (err: any) {
@@ -195,8 +201,8 @@ export default function SonicDevinWorkstation() {
           <WorkstationHeader
             sidebarOpen={sidebarOpen}
             setSidebarOpen={setSidebarOpen}
-            sessionName={workstationState?.mission_name || "Autonomous Mission"}
-            gitBranch={workstationState?.git_branch || "main"}
+            sessionName={workstationState?.mission_name || "New conversation"}
+            gitBranch={workstationState?.git_branch || ""}
             latestCommit={workstationState?.latest_commit}
             connectionStatus={connectionStatus}
           />
@@ -207,10 +213,12 @@ export default function SonicDevinWorkstation() {
             <div className="col-span-6 border-r border-[#21262D] flex flex-col h-full bg-[#0D0F12] overflow-hidden">
               <WorklogFeed
                 worklog={workstationState?.worklog || []}
-                currentAction={workstationState?.current_action}
+                currentAction={workstationState?.worklog?.length ? workstationState.current_action : undefined}
                 loading={loading}
                 onSendPrompt={handleSendPrompt}
                 onSelectFile={fetchFile}
+                sessionName={workstationState?.mission_name || ""}
+                gitBranch={workstationState?.git_branch || ""}
               />
             </div>
 
@@ -314,6 +322,7 @@ export default function SonicDevinWorkstation() {
                     desktopState={workstationState?.desktop}
                     onRunCommand={handleRunCommand}
                     commandLogs={commandLogs}
+                    sessionId={sessionId}
                   />
                 )}
 

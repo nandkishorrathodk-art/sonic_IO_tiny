@@ -13,6 +13,7 @@ Demonstrates true empirical self-evolution:
 from __future__ import annotations
 
 from pydantic import BaseModel
+from typing import Optional
 
 from sonic.evolution.candidate_generator import CandidateGenerator
 from sonic.evolution.comparator import BaselineComparator
@@ -27,18 +28,21 @@ from sonic.evolution.models import (
     FailurePattern,
 )
 from sonic.evolution.promotion import CanaryManager, PromotionEngine
+from sonic.sandbox.provider import ComputeProvider
 
 
 class EmpiricalEvolutionResult(BaseModel):
     """Result of a real empirical self-evolution run."""
-    baseline_version: str
-    promoted_version: str
-    v1_f1_score: float
-    v2_f1_score: float
-    f1_gain: float
-    security_violations: int
-    promoted_to_production: bool
-    holdout_passed: bool
+    baseline_version: str = ""
+    promoted_version: str = ""
+    v1_f1_score: float = 0.0
+    v2_f1_score: float = 0.0
+    f1_gain: float = 0.0
+    security_violations: int = 0
+    promoted_to_production: bool = False
+    holdout_passed: bool = False
+    status: str = "BLOCKED"
+    reason: str = ""
 
 
 class EmpiricalEvolutionRunner:
@@ -47,23 +51,33 @@ class EmpiricalEvolutionRunner:
     """
 
     @classmethod
-    def run_evolution_cycle(cls) -> EmpiricalEvolutionResult:
+    def run_evolution_cycle(
+        cls,
+        compute_provider: Optional[ComputeProvider] = None,
+        failure_pattern: Optional[FailurePattern] = None,
+        baseline_metrics: Optional[CandidateMetrics] = None,
+        ground_truth_fixtures: Optional[list[dict]] = None,
+        workspace_id: str = "",
+    ) -> EmpiricalEvolutionResult:
         """
         Executes a real empirical self-evolution cycle.
         """
+        if compute_provider is None or not workspace_id or failure_pattern is None or baseline_metrics is None:
+            return EmpiricalEvolutionResult(
+                status="BLOCKED",
+                reason=(
+                    "Self-development requires a real disposable ComputeProvider workspace, "
+                    "an observed FailurePattern, baseline metrics, and authorized ground-truth fixtures."
+                ),
+            )
+
         policy = EvolutionPolicy()
         gen = CandidateGenerator(policy=policy)
-        lab = EvolutionLab(policy=policy)
+        lab = EvolutionLab(compute_provider=compute_provider, policy=policy)
         skill_mgr = DomainSkillManager()
 
         # 1. Mine real failure pattern from v1.0.0 execution
-        pattern = FailurePattern(
-            category=FailureCategory.FALSE_NEGATIVE,
-            description="Missed JWT algorithm none parameter bypass during auth testing",
-            affected_agent="auth_recon",
-            reproduction_steps=["Inject alg=none parameter in header"],
-            confidence=0.92,
-        )
+        pattern = failure_pattern
 
         # 2. Formulate hypothesis & generate concrete candidate
         hyp = gen.formulate_hypothesis(pattern)
@@ -77,32 +91,15 @@ class EmpiricalEvolutionRunner:
         assert cand is not None
 
         # 3. Define Real Execution Ground-Truth Fixtures
-        ground_truth_fixtures = [
-            {
-                "id": "fixture-jwt-none",
-                "vuln_type": "jwt_none_alg",
-                "expected_vulnerable": True,
-                "evaluator": lambda c: "jwt" in str(c.changes).lower() or "differential" in str(c.changes).lower() or "token" in str(c.changes).lower(),
-            },
-            {
-                "id": "fixture-clean-auth",
-                "vuln_type": "clean_auth",
-                "expected_vulnerable": False,
-                "evaluator": lambda c: False,
-            },
-            {
-                "id": "fixture-idor-param",
-                "vuln_type": "idor_param",
-                "expected_vulnerable": True,
-                "evaluator": lambda c: "idor" in str(c.changes).lower() or "token" in str(c.changes).lower(),
-            },
-        ]
+        if not ground_truth_fixtures:
+            return EmpiricalEvolutionResult(status="BLOCKED", reason="No authorized ground-truth fixtures supplied")
 
         # 4. Evaluate Candidate in EvolutionLab
-        result, metrics = asyncio_run(lab.run_candidate_pipeline(cand, ground_truth_fixtures=ground_truth_fixtures))
-        assert result.passed_all_critical is True
+        result, metrics = asyncio_run(lab.run_candidate_pipeline(cand, ground_truth_fixtures=ground_truth_fixtures, workspace_id=workspace_id))
+        if not result.passed_all_critical:
+            return EmpiricalEvolutionResult(status="REJECTED", reason="Candidate failed real lab pipeline", security_violations=metrics.safety_violations)
 
-        v1_f1 = 0.667  # Baseline F1
+        v1_f1 = baseline_metrics.f1_score
         v2_f1 = metrics.f1_score  # Evaluated F1 (1.000)
 
         # 5. Mutate actual DomainSkill in DomainSkillManager
@@ -113,10 +110,10 @@ class EmpiricalEvolutionRunner:
         )
 
         # 6. Evaluate Promotion Gates
-        baseline_metrics = CandidateMetrics(f1_score=v1_f1)
         comparison = BaselineComparator.compare(baseline=baseline_metrics, candidate=metrics)
         approved, reason, state = PromotionEngine.evaluate_gates(cand, comparison, policy=policy)
-        assert approved is True
+        if not approved:
+            return EmpiricalEvolutionResult(status="REJECTED", reason=reason, v1_f1_score=v1_f1, v2_f1_score=v2_f1, f1_gain=round(v2_f1 - v1_f1, 3), security_violations=metrics.safety_violations)
 
         # 7. Canary Rollout
         CanaryManager.deploy_canary(cand, traffic_percent=10.0)
@@ -131,6 +128,8 @@ class EmpiricalEvolutionRunner:
             security_violations=metrics.safety_violations,
             promoted_to_production=True,
             holdout_passed=True,
+            status="PROMOTED",
+            reason=reason,
         )
 
 

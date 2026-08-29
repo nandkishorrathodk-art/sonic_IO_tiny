@@ -8,6 +8,7 @@ telemetry triggers, open-system improvements, and autonomous tool decisions.
 from __future__ import annotations
 
 import uuid
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Any
 from pydantic import BaseModel, Field
@@ -43,7 +44,7 @@ class ContinuousDevTelemetryEvent(BaseModel):
     threshold: float
     anomaly_type: str
     target_subsystem: str
-    timestamp: str = Field(default_factory=lambda: "2026-08-28T12:00:00Z")
+    timestamp: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
 
 
 class ContinuousDevGeneration(BaseModel):
@@ -56,24 +57,26 @@ class ContinuousDevGeneration(BaseModel):
     commit_hash: str
     pr_id: str
     files_modified: list[str]
-    test_exit_code: int = 0
+    test_exit_code: int = -1
     security_violations: int = 0
-    f1_score: float = 1.0
+    f1_score: float = 0.0
     latency_improvement_pct: float = 0.0
-    status: GenerationStatus = GenerationStatus.PROMOTED
+    status: GenerationStatus = GenerationStatus.MONITORING
 
 
 class OpenSystemImprovementReport(BaseModel):
     """Result of unprompted optimization on an unseen third-party repository."""
-    repo_name: str
-    objective_given: str
-    discovered_bottleneck: str
-    baseline_latency_ms: float
-    optimized_latency_ms: float
-    improvement_pct: float
-    test_suite_passed: bool
-    git_commit_hash: str
-    success: bool
+    repo_name: str = ""
+    objective_given: str = ""
+    discovered_bottleneck: str = ""
+    baseline_latency_ms: float = 0.0
+    optimized_latency_ms: float = 0.0
+    improvement_pct: float = 0.0
+    test_suite_passed: bool = False
+    git_commit_hash: str = ""
+    success: bool = False
+    status: str = "BLOCKED"
+    reason: str = ""
 
 
 class ToolSelectionDecision(BaseModel):

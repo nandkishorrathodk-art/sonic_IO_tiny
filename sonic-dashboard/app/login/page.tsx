@@ -22,9 +22,9 @@ import { setAuthToken } from "../../lib/auth";
 
 export default function LoginPage() {
   const router = useRouter();
-  const [email, setEmail] = useState("engineer@company.com");
-  const [name, setName] = useState("Lead Engineer");
-  const [tenantId, setTenantId] = useState("tenant-alpha");
+  const [email, setEmail] = useState("");
+  const [name, setName] = useState("");
+  const [tenantId, setTenantId] = useState("");
   const [role, setRole] = useState("operator");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -69,13 +69,6 @@ export default function LoginPage() {
     } finally {
       setLoading(false);
     }
-  };
-
-  const handleQuickPreset = (presetEmail: string, presetTenant: string, presetRole: string) => {
-    setEmail(presetEmail);
-    setTenantId(presetTenant);
-    setRole(presetRole);
-    setName(presetEmail.split("@")[0].replace(".", " ").toUpperCase());
   };
 
   return (
@@ -219,35 +212,6 @@ export default function LoginPage() {
             </button>
           </form>
 
-          {/* Quick Demo Identities */}
-          <div className="border-t border-slate-800/80 pt-4 space-y-2">
-            <div className="text-[10px] text-slate-500 uppercase tracking-wider font-mono font-bold">
-              Quick Test Identities:
-            </div>
-            <div className="flex flex-wrap gap-2">
-              <button
-                type="button"
-                onClick={() => handleQuickPreset("engineer@company.com", "tenant-alpha", "operator")}
-                className="px-2.5 py-1 rounded-md bg-[#161B26] hover:bg-[#1E2535] text-slate-300 border border-slate-700/60 text-[10px] font-mono transition"
-              >
-                Lead Engineer (Alpha)
-              </button>
-              <button
-                type="button"
-                onClick={() => handleQuickPreset("auditor@othercorp.com", "tenant-beta", "auditor")}
-                className="px-2.5 py-1 rounded-md bg-[#161B26] hover:bg-[#1E2535] text-slate-300 border border-slate-700/60 text-[10px] font-mono transition"
-              >
-                Auditor (Beta)
-              </button>
-              <button
-                type="button"
-                onClick={() => handleQuickPreset("admin@security.io", "sec-fleet", "admin")}
-                className="px-2.5 py-1 rounded-md bg-[#161B26] hover:bg-[#1E2535] text-slate-300 border border-slate-700/60 text-[10px] font-mono transition"
-              >
-                Security Admin
-              </button>
-            </div>
-          </div>
         </div>
       </main>
 

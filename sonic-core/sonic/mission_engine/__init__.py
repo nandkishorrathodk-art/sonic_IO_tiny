@@ -22,6 +22,9 @@ from sonic.mission_engine.models import (
 from sonic.mission_engine.resource_manager import MissionResourceManager
 from sonic.mission_engine.director import MissionDirector
 from sonic.mission_engine.benchmark import LongHorizonMissionBenchmark, LongHorizonMissionResult
+from sonic.mission_engine.planner import MissionPlanner, MissionActionPlan, PlannedAction
+from sonic.mission_engine.executor import MissionToolExecutor, ActionExecutionResult
+from sonic.mission_engine.tool_registry import MissionToolRegistry, ToolPlane, ToolRisk, ToolSpec
 
 __all__ = [
     "MissionPhase",
@@ -41,4 +44,13 @@ __all__ = [
     "MissionDirector",
     "LongHorizonMissionBenchmark",
     "LongHorizonMissionResult",
+    "MissionPlanner",
+    "MissionActionPlan",
+    "PlannedAction",
+    "MissionToolExecutor",
+    "ActionExecutionResult",
+    "MissionToolRegistry",
+    "ToolPlane",
+    "ToolRisk",
+    "ToolSpec",
 ]

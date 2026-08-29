@@ -1,13 +1,15 @@
 import React, { useState, useEffect } from "react";
-import { Dna, Play, RefreshCw, Loader2, ShieldCheck } from "lucide-react";
+import { Dna, Play, RefreshCw, Loader2, ShieldCheck, FlaskConical, Trash2 } from "lucide-react";
 import { api } from "../../lib/api";
 
-export function EvolutionView() {
+export function EvolutionView({ sessionId = "default" }: { sessionId?: string }) {
   const [experiments, setExperiments] = useState<any[]>([]);
   const [benchmarking, setBenchmarking] = useState(false);
   const [benchmarkResult, setBenchmarkResult] = useState<any | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [researchLab, setResearchLab] = useState<any | null>(null);
+  const [labBusy, setLabBusy] = useState(false);
 
   const fetchExperiments = async () => {
     setLoading(true);
@@ -25,7 +27,32 @@ export function EvolutionView() {
 
   useEffect(() => {
     fetchExperiments();
-  }, []);
+    api.getResearchLabStatus(sessionId).then(setResearchLab).catch(() => setResearchLab(null));
+  }, [sessionId]);
+
+  const handleProvisionLab = async () => {
+    setLabBusy(true);
+    try {
+      const data = await api.provisionResearchLab(sessionId);
+      setResearchLab(data.research_lab);
+    } catch (err: any) {
+      setError(err.message || "Research lab provisioning failed.");
+    } finally {
+      setLabBusy(false);
+    }
+  };
+
+  const handleDestroyLab = async () => {
+    setLabBusy(true);
+    try {
+      const data = await api.destroyResearchLab(sessionId);
+      setResearchLab(data.research_lab);
+    } catch (err: any) {
+      setError(err.message || "Research lab cleanup failed.");
+    } finally {
+      setLabBusy(false);
+    }
+  };
 
   const handleRunBenchmark = async () => {
     setBenchmarking(true);
@@ -48,6 +75,18 @@ export function EvolutionView() {
           <span className="text-sm font-bold text-white">Autonomous Self-Evolution & Canary Benchmarks</span>
         </div>
         <div className="flex items-center gap-2">
+          <span className={`px-2 py-1 rounded text-[10px] font-mono border ${researchLab?.workspace_id ? "text-amber-300 border-amber-700/50 bg-amber-950/30" : "text-[#8B949E] border-[#30363D]"}`}>
+            Lab: {researchLab?.status || "NO_ACTIVE_LAB"}
+          </span>
+          {researchLab?.workspace_id ? (
+            <button onClick={handleDestroyLab} disabled={labBusy} className="px-2 py-1 rounded text-[10px] font-mono text-red-300 border border-red-800/50 hover:bg-red-950/40 disabled:opacity-50 flex items-center gap-1">
+              <Trash2 className="w-3 h-3" /> Destroy Lab
+            </button>
+          ) : (
+            <button onClick={handleProvisionLab} disabled={labBusy} className="px-2 py-1 rounded text-[10px] font-mono text-amber-300 border border-amber-700/50 hover:bg-amber-950/40 disabled:opacity-50 flex items-center gap-1">
+              <FlaskConical className="w-3 h-3" /> Provision Lab
+            </button>
+          )}
           <button
             onClick={handleRunBenchmark}
             disabled={benchmarking}
@@ -66,7 +105,7 @@ export function EvolutionView() {
         </div>
       </div>
 
-      {benchmarkResult && (
+      {benchmarkResult && benchmarkResult.metrics && (
         <div className="p-3 rounded-lg bg-emerald-950/40 border border-emerald-800 text-emerald-300 text-xs font-mono space-y-1">
           <div className="font-bold flex items-center gap-2">
             <ShieldCheck className="w-4 h-4 text-emerald-400" />
@@ -75,6 +114,14 @@ export function EvolutionView() {
           <div className="text-[#8B949E]">
             Precision: {(benchmarkResult.precision * 100).toFixed(1)}% | Recall: {(benchmarkResult.recall * 100).toFixed(1)}%
           </div>
+        </div>
+      )}
+      {benchmarkResult && !benchmarkResult.metrics && (
+        <div className={`p-3 rounded-lg border text-xs font-mono space-y-1 ${benchmarkResult.verified ? "bg-emerald-950/40 border-emerald-800 text-emerald-300" : "bg-amber-950/30 border-amber-800 text-amber-300"}`}>
+          <div className="font-bold flex items-center gap-2"><ShieldCheck className="w-4 h-4" />
+            <span>Real lab command {benchmarkResult.verified ? "passed" : "did not pass"}</span>
+          </div>
+          <div className="text-[#8B949E]">No vulnerability score was generated without an authorized evaluator.</div>
         </div>
       )}
 

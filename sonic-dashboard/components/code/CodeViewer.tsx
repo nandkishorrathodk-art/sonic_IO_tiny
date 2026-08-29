@@ -24,12 +24,14 @@ export function CodeViewer({
   const [saving, setSaving] = useState(false);
 
   const handleCopy = () => {
+    if (!fileContent.length) return;
     navigator.clipboard.writeText(fileContent.join("\n"));
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   };
 
   const handleStartEdit = () => {
+    if (!activeFile || !fileContent.length) return;
     setEditedText(fileContent.join("\n"));
     setEditable(true);
   };
@@ -87,8 +89,8 @@ export function CodeViewer({
       <div className="h-8 border-b border-[#21262D] bg-[#1C2128] px-3 flex items-center justify-between text-xs font-mono text-[#8B949E]">
         <div className="flex items-center gap-2 truncate">
           <FileCode className="w-3.5 h-3.5 text-[#58A6FF]" />
-          <span className="text-[#58A6FF] font-semibold truncate">{activeFile.split("/").pop()}</span>
-          <span className="text-[10px] text-[#8B949E] truncate">{activeFile}</span>
+          <span className="text-[#58A6FF] font-semibold truncate">{activeFile ? activeFile.split("/").pop() : "No file selected"}</span>
+          {activeFile && <span className="text-[10px] text-[#8B949E] truncate">{activeFile}</span>}
         </div>
         <div className="flex items-center gap-2">
           {editable ? (
@@ -103,14 +105,16 @@ export function CodeViewer({
           ) : (
             <button
               onClick={handleStartEdit}
-              className="px-2 py-0.5 rounded bg-[#21262D] text-[#C9D1D9] hover:text-white transition text-[11px]"
+              disabled={!activeFile || !fileContent.length}
+              className="px-2 py-0.5 rounded bg-[#21262D] text-[#C9D1D9] hover:text-white transition text-[11px] disabled:opacity-40 disabled:cursor-not-allowed"
             >
               Edit File
             </button>
           )}
           <button
             onClick={handleCopy}
-            className="text-[#8B949E] hover:text-white p-1 rounded hover:bg-[#2D333B] transition"
+            disabled={!fileContent.length}
+            className="text-[#8B949E] hover:text-white p-1 rounded hover:bg-[#2D333B] transition disabled:opacity-40 disabled:cursor-not-allowed"
             title="Copy content"
           >
             {copied ? <Check className="w-3.5 h-3.5 text-[#3FB950]" /> : <Copy className="w-3.5 h-3.5" />}
@@ -127,14 +131,18 @@ export function CodeViewer({
         />
       ) : (
         <div className="flex-1 overflow-y-auto p-3 font-mono text-xs leading-relaxed bg-[#0D1117]">
-          {fileContent.map((line, i) => (
+          {fileContent.length ? fileContent.map((line, i) => (
             <div key={i} className="flex hover:bg-[#161B22]/50 leading-5">
               <span className="w-10 text-right pr-4 text-[#484F58] select-none font-mono text-[11px]">
                 {i + 1}
               </span>
               <span className="flex-1 whitespace-pre text-[#C9D1D9]">{line}</span>
             </div>
-          ))}
+          )) : (
+            <div className="h-full flex items-center justify-center text-xs text-[#6E7681]">
+              Select a real file from the agent worklog after a workspace is connected.
+            </div>
+          )}
         </div>
       )}
     </div>

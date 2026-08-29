@@ -90,7 +90,7 @@ export default function EvidenceBoard() {
               <div className="flex items-center justify-between">
                 <span className="font-bold text-white">{f.title || f.name}</span>
                 <span className="px-2 py-0.5 rounded bg-red-950 text-red-400 border border-red-800 text-[10px] font-bold">
-                  {f.severity || "CRITICAL"}
+                  {f.severity || "UNSPECIFIED"}
                 </span>
               </div>
               <p className="text-[11px] text-slate-400">{f.target || f.endpoint}</p>

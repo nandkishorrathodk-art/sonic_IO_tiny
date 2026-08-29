@@ -82,12 +82,12 @@ export default function LongHorizonMissionsPage() {
             <div className="glass-card p-4 rounded-xl border border-slate-800 space-y-1">
               <span className="text-slate-500">Active Objective</span>
               <div className="text-sm font-bold text-white truncate">{missionState?.mission_name || "Awaiting Objective"}</div>
-              <p className="text-[10px] text-cyan-400">Target: {missionState?.target_repo || "sonic"}</p>
+              <p className="text-[10px] text-cyan-400">Target: {missionState?.target_repo || "Not connected"}</p>
             </div>
             <div className="glass-card p-4 rounded-xl border border-slate-800 space-y-1">
               <span className="text-slate-500">Execution Status</span>
               <div className="text-sm font-bold text-[#3FB950]">{missionState?.status || "IDLE"}</div>
-              <p className="text-[10px] text-slate-400">Branch: {missionState?.git_branch || "main"}</p>
+              <p className="text-[10px] text-slate-400">Branch: {missionState?.git_branch || "—"}</p>
             </div>
             <div className="glass-card p-4 rounded-xl border border-slate-800 space-y-1">
               <span className="text-slate-500">Security Gate</span>

@@ -60,3 +60,4 @@ evidence_store/
 *.pcap
 *.db
 sonic_data.db
+sonic-core/sonic_data/

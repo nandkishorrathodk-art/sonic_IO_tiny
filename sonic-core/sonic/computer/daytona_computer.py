@@ -13,11 +13,11 @@ Integrates Daytona Cloud Sandboxes with full graphical Linux workstation capabil
 
 from __future__ import annotations
 
-import asyncio
-import base64
 import os
+import shlex
 from datetime import datetime, timezone
 from typing import Any, Optional
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from sonic.computer.models import (
     ApplicationPolicy,
@@ -82,6 +82,8 @@ class DaytonaComputerProvider(ComputerProvider):
                 if self.api_key:
                     config_kwargs["api_key"] = self.api_key
                 if self.api_url:
+                    # Current Daytona SDK uses api_url; server_url is kept
+                    # only for older SDKs and emits a deprecation warning.
                     config_kwargs["api_url"] = self.api_url
                 if self.target:
                     config_kwargs["target"] = self.target
@@ -100,7 +102,10 @@ class DaytonaComputerProvider(ComputerProvider):
             return self._sandboxes[workspace_id]
 
         env_id = os.environ.get("DAYTONA_SANDBOX_ID", "")
-        target_id = workspace_id if (workspace_id and workspace_id != "default" and len(workspace_id) > 10) else env_id
+        # Persisted workspace IDs are Daytona sandbox IDs. Older in-memory
+        # records used a synthetic ws-* ID and can only resolve through the
+        # attached environment sandbox fallback.
+        target_id = workspace_id if (workspace_id and not workspace_id.startswith("ws-") and workspace_id != "default") else env_id
 
         if target_id:
             if target_id in self._sandboxes:
@@ -111,7 +116,8 @@ class DaytonaComputerProvider(ComputerProvider):
                 try:
                     sandbox = await client.get(target_id)
                     if sandbox:
-                        self._sandboxes[workspace_id] = sandbox
+                        if workspace_id:
+                            self._sandboxes[workspace_id] = sandbox
                         self._sandboxes[target_id] = sandbox
                         # Ensure computer_use VNC stack is started
                         if hasattr(sandbox, "computer_use"):
@@ -139,6 +145,15 @@ class DaytonaComputerProvider(ComputerProvider):
         workspace_id = _new_id("ws-daytona")
         client = self._get_client()
 
+        # Mission desktops are persistent engineering workstations. Research
+        # labs are intentionally disposable and may use a hardened security
+        # image configured separately by the operator.
+        image_env = {
+            ComputerWorkspaceType.RESEARCH_LAB: "DAYTONA_RESEARCH_IMAGE",
+            ComputerWorkspaceType.TARGET_SANDBOX: "DAYTONA_TARGET_IMAGE",
+            ComputerWorkspaceType.MISSION_COMPUTER: "DAYTONA_IMAGE",
+        }[workspace_type]
+        configured_image = os.environ.get(image_env, "daytonaio/sandbox:0.9.0")
         ws = ComputerWorkspace(
             id=workspace_id,
             tenant_id=tenant_id,
@@ -146,44 +161,70 @@ class DaytonaComputerProvider(ComputerProvider):
             workspace_type=workspace_type,
             profile=profile,
             provider_type="DaytonaComputerProvider",
-            image="daytonaio/sandbox:0.8.0",
+            image=configured_image,
             status=ComputerWorkspaceStatus.CREATING,
             capabilities=["desktop", "terminal", "filesystem", "ide", "browser", "git", "computer_use"],
         )
         self.workspaces[workspace_id] = ws
 
-        if client and self.api_key:
-            try:
+        if not client or not self.api_key:
+            ws.status = ComputerWorkspaceStatus.FAILED
+            self.workspaces.pop(workspace_id, None)
+            raise RuntimeError(
+                "Daytona is not configured. Set DAYTONA_API_KEY and install the official SDK."
+            )
+
+        try:
+            env_sandbox_id = os.environ.get("DAYTONA_SANDBOX_ID")
+            configured_tenant = os.environ.get("DAYTONA_SANDBOX_TENANT_ID")
+            if env_sandbox_id and configured_tenant == tenant_id:
+                sandbox = await client.get(env_sandbox_id)
+                if not sandbox:
+                    raise RuntimeError(f"Configured Daytona sandbox '{env_sandbox_id}' was not found")
+                self._sandboxes[workspace_id] = sandbox
+                logger.info("daytona_sandbox_attached", workspace_id=workspace_id, sandbox_id=env_sandbox_id)
+            else:
                 from daytona import CreateSandboxFromImageParams
 
                 params = CreateSandboxFromImageParams(
                     name=workspace_id,
-                    image="daytonaio/sandbox:0.8.0",
+                    image=ws.image,
                     labels={
                         "tenant_id": tenant_id,
                         "engagement_id": engagement_id,
                         "managed_by": "sonic-reda",
                         "workstation": "graphical_desktop",
+                        "workspace_type": workspace_type.value,
                     },
                     auto_stop_interval=30,
                 )
                 sandbox = await client.create(params, timeout=120)
-                if sandbox:
-                    self._sandboxes[workspace_id] = sandbox
-                    ws.status = ComputerWorkspaceStatus.READY
-                    logger.info("daytona_sandbox_provisioned", workspace_id=workspace_id)
+                if not sandbox:
+                    raise RuntimeError("Daytona returned no sandbox for the create request")
+                self._sandboxes[workspace_id] = sandbox
 
-                    # Start the VNC desktop stack (Xvfb + XFCE + x11vnc + noVNC)
-                    try:
-                        await sandbox.computer_use.start()
-                        logger.info("daytona_computer_use_started", workspace_id=workspace_id)
-                    except Exception as cu_err:
-                        logger.warning("daytona_computer_use_start_deferred", error=str(cu_err))
-            except Exception as e:
-                logger.warning("daytona_cloud_provision_deferred", error=str(e))
-                ws.status = ComputerWorkspaceStatus.READY
-        else:
+            # Use Daytona's authoritative sandbox ID as the workspace ID so
+            # the control plane can reconnect after a process restart.
+            remote_id = str(getattr(sandbox, "id", "") or env_sandbox_id or "")
+            if remote_id and remote_id != workspace_id:
+                self._sandboxes[remote_id] = sandbox
+                self.workspaces.pop(workspace_id, None)
+                self._active_windows.pop(workspace_id, None)
+                ws.id = remote_id
+                self.workspaces[remote_id] = ws
+                workspace_id = remote_id
+
+            if not hasattr(sandbox, "computer_use"):
+                raise RuntimeError("Daytona sandbox does not expose the computer_use API")
+            await sandbox.computer_use.start()
             ws.status = ComputerWorkspaceStatus.READY
+            logger.info("daytona_computer_use_started", workspace_id=workspace_id)
+        except Exception as e:
+            ws.status = ComputerWorkspaceStatus.FAILED
+            self._sandboxes.pop(workspace_id, None)
+            self.workspaces.pop(workspace_id, None)
+            logger.error("daytona_cloud_provision_failed", error=str(e), workspace_id=workspace_id)
+            raise
 
         self._active_windows[workspace_id] = "XFCE Desktop"
         self._record_audit(
@@ -227,9 +268,22 @@ class DaytonaComputerProvider(ComputerProvider):
                 url = getattr(preview, "url", None)
                 token = getattr(preview, "token", None)
                 if url:
-                    # Append token for private sandbox access
-                    full_url = f"{url}?token={token}" if token else url
-                    return full_url
+                    # Encode private-sandbox tokens before returning the URL.
+                    # Tokens may contain `+`, `/`, or `=`; concatenating them
+                    # raw causes browsers to send a different value and the
+                    # Daytona proxy then rejects its /callback state check.
+                    if token:
+                        parts = urlsplit(str(url))
+                        query = dict(parse_qsl(parts.query, keep_blank_values=True))
+                        query["token"] = str(token)
+                        return urlunsplit((
+                            parts.scheme,
+                            parts.netloc,
+                            parts.path,
+                            urlencode(query),
+                            parts.fragment,
+                        ))
+                    return str(url)
             except Exception as e:
                 logger.warning("daytona_vnc_preview_url_failed", error=str(e))
         return None
@@ -317,30 +371,6 @@ class DaytonaComputerProvider(ComputerProvider):
             except Exception as e:
                 logger.warning("daytona_direct_screenshot_failed", error=str(e))
 
-        # Fallback to local sandbox container if running with X11 display
-        try:
-            import subprocess
-            proc = subprocess.run(
-                ["docker", "exec", "sonic-sandbox", "/bin/bash", "-c", "DISPLAY=:99 scrot -o /tmp/screen.png 2>/dev/null && base64 /tmp/screen.png"],
-                capture_output=True,
-                text=True,
-                timeout=4,
-            )
-            if proc.returncode == 0 and proc.stdout:
-                b64 = proc.stdout.strip().replace("\n", "").replace("\r", "")
-                if len(b64) > 100:
-                    return ScreenObservation(
-                        screenshot_base64=b64,
-                        width=1280,
-                        height=800,
-                        active_window=self._active_windows.get(workspace_id, "X11 Desktop"),
-                        visible_text="Active Desktop Session",
-                        detected_controls=["xterm", "fluxbox", "terminal"],
-                        desktop_state="INTERACTIVE",
-                    )
-        except Exception:
-            pass
-
         # NO_DISPLAY: no live desktop frame exists — never fabricate a pixel
         return ScreenObservation(
             screenshot_base64="",
@@ -366,6 +396,8 @@ class DaytonaComputerProvider(ComputerProvider):
         Dispatches authentic mouse and keyboard events directly into the remote X11 desktop.
         """
         sandbox = await self._resolve_sandbox(workspace_id)
+        if not sandbox or not hasattr(sandbox, "computer_use"):
+            raise RuntimeError("No live Daytona computer workspace is attached to this session")
         action_type = action.action
 
         if action_type in [GUIActionType.CLICK, GUIActionType.DOUBLE_CLICK]:
@@ -390,37 +422,13 @@ class DaytonaComputerProvider(ComputerProvider):
                     self._active_windows[workspace_id] = action.app_name
                     # Launch the app on DISPLAY :99 via process exec
                     try:
-                        await sandbox.process.exec(f"DISPLAY=:99 {action.app_name} &")
+                        await sandbox.process.exec(f"DISPLAY=:99 {shlex.quote(action.app_name)} &")
                     except Exception:
                         pass
 
             except Exception as e:
-                logger.warning("daytona_gui_action_dispatch_error", error=str(e))
-
-        # Also dispatch to local sandbox container X11 display via xdotool
-        try:
-            import subprocess
-            if action_type in [GUIActionType.CLICK, GUIActionType.DOUBLE_CLICK]:
-                cmd = f"DISPLAY=:99 xdotool mousemove {action.x} {action.y} click 1"
-                if action_type == GUIActionType.DOUBLE_CLICK:
-                    cmd = f"DISPLAY=:99 xdotool mousemove {action.x} {action.y} click --repeat 2 1"
-                subprocess.run(["docker", "exec", "sonic-sandbox", "/bin/bash", "-c", cmd], timeout=4)
-
-            elif action_type == GUIActionType.TYPE and action.text:
-                safe_text = action.text.replace("'", "'\\''")
-                cmd = f"DISPLAY=:99 xdotool type --delay 10 '{safe_text}'"
-                subprocess.run(["docker", "exec", "sonic-sandbox", "/bin/bash", "-c", cmd], timeout=4)
-
-            elif action_type == GUIActionType.KEYPRESS and action.key:
-                cmd = f"DISPLAY=:99 xdotool key '{action.key}'"
-                subprocess.run(["docker", "exec", "sonic-sandbox", "/bin/bash", "-c", cmd], timeout=4)
-
-            elif action_type == GUIActionType.OPEN_APP and action.app_name:
-                self._active_windows[workspace_id] = action.app_name
-                cmd = f"DISPLAY=:99 {action.app_name} &"
-                subprocess.run(["docker", "exec", "sonic-sandbox", "/bin/bash", "-c", cmd], timeout=4)
-        except Exception:
-            pass
+                logger.error("daytona_gui_action_dispatch_error", error=str(e))
+                raise RuntimeError(f"Daytona GUI action failed: {e}") from e
 
         if action.app_name:
             self._active_windows[workspace_id] = action.app_name
@@ -452,7 +460,7 @@ class DaytonaComputerProvider(ComputerProvider):
         Executes bash commands strictly inside the remote sandbox container.
         FAIL-CLOSED: Host execution is strictly forbidden.
         """
-        sandbox = self._sandboxes.get(workspace_id)
+        sandbox = await self._resolve_sandbox(workspace_id)
         start_time = datetime.now(timezone.utc)
 
         # 1. Try Daytona SDK execution
@@ -471,31 +479,6 @@ class DaytonaComputerProvider(ComputerProvider):
             except Exception as e:
                 logger.warning("daytona_process_exec_failed", error=str(e))
 
-        # 2. Try Docker container ('sonic-sandbox')
-        try:
-            check_proc = await asyncio.create_subprocess_exec(
-                "docker", "inspect", "-f", "{{.State.Running}}", "sonic-sandbox",
-                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
-            )
-            stdout, stderr = await check_proc.communicate()
-            if stdout.decode().strip() == "true":
-                exec_proc = await asyncio.create_subprocess_exec(
-                    "docker", "exec", "-i", "sonic-sandbox", "/bin/bash", "-c", command,
-                    stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
-                )
-                out, err = await asyncio.wait_for(exec_proc.communicate(), timeout=timeout)
-                duration = (datetime.now(timezone.utc) - start_time).total_seconds()
-                return ExecResult(
-                    command=command,
-                    exit_code=exec_proc.returncode or 0,
-                    stdout=out.decode("utf-8", errors="replace"),
-                    stderr=err.decode("utf-8", errors="replace"),
-                    duration_seconds=duration,
-                    sandbox_id="sonic-sandbox",
-                )
-        except Exception:
-            pass
-
         # FAIL CLOSED
         return ExecResult(
             command=command,
@@ -512,10 +495,10 @@ class DaytonaComputerProvider(ComputerProvider):
 
     async def read_file(self, workspace_id: str, path: str) -> str:
         """Reads a file from the sandbox container filesystem."""
-        sandbox = self._sandboxes.get(workspace_id)
-        if sandbox and hasattr(sandbox, "fs"):
+        sandbox = await self._resolve_sandbox(workspace_id)
+        if sandbox and hasattr(sandbox, "fs") and hasattr(sandbox.fs, "download_file"):
             try:
-                content = await sandbox.fs.read_file(path)
+                content = await sandbox.fs.download_file(path)
                 return content.decode("utf-8") if isinstance(content, bytes) else str(content)
             except Exception as e:
                 logger.warning("daytona_fs_read_failed", error=str(e), path=path)
@@ -527,18 +510,17 @@ class DaytonaComputerProvider(ComputerProvider):
 
     async def write_file(self, workspace_id: str, path: str, content: str, actor: str = "operator") -> bool:
         """Writes a file to the sandbox container filesystem."""
-        sandbox = self._sandboxes.get(workspace_id)
-        if sandbox and hasattr(sandbox, "fs"):
+        sandbox = await self._resolve_sandbox(workspace_id)
+        if sandbox and hasattr(sandbox, "fs") and hasattr(sandbox.fs, "upload_file"):
             try:
-                await sandbox.fs.write_file(path, content.encode("utf-8"))
+                await sandbox.fs.upload_file(src=content.encode("utf-8"), dst=path)
                 return True
             except Exception as e:
                 logger.warning("daytona_fs_write_failed", error=str(e), path=path)
 
-        # Fallback to base64 pipe in container
-        b64 = base64.b64encode(content.encode("utf-8")).decode("utf-8")
-        res = await self.terminal(workspace_id, f"echo '{b64}' | base64 -d > {path}")
-        return res.exit_code == 0
+        # No alternate-container or host fallback.  A Daytona workstation must
+        # expose its filesystem API for writes to be considered successful.
+        return False
 
     async def list_files(self, workspace_id: str, path: str = ".") -> list[FileEntry]:
         """Lists files inside the sandbox directory."""
@@ -566,7 +548,7 @@ class DaytonaComputerProvider(ComputerProvider):
     async def process_list(self, workspace_id: str) -> list[ProcessInfo]:
         """Lists running processes inside the sandbox by querying real process state."""
         processes: list[ProcessInfo] = []
-        sandbox = self._sandboxes.get(workspace_id)
+        sandbox = await self._resolve_sandbox(workspace_id)
 
         # Query real processes via computer_use status API
         if sandbox and hasattr(sandbox, "computer_use"):
@@ -579,10 +561,9 @@ class DaytonaComputerProvider(ComputerProvider):
                                 ProcessInfo(
                                     pid=getattr(pstatus, "pid", 0) or 0,
                                     name=proc_name,
-                                    cpu_percent=0.0,
+                                    cpu_pct=0.0,
                                     memory_mb=0.0,
-                                    user="daytona",
-                                    command=f"{proc_name} (status: {pstatus.status})",
+                                    status=str(pstatus.status),
                                 )
                             )
                     except Exception:
@@ -605,10 +586,9 @@ class DaytonaComputerProvider(ComputerProvider):
                                 ProcessInfo(
                                     pid=int(parts[1]),
                                     name=parts[10].split()[0].split("/")[-1],
-                                    cpu_percent=float(parts[2]),
+                                    cpu_pct=float(parts[2]),
                                     memory_mb=float(parts[5]) / 1024.0 if parts[5].isdigit() else 0.0,
-                                    user=parts[0],
-                                    command=parts[10],
+                                    status="RUNNING",
                                 )
                             )
                         except (ValueError, IndexError):
@@ -621,7 +601,7 @@ class DaytonaComputerProvider(ComputerProvider):
     async def application_list(self, workspace_id: str) -> list[str]:
         """Lists installed applications in the sandbox by querying real binaries."""
         apps: list[str] = []
-        sandbox = self._sandboxes.get(workspace_id)
+        sandbox = await self._resolve_sandbox(workspace_id)
         if sandbox and hasattr(sandbox, "process"):
             try:
                 res = await sandbox.process.exec("which xfce4-terminal code-server chromium git python3 bash 2>/dev/null")
@@ -656,15 +636,15 @@ class DaytonaComputerProvider(ComputerProvider):
     async def launch_application(self, workspace_id: str, app_name: str, actor: str = "operator") -> bool:
         """Launches a GUI application on display :99."""
         self._active_windows[workspace_id] = app_name
-        await self.terminal(workspace_id, f"DISPLAY=:99 {app_name} &")
-        return True
+        result = await self.terminal(workspace_id, f"DISPLAY=:99 {shlex.quote(app_name)} &")
+        return result.exit_code == 0
 
     async def close_application(self, workspace_id: str, app_name: str, actor: str = "operator") -> bool:
         """Closes a running desktop application."""
-        await self.terminal(workspace_id, f"pkill -f {app_name}")
+        result = await self.terminal(workspace_id, f"pkill -f -- {shlex.quote(app_name)}")
         if self._active_windows.get(workspace_id) == app_name:
             self._active_windows[workspace_id] = "XFCE Desktop"
-        return True
+        return result.exit_code == 0
 
     async def install_application(self, workspace_id: str, package_name: str, actor: str = "operator") -> tuple[bool, str]:
         """Installs an application inside the sandbox."""
@@ -678,8 +658,14 @@ class DaytonaComputerProvider(ComputerProvider):
 
     async def service_action(self, workspace_id: str, service_name: str, action: str, actor: str = "operator") -> ServiceInfo:
         """Controls system services inside the sandbox."""
-        await self.terminal(workspace_id, f"service {service_name} {action}")
-        return ServiceInfo(name=service_name, status="RUNNING", port=0, logs=[f"Service {service_name} {action} complete"])
+        res = await self.terminal(workspace_id, f"service {shlex.quote(service_name)} {shlex.quote(action)}")
+        status_value = "RUNNING" if res.exit_code == 0 and action in {"start", "restart"} else action.upper()
+        return ServiceInfo(
+            name=service_name,
+            status=status_value,
+            port=0,
+            logs=(res.stdout + res.stderr).splitlines(),
+        )
 
     async def git_action(self, workspace_id: str, action: str, **kwargs: Any) -> Any:
         """Executes Git operations against the sandbox workspace."""

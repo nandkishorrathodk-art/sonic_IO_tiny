@@ -2,7 +2,7 @@ import React, { useState, useEffect } from "react";
 import { FileCheck2, ShieldCheck, RefreshCw, Loader2, AlertCircle } from "lucide-react";
 import { api } from "../../lib/api";
 
-export function EvidenceView() {
+export function EvidenceView({ sessionId = "default" }: { sessionId?: string }) {
   const [findings, setFindings] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -11,8 +11,17 @@ export function EvidenceView() {
     setLoading(true);
     setError(null);
     try {
-      const data = await api.getEvidence();
-      setFindings(data.findings || []);
+      const [globalData, missionData] = await Promise.all([
+        api.getEvidence(),
+        api.getMissionEvidence(sessionId),
+      ]);
+      const missionEvidence = (missionData.evidence || []).map((item: any) => ({
+        ...item,
+        title: `${item.tool} · ${item.status}`,
+        target: item.target || "Agent desktop / authorized target",
+        severity: item.verified ? "VERIFIED" : "UNVERIFIED",
+      }));
+      setFindings([...(globalData.findings || []), ...missionEvidence]);
     } catch (err: any) {
       setError(err.message || "Failed to load evidence from backend.");
       setFindings([]);
@@ -23,7 +32,7 @@ export function EvidenceView() {
 
   useEffect(() => {
     fetchEvidence();
-  }, []);
+  }, [sessionId]);
 
   return (
     <div className="flex-1 rounded-lg border border-[#21262D] bg-[#161B22] flex flex-col overflow-hidden p-4 space-y-4">
@@ -31,7 +40,7 @@ export function EvidenceView() {
         <div className="flex items-center gap-2">
           <FileCheck2 className="w-4 h-4 text-emerald-400" />
           <span className="text-sm font-bold text-white">Verified Findings & Cryptographic Evidence</span>
-          <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-emerald-950 text-emerald-400 border border-emerald-800">
+              <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-emerald-950 text-emerald-400 border border-emerald-800">
             SHA-256 Custody Chain
           </span>
         </div>
@@ -68,10 +77,16 @@ export function EvidenceView() {
               <div className="flex items-center justify-between">
                 <span className="text-xs font-bold text-white">{f.title || f.name}</span>
                 <span className="text-[10px] font-mono font-bold px-2 py-0.5 rounded bg-red-950 text-red-400 border border-red-800">
-                  {f.severity || "CRITICAL"}
+                  {f.severity || "UNSPECIFIED"}
                 </span>
               </div>
               <p className="text-[11px] text-[#8B949E] font-mono">{f.endpoint || f.target}</p>
+              {f.sha256 && (
+                <p className="text-[10px] text-emerald-500/80 font-mono break-all">sha256:{f.sha256}</p>
+              )}
+              {f.output && (
+                <pre className="text-[10px] text-[#8B949E] bg-[#11161E] rounded p-2 whitespace-pre-wrap max-h-28 overflow-y-auto">{f.output}</pre>
+              )}
             </div>
           ))}
         </div>

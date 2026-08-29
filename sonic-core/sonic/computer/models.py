@@ -43,6 +43,7 @@ class ComputerWorkspaceStatus(StrEnum):
 class ComputerWorkspaceType(StrEnum):
     MISSION_COMPUTER = "MISSION_COMPUTER"  # Persistent long-term environment
     RESEARCH_LAB = "RESEARCH_LAB"          # Disposable single-task sandbox
+    TARGET_SANDBOX = "TARGET_SANDBOX"      # Disposable authorized target environment
 
 
 class ComputerProfile(StrEnum):

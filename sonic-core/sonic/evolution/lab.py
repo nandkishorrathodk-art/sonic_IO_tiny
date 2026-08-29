@@ -8,6 +8,8 @@ Enforces FAIL-CLOSED execution: candidate code is never executed on the host OS.
 from __future__ import annotations
 
 import asyncio
+import os
+import time
 from typing import Any, Optional
 
 from sonic.evolution.models import (
@@ -25,11 +27,13 @@ logger = get_logger(__name__)
 class TestPipelineResult:
     """Detailed stage-by-stage results of an evolution candidate run in the lab."""
     def __init__(self):
-        self.syntax_passed: bool = True
-        self.type_check_passed: bool = True
-        self.unit_tests_passed: bool = True
-        self.integration_tests_passed: bool = True
-        self.security_tests_passed: bool = True
+        # A stage is true only after a real command completes in the
+        # configured evaluation sandbox. Unknown stages fail closed.
+        self.syntax_passed: bool = False
+        self.type_check_passed: bool = False
+        self.unit_tests_passed: bool = False
+        self.integration_tests_passed: bool = False
+        self.security_tests_passed: bool = False
         self.benchmark_score: float = 0.0
         self.metrics: Optional[CandidateMetrics] = None
         self.errors: list[str] = []
@@ -74,6 +78,59 @@ class EvolutionLab:
         candidate.transition_to(EvolutionState.TESTING)
         result = TestPipelineResult()
 
+        if self.provider is None:
+            result.errors.append(
+                "Evolution evaluation is blocked: no disposable compute provider is configured. "
+                "SONIC will not execute or score a candidate on the host."
+            )
+            candidate.transition_to(EvolutionState.REJECTED)
+            metrics = CandidateMetrics(safety_violations=1)
+            result.metrics = metrics
+            return result, metrics
+
+        # Every stage is command-backed and runs through ComputeProvider. No
+        # host shell or synthetic pass/fail values are allowed.
+        commands = [
+            ("syntax", os.environ.get("SONIC_EVOLUTION_SYNTAX_COMMAND", "python -m compileall -q .")),
+            ("type", os.environ.get("SONIC_EVOLUTION_TYPE_COMMAND", "python -m mypy .")),
+            ("unit", os.environ.get("SONIC_EVOLUTION_UNIT_COMMAND", "python -m pytest -q")),
+            ("integration", os.environ.get("SONIC_EVOLUTION_INTEGRATION_COMMAND", "python -m pytest -q tests/integration")),
+            ("security", os.environ.get("SONIC_EVOLUTION_SECURITY_COMMAND", "python -m pytest -q tests/security")),
+        ]
+        stage_results: dict[str, Any] = {}
+        measured_latency_ms = 0.0
+        for stage, command in commands:
+            started = time.perf_counter()
+            try:
+                execution = await self.provider.execute(workspace_id, command, timeout=self.policy.max_runtime_seconds)
+                duration = getattr(execution, "duration_seconds", 0.0) or (time.perf_counter() - started)
+                measured_latency_ms += float(duration) * 1000.0
+                passed = execution.exit_code == 0 and not getattr(execution, "timed_out", False)
+                stage_results[stage] = passed
+                if not passed:
+                    detail = (getattr(execution, "stderr", "") or getattr(execution, "stdout", "") or "command failed").strip()
+                    result.errors.append(f"{stage} stage failed ({execution.exit_code}): {detail[:500]}")
+            except Exception as exc:
+                stage_results[stage] = False
+                result.errors.append(f"{stage} stage could not execute in evaluation sandbox: {exc}")
+
+        result.syntax_passed = stage_results.get("syntax", False)
+        result.type_check_passed = stage_results.get("type", False)
+        result.unit_tests_passed = stage_results.get("unit", False)
+        result.integration_tests_passed = stage_results.get("integration", False)
+        result.security_tests_passed = stage_results.get("security", False)
+
+        if not result.passed_all_critical:
+            candidate.transition_to(EvolutionState.REJECTED)
+            metrics = CandidateMetrics(
+                execution_count=len(commands),
+                verification_success_rate=sum(bool(v) for v in stage_results.values()) / len(commands),
+                latency_ms=round(measured_latency_ms, 3),
+                safety_violations=1 if not result.security_tests_passed else 0,
+            )
+            result.metrics = metrics
+            return result, metrics
+
         # 1. Syntax Check
         if simulate_syntax_failure:
             result.syntax_passed = False
@@ -82,12 +139,6 @@ class EvolutionLab:
             metrics = CandidateMetrics(safety_violations=0)
             result.metrics = metrics
             return result, metrics
-
-        # 2. Type Check & Unit Tests
-        result.syntax_passed = True
-        result.type_check_passed = True
-        result.unit_tests_passed = True
-        result.integration_tests_passed = True
 
         # 3. Security Regression Suite (Immutable Invariant Check)
         if simulate_security_failure:
@@ -98,7 +149,6 @@ class EvolutionLab:
             result.metrics = metrics
             return result, metrics
 
-        result.security_tests_passed = True
         candidate.transition_to(EvolutionState.BENCHMARKING)
 
         # 4. Ground-Truth Benchmark Dynamic Evaluation
@@ -106,13 +156,18 @@ class EvolutionLab:
         fp = 0
         fn = 0
 
-        fixtures = ground_truth_fixtures or [
-            {"id": "fix-01", "vuln_type": "jwt_none_alg", "expected_vulnerable": True, "token": "eyJhbGciOiJub25lIn0.eyJzdWIiOiJhZG1pbiJ9."},
-            {"id": "fix-02", "vuln_type": "idor_param", "expected_vulnerable": True, "path": "/api/users/123"},
-            {"id": "fix-03", "vuln_type": "clean_endpoint", "expected_vulnerable": False, "path": "/api/health"},
-            {"id": "fix-04", "vuln_type": "jwt_valid_sig", "expected_vulnerable": False, "token": "valid.signed.token"},
-            {"id": "fix-05", "vuln_type": "auth_header_tamper", "expected_vulnerable": True, "token": "tampered.header"},
-        ]
+        fixtures = ground_truth_fixtures or []
+        if not fixtures:
+            result.errors.append("Benchmark blocked: no authorized ground-truth fixtures were supplied")
+            candidate.transition_to(EvolutionState.REJECTED)
+            metrics = CandidateMetrics(
+                execution_count=len(commands),
+                verification_success_rate=1.0,
+                latency_ms=round(measured_latency_ms, 3),
+                safety_violations=0,
+            )
+            result.metrics = metrics
+            return result, metrics
 
         total_fixtures = len(fixtures)
         for fix in fixtures:
@@ -122,17 +177,8 @@ class EvolutionLab:
             if callable(eval_fn):
                 is_detected = bool(eval_fn(candidate))
             else:
-                strat_text = " ".join([str(c) for c in candidate.changes] + candidate.files_affected).lower()
-                if is_vuln:
-                    is_detected = (
-                        fix["vuln_type"] in strat_text
-                        or ("jwt" in fix["vuln_type"] and ("jwt" in strat_text or "token" in strat_text or "differential" in strat_text))
-                        or ("idor" in fix["vuln_type"] and ("idor" in strat_text or "token" in strat_text))
-                        or ("auth" in fix["vuln_type"] and ("auth" in strat_text or "tamper" in strat_text))
-                        or ("add_rule" in strat_text or "agent_strategies" in strat_text)
-                    )
-                else:
-                    is_detected = False
+                result.errors.append(f"Fixture {fix.get('id', '<unknown>')} has no executable evaluator")
+                is_detected = False
 
             if is_detected and is_vuln:
                 tp += 1
@@ -151,13 +197,13 @@ class EvolutionLab:
             f1_score=f1,
             false_positives=fp,
             false_negatives=fn,
-            evidence_completeness=1.0,
-            verification_success_rate=0.95,
-            prediction_accuracy=0.90,
-            execution_count=total_fixtures,
-            latency_ms=180.0,
-            token_cost=0.045,
-            resource_usage=0.35,
+            evidence_completeness=1.0 if total_fixtures and not result.errors else 0.0,
+            verification_success_rate=1.0,
+            prediction_accuracy=round((tp + (total_fixtures - fp - fn)) / max(1, total_fixtures), 3),
+            execution_count=len(commands) + total_fixtures,
+            latency_ms=round(measured_latency_ms, 3),
+            token_cost=0.0,
+            resource_usage=0.0,
             safety_violations=0,
         )
 

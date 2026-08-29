@@ -14,6 +14,7 @@ export interface WorklogItem {
   file?: string;
   lines?: string;
   timestamp?: string;
+  duration_seconds?: number;
 }
 
 export interface DesktopApp {

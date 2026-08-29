@@ -39,6 +39,18 @@ export default function ComputerWorkspacePage() {
     }
   };
 
+  const provisionDesktop = async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      await api.provisionDesktop();
+      await fetchStatus();
+    } catch (err: any) {
+      setError(err.message || "Failed to provision Daytona workstation.");
+      setLoading(false);
+    }
+  };
+
   useEffect(() => {
     fetchStatus();
   }, []);
@@ -73,10 +85,10 @@ export default function ComputerWorkspacePage() {
               <h2 className="text-base font-bold text-white tracking-wide">
                 DAYTONA GRAPHICAL WORKSTATION
               </h2>
-              {desktopState?.vnc_url || desktopState?.status === "LIVE" || desktopState?.status === "ACTIVE" || desktopState?.status === "READY / ACTIVE" ? (
+              {desktopState?.vnc_url ? (
                 <span className="px-2 py-0.5 text-[10px] font-mono bg-emerald-950 text-emerald-300 border border-emerald-800/60 rounded-full font-semibold flex items-center gap-1">
                   <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
-                  LIVE (:99)
+                  LIVE DESKTOP
                 </span>
               ) : (
                 <span className="px-2 py-0.5 text-[10px] font-mono bg-slate-900 text-slate-400 border border-slate-800 rounded-full font-semibold flex items-center gap-1">
@@ -113,6 +125,7 @@ export default function ComputerWorkspacePage() {
             desktopState={desktopState}
             onRunCommand={handleRunCommand}
             commandLogs={commandLogs}
+            onProvision={provisionDesktop}
           />
         </div>
       )}

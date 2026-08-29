@@ -8,8 +8,6 @@ Applications, Git, Services, and Process management on top of ComputeProviders.
 
 from __future__ import annotations
 
-import asyncio
-import base64
 import json
 import uuid
 from abc import ABC, abstractmethod
@@ -190,14 +188,22 @@ class UnifiedComputerProvider(ComputerProvider):
         config = WorkspaceConfig(
             workspace_id=workspace_id,
             tenant_id=tenant_id,
-            workspace_type=WorkspaceType.MISSION_COMPUTER if workspace_type == ComputerWorkspaceType.MISSION_COMPUTER else WorkspaceType.RESEARCH_LAB,
+            workspace_type=(
+                WorkspaceType.MISSION_COMPUTER
+                if workspace_type == ComputerWorkspaceType.MISSION_COMPUTER
+                else WorkspaceType.TARGET_SANDBOX
+                if workspace_type == ComputerWorkspaceType.TARGET_SANDBOX
+                else WorkspaceType.RESEARCH_LAB
+            ),
             image="sonic-kali-linux:v1.3.0" if profile == ComputerProfile.KALI_SECURITY else "debian:12-slim",
             cpu_limit="1.0",
             memory_limit="1024M",
             timeout_seconds=600 if workspace_type == ComputerWorkspaceType.MISSION_COMPUTER else 180,
             network_isolated=True,
         )
-        await self.compute.create_workspace(config)
+        created = await self.compute.create_workspace(config)
+        if not created:
+            raise RuntimeError("Compute provider failed to provision the computer workspace")
 
         ws = ComputerWorkspace(
             id=workspace_id,
@@ -210,17 +216,10 @@ class UnifiedComputerProvider(ComputerProvider):
             status=ComputerWorkspaceStatus.READY,
         )
         self.workspaces[ws.id] = ws
-        self._running_apps[ws.id] = {"Desktop", "Terminal"}
-        self._active_window[ws.id] = "Desktop"
-        self._installed_apps[ws.id] = {"git", "curl", "python3-pip", "nmap", "nuclei", "chromium", "code-server"}
-        self._vfs[ws.id] = {
-            "/home/sonic/workspace/README.md": "# SONIC Workspace\n\nInitialized engineering workspace.",
-            "/home/sonic/workspace/package.json": "{\"name\": \"sonic-app\", \"version\": \"1.0.0\"}",
-        }
-        self._services[ws.id] = {
-            "xvfb": ServiceInfo(name="xvfb", status="RUNNING", port=99, logs=["[Xvfb] Display :99 active (1920x1080x24)"]),
-            "code-server": ServiceInfo(name="code-server", status="RUNNING", port=8080, logs=["[code-server] HTTP server listening on 127.0.0.1:8080"]),
-        }
+        self._running_apps[ws.id] = set()
+        self._active_window[ws.id] = ""
+        self._installed_apps[ws.id] = set()
+        self._services[ws.id] = {}
 
         self._record_audit(
             session_id="system",
@@ -261,8 +260,10 @@ class UnifiedComputerProvider(ComputerProvider):
 
     async def status(self, workspace_id: str) -> ComputerState:
         ws = self._require_workspace(workspace_id)
-        running = list(self._running_apps.get(workspace_id, {"Desktop"}))
-        active_app = self._active_window.get(workspace_id, "Desktop")
+        running = list(self._running_apps.get(workspace_id, set()))
+        active_app = self._active_window.get(workspace_id, "")
+        pwd = await self.compute.execute(workspace_id, "pwd")
+        branch = await self.compute.execute(workspace_id, "git branch --show-current 2>/dev/null")
 
         return ComputerState(
             workspace_id=workspace_id,
@@ -270,12 +271,12 @@ class UnifiedComputerProvider(ComputerProvider):
             active_application=active_app,
             open_applications=running,
             active_window=active_app,
-            working_directory="/home/sonic/workspace",
-            running_processes=[f"pid-{idx}:{app}" for idx, app in enumerate(running, start=100)],
+            working_directory=pwd.stdout.strip() if pwd.exit_code == 0 else "",
+            running_processes=[],
             installed_applications=sorted(list(self._installed_apps.get(workspace_id, set()))),
             current_project="sonic-repo",
-            git_branch="main",
-            resource_usage={"cpu_pct": 14.2, "memory_mb": 1536.0},
+            git_branch=branch.stdout.strip() if branch.exit_code == 0 else "",
+            resource_usage={},
         )
 
     # -------------------------------------------------------------
@@ -283,18 +284,16 @@ class UnifiedComputerProvider(ComputerProvider):
     # -------------------------------------------------------------
     async def screenshot(self, workspace_id: str) -> ScreenObservation:
         self._require_workspace(workspace_id)
-        running = list(self._running_apps.get(workspace_id, {"Desktop"}))
-        active_window = self._active_window.get(workspace_id, "Desktop")
-
-        # Deterministic synthetic visual display perception
+        # A generic ComputeProvider has no screen-capture contract. Never
+        # manufacture a screenshot; use DaytonaComputerProvider for GUI work.
         return ScreenObservation(
-            screenshot_base64="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
-            width=1920,
-            height=1080,
-            active_window=active_window,
-            visible_text=f"Active: {active_window} | Running: {', '.join(running)}",
-            detected_controls=["WindowClose", "WindowMinimize", "Toolbar", "TerminalBuffer", "FileTree"],
-            desktop_state="INTERACTIVE",
+            screenshot_base64="",
+            width=0,
+            height=0,
+            active_window="",
+            visible_text="",
+            detected_controls=[],
+            desktop_state="NO_DISPLAY",
         )
 
     async def gui_action(
@@ -305,15 +304,7 @@ class UnifiedComputerProvider(ComputerProvider):
     ) -> ScreenObservation:
         ws = self._require_workspace(workspace_id)
 
-        if action.action == GUIActionType.OPEN_APP and action.app_name:
-            self._running_apps[workspace_id].add(action.app_name)
-            self._active_window[workspace_id] = action.app_name
-        elif action.action == GUIActionType.SELECT_WINDOW and action.app_name:
-            self._active_window[workspace_id] = action.app_name
-        elif action.action == GUIActionType.CLOSE_APP and action.app_name:
-            self._running_apps[workspace_id].discard(action.app_name)
-            if self._active_window.get(workspace_id) == action.app_name:
-                self._active_window[workspace_id] = "Desktop"
+        raise RuntimeError("GUI actions require a provider with a real desktop backend")
 
         self._record_audit(
             session_id=actor,
@@ -340,25 +331,6 @@ class UnifiedComputerProvider(ComputerProvider):
         ws = self._require_workspace(workspace_id)
         res = await self.compute.execute(workspace_id, command, timeout=timeout)
 
-        # Handle container offline / mock sandbox fallback for tests
-        if res.exit_code == 126 and "FAIL-CLOSED" in res.stderr:
-            # Deterministic simulation for test environments
-            stdout_sim = ""
-            if "echo" in command:
-                stdout_sim = command.replace("echo", "").strip().strip("'\"") + "\n"
-            elif "python" in command and "print" in command:
-                stdout_sim = "Tests: 14 passed, 0 failed\n"
-            elif "whoami" in command:
-                stdout_sim = "sonic\n"
-            res = ExecResult(
-                command=command,
-                exit_code=0,
-                stdout=stdout_sim,
-                stderr="",
-                duration_seconds=0.01,
-                sandbox_id=workspace_id,
-            )
-
         self._record_audit(
             session_id=actor,
             workspace_id=workspace_id,
@@ -372,28 +344,32 @@ class UnifiedComputerProvider(ComputerProvider):
 
     async def process_list(self, workspace_id: str) -> list[ProcessInfo]:
         self._require_workspace(workspace_id)
-        running = self._running_apps.get(workspace_id, set())
-        procs = [
-            ProcessInfo(pid=1, name="systemd/init", cpu_pct=0.1, memory_mb=12.5),
-            ProcessInfo(pid=10, name="Xvfb", cpu_pct=0.5, memory_mb=45.0),
-        ]
-        for idx, app in enumerate(sorted(list(running)), start=100):
-            procs.append(ProcessInfo(pid=idx, name=app, cpu_pct=1.5, memory_mb=90.0))
-        return procs
+        res = await self.compute.execute(workspace_id, "ps -eo pid=,comm=,pcpu=,rss= --no-headers")
+        if res.exit_code != 0:
+            return []
+        processes: list[ProcessInfo] = []
+        for line in res.stdout.splitlines():
+            parts = line.split()
+            if len(parts) < 4:
+                continue
+            try:
+                processes.append(ProcessInfo(
+                    pid=int(parts[0]),
+                    name=parts[1],
+                    cpu_pct=float(parts[2]),
+                    memory_mb=float(parts[3]) / 1024.0,
+                ))
+            except ValueError:
+                continue
+        return processes
 
     # -------------------------------------------------------------
     # 4. Filesystem
     # -------------------------------------------------------------
     async def read_file(self, workspace_id: str, path: str) -> str:
         self._require_workspace(workspace_id)
-        vfs = self._vfs.get(workspace_id, {})
-        if path in vfs:
-            return vfs[path]
-        try:
-            data = await self.compute.read_file(workspace_id, path)
-            return data.decode("utf-8", errors="replace")
-        except Exception:
-            return vfs.get(path, "")
+        data = await self.compute.read_file(workspace_id, path)
+        return data.decode("utf-8", errors="replace")
 
     async def write_file(
         self,
@@ -403,13 +379,7 @@ class UnifiedComputerProvider(ComputerProvider):
         actor: str = "operator",
     ) -> bool:
         ws = self._require_workspace(workspace_id)
-        vfs = self._vfs.setdefault(workspace_id, {})
-        vfs[path] = content
-
-        try:
-            ok = await self.compute.write_file(workspace_id, path, content)
-        except Exception:
-            ok = True
+        ok = await self.compute.write_file(workspace_id, path, content)
 
         self._record_audit(
             session_id=actor,
@@ -420,17 +390,26 @@ class UnifiedComputerProvider(ComputerProvider):
             resource=path,
             result="SUCCESS",
         )
-        return True
+        return ok
 
     async def list_files(self, workspace_id: str, path: str = ".") -> list[FileEntry]:
         self._require_workspace(workspace_id)
-        vfs = self._vfs.get(workspace_id, {})
-        entries = []
-        for p, content in vfs.items():
-            fname = p.split("/")[-1]
-            entries.append(FileEntry(name=fname, path=p, is_dir=False, size_bytes=len(content)))
-        if not entries:
-            entries.append(FileEntry(name="workspace", path=path, is_dir=True))
+        # Filesystem truth comes from the sandbox provider, never an in-memory VFS.
+        result = await self.compute.execute(
+            workspace_id,
+            f"find -- '{path}' -maxdepth 1 -mindepth 1 -printf '%y|%s|%p\\n'",
+        )
+        entries: list[FileEntry] = []
+        if result.exit_code != 0:
+            return entries
+        for line in result.stdout.splitlines():
+            kind, size, item_path = line.split("|", 2)
+            entries.append(FileEntry(
+                name=item_path.rstrip("/").split("/")[-1],
+                path=item_path,
+                is_dir=kind == "d",
+                size_bytes=int(size) if size.isdigit() else 0,
+            ))
         return entries
 
     # -------------------------------------------------------------
@@ -438,11 +417,17 @@ class UnifiedComputerProvider(ComputerProvider):
     # -------------------------------------------------------------
     async def application_list(self, workspace_id: str) -> list[str]:
         self._require_workspace(workspace_id)
-        return sorted(list(self._installed_apps.get(workspace_id, set())))
+        result = await self.compute.execute(
+            workspace_id,
+            "command -v git curl python3 bash node npm chromium code-server nmap nuclei ffuf 2>/dev/null",
+        )
+        if result.exit_code != 0:
+            return []
+        return sorted({line.rsplit("/", 1)[-1] for line in result.stdout.splitlines() if line.strip()})
 
     async def launch_application(self, workspace_id: str, app_name: str, actor: str = "operator") -> bool:
         ws = self._require_workspace(workspace_id)
-        self._running_apps[workspace_id].add(app_name)
+        result = await self.compute.execute(workspace_id, f"DISPLAY=:99 {app_name} >/tmp/sonic-app.log 2>&1 &")
         self._record_audit(
             session_id=actor,
             workspace_id=workspace_id,
@@ -453,11 +438,11 @@ class UnifiedComputerProvider(ComputerProvider):
             resource=app_name,
             result="SUCCESS",
         )
-        return True
+        return result.exit_code == 0
 
     async def close_application(self, workspace_id: str, app_name: str, actor: str = "operator") -> bool:
         ws = self._require_workspace(workspace_id)
-        self._running_apps[workspace_id].discard(app_name)
+        result = await self.compute.execute(workspace_id, f"pkill -f -- '{app_name}'")
         self._record_audit(
             session_id=actor,
             workspace_id=workspace_id,
@@ -468,7 +453,7 @@ class UnifiedComputerProvider(ComputerProvider):
             resource=app_name,
             result="SUCCESS",
         )
-        return True
+        return result.exit_code == 0
 
     async def install_application(
         self,
@@ -494,7 +479,7 @@ class UnifiedComputerProvider(ComputerProvider):
 
         cmd = f"apt-get update -qq && apt-get install -y -qq {package_name} || pip install {package_name}"
         res = await self.compute.execute(workspace_id, cmd)
-        success = res.exit_code == 0 or "installed" in res.stdout.lower() or res.exit_code == 126
+        success = res.exit_code == 0
 
         if success:
             self._installed_apps[workspace_id].add(package_name)
@@ -518,8 +503,7 @@ class UnifiedComputerProvider(ComputerProvider):
         actor: str = "operator",
     ) -> bool:
         ws = self._require_workspace(workspace_id)
-        self._installed_apps[workspace_id].discard(package_name)
-        self._running_apps[workspace_id].discard(package_name)
+        result = await self.compute.execute(workspace_id, f"apt-get remove -y -- '{package_name}'")
 
         self._record_audit(
             session_id=actor,
@@ -529,9 +513,9 @@ class UnifiedComputerProvider(ComputerProvider):
             action="UNINSTALL_APP",
             application=package_name,
             resource=package_name,
-            result="SUCCESS",
+            result="SUCCESS" if result.exit_code == 0 else f"EXIT_{result.exit_code}",
         )
-        return True
+        return result.exit_code == 0
 
     # -------------------------------------------------------------
     # 6. Services & Snapshots
@@ -544,21 +528,14 @@ class UnifiedComputerProvider(ComputerProvider):
         actor: str = "operator",
     ) -> ServiceInfo:
         ws = self._require_workspace(workspace_id)
-        svc_map = self._services.setdefault(workspace_id, {})
-        svc = svc_map.get(service_name)
-        if not svc:
-            svc = ServiceInfo(name=service_name, status="STOPPED", logs=[f"Service {service_name} initialized."])
-            svc_map[service_name] = svc
-
-        if action == "start":
-            svc.status = "RUNNING"
-            svc.logs.append(f"[{_now()}] Service {service_name} started.")
-        elif action == "stop":
-            svc.status = "STOPPED"
-            svc.logs.append(f"[{_now()}] Service {service_name} stopped.")
-        elif action == "restart":
-            svc.status = "RUNNING"
-            svc.logs.append(f"[{_now()}] Service {service_name} restarted.")
+        result = await self.compute.execute(workspace_id, f"service '{service_name}' '{action}'")
+        status_value = "RUNNING" if result.exit_code == 0 and action in {"start", "restart"} else action.upper()
+        svc = ServiceInfo(
+            name=service_name,
+            status=status_value,
+            logs=(result.stdout + result.stderr).splitlines(),
+        )
+        self._services.setdefault(workspace_id, {})[service_name] = svc
 
         self._record_audit(
             session_id=actor,
@@ -567,7 +544,7 @@ class UnifiedComputerProvider(ComputerProvider):
             actor=actor,
             action=f"SERVICE_{action.upper()}",
             resource=service_name,
-            result="SUCCESS",
+            result="SUCCESS" if result.exit_code == 0 else f"EXIT_{result.exit_code}",
         )
         return svc
 

@@ -51,7 +51,7 @@ def auth_headers():
 
 @pytest.fixture
 def daytona_computer():
-    return DaytonaComputerProvider()
+    return DaytonaComputerProvider(api_key="")
 
 
 def test_daytona_computer_lifecycle(daytona_computer):

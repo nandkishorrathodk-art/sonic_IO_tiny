@@ -6,7 +6,6 @@ import {
   Plus,
   GitBranch,
   Monitor,
-  Terminal,
   Compass,
   Share2,
   FileCheck2,
@@ -78,20 +77,6 @@ export function WorkstationSidebar({
           <span>Workstation</span>
         </Link>
         <Link
-          href="/computer"
-          className="flex items-center gap-2.5 px-3 py-1.5 rounded-md text-[#8B949E] hover:text-white hover:bg-[#1A1F26] transition"
-        >
-          <Monitor className="w-4 h-4 text-emerald-400" />
-          <span>Daytona Desktop</span>
-        </Link>
-        <Link
-          href="/terminal"
-          className="flex items-center gap-2.5 px-3 py-1.5 rounded-md text-[#8B949E] hover:text-white hover:bg-[#1A1F26] transition"
-        >
-          <Terminal className="w-4 h-4 text-amber-400" />
-          <span>PTY Terminal</span>
-        </Link>
-        <Link
           href="/missions"
           className="flex items-center gap-2.5 px-3 py-1.5 rounded-md text-[#8B949E] hover:text-white hover:bg-[#1A1F26] transition"
         >
@@ -157,7 +142,7 @@ export function WorkstationSidebar({
               >
                 <div className="flex items-start justify-between gap-1">
                   <div className="font-semibold truncate text-[12px] flex-1 leading-snug">
-                    {sess.mission_name || "Autonomous Mission"}
+                    {sess.mission_name || "Unprovisioned Workstation"}
                   </div>
                   {onDeleteSession && sess.session_id !== "default" && (
                     <button
@@ -175,7 +160,7 @@ export function WorkstationSidebar({
 
                 <div className="flex items-center justify-between text-[10px] text-[#8B949E] font-mono mt-0.5">
                   <span className="text-[#3FB950] flex items-center gap-0.5">
-                    <GitBranch className="w-2.5 h-2.5" /> {sess.git_branch || "main"}
+                    <GitBranch className="w-2.5 h-2.5" /> {sess.git_branch || "—"}
                   </span>
                   {sess.log_count !== undefined && sess.log_count > 0 && (
                     <span className="text-slate-400">

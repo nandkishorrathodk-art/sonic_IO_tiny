@@ -72,6 +72,29 @@ export const api = {
   getDesktopStatus: (sessionId = "default") =>
     apiClient<any>(`/workstation/desktop/status?session_id=${encodeURIComponent(sessionId)}`),
 
+  getDesktopScreenshot: (sessionId = "default") =>
+    apiClient<any>(`/workstation/desktop/screenshot?session_id=${encodeURIComponent(sessionId)}`),
+
+  executeDesktopAction: (actionData: {
+    action: string;
+    target?: string;
+    coordinates?: [number, number];
+    text?: string;
+    key?: string;
+    sessionId?: string;
+  }) =>
+    apiClient<any>("/workstation/desktop/action", {
+      method: "POST",
+      body: JSON.stringify({
+        action: actionData.action,
+        target: actionData.target,
+        coordinates: actionData.coordinates,
+        text: actionData.text,
+        key: actionData.key,
+        session_id: actionData.sessionId || "default",
+      }),
+    }),
+
   getFileTree: () =>
     apiClient<{ files: string[] }>("/workstation/tree"),
 

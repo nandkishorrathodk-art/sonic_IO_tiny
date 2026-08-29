@@ -21,7 +21,7 @@ from sonic.computer.models import (
     GUIActionType,
     ScreenObservation,
 )
-from sonic.computer.provider import UnifiedComputerProvider
+from sonic.computer.provider import ComputerProvider, UnifiedComputerProvider
 from sonic.computer_use.models import (
     ComputerActionPlan,
     ComputerActionType,
@@ -46,7 +46,7 @@ class ComputerUseAgent:
 
     def __init__(
         self,
-        computer_provider: UnifiedComputerProvider,
+        computer_provider: ComputerProvider,
         autonomy_level: ComputerAutonomyLevel = ComputerAutonomyLevel.L3_AUTONOMOUS,
         mode: EngineeringMissionMode = EngineeringMissionMode.ENGINEERING_MODE,
         max_actions: int = 50,

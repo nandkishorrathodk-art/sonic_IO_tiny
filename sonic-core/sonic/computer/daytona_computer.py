@@ -185,7 +185,7 @@ class DaytonaComputerProvider(ComputerProvider):
             return True
         return False
 
-    async def get_vnc_url(self, workspace_id: str) -> Optional[str]:
+    async def get_stream_url(self, workspace_id: str) -> Optional[str]:
         """Obtains the Daytona preview/public URL for the noVNC port (6080).
 
         Uses the Daytona SDK get_preview_link API. Returns None if unavailable.
@@ -213,6 +213,10 @@ class DaytonaComputerProvider(ComputerProvider):
             except Exception as e:
                 logger.warning("daytona_vnc_preview_url_failed", error=str(e))
         return None
+
+    async def get_vnc_url(self, workspace_id: str) -> Optional[str]:
+        """Alias for get_stream_url."""
+        return await self.get_stream_url(workspace_id)
 
     async def status(self, workspace_id: str) -> ComputerState:
         """Returns the real-time operational state of the graphical desktop."""

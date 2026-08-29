@@ -184,10 +184,12 @@ def test_computer_use_agent_closed_loop(daytona_computer):
 
 
 def test_vnc_url_returns_none_when_no_sandbox(daytona_computer):
-    """Proves get_vnc_url returns None when no sandbox is connected."""
+    """Proves get_stream_url and get_vnc_url return None when no sandbox is connected."""
     async def run():
         ws = await daytona_computer.create("tenant-alpha", "eng-01")
-        # No real sandbox connected, get_vnc_url should return None
+        # No real sandbox connected, get_stream_url and get_vnc_url should return None
+        stream_url = await daytona_computer.get_stream_url(ws.id)
+        assert stream_url is None
         vnc_url = await daytona_computer.get_vnc_url(ws.id)
         assert vnc_url is None
         await daytona_computer.destroy(ws.id)

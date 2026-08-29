@@ -5,7 +5,6 @@ import {
   PanelLeftClose,
   Plus,
   GitBranch,
-  Monitor,
   Compass,
   Share2,
   FileCheck2,
@@ -184,10 +183,6 @@ export function WorkstationSidebar({
         <Link href="/settings" className="flex items-center gap-2 hover:text-white transition">
           <Settings className="w-4 h-4" />
           <span>Settings</span>
-        </Link>
-        <Link href="/terminal" className="flex items-center gap-1.5 hover:text-white transition">
-          <Monitor className="w-4 h-4" />
-          <span>PTY Shell</span>
         </Link>
       </div>
     </aside>

@@ -68,6 +68,14 @@ async def lifespan(app: FastAPI):
     yield
 
     # Shutdown
+    # Release the shared Daytona SDK client (aiohttp session) if one was created.
+    from sonic.api.routes.workstation import _daytona_provider_instance
+
+    if _daytona_provider_instance is not None:
+        try:
+            await _daytona_provider_instance.close()
+        except Exception as e:
+            logger.warning("daytona_provider_close_failed", error=str(e))
     await graph.disconnect()
     logger.info("sonic_shutdown")
 

@@ -77,6 +77,7 @@ def test_daytona_computer_lifecycle(daytona_computer):
         # Cleanup
         destroyed = await daytona_computer.destroy(ws.id)
         assert destroyed is True
+        await daytona_computer.close()
 
     asyncio.run(run())
 
@@ -129,6 +130,7 @@ def test_daytona_screenshot_observation(daytona_computer):
         assert len(raw_bytes) > 1000
 
         await daytona_computer.destroy(ws.id)
+        await daytona_computer.close()
 
     asyncio.run(run())
 
@@ -137,6 +139,51 @@ def test_daytona_gui_action_dispatch(daytona_computer):
     """Proves mouse click, keyboard type, and app management dispatch into remote X11 desktop."""
     async def run():
         ws = await daytona_computer.create("tenant-alpha", "eng-01")
+
+        # Simulate a live Daytona sandbox so gui_action dispatches into the
+        # remote X11 desktop via the SDK computer_use API (mouse/keyboard) and
+        # process.exec, rather than degrading to the no-sandbox observation.
+        class MockMouse:
+            async def click(self, x, y, button="left", double=False):
+                return None
+
+            async def move(self, x, y):
+                return None
+
+        class MockKeyboard:
+            async def type(self, text):
+                return None
+
+            async def press(self, key):
+                return None
+
+        class MockScreenshotResponse:
+            def __init__(self):
+                self.screenshot = base64.b64encode(b"\x89PNG\r\n\x1a\n" + b"\x00" * 1200).decode("utf-8")
+                self.size_bytes = 1210
+
+        class MockScreenshotService:
+            async def take_full_screen(self, **kwargs):
+                return MockScreenshotResponse()
+
+        class MockComputerUse:
+            mouse = MockMouse()
+            keyboard = MockKeyboard()
+            screenshot = MockScreenshotService()
+
+        class MockProcess:
+            async def exec(self, command):
+                class _R:
+                    exit_code = 0
+                    stdout = ""
+                    stderr = ""
+                return _R()
+
+        class MockSandbox:
+            computer_use = MockComputerUse()
+            process = MockProcess()
+
+        daytona_computer._sandboxes[ws.id] = MockSandbox()
 
         # 1. Click
         click_act = GUIAction(action=GUIActionType.CLICK, x=400, y=300)
@@ -154,6 +201,7 @@ def test_daytona_gui_action_dispatch(daytona_computer):
         assert obs3.active_window == "VS Code Workspace Editor"
 
         await daytona_computer.destroy(ws.id)
+        await daytona_computer.close()
 
     asyncio.run(run())
 
@@ -182,6 +230,7 @@ def test_computer_use_agent_closed_loop(daytona_computer):
         assert len(decision) == 4
 
         await daytona_computer.destroy(ws.id)
+        await daytona_computer.close()
 
     asyncio.run(run())
 
@@ -196,6 +245,7 @@ def test_vnc_url_returns_none_when_no_sandbox(daytona_computer):
         vnc_url = await daytona_computer.get_vnc_url(ws.id)
         assert vnc_url is None
         await daytona_computer.destroy(ws.id)
+        await daytona_computer.close()
 
     asyncio.run(run())
 
@@ -208,6 +258,7 @@ def test_process_list_returns_empty_when_no_sandbox(daytona_computer):
         assert isinstance(processes, list)
         assert len(processes) == 0  # No hardcoded fake processes
         await daytona_computer.destroy(ws.id)
+        await daytona_computer.close()
 
     asyncio.run(run())
 
@@ -220,6 +271,7 @@ def test_application_list_returns_empty_when_no_sandbox(daytona_computer):
         assert isinstance(apps, list)
         assert len(apps) == 0  # No hardcoded fake apps
         await daytona_computer.destroy(ws.id)
+        await daytona_computer.close()
 
     asyncio.run(run())
 
@@ -233,6 +285,7 @@ def test_gui_action_missing_coords_does_not_click(daytona_computer):
         assert obs is not None
         assert obs.width == 1280
         await daytona_computer.destroy(ws.id)
+        await daytona_computer.close()
 
     asyncio.run(run())
 

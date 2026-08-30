@@ -61,3 +61,4 @@ evidence_store/
 *.db
 sonic_data.db
 sonic-core/sonic_data/
+sonic_data/

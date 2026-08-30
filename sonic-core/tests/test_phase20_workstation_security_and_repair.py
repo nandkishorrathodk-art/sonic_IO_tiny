@@ -115,3 +115,72 @@ def test_workstation_file_access_path_traversal_blocked(client, auth_headers):
     """Proves path traversal outside repository is rejected with 403."""
     res = client.get("/workstation/file?path=../../../../etc/passwd", headers=auth_headers)
     assert res.status_code == 403
+
+
+@pytest.fixture
+def auditor_headers():
+    user = User(
+        email="auditor@company.com",
+        name="Compliance Auditor",
+        role=UserRole.AUDITOR,
+        tenant_id="tenant-alpha",
+    )
+    auth_token = create_jwt_token(user)
+    return {"Authorization": f"Bearer {auth_token.access_token}"}
+
+
+def test_workstation_auditor_blocked_from_mutations(client, auditor_headers):
+    """RBAC: read-only AUDITOR role must be rejected (403) from all workstation mutation routes."""
+    mutation_routes = [
+        ("post", "/workstation/desktop/provision", {}),
+        ("post", "/workstation/research-lab/provision", {}),
+        ("delete", "/workstation/research-lab", None),
+        ("post", "/workstation/target-sandbox/provision", {"target": "10.0.0.1", "scope_config": {"authorized": True}}),
+        ("delete", "/workstation/target-sandbox", None),
+        ("post", "/workstation/desktop/action", {"action": "click", "coordinates": [10, 10]}),
+        ("post", "/workstation/file", {"path": "sonic-core/sonic/__init__.py", "content": "x"}),
+        ("post", "/workstation/command", {"command": "whoami"}),
+        ("post", "/workstation/mission/start", {"objective": "test"}),
+        ("post", "/workstation/prompt", {"prompt": "test"}),
+        ("delete", "/workstation/session?session_id=sess", None),
+    ]
+    for method, route, body in mutation_routes:
+        if method == "post":
+            res = client.post(route, headers=auditor_headers, json=body)
+        else:
+            res = client.delete(route, headers=auditor_headers)
+        assert res.status_code == 403, f"AUDITOR was allowed to {method.upper()} {route} (got {res.status_code})"
+
+
+def test_workstation_auditor_can_read_state(client, auditor_headers):
+    """RBAC: read-only AUDITOR may still GET workstation state and desktop status (no mutation)."""
+    res_state = client.get("/workstation/state", headers=auditor_headers)
+    assert res_state.status_code == 200
+    res_status = client.get("/workstation/desktop/status", headers=auditor_headers)
+    assert res_status.status_code == 200
+    # Screenshot with no workspace should degrade gracefully to 200 NO_DISPLAY, not 403/409.
+    res_screen = client.get("/workstation/desktop/screenshot", headers=auditor_headers)
+    assert res_screen.status_code == 200
+    assert res_screen.json()["desktop_state"] == "NO_DISPLAY"
+
+
+def test_workstation_screenshot_no_workspace_returns_no_display(client, auth_headers):
+    """Screenshot endpoint degrades to a 200 NO_DISPLAY observation when no workstation is provisioned."""
+    res = client.get("/workstation/desktop/screenshot", headers=auth_headers)
+    assert res.status_code == 200
+    data = res.json()
+    assert data["desktop_state"] == "NO_DISPLAY"
+    assert data["screenshot_base64"] == ""
+
+
+def test_workstation_desktop_action_no_workspace_degrades(client, auth_headers):
+    """Desktop action with no provisioned workstation returns success with a NO_DISPLAY observation."""
+    res = client.post(
+        "/workstation/desktop/action",
+        headers=auth_headers,
+        json={"action": "click", "coordinates": [200, 150]},
+    )
+    assert res.status_code == 200
+    data = res.json()
+    assert data["status"] == "success"
+    assert data["observation"]["desktop_state"] == "NO_DISPLAY"

@@ -32,6 +32,13 @@ def test_exploit_validator_evaluation():
             "title": "IDOR on token endpoint",
             "vulnerability_class": "IDOR",
             "poc": "GET /api/user/10/tokens HTTP/1.1",
+            # Production contract: empirical confirmation requires real sandbox
+            # execution evidence (model-only confirmation is disabled by the
+            # P0 security hardening), so supply evidence + a sandbox-derived
+            # confidence/blast radius.
+            "execution_evidence": "HTTP/1.1 200 OK\n{\"tokens\":[...]}  (sandbox reproduction confirmed unauthorized access to user 10 tokens)",
+            "confidence_score": 90,
+            "blast_radius": "tenant_wide",
         }
         res = await validator._validate_poc(finding)
         assert res.is_confirmed is True

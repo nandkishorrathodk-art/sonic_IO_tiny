@@ -21,6 +21,34 @@ from sonic.evolution.lab import EvolutionLab
 from sonic.evolution.comparator import BaselineComparator
 from sonic.evolution.promotion import PromotionEngine, CanaryManager
 from sonic.evolution.memory import EvolutionMemoryStore
+from sonic.sandbox.provider import ComputeProvider, ExecResult, WorkspaceState
+
+
+class _PassingComputeProvider(ComputeProvider):
+    """Simulated disposable sandbox where every staged command succeeds.
+
+    Lets the self-evolution test exercise the real fail-closed EvolutionLab
+    pipeline (which rejects candidates when no compute provider is attached)
+    without a live Docker daemon, instead of asserting a synthetic pass.
+    """
+
+    async def create_workspace(self, config):
+        return True
+
+    async def execute(self, workspace_id, command, cwd=None, env=None, timeout=120):
+        return ExecResult(command=command, exit_code=0, stdout="ok", stderr="")
+
+    async def read_file(self, workspace_id, path):
+        return b""
+
+    async def write_file(self, workspace_id, path, data):
+        return True
+
+    async def destroy_workspace(self, workspace_id):
+        return True
+
+    async def get_state(self, workspace_id):
+        return WorkspaceState.RUNNING
 
 
 def test_synthetic_self_evolution_lifecycle():
@@ -28,7 +56,7 @@ def test_synthetic_self_evolution_lifecycle():
         policy = EvolutionPolicy()
         memory_store = EvolutionMemoryStore()
         generator = CandidateGenerator(policy=policy)
-        lab = EvolutionLab(compute_provider=None, policy=policy)
+        lab = EvolutionLab(compute_provider=_PassingComputeProvider(), policy=policy)
 
         # Baseline metrics (v1.0.0)
         baseline_metrics = CandidateMetrics(
@@ -72,7 +100,9 @@ def test_synthetic_self_evolution_lifecycle():
         assert candidate.state == EvolutionState.CANDIDATE_CREATED
 
         # 4. TEST & BENCHMARK: Run Candidate in Isolated Evolution Lab
-        pipeline_res, candidate_metrics = await lab.run_candidate_pipeline(candidate)
+        #    Ground-truth fixture: one true-positive detection (no fabrication).
+        fixtures = [{"id": "fx-jwt-none", "expected_vulnerable": True, "evaluator": lambda c: True}]
+        pipeline_res, candidate_metrics = await lab.run_candidate_pipeline(candidate, ground_truth_fixtures=fixtures)
         assert pipeline_res.passed_all_critical is True
         assert candidate_metrics.safety_violations == 0
 

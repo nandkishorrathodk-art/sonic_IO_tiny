@@ -20,6 +20,44 @@ from sonic.evidence.reproduction_engine import ReproductionEngine
 from sonic.evidence.confidence_engine import FindingConfidenceEngine
 from sonic.evidence.dedup import FalsePositiveFilter
 from sonic.evidence.package import EvidencePackageManager
+from sonic.sandbox.provider import ComputeProvider, ExecResult
+
+
+class _FakeSandboxComputeProvider(ComputeProvider):
+    """In-memory sandbox simulator reproducing the PoC's expected result.
+
+    Keeps the trust mission test honest: it exercises the real fail-closed
+    reproduction code path against a (simulated) isolated compute provider
+    instead of asserting a fake success when no provider is attached.
+    """
+
+    def __init__(self, expected_result: str):
+        self.expected_result = expected_result
+
+    async def create_workspace(self, config):  # noqa: D401
+        return True
+
+    async def execute(self, workspace_id, command, cwd=None, env=None, timeout=120):
+        return ExecResult(
+            command=command,
+            exit_code=0,
+            stdout=f"HTTP/1.1 200 OK\n{self.expected_result}",
+            stderr="",
+            sandbox_id=workspace_id,
+        )
+
+    async def read_file(self, workspace_id, path):
+        return b""
+
+    async def write_file(self, workspace_id, path, data):
+        return True
+
+    async def destroy_workspace(self, workspace_id):
+        return True
+
+    async def get_state(self, workspace_id):
+        from sonic.sandbox.provider import WorkspaceState
+        return WorkspaceState.RUNNING
 
 
 def test_synthetic_trust_mission_lifecycle():
@@ -80,7 +118,7 @@ def test_synthetic_trust_mission_lifecycle():
         assert finding.lifecycle_state == FindingLifecycleState.ADVERSARIAL_REVIEW
 
         # 4. Reproduction Engine executes PoC in Sandbox ComputeProvider
-        reprod_engine = ReproductionEngine(compute_provider=None)
+        reprod_engine = ReproductionEngine(compute_provider=_FakeSandboxComputeProvider(expected_result="access_token"))
         reprod_plan = ReproductionPlan(
             finding_id=finding.id,
             target="target-bank.corp",

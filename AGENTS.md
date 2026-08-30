@@ -52,8 +52,28 @@ the ephemeral `InMemoryGraph`. So if Neo4j is down, memory still persists.
   (hardcoded planner/director), browser-in-loop, security-tool execution, and
   curiosity/life are NOT done (Phase 3-6, deferred per PLAN).
 
+## Persistent body + safety (Phase 2 — DONE, foundation)
+- `DaytonaComputerProvider` persists its workspace index to
+  `sonic_data/workstations.json` (`SONIC_WORKSTATION_STATE_PATH`). `_load_state()`
+  runs in `__init__`, so workspace IDs survive a backend restart and
+  `_resolve_sandbox` re-attaches via `client.get(id)`. `create()`/`destroy()`
+  write-through on every lifecycle change.
+- `get_or_create_home(tenant_id)` returns the tenant's long-lived
+  `MISSION_COMPUTER` home, reusing a persisted one instead of reprovisioning
+  (tenant-scoped).
+- Safety regression (verified by `test_phase2_persistent_body_and_safety.py`):
+  host execution is hard-forced false outside dev even when
+  `SONIC_ALLOW_HOST_EXECUTION=true`; `LocalDevProvider.execute()` returns a
+  fail-closed result (exit 126) when disabled — never spawns a host subprocess.
+- Test marker `@pytest.mark.no_live_infra` opts a test out of the live-compute
+  skip gate (for provider state/safety logic that needs no live sandbox). The
+  ~48 genuinely live-gated integration tests remain honestly skipped.
+- **Live done-gate (Step 2.4) is environment-gated:** the full
+  provision-home → screenshot → terminal → restart → re-attach cycle needs a
+  real Daytona cloud desktop (`SONIC_RUN_LIVE_DAYTONA=1`). Not runnable here.
+
 ## Current test baseline
-- 294 passed, 48 honestly skipped (Docker-daemon / Daytona-live gated via
+- 300 passed, 48 honestly skipped (Docker-daemon / Daytona-live gated via
   `sonic-core/tests/conftest.py`), 6 pre-existing failures.
 - The 6 failures are pre-existing model-only/fail-closed contract tests that
   assert the OLD fake-success behavior (e.g. `EvolutionLab(compute_provider=None)`

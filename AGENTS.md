@@ -29,6 +29,43 @@ execution, Neo4j graph memory, multi-tenant RBAC.
 - `get_settings()` is `@lru_cache`d — in tests that monkeypatch env vars, call
   `get_settings.cache_clear()` before and after.
 
+## Persistent memory (Phase 1 — DONE, foundation)
+SONIC's mind now survives a backend restart. The memory router
+(`sonic/memory/router.py`) selects Neo4j first, then falls back to a
+**persistent** SQLite-backed graph (`sonic/memory/sqlite_graph.py`) instead of
+the ephemeral `InMemoryGraph`. So if Neo4j is down, memory still persists.
+- `SqliteGraph` mirrors the `InMemoryGraph` interface exactly (drop-in), with
+  write-through: every node/relationship write commits to SQLite immediately.
+  Tables: `memory_nodes(uid,label,tenant_id,props_json,created_at)`,
+  `memory_relationships(from_uid,to_uid,type,from_label,to_label,props_json,tenant_id)`.
+- `VectorMemory` (`sonic/memory/vector.py`) and `EvolutionMemoryStore`
+  (`sonic/evolution/memory.py`) also write through to SQLite (`vector_documents`,
+  `evolution_items` tables) via stdlib `sqlite3` (sync API preserved).
+- DB path resolves from `SONIC_MEMORY_DB_PATH` env → `DATABASE_URL` (sqlite) →
+  `./sonic_data.db`. Tests set `SONIC_MEMORY_DB_PATH` to a temp file.
+- `reset_memory_singleton()` / `reset_vector_memory_singleton()` clear the cached
+  singletons to simulate a restart (used by `test_phase1_persistent_memory.py`).
+- Done-gate test: `sonic-core/tests/test_phase1_persistent_memory.py` — proves
+  graph/vector/evolution memory survive restart, tenant isolation holds across
+  restart, and no host `subprocess` execution was introduced.
+- **Honesty checkpoint:** Phase 1 claims ONLY persistent memory. Real reasoning
+  (hardcoded planner/director), browser-in-loop, security-tool execution, and
+  curiosity/life are NOT done (Phase 3-6, deferred per PLAN).
+
+## Current test baseline
+- 294 passed, 48 honestly skipped (Docker-daemon / Daytona-live gated via
+  `sonic-core/tests/conftest.py`), 6 pre-existing failures.
+- The 6 failures are pre-existing model-only/fail-closed contract tests that
+  assert the OLD fake-success behavior (e.g. `EvolutionLab(compute_provider=None)`
+  expects success but is now correctly fail-closed; `ExploitValidator` expects
+  confirmation without sandbox evidence). They are in the capability layer
+  (evolution/exploit), NOT the foundation, and are out of scope per PLAN line
+  128 ("Known pre-existing test failures ... not caused by this work").
+- `test_phase20_workstation_security_and_repair.py` is now GREEN: the
+  `/workstation/command` route returns 503 fail-closed (not 409) when no sandbox
+  is provisioned, and `/workstation/file` validates path confinement (403) BEFORE
+  the workspace-state check.
+
 ## Security hardening applied (commit ab99ae2)
 P0 fixes (all covered by `test_p0_security_hardening.py`):
 1. `/auth/login` + `/auth/dev-token` are dev-only (404 in non-dev); roles clamped

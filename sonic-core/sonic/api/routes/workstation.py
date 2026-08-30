@@ -309,7 +309,7 @@ def _workspace_file_path(path: str) -> str:
         raw if raw.startswith("/") else posixpath.join(_WORKSPACE_ROOT, raw)
     )
     if candidate != _WORKSPACE_ROOT and not candidate.startswith(f"{_WORKSPACE_ROOT}/"):
-        raise HTTPException(status_code=400, detail="File path must stay inside the workstation workspace")
+        raise HTTPException(status_code=403, detail="File path must stay inside the workstation workspace")
     return candidate
 
 
@@ -927,10 +927,13 @@ async def get_workstation_file(
     user: User = Depends(require_auth),
 ):
     """Reads a file from the authenticated remote workstation filesystem."""
+    # Security: validate the path is confined to the workspace root BEFORE any
+    # workspace-state check, so traversal attempts are rejected with 403 even
+    # when no sandbox is provisioned (never reveal or weaken the path policy).
+    remote_path = _workspace_file_path(path)
     workspace_id = _session_workspace_id(user, session_id)
     if not workspace_id:
         raise HTTPException(status_code=409, detail="No Daytona workstation is provisioned for this session")
-    remote_path = _workspace_file_path(path)
     try:
         content = await get_daytona_computer().read_file(workspace_id, remote_path)
         if content.startswith(f"# Error reading file {remote_path}"):
@@ -1017,10 +1020,14 @@ async def execute_workstation_command(
     # Execute only against the authenticated tenant/session's Daytona workspace.
     # A shared Docker container is never a safe fallback for a tenant-scoped
     # request because it can cross session boundaries and is not the agent's
-    # actual workstation.
+    # actual workstation. No provisioned sandbox => sandbox UNAVAILABLE =>
+    # fail-closed 503 (never host execution).
     workspace_id = _session_workspace_id(user, req.session_id or "default")
     if not workspace_id:
-        raise HTTPException(status_code=409, detail="Provision a Daytona workstation before executing commands")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Direct host OS execution is strictly prohibited; no sandboxed Daytona workstation is provisioned for this session.",
+        )
     comp = get_daytona_computer()
     res = await comp.terminal(workspace_id, req.command, timeout=req.timeout or 30, actor=user.email)
     if res.exit_code == 126:

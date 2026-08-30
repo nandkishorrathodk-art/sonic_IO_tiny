@@ -639,3 +639,56 @@ class ComputerUseAgent:
         )
 
         return self.traces
+
+    # =============================================================
+    # 6. Self-Directed Curiosity / Life Loop (Phase 6)
+    # =============================================================
+    async def _observation_summary(self, workspace_id: str) -> str:
+        """A compact text summary of the current world for curiosity proposals."""
+        obs = await self.observe(workspace_id)
+        return (
+            f"Active app: {obs.active_application}\n"
+            f"Screen: {(obs.visible_text or '')[:300]}\n"
+            f"Terminal: {(obs.terminal_output or '')[:200]}\n"
+            f"Files: {obs.filesystem_files}\n"
+            f"Git: branch={obs.git_branch}, clean={obs.git_clean}"
+        )
+
+    async def idle_cycle(
+        self,
+        workspace_id: str,
+        curiosity: Any,
+    ) -> Any:
+        """One self-directed curiosity cycle, no operator goal required.
+
+        Uses the CuriosityLoop to PROPOSE a goal from the live observation +
+        learned facts, pursues it via the real observe->reason->act loop, then
+        measures novelty and persists any newly-learned fact. Returns the
+        CuriosityCycleResult.
+        """
+        async def pursue(goal: str, steps: int) -> str:
+            before = len(self.traces)
+            await self.run_mission(workspace_id, goal, steps=steps)
+            # Summarize what the pursuit actually observed/did.
+            new_traces = self.traces[before:]
+            if not new_traces:
+                return f"no actions taken toward: {goal}"
+            outcomes = "; ".join(
+                f"{t.action_type.value}:{(t.actual_observation or '')[:60]}" for t in new_traces
+            )
+            return f"{goal} -> {outcomes}"
+
+        obs_summary = await self._observation_summary(workspace_id)
+        return await curiosity.run_cycle(obs_summary, pursue)
+
+    async def run_curiosity_loop(
+        self,
+        workspace_id: str,
+        curiosity: Any,
+    ) -> list[Any]:
+        """Run repeated self-directed curiosity cycles until max_cycles."""
+        results = []
+        for _ in range(curiosity.max_cycles):
+            res = await self.idle_cycle(workspace_id, curiosity)
+            results.append(res)
+        return results

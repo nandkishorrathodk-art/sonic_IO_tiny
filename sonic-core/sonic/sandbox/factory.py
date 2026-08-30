@@ -49,6 +49,17 @@ def get_compute_provider(force_provider: str | None = None) -> ComputeProvider:
     else:
         # Fail-closed local dev provider
         allow_host = os.environ.get("SONIC_ALLOW_HOST_EXECUTION", "false").lower() == "true"
+        # Hard guard: host shell execution (shell=True on the host OS) is NEVER
+        # permitted outside development. This prevents the LocalSandbox escape
+        # hatch from being activated by a stray env var in production/staging.
+        settings = get_settings()
+        if allow_host and not settings.is_dev:
+            logger.error(
+                "host_execution_refused_in_non_dev",
+                env=settings.app_env,
+                msg="SONIC_ALLOW_HOST_EXECUTION=true is forbidden outside development; forcing fail-closed.",
+            )
+            allow_host = False
         _active_provider = LocalDevProvider(allow_host_execution=allow_host)
         logger.info("compute_provider_selected", provider="LocalDevProvider", allow_host=allow_host)
 

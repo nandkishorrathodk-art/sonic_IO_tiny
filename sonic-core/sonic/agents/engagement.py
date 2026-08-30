@@ -20,6 +20,8 @@ import json
 from datetime import datetime, timezone
 from sonic.logger import get_logger
 
+from sonic.sandbox.egress import is_target_allowed
+
 logger = get_logger(__name__)
 
 from sonic.agents.orchestrator import MetaOrchestrator
@@ -82,6 +84,14 @@ class EngagementManager:
         tenant_id: str = "default",
     ) -> str:
         """Create a new engagement partitioned by tenant and return its ID."""
+        # Egress / scope guard: refuse to create an engagement whose target
+        # resolves to a private, loopback, or cloud-metadata address. This
+        # prevents an agent from being pointed at internal infrastructure.
+        allowed, reason = is_target_allowed(target)
+        if not allowed:
+            logger.warning("engagement_target_egress_denied", target=target, reason=reason)
+            return ""
+
         engagement = EngagementNode(
             name=name,
             target_summary=target,
@@ -118,6 +128,7 @@ class EngagementManager:
         self,
         engagement_id: str,
         phases: list[str] | None = None,
+        tenant_id: str | None = None,
     ) -> dict[str, Any]:
         """
         Run a full engagement pipeline.
@@ -127,6 +138,16 @@ class EngagementManager:
         eng = self.active_engagements.get(engagement_id)
         if not eng:
             return {"error": f"Engagement {engagement_id} not found"}
+
+        # Tenant ownership check: refuse to run another tenant's engagement.
+        if tenant_id and eng.get("tenant_id") != tenant_id:
+            logger.warning(
+                "cross_tenant_run_denied",
+                engagement_id=engagement_id,
+                requesting_tenant=tenant_id,
+                owner_tenant=eng.get("tenant_id"),
+            )
+            return {"error": "Engagement not found or unauthorized"}
 
         target = eng["target"]
         scope = eng["scope"]

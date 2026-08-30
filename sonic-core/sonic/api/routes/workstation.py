@@ -667,6 +667,15 @@ async def provision_target_sandbox(
     if not scope.is_target_in_scope(target_host, req.scope_config):
         raise HTTPException(status_code=403, detail="Target is outside the supplied engagement scope")
 
+    # Egress guard: refuse to bind a sandbox to a private/loopback/metadata target.
+    from sonic.sandbox.egress import is_target_allowed
+    egress_ok, egress_reason = is_target_allowed(target_host)
+    if not egress_ok:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Target rejected by egress policy: {egress_reason}",
+        )
+
     state = _get_or_create_session(user.email, session_id)
     target_box = state["target_sandbox"]
     if target_box.get("workspace_id"):

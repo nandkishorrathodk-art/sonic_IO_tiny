@@ -41,6 +41,15 @@ async def lifespan(app: FastAPI):
         env=settings.app_env,
     )
 
+    # Security: refuse to boot in production with an insecure JWT signing secret.
+    jwt_ok, jwt_reason = settings.validate_jwt_secret()
+    if not jwt_ok:
+        logger.error("jwt_secret_invalid", reason=jwt_reason)
+        raise RuntimeError(jwt_reason)
+    if settings.is_dev and "default" in jwt_reason:
+        logger.warning("jwt_secret_weak_dev", reason=jwt_reason)
+    logger.info("jwt_secret_validated", production=settings.is_production)
+
     # Load safety rules (immutable after this point)
     scope_checker = get_scope_checker()
     logger.info("safety_layer_loaded")
@@ -100,7 +109,7 @@ app.include_router(workstation.router, tags=["Workstation"])
 from fastapi.middleware.cors import CORSMiddleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://localhost:3001", "http://127.0.0.1:3000"],
+    allow_origins=settings.cors_origins_list,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

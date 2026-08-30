@@ -2,6 +2,15 @@
 SONIC-REDA — Auth Routes
 ============================
 Google OAuth2 login/callback/logout and local session endpoints.
+
+Security note:
+    The local ``/login`` and ``/dev-token`` endpoints are DEVELOPMENT-ONLY
+    conveniences for bootstrapping dashboard sessions without a configured
+    Google OAuth client. They are HARD-GATED to ``app_env == "development"`` and,
+    even in development, can never elevate a caller to an administrative role
+    (``SUPER_ADMIN`` / ``TENANT_ADMIN``). In any non-development environment
+    these routes are disabled and authentication is performed exclusively via
+    Google OAuth2.
 """
 
 from __future__ import annotations
@@ -16,11 +25,21 @@ from sonic.auth.google_auth import (
 )
 from sonic.auth.middleware import require_auth
 from sonic.auth.models import AuthToken, User, UserRole
+from sonic.config import get_settings
 
 router = APIRouter()
 
 
 from pydantic import BaseModel
+
+# Roles that an unauthenticated local-login endpoint may NEVER issue, even in
+# development. Administrative roles must come only from verified OAuth2
+# callback flow or out-of-band admin configuration — never from a self-asserted
+# request body.
+_FORBIDDEN_LOCAL_ROLES = {UserRole.SUPER_ADMIN, UserRole.TENANT_ADMIN}
+
+# The maximum role the dev login path can grant.
+_DEV_LOCAL_ROLE_CEILING = UserRole.OPERATOR
 
 
 class LoginRequest(BaseModel):
@@ -30,20 +49,43 @@ class LoginRequest(BaseModel):
     tenant_id: str = "default"
 
 
+def _enforce_dev_only(action: str) -> None:
+    """Disable local/unauthenticated auth endpoints outside development."""
+    settings = get_settings()
+    if not settings.is_dev:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"{action} is disabled outside development; use /auth/google/login.",
+        )
+
+
 @router.post("/login")
 async def login_user(req: LoginRequest):
-    """Generates an authenticated JWT token for the requested tenant user."""
-    role_enum = UserRole.OPERATOR
+    """
+    Development-only local login.
+
+    Mints an OPERATOR-scoped JWT for the requested tenant user. The requested
+    role is clamped to ``OPERATOR`` (or ``AUDITOR``); administrative roles are
+    never issued from this unauthenticated endpoint, which prevents privilege
+    escalation. Disabled entirely in non-development environments.
+    """
+    _enforce_dev_only("/auth/login")
+
+    requested = UserRole.OPERATOR
     try:
         if req.role:
-            role_enum = UserRole(req.role.lower())
+            requested = UserRole(req.role.lower())
     except ValueError:
-        role_enum = UserRole.OPERATOR
+        requested = UserRole.OPERATOR
+
+    # Clamp: never issue an administrative role from the unauthenticated path.
+    if requested in _FORBIDDEN_LOCAL_ROLES:
+        requested = _DEV_LOCAL_ROLE_CEILING
 
     user = User(
         email=req.email,
         name=req.name or req.email.split("@")[0].title(),
-        role=role_enum,
+        role=requested,
         tenant_id=req.tenant_id or "default",
     )
     auth_token = create_jwt_token(user)
@@ -57,7 +99,13 @@ async def login_user(req: LoginRequest):
 
 @router.post("/dev-token")
 async def get_dev_token(email: str = Query("engineer@company.com")):
-    """Generates a real, cryptographically valid operator JWT for dashboard sessions."""
+    """
+    Development-only token bootstrap for the dashboard.
+
+    Issues a cryptographically valid but strictly OPERATOR-scoped JWT. Disabled
+    entirely in non-development environments; never grants administrative roles.
+    """
+    _enforce_dev_only("/auth/dev-token")
     user = User(
         email=email,
         name="Lead Engineer",

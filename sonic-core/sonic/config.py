@@ -11,7 +11,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Optional
 
-from pydantic import Field
+from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -85,7 +85,10 @@ class Settings(BaseSettings):
     google_redirect_uri: str = "http://localhost:8000/auth/google/callback"
     allowed_emails: str = ""  # Comma-separated in env
     allowed_domains: str = ""  # Comma-separated in env
-    jwt_secret: str = "CHANGE-ME"
+    jwt_secret: str = Field(
+        default="CHANGE-ME",
+        validation_alias=AliasChoices("jwt_secret", "SECRET_KEY", "JWT_SECRET"),
+    )
     jwt_algorithm: str = "HS256"
     jwt_expiry_hours: int = 24
 
@@ -112,9 +115,35 @@ class Settings(BaseSettings):
 
     # ---- Computed Properties ----
 
+    # Secret values that must never be used outside local development.
+    _INSECURE_JWT_SECRETS = {"CHANGE-ME", "", "secret", "changeme"}
+
     @property
     def is_dev(self) -> bool:
         return self.app_env == "development"
+
+    @property
+    def is_production(self) -> bool:
+        return self.app_env == "production"
+
+    def validate_jwt_secret(self) -> tuple[bool, str]:
+        """
+        Validate the JWT signing secret.
+
+        Returns (ok, reason). In production a weak/default secret is a hard
+        failure; in development it is permitted but flagged for rotation.
+        """
+        secret = self.jwt_secret
+        if secret in self._INSECURE_JWT_SECRETS:
+            if self.is_production:
+                return False, (
+                    "jwt_secret is unset or default in production. Set a strong "
+                    "(>=32 byte) random SECRET_KEY via environment before booting."
+                )
+            return True, "jwt_secret uses the development default; rotate before production."
+        if len(secret) < 32 and self.is_production:
+            return False, "jwt_secret must be at least 32 bytes in production."
+        return True, "ok"
 
     @property
     def allowed_emails_list(self) -> list[str]:

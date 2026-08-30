@@ -73,6 +73,11 @@ async def create_engagement(
         created_by=user.email,
         tenant_id=user.tenant_id,
     )
+    if not uid:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Engagement target rejected by egress/scope policy (private, loopback, or metadata address).",
+        )
     return {"engagement_id": uid, "status": "created", "tenant_id": user.tenant_id}
 
 
@@ -84,14 +89,24 @@ async def run_engagement(
 ):
     """Run an engagement (starts the agent pipeline)."""
     manager = get_engagement_manager()
-    eng = await manager.get_engagement_status(engagement_id, tenant_id=user.tenant_id if user.role != UserRole.SUPER_ADMIN else None)
-    if "error" in eng:
+    # Strict tenant scoping: every caller (including SUPER_ADMIN) is bound to
+    # their own tenant_id for engagement execution. Cross-tenant runs are
+    # refused. SUPER_ADMIN retains graph/Cypher privileges elsewhere, not here.
+    status_data = await manager.get_engagement_status(engagement_id, tenant_id=user.tenant_id)
+    if "error" in status_data:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Engagement not found or unauthorized",
         )
 
-    results = await manager.run_engagement(engagement_id, phases=request.phases)
+    results = await manager.run_engagement(
+        engagement_id, phases=request.phases, tenant_id=user.tenant_id
+    )
+    if isinstance(results, dict) and results.get("error"):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Engagement not found or unauthorized",
+        )
     return results
 
 
@@ -104,7 +119,7 @@ async def get_engagement(
     manager = get_engagement_manager()
     status_data = await manager.get_engagement_status(
         engagement_id,
-        tenant_id=user.tenant_id if user.role != UserRole.SUPER_ADMIN else None,
+        tenant_id=user.tenant_id,
     )
     if "error" in status_data:
         raise HTTPException(
@@ -124,7 +139,7 @@ async def get_engagement_findings(
     # Validate access
     status_data = await manager.get_engagement_status(
         engagement_id,
-        tenant_id=user.tenant_id if user.role != UserRole.SUPER_ADMIN else None,
+        tenant_id=user.tenant_id,
     )
     if "error" in status_data:
         raise HTTPException(

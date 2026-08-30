@@ -13,10 +13,12 @@ Integrates Daytona Cloud Sandboxes with full graphical Linux workstation capabil
 
 from __future__ import annotations
 
+import json
 import os
 import shlex
 import asyncio
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Optional
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
@@ -72,6 +74,97 @@ class DaytonaComputerProvider(ComputerProvider):
         self.sessions: dict[str, ComputerSession] = {}
         self.audit_log: list[ComputerAuditEvent] = []
         self._active_windows: dict[str, str] = {}
+        # Persistent Body (PLAN Phase 2): the home desktop ID survives a
+        # backend restart so _resolve_sandbox can re-attach via client.get(id).
+        self._state_path = os.environ.get(
+            "SONIC_WORKSTATION_STATE_PATH",
+            str(Path(os.environ.get("SONIC_DATA_DIR", "sonic_data")) / "workstations.json"),
+        )
+        self._load_state()
+
+    # -------------------------------------------------------------
+    # Persistent Body state (PLAN Phase 2.0)
+    # -------------------------------------------------------------
+
+    def _load_state(self) -> None:
+        """Reload persisted workspace records on init (simulates restart re-attach)."""
+        try:
+            raw = Path(self._state_path).read_text()
+        except (FileNotFoundError, OSError):
+            return
+        try:
+            records = json.loads(raw)
+        except (json.JSONDecodeError, ValueError):
+            logger.warning("workstation_state_corrupt_ignored", path=self._state_path)
+            return
+        for ws_id, rec in (records or {}).items():
+            try:
+                ws = ComputerWorkspace(
+                    id=ws_id,
+                    tenant_id=rec.get("tenant_id", "default"),
+                    engagement_id=rec.get("engagement_id", ""),
+                    workspace_type=ComputerWorkspaceType(rec.get("workspace_type", ComputerWorkspaceType.MISSION_COMPUTER.value)),
+                    profile=ComputerProfile(rec.get("profile", ComputerProfile.DEBIAN_ENGINEERING.value)),
+                    provider_type=rec.get("provider_type", "DaytonaComputerProvider"),
+                    image=rec.get("image", ""),
+                    status=ComputerWorkspaceStatus(rec.get("status", ComputerWorkspaceStatus.READY.value)),
+                    created_at=rec.get("created_at", _now()),
+                    last_active_at=rec.get("last_active_at", _now()),
+                )
+                self.workspaces[ws_id] = ws
+            except Exception as exc:
+                logger.warning("workstation_state_record_skipped", workspace_id=ws_id, error=str(exc))
+        if self.workspaces:
+            logger.info("workstation_state_loaded", workstations=list(self.workspaces.keys()))
+
+    def _persist_state(self) -> None:
+        """Write the workspace index to disk so IDs survive a restart."""
+        try:
+            Path(self._state_path).parent.mkdir(parents=True, exist_ok=True)
+            records = {
+                ws_id: {
+                    "tenant_id": ws.tenant_id,
+                    "engagement_id": ws.engagement_id,
+                    "workspace_type": ws.workspace_type.value,
+                    "profile": ws.profile.value,
+                    "provider_type": ws.provider_type,
+                    "image": ws.image,
+                    "status": ws.status.value,
+                    "created_at": ws.created_at,
+                    "last_active_at": ws.last_active_at,
+                }
+                for ws_id, ws in self.workspaces.items()
+            }
+            Path(self._state_path).write_text(json.dumps(records, indent=2))
+        except Exception as exc:
+            logger.warning("workstation_state_persist_failed", error=str(exc))
+
+    async def get_or_create_home(self, tenant_id: str) -> ComputerWorkspace:
+        """Return the tenant's long-lived MISSION_COMPUTER home, provisioning once.
+
+        Engagements reuse the home; only research-lab/target sandboxes are
+        disposable. If a home already exists (in memory or persisted), it is
+        returned and its sandbox re-attached lazily via ``_resolve_sandbox``.
+        """
+        for ws in self.workspaces.values():
+            if (
+                ws.tenant_id == tenant_id
+                and ws.workspace_type == ComputerWorkspaceType.MISSION_COMPUTER
+                and ws.status not in (ComputerWorkspaceStatus.DESTROYED, ComputerWorkspaceStatus.FAILED)
+            ):
+                # Re-attach the live sandbox by its persisted ID.
+                await self._resolve_sandbox(ws.id)
+                logger.info("home_workstation_reused", workspace_id=ws.id, tenant_id=tenant_id)
+                return ws
+        ws = await self.create(
+            tenant_id=tenant_id,
+            engagement_id=f"home-{tenant_id}",
+            workspace_type=ComputerWorkspaceType.MISSION_COMPUTER,
+            profile=ComputerProfile.DEBIAN_ENGINEERING,
+        )
+        self._persist_state()
+        logger.info("home_workstation_provisioned", workspace_id=ws.id, tenant_id=tenant_id)
+        return ws
 
     def _get_client(self):
         """Initializes and returns the official AsyncDaytona SDK client."""
@@ -232,6 +325,7 @@ class DaytonaComputerProvider(ComputerProvider):
             raise
 
         self._active_windows[workspace_id] = "XFCE Desktop"
+        self._persist_state()
         self._record_audit(
             session_id="system",
             workspace_id=workspace_id,
@@ -266,6 +360,7 @@ class DaytonaComputerProvider(ComputerProvider):
         self.workspaces.pop(workspace_id, None)
         self._sandboxes.pop(workspace_id, None)
         self._active_windows.pop(workspace_id, None)
+        self._persist_state()
 
         if ws or sandbox:
             self._record_audit(

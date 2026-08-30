@@ -61,9 +61,22 @@ def _module_has_any(module, names) -> bool:
     return any(getattr(module, n, None) is not None for n in names)
 
 
+def _has_marker(request, name: str) -> bool:
+    try:
+        return name in {m.name for m in request.node.iter_markers()}
+    except Exception:
+        return False
+
+
 @pytest.fixture(autouse=True)
 def _gate_live_compute(request):
-    """Skip tests whose module imports a live compute provider when it is unavailable."""
+    """Skip tests whose module imports a live compute provider when it is
+    unavailable — UNLESS the test opts out via ``@pytest.mark.no_live_infra``,
+    which marks it as exercising only the provider's state/safety/code-path
+    logic with no live sandbox dependency.
+    """
+    if _has_marker(request, "no_live_infra"):
+        return
     module = request.module
     if module is None:
         return
@@ -71,3 +84,7 @@ def _gate_live_compute(request):
         pytest.skip("Docker daemon unavailable — live compute integration test skipped")
     if _module_has_any(module, _DAYTONA_SYMBOLS) and not os.environ.get("SONIC_RUN_LIVE_DAYTONA"):
         pytest.skip("Live Daytona integration test (set SONIC_RUN_LIVE_DAYTONA=1 to run)")
+
+
+def pytest_configure(config):
+    config.addinivalue_line("markers", "no_live_infra: provider state/safety logic only, no live sandbox")

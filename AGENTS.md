@@ -121,8 +121,26 @@ browser, security tools, AND self-directed exploration. No hardcoded fallbacks.
   exploration.
 - Done-gate: `test_phase6_curiosity_life_loop.py` (5 tests).
 
+### PLAN Phase 6 — Self-host safety envelope / VPS gate (fail-closed ActionPolicy)
+- `sonic/safety/action_policy.py`: `ActionPolicy` is a fail-closed gate the loop
+  consults BEFORE any action (operator- OR self-directed). It composes existing
+  primitives: path confinement (workspace-root) for FILE_*; egress filter
+  (`sonic.sandbox.egress`) for SECURITY_TOOL targets + BROWSER_NAVIGATE urls;
+  destructive-command gating (`sonic.safety.scope.classify_command_risk`,
+  L2->block, L1->needs approval); an action-type allowlist (unknown types
+  DENIED by default); and a per-agent rate limit.
+- `ComputerUseAgent.execute_action()` evaluates the policy pre-dispatch; a
+  denied action is recorded BLOCKED, NEVER reaches the provider, and does NOT
+  trigger recovery (recovery must not bypass the gate). Self-host mode
+  (`self_host=True`) REFUSES to construct without a safety policy.
+- Done-gate: `test_phase_plan6_safety_envelope.py` (10 tests): in-workspace
+  actions execute; path-escape/traversal denied; destructive command denied;
+  security tool vs metadata IP denied (egress); unknown action type denied;
+  the SAME gate blocks curiosity pursuits; self-host requires a policy;
+  rate limit caps actions/min.
+
 ### Test baseline (after Phases 3-6)
-- 322 passed, 48 honestly skipped, 6 pre-existing model-only failures
+- 332 passed, 48 honestly skipped, 6 pre-existing model-only failures
   (unchanged). The 6 failures assert OLD fake-success behavior in the evolution
   / exploit capability layer; they are out of scope per PLAN and are NOT caused
   by this work.

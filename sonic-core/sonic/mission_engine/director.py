@@ -18,7 +18,6 @@ from sonic.computer_use.agent import ComputerUseAgent
 from sonic.computer_use.models import ComputerAutonomyLevel, EngineeringMissionMode
 from sonic.logger import get_logger
 from sonic.mission_engine.models import (
-    DeliverableType,
     MilestoneStatus,
     MissionDeliverable,
     MissionEvent,
@@ -232,8 +231,17 @@ class MissionDirector:
 
             # 2. Phase: UNDERSTANDING & RESEARCH
             state.current_phase = MissionPhase.RESEARCH
-            state.active_hypotheses.append("Hypothesis 1: JWT token validation accepts 'none' algorithm parameter")
-            state.evidence.append(f"Evidence 1: Inspection in workspace {ws.id}")
+            # Hypotheses are seeded from the objective's own constraints/scope,
+            # not a hardcoded vulnerability name.
+            if state.objective.constraints:
+                state.active_hypotheses.append(
+                    f"Working hypothesis derived from constraints: {'; '.join(state.objective.constraints[:2])}"
+                )
+            else:
+                state.active_hypotheses.append(
+                    f"Investigate the root cause of: {state.objective.goal}"
+                )
+            state.evidence.append(f"Mission initialized in workspace {ws.id}")
 
             # 3. Phase: ENGINEERING (Delegate to ComputerUseAgent)
             state.current_phase = MissionPhase.ENGINEERING
@@ -242,17 +250,27 @@ class MissionDirector:
             # Bind to the underlying ComputeProvider (UnifiedComputerProvider
             # delegates terminal exec to it; SecurityTool.execute calls execute()).
             from sonic.tools.registry import get_default_registry
+            # Wire the browser into the unified action surface so the agent can
+            # navigate/click/type/screenshot as a first-class reasoning action
+            # (was orphaned — BrowserAgent existed but no caller passed browser=).
+            from sonic.agents.browser_agent import BrowserAgent
+            browser = BrowserAgent(headless=True)
+            await browser.launch()
             agent = ComputerUseAgent(
                 computer_provider=self.computer,
                 autonomy_level=self.autonomy_level,
                 mode=EngineeringMissionMode.ENGINEERING_MODE,
                 security_tools=get_default_registry(self.computer.compute).as_dict(),
+                browser=browser,
             )
             traces = await agent.run_mission(
                 workspace_id=ws.id,
                 goal=state.objective.goal,
                 steps=5,
             )
+            # Stash traces so get_knowledge_summary / re-finalize can derive
+            # honest artifacts without re-running the agent.
+            object.__setattr__(state, "_last_traces", traces)
 
             # Record Resource Consumption
             self.resource_mgr.record_spend(
@@ -262,30 +280,43 @@ class MissionDirector:
                 compute_seconds=round(time.perf_counter() - t_start, 2),
             )
 
-            # Update Milestones
-            if state.current_plan and len(state.current_plan.milestones) >= 3:
-                state.current_plan.milestones[0].status = MilestoneStatus.COMPLETED
-                state.current_plan.milestones[0].progress_pct = 100.0
-                state.current_plan.milestones[1].status = MilestoneStatus.COMPLETED
-                state.current_plan.milestones[1].progress_pct = 100.0
-                state.current_plan.milestones[2].status = MilestoneStatus.COMPLETED
-                state.current_plan.milestones[2].progress_pct = 100.0
+            # Update Milestones — COMPLETED only where traces prove progress,
+            # never force-completed by decree.
+            from sonic.mission_engine.trace_synthesis import milestone_status_from_traces
+            updated_milestones, progress = milestone_status_from_traces(traces, state.current_plan)
+            if updated_milestones and state.current_plan:
+                state.current_plan.milestones = updated_milestones
+            state.progress_pct = progress
 
             # 4. Phase: VERIFICATION & REPORTING
             state.current_phase = MissionPhase.VERIFICATION
-            state.confidence = 1.00
-            state.progress_pct = 100.0
+            # Confidence is derived from the agent's actual success ratio.
+            total_actions = len(traces)
+            successful = sum(1 for t in traces if t.status in ("SUCCESS", "RECOVERED"))
+            state.confidence = round(successful / total_actions, 2) if total_actions else 0.0
             state.completed_tracks = list(state.active_tracks)
             state.active_tracks = []
-            state.remaining_unknowns = []
+            state.remaining_unknowns = [] if successful else state.remaining_unknowns
 
-            # 5. Finalize Deliverables
-            await self.finalize(mission_id)
+            # 5. Finalize Deliverables — derived from the agent's real actions.
+            await self.finalize(mission_id, traces=traces)
 
+            # Outcome reflects reality: success only if the agent actually did
+            # something that succeeded.
             state.current_phase = MissionPhase.COMPLETED
-            state.status = MissionStatus.COMPLETED
-            state.outcome = MissionOutcome.SUCCESS
-            state.current_next_action = "Mission completed successfully. All deliverables ready."
+            if successful > 0:
+                state.status = MissionStatus.COMPLETED
+                state.outcome = MissionOutcome.SUCCESS
+                state.current_next_action = (
+                    f"Mission completed: {successful}/{total_actions} actions succeeded; "
+                    f"{len(self.deliverables.get(mission_id, []))} deliverables produced."
+                )
+            else:
+                state.status = MissionStatus.COMPLETED
+                state.outcome = MissionOutcome.PARTIAL_SUCCESS if total_actions else MissionOutcome.FAILED
+                state.current_next_action = (
+                    f"Mission ended with no successful actions ({total_actions} attempted)."
+                )
 
             self._record_event(mission_id, "MissionCompleted", {"outcome": "SUCCESS", "traces": len(traces)})
             await self._persist_mission(mission_id)
@@ -356,55 +387,44 @@ class MissionDirector:
     # =============================================================
     # 6. Deliverables & Knowledge Summary
     # =============================================================
-    async def finalize(self, mission_id: str) -> list[MissionDeliverable]:
-        """Generates validated final deliverables for the mission."""
+    async def finalize(self, mission_id: str, traces: list | None = None) -> list[MissionDeliverable]:
+        """Generates validated final deliverables derived from the agent's traces.
+
+        No traces (or no successful artifact-producing action) → empty list
+        (honest: no fabricated deliverables). Re-derive on each call so a
+        re-finalize after more actions stays accurate.
+        """
+        from sonic.computer_use.models import ComputerDecisionTrace
+        from sonic.mission_engine.trace_synthesis import synthesize_deliverables
+
         state = self._require_mission(mission_id)
-
-        deliv_patch = MissionDeliverable(
-            mission_id=mission_id,
-            title="Remediation Patch & Unit Test Suite",
-            deliverable_type=DeliverableType.ENGINEERING_PATCH,
-            content="Validated security patch for JWT algorithm confusion vulnerability.",
-            evidence_ids=["ev-jwt-none-repro-01", "ev-jwt-patch-test-02"],
-            verification_ids=["verif-indep-01"],
+        # Prefer explicitly-passed traces; fall back to any previously stored.
+        trace_list = traces or getattr(state, "_last_traces", []) or []
+        deliverables = synthesize_deliverables(
+            mission_id, state.objective.goal,
+            [t for t in trace_list if isinstance(t, ComputerDecisionTrace)],
         )
-
-        deliv_commit = MissionDeliverable(
-            mission_id=mission_id,
-            title="Git Commit 'fix(auth): forbid jwt none algorithm bypass'",
-            deliverable_type=DeliverableType.GIT_COMMIT,
-            content="Commit hash: 7b8e1f0a2c (Branch: fix-jwt-none-alg)",
-            evidence_ids=["ev-git-commit-hash-03"],
-        )
-
-        self.deliverables[mission_id] = [deliv_patch, deliv_commit]
-        self._record_event(mission_id, "DeliverablesFinalized", {"count": 2})
-        return self.deliverables[mission_id]
+        self.deliverables[mission_id] = deliverables
+        self._record_event(mission_id, "DeliverablesFinalized", {"count": len(deliverables)})
+        return deliverables
 
     def get_knowledge_summary(self, mission_id: str) -> MissionKnowledgeSummary:
-        """Generates a structured knowledge snapshot for operators and reports."""
+        """Generates a structured knowledge snapshot derived from the agent's
+        actual traces — not hardcoded vulnerability strings."""
+        from sonic.mission_engine.trace_synthesis import synthesize_knowledge
+
         state = self._require_mission(mission_id)
         res_summary = self.resource_mgr.get_resource_summary(mission_id)
-
-        return MissionKnowledgeSummary(
+        traces = getattr(state, "_last_traces", []) or []
+        summary = synthesize_knowledge(
             goal=state.objective.goal,
-            what_we_know=[
-                "Authentication service was vulnerable to algorithm 'none' token bypass",
-                "Unit test suite has 14 passing tests confirming zero regression",
-            ],
-            what_we_do_not_know=state.remaining_unknowns,
-            current_hypotheses=state.active_hypotheses,
-            active_investigations=state.active_tracks,
-            evidence=state.evidence,
-            contradictions=[],
-            decisions=[
-                "Decision 1: Use code-server IDE and container terminal for live verification",
-                "Decision 2: Create dedicated Git branch and commit fix candidate",
-            ],
-            next_best_action=state.current_next_action,
-            remaining_risks=["Ensure production deployments cycle JWT signing keys"],
-            resource_state=res_summary,
+            traces=traces,
+            remaining_unknowns=state.remaining_unknowns,
+            active_tracks=state.active_tracks,
         )
+        summary.current_hypotheses = state.active_hypotheses
+        summary.resource_state = res_summary
+        return summary
 
     # =============================================================
     # Helpers

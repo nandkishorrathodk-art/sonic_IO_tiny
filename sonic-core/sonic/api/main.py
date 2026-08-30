@@ -68,13 +68,19 @@ async def _maybe_start_being_life_loop(settings):
         # Reuse a shared LLM router if available; curiosity needs an LLM.
         from sonic.llm.router import ModelRouter
         from sonic.tools.registry import get_default_registry
+        from sonic.agents.browser_agent import BrowserAgent
         router = ModelRouter.for_default() if hasattr(ModelRouter, "for_default") else ModelRouter()
+        browser = BrowserAgent(headless=True)
+        await browser.launch()
         agent = ComputerUseAgent(
             computer_provider=provider, llm_router=router,
             safety=safety, self_host=True, tenant_id=tenant_id, agent_id=being.being_id,
             # Wire the REAL security-tool adapters so the being can actually run
             # scans during self-directed curiosity (in-sandbox, fail-closed).
             security_tools=get_default_registry(provider).as_dict(),
+            # Wire the browser so the being can navigate/click/type/screenshot as
+            # a first-class reasoning action (was orphaned before).
+            browser=browser,
         )
         curiosity = CuriosityLoop(llm_router=router, vector_memory=get_vector_memory(), max_cycles=1)
         tick_interval = float(os.environ.get("SONIC_BEING_TICK_INTERVAL", "60"))

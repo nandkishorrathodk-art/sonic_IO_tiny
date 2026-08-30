@@ -288,8 +288,67 @@ or reassigning ``agent.safety``) and then act.
 ### Test baseline (after Phase 7.6)
 - 370 passed, 48 honestly skipped, 0 failures.
 
+## Real Autonomy: Trace-Derived Mission Artifacts (Phase 7.7)
+Closed the PLAN.md audit item: the mission director hardcoded its milestones
+(all force-set to COMPLETED), deliverables ("JWT none algorithm bypass" + a
+fake commit hash `7b8e1f0a2c`), knowledge summary ("what_we_know" JWT strings),
+and confidence (=1.00) — NONE of it derived from what the agent actually did.
+That was scripted theater: the director reported success and fabricated
+evidence regardless of the traces.
+
+### `sonic/mission_engine/trace_synthesis.py` — derive real artifacts from traces
+- `synthesize_deliverables(mission_id, goal, traces)` — one deliverable per
+  concrete successful engineering action the agent ACTUALLY took
+  (FILE_WRITE→ENGINEERING_PATCH, GIT_COMMIT→GIT_COMMIT, SECURITY_TOOL→
+  EVIDENCE_PACKAGE). Content = the real observation text, not a hardcoded vuln
+  name. No successful artifact action → empty list (honest: no fabrication).
+- `synthesize_knowledge(goal, traces)` — what_we_know/decisions/evidence come
+  from the real traces; confidence = success ratio (NOT 1.00 by decree).
+- `milestone_status_from_traces(traces, plan)` — a milestone is COMPLETED only
+  where the traces contain a relevant successful action; otherwise stays
+  PENDING. Never force-completed by decree.
+
+### Director wiring (`director.py`)
+- `coordinate()`: milestones now derived via `milestone_status_from_traces`;
+  confidence = successful/total; outcome is SUCCESS only if the agent actually
+  did something that succeeded (else PARTIAL_SUCCESS/FAILED).
+- `finalize(traces=...)`: returns trace-derived deliverables (was the hardcoded
+  JWT pair). No traces → empty list.
+- `get_knowledge_summary()`: reflects the stashed real traces (was hardcoded
+  JWT strings).
+- RESEARCH-phase hypotheses seeded from the objective's constraints, not a
+  hardcoded "JWT none algorithm" hypothesis.
+
+### Browser action surface wiring (also closes the "orphaned browser" item)
+- `director.coordinate()` + `api/main.py` being loop now construct a
+  `BrowserAgent(headless=True)`, launch it, and pass `browser=` to the agent.
+  The browser was orphaned before (BrowserAgent existed + the agent's
+  observe→reason→act loop had full browser support, but no caller ever passed
+  `browser=`, so `agent.browser` was always None and the browser branch never
+  ran). Now navigate/click/type/screenshot dispatch as first-class actions.
+- Removed dead code: `_derive_remediation_from_goal()` (67 lines of hardcoded
+  JWT/SQLi/XSS/traversal patches, never called) — the LLM-driven
+  `_llm_choose_action` + generic `_diagnostic_fallback` are the real paths.
+
+### `MissionKnowledgeSummary.confidence` field added
+- New `confidence: float = 0.0` field so the trace-derived success ratio is
+  surfaced in the knowledge snapshot (was on `MissionState` only).
+
+### Done-gate (12 + 2 tests)
+- `test_mission_trace_synthesis.py` (12): deliverables one-per-artifact +
+  content-is-real-observation + failed-produces-none + empty-is-empty +
+  dedupe; knowledge derived-from-traces + confidence=success-ratio (not 1.00)
+  + empty-is-honest + all-success=1.0; milestones completed-only-where-proven
+  + all-pending-when-no-success; director.finalize trace-derived (not JWT) +
+  honest-on-no-traces; knowledge summary reflects stashed traces.
+- `test_browser_wiring.py` (2): browser-attached dispatches navigate to the
+  browser (SUCCESS trace); browser=None does not crash (graceful skip).
+
+### Test baseline (after Phase 7.7)
+- 384 passed, 48 honestly skipped, 0 failures.
+
 ## Current test baseline
-- 370 passed, 48 honestly skipped (Docker-daemon / Daytona-live gated via
+- 384 passed, 48 honestly skipped (Docker-daemon / Daytona-live gated via
   `sonic-core/tests/conftest.py`), 0 failures.
 - The previously-pre-existing 6 model-only/fail-closed contract failures were
   resolved by PR#3's simulated-provider + execution-evidence fixes (they asserted

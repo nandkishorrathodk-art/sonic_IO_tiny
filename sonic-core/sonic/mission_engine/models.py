@@ -172,6 +172,7 @@ class MissionKnowledgeSummary(BaseModel):
     next_best_action: str = ""
     remaining_risks: list[str] = Field(default_factory=list)
     resource_state: dict[str, Any] = Field(default_factory=dict)
+    confidence: float = 0.0
     timestamp: str = Field(default_factory=_now)
 
 

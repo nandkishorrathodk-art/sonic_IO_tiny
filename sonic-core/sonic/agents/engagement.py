@@ -156,7 +156,7 @@ class EngagementManager:
         eng["status"] = EngagementStatus.RUNNING
         await self.memory.update_engagement(engagement_id, status=EngagementStatus.RUNNING)
 
-        default_phases = ["recon", "hypothesis", "static", "dynamic", "verify"]
+        default_phases = ["recon", "hypothesis", "static", "dynamic", "verify", "report"]
         run_phases = phases or default_phases
         results: dict[str, Any] = {}
 
@@ -189,7 +189,15 @@ class EngagementManager:
                 elif phase == "verify":
                     results["verify"] = await self._run_verify(engagement_id)
 
+                elif phase == "report":
+                    results["report"] = await self._run_report(engagement_id, target, results)
+
                 logger.info("phase_complete", engagement=engagement_id, phase=phase)
+
+            # Collect findings produced across phases for the summary.
+            all_findings = self._collect_findings(results)
+            results["findings"] = all_findings
+            results["summary"] = self._build_summary(target, all_findings, results)
 
             # Mark complete
             eng["status"] = EngagementStatus.COMPLETED
@@ -286,7 +294,7 @@ class EngagementManager:
         self, engagement_id: str, target: str,
         hypothesis_results: dict, recon_results: dict
     ) -> dict:
-        """Run dynamic testing phase."""
+        """Run the autonomous dynamic pentest loop."""
         agent = self._create_agent(DynamicExecutionAgent)
         self.active_engagements[engagement_id]["agents_used"].append(agent.agent_id)
 
@@ -297,12 +305,15 @@ class EngagementManager:
             engagement_id=engagement_id,
         ))
 
+        eng = self.active_engagements.get(engagement_id, {})
+        scope_config = eng.get("scope") or {}
         result = await agent.run({
             "target": target,
             "engagement_id": engagement_id,
             "hypotheses": hypothesis_results.get("hypotheses", []),
             "assets": recon_results.get("assets", []),
             "task": "general_testing",
+            "scope_config": scope_config,
         })
         return result
 
@@ -322,6 +333,59 @@ class EngagementManager:
             "engagement_id": engagement_id,
         })
         return result
+
+    async def _run_report(self, engagement_id: str, target: str, results: dict) -> dict:
+        """Compile a final report from all verified findings."""
+        report = await self.get_findings_report(engagement_id)
+        dynamic = results.get("dynamic", {}) or {}
+        report["engagement"] = {
+            "engagement_id": engagement_id,
+            "target": target,
+            "phases_run": [k for k in results.keys() if k not in ("findings", "summary", "error")],
+            "tests_executed": dynamic.get("tests_executed", 0),
+            "failed_attempts": len(dynamic.get("failed_attempts", []) or []),
+            "observations": len(dynamic.get("observations", []) or []),
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+        }
+        return report
+
+    def _collect_findings(self, results: dict) -> list[dict]:
+        """Gather findings produced by every phase into one list."""
+        collected: list[dict] = []
+        for phase_name, phase_data in results.items():
+            if phase_name in ("findings", "summary", "report", "error"):
+                continue
+            if not isinstance(phase_data, dict):
+                continue
+            for key in ("findings",):
+                for f in phase_data.get(key, []) or []:
+                    if isinstance(f, dict):
+                        collected.append(f)
+        # De-duplicate by title+url
+        seen = set()
+        unique = []
+        for f in collected:
+            sig = (f.get("title", ""), f.get("url", ""))
+            if sig in seen:
+                continue
+            seen.add(sig)
+            unique.append(f)
+        return unique
+
+    def _build_summary(self, target: str, findings: list[dict], results: dict) -> dict:
+        by_sev = {sev: 0 for sev in ["critical", "high", "medium", "low", "info"]}
+        for f in findings:
+            sev = (f.get("severity") or "info").lower()
+            if sev in by_sev:
+                by_sev[sev] += 1
+        dynamic = results.get("dynamic", {}) or {}
+        return {
+            "target": target,
+            "total_findings": len(findings),
+            "by_severity": by_sev,
+            "tests_executed": dynamic.get("tests_executed", 0),
+            "status": "completed",
+        }
 
     # ============================================
     # Status & Reports

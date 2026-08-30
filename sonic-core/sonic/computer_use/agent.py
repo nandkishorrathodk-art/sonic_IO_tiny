@@ -69,6 +69,7 @@ class ComputerUseAgent:
         max_actions: int = 50,
         max_recovery_attempts: int = 5,
         llm_router: Optional[Any] = None,
+        browser: Optional[Any] = None,
     ):
         self.computer = computer_provider
         self.autonomy_level = autonomy_level
@@ -76,6 +77,9 @@ class ComputerUseAgent:
         self.max_actions = max_actions
         self.max_recovery_attempts = max_recovery_attempts
         self.llm_router = llm_router  # ModelRouter for LLM-driven reasoning
+        # Optional BrowserAgent so the same observe->reason->act loop can drive a
+        # real web browser (navigate/click/type/screenshot) — unified computer-use.
+        self.browser = browser
 
         self.traces: list[ComputerDecisionTrace] = []
         self.recovery_events: int = 0
@@ -85,6 +89,9 @@ class ComputerUseAgent:
         # what makes the agent adaptive: step N's action depends on step N-1's
         # observed outcome, not on a pre-written script.
         self.history: list[dict[str, str]] = []
+        # Last captured browser page state, carried into the next observation so
+        # the LLM sees the current page even between browser actions.
+        self._last_browser_snapshot: Optional[Any] = None
 
     # =============================================================
     # 1. Closed-Loop Observation
@@ -94,6 +101,9 @@ class ComputerUseAgent:
 
         The terminal output is read from a real (cheap) probe so the agent
         reacts to what is actually on the screen/terminal, not a placeholder.
+        When a browser is attached, the current page state (url, title,
+        interactive elements) is folded into the observation so the same
+        reasoning loop can drive web interaction.
         """
         screen_obs = await self.computer.screenshot(workspace_id)
         status = await self.computer.status(workspace_id)
@@ -108,6 +118,13 @@ class ComputerUseAgent:
         except Exception:
             terminal_output = f"Terminal Ready ({len(status.running_processes)} procs)"
 
+        browser_state = {"url": "about:blank", "title": "New Tab", "interactive_elements": []}
+        if self.browser is not None:
+            try:
+                browser_state = await self._observe_browser()
+            except Exception as e:
+                logger.warning("browser_observe_failed", error=str(e))
+
         return ComputerWorldObservation(
             screen=screen_obs,
             active_application=status.active_application,
@@ -116,11 +133,40 @@ class ComputerUseAgent:
             filesystem_files=[f.name for f in files],
             processes=status.running_processes,
             terminal_output=terminal_output,
-            browser_state={"url": "http://127.0.0.1:8080", "title": "code-server IDE"},
+            browser_state=browser_state,
             ide_state={"active_file": "auth_controller.py", "cursor_line": 12},
             git_branch=git_st.branch if hasattr(git_st, "branch") else "main",
             git_clean=git_st.is_clean if hasattr(git_st, "is_clean") else True,
         )
+
+    async def _observe_browser(self) -> dict[str, Any]:
+        """Capture the current browser page state for reasoning.
+
+        Prefers the browser's LIVE page state (which reflects post-click/type
+        navigation), falling back to the last navigated snapshot. Refreshes the
+        interactive-element list so the LLM sees what it can click/type.
+        """
+        url, title = "about:blank", "New Tab"
+        if hasattr(self.browser, "current_page_state"):
+            try:
+                url, title = await self.browser.current_page_state()
+            except Exception:
+                pass
+        if (not url or url == "about:blank") and self._last_browser_snapshot is not None:
+            url = getattr(self._last_browser_snapshot, "url", "about:blank")
+            title = getattr(self._last_browser_snapshot, "title", "New Tab")
+        elements: list[dict[str, str]] = []
+        try:
+            dom = await self.browser.find_interactive_elements()
+            for el in dom[:20]:  # cap to keep the prompt bounded
+                elements.append({
+                    "tag": getattr(el, "tag", ""),
+                    "selector": getattr(el, "selector", ""),
+                    "text": (getattr(el, "text", "") or "")[:40],
+                })
+        except Exception:
+            pass
+        return {"url": url, "title": title, "interactive_elements": elements}
 
     # =============================================================
     # 2. Closed-Loop Reasoning & Action Selection
@@ -175,35 +221,52 @@ class ComputerUseAgent:
         """Build the (system_prompt, user_prompt) the LLM reasons over.
 
         The user prompt embeds the LIVE observation — screen visible text,
-        terminal output, files, git state — and the full action/result history,
-        so the model's decision is a function of the current world state and
-        what it has already done, not a step counter.
+        terminal output, files, git state, browser page — and the full
+        action/result history, so the model's decision is a function of the
+        current world state and what it has already done, not a step counter.
         """
         history_text = self._format_history()
 
         screen_text = (observation.visible_text or "").strip()
         terminal_text = (observation.terminal_output or "").strip()
+        bs = observation.browser_state or {}
+        browser_lines = ""
+        if self.browser is not None:
+            elements = bs.get("interactive_elements", [])
+            el_summary = ", ".join(
+                f"{e.get('tag', '?')}[{e.get('selector', '')}]:'{e.get('text', '')}'"
+                for e in elements[:10]
+            ) or "(no interactive elements)"
+            browser_lines = (
+                f"Browser page: url={bs.get('url', 'about:blank')}, "
+                f"title={bs.get('title', '')}\n"
+                f"Interactive elements: {el_summary}\n"
+            )
         obs_summary = (
             f"Step {step_index}. Goal: {goal}\n"
             f"Active app: {observation.active_application}\n"
             f"Screen visible text:\n{screen_text or '(empty screen)'}\n"
             f"Terminal output:\n{terminal_text or '(no output yet)'}\n"
+            f"{browser_lines}"
             f"Files in workspace: {observation.filesystem_files}\n"
             f"Git branch: {observation.git_branch}, clean: {observation.git_clean}\n"
             f"Primary file: {primary_file}, Test file: {test_file}\n"
             f"Actions taken so far:\n{history_text or '(none — this is the first action)'}\n"
         )
         system_prompt = (
-            "You are an autonomous engineering agent operating a sandboxed computer. "
-            "You can see the screen text, the terminal output, the workspace files, and "
-            "the git state, plus everything you have already done. "
+            "You are an autonomous engineering agent operating a sandboxed computer with "
+            "a terminal, a filesystem, git, and (when available) a web browser. "
+            "You can see the screen text, the terminal output, the workspace files, the "
+            "git state, the current browser page, and everything you have already done. "
             "Choose the ONE next action that makes the most progress toward the goal, "
             "reacting to the latest observation and your prior actions — do NOT follow a "
             "fixed script. If the goal is already achieved, respond GOAL_COMPLETE.\n"
             "Respond in EXACTLY this format (no markdown):\n"
-            "ACTION: <FILE_READ|FILE_WRITE|TERMINAL_EXEC|GIT_COMMIT|APP_LAUNCH|GOAL_COMPLETE>\n"
-            "TARGET: <resource path or name>\n"
-            'PAYLOAD: <json dict, e.g. {"path": "...", "content": "..."} or {"command": "..."}>\n'
+            "ACTION: <FILE_READ|FILE_WRITE|TERMINAL_EXEC|GIT_COMMIT|APP_LAUNCH|"
+            "BROWSER_NAVIGATE|BROWSER_CLICK|BROWSER_TYPE|BROWSER_SCREENSHOT|GOAL_COMPLETE>\n"
+            "TARGET: <resource path, name, url, or css selector>\n"
+            'PAYLOAD: <json dict, e.g. {"path": "...", "content": "..."}, '
+            '{"command": "..."}, {"url": "..."}, {"selector": "...", "text": "..."}>\n'
             "EXPECTED: <short description of predicted outcome>"
         )
         return system_prompt, obs_summary
@@ -269,6 +332,10 @@ class ComputerUseAgent:
             "TERMINAL_EXEC": ComputerActionType.TERMINAL_EXEC,
             "GIT_COMMIT": ComputerActionType.GIT_COMMIT,
             "APP_LAUNCH": ComputerActionType.APP_LAUNCH,
+            "BROWSER_NAVIGATE": ComputerActionType.BROWSER_NAVIGATE,
+            "BROWSER_CLICK": ComputerActionType.BROWSER_CLICK,
+            "BROWSER_TYPE": ComputerActionType.BROWSER_TYPE,
+            "BROWSER_SCREENSHOT": ComputerActionType.BROWSER_SCREENSHOT,
             # GOAL_COMPLETE is handled by the caller as a no-op terminator.
             "GOAL_COMPLETE": ComputerActionType.TERMINAL_EXEC,
         }
@@ -366,6 +433,34 @@ class ComputerUseAgent:
                 act = payload.get("action", "restart")
                 svc_info = await self.computer.service_action(workspace_id, svc, act)
                 actual_obs_str = f"Service {svc} is {svc_info.status}"
+
+            elif action_type == ComputerActionType.BROWSER_NAVIGATE:
+                url = payload.get("url") or target_resource
+                snap = await self.browser.navigate(url)
+                self._last_browser_snapshot = snap
+                actual_obs_str = f"Navigated to {getattr(snap, 'url', url)} (title: {getattr(snap, 'title', '')})"
+
+            elif action_type == ComputerActionType.BROWSER_CLICK:
+                selector = payload.get("selector") or target_resource
+                ok = await self.browser.click(selector)
+                actual_obs_str = f"Clicked {selector}" if ok else f"Click failed: {selector}"
+                if not ok:
+                    recovery_needed = True
+
+            elif action_type == ComputerActionType.BROWSER_TYPE:
+                selector = payload.get("selector") or target_resource
+                text = payload.get("text", "")
+                ok = await self.browser.type_text(selector, text)
+                actual_obs_str = f"Typed {len(text)} chars into {selector}" if ok else f"Type failed: {selector}"
+                if not ok:
+                    recovery_needed = True
+
+            elif action_type == ComputerActionType.BROWSER_SCREENSHOT:
+                snap = await self.browser.navigate(
+                    getattr(self._last_browser_snapshot, "url", "about:blank")
+                ) if self._last_browser_snapshot else await self.browser.navigate("about:blank")
+                self._last_browser_snapshot = snap
+                actual_obs_str = f"Screenshot captured: {getattr(snap, 'url', '')}"
 
         except Exception as e:
             actual_obs_str = f"Error: {str(e)}"

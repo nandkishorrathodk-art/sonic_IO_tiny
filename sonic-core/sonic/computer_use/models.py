@@ -53,6 +53,11 @@ class ComputerActionType(StrEnum):
     SERVICE_ACTION = "SERVICE_ACTION"
     GIT_BRANCH = "GIT_BRANCH"
     GIT_COMMIT = "GIT_COMMIT"
+    # Unified computer-use: browser actions share the same reasoning loop.
+    BROWSER_NAVIGATE = "BROWSER_NAVIGATE"
+    BROWSER_CLICK = "BROWSER_CLICK"
+    BROWSER_TYPE = "BROWSER_TYPE"
+    BROWSER_SCREENSHOT = "BROWSER_SCREENSHOT"
 
 
 # ============================================

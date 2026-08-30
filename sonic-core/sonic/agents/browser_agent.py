@@ -270,3 +270,18 @@ class BrowserAgent:
             await self._playwright.stop()
         self._using_playwright = False
         logger.info("browser_agent_closed")
+
+    async def current_page_state(self) -> tuple[str, str]:
+        """Return the live (url, title) of the current page, or a blank default.
+
+        Used by the unified computer-use loop so the observation reflects the
+        page state AFTER interactions (click/type), not just the last navigate.
+        """
+        if self._using_playwright and self._page:
+            try:
+                url = self._page.url or "about:blank"
+                title = await self._page.title() if self._page else ""
+                return url, title
+            except Exception:
+                return "about:blank", ""
+        return "about:blank", ""

@@ -245,8 +245,51 @@ actually dispatch a scan.
 ### Test baseline (after Phase 7.5)
 - 359 passed, 48 honestly skipped, 0 failures.
 
+## Sealed Safety Policy (Phase 7.6 — tamper-evident guards)
+Closed the PLAN.md audit item: "Safety immutability: guards are real but NOT
+protected from a self-evolving agent modifying them (no read-only/signed layer)."
+The existing guards were plain mutable Python objects — an in-process
+self-evolving being could widen its own envelope at runtime
+(``policy.security_tool_targets.add(...)``, ``egress.BLOCKED_NETWORKS.clear()``,
+or reassigning ``agent.safety``) and then act.
+
+### `sonic/safety/sealed.py` — tamper-evident policy
+- `SealedActionPolicy(ActionPolicy)`: at `seal()` time freezes a snapshot of every
+  verdict-controlling field (allowed_types, security_tool_targets [frozenset],
+  rate cap, approval flag, workspace root, and a *copy* of the egress
+  blocked-networks list) and records a SHA-256 seal hash.
+- After sealing, mutation of any safety-relevant field raises `AttributeError`
+  (effectively immutable); the rate window may still mutate.
+- On every `evaluate()` the seal hash is recomputed + compared; any mismatch
+  (config altered) makes the verdict fail-closed DENY + logs
+  `safety_policy_tampered` — the being may NOT act under an unprovable policy.
+- `_check_egress` uses the FROZEN blocked-networks snapshot (via the new
+  `egress.is_target_allowed(blocked_networks=...)` param), so a runtime mutation
+  of the module-level `BLOCKED_NETWORKS` list cannot widen what this policy
+  permits. Backward compatible: `is_target_allowed` defaults to the live list.
+- `seal_default()` builds + seals the standard production policy.
+- Additive + opt-in: plain `ActionPolicy` still works unchanged (existing tests
+  hold); the being life loop constructs a `SealedActionPolicy`.
+
+### Wiring
+- `api/main.py` being life loop: `safety = seal_default(...)` (was a plain
+  `ActionPolicy`) — the AI-Human being always acts under a proven-intact envelope.
+
+### Done-gate (test_safety_sealed_policy.py, 11 tests)
+- seal freezes config + records a 64-char sha256 hash; sealed fields are
+  immutable (AttributeError on mutation of allowed_types/rate/approval/workspace);
+  a tampered policy (object.__dict__ bypass) fails-closed DENY + logs tamper;
+  egress uses the frozen snapshot (clearing `egress.BLOCKED_NETWORKS` does NOT
+  widen the sealed policy — `10.0.0.5` stays blocked — and the seal stays intact);
+  contrast: a plain unsealed `ActionPolicy` IS widened by the same mutation
+  (proving the gap the sealed layer closes); the agent under a sealed policy
+  allows a public target and blocks (status=BLOCKED) a private one.
+
+### Test baseline (after Phase 7.6)
+- 370 passed, 48 honestly skipped, 0 failures.
+
 ## Current test baseline
-- 359 passed, 48 honestly skipped (Docker-daemon / Daytona-live gated via
+- 370 passed, 48 honestly skipped (Docker-daemon / Daytona-live gated via
   `sonic-core/tests/conftest.py`), 0 failures.
 - The previously-pre-existing 6 model-only/fail-closed contract failures were
   resolved by PR#3's simulated-provider + execution-evidence fixes (they asserted

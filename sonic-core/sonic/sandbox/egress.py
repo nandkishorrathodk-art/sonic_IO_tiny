@@ -31,12 +31,23 @@ BLOCKED_NETWORKS = [
 ]
 
 
-def is_target_allowed(target: str, allow_private_for_tests: bool = False) -> tuple[bool, str]:
+def is_target_allowed(
+    target: str,
+    allow_private_for_tests: bool = False,
+    blocked_networks: list | tuple | None = None,
+) -> tuple[bool, str]:
     """
     Validate that target IP/domain does not resolve to a private or metadata address.
+
+    ``blocked_networks`` lets a caller (e.g. a tamper-evident SealedActionPolicy)
+    pass a *frozen snapshot* of the blocked ranges, so a runtime mutation of the
+    module-level ``BLOCKED_NETWORKS`` list cannot widen what this check permits.
+    Defaults to the live module list for backward compatibility.
     """
     if allow_private_for_tests:
         return True, "Allowed (test override)"
+
+    nets = blocked_networks if blocked_networks is not None else BLOCKED_NETWORKS
 
     # Extract hostname / host
     raw_host = target.strip()
@@ -52,7 +63,7 @@ def is_target_allowed(target: str, allow_private_for_tests: bool = False) -> tup
     # without port-stripping mangling IPv6 addresses.
     try:
         ip_obj = ipaddress.ip_address(raw_host)
-        for blocked_net in BLOCKED_NETWORKS:
+        for blocked_net in nets:
             if ip_obj in blocked_net:
                 logger.warning("egress_blocked_ip", target=target, ip=str(ip_obj), blocked_by=str(blocked_net))
                 return False, f"Target IP {ip_obj} is in blocked network {blocked_net}"
@@ -67,7 +78,7 @@ def is_target_allowed(target: str, allow_private_for_tests: bool = False) -> tup
     # Try again as IP after port strip (e.g. "127.0.0.1:8080")
     try:
         ip_obj = ipaddress.ip_address(raw_host)
-        for blocked_net in BLOCKED_NETWORKS:
+        for blocked_net in nets:
             if ip_obj in blocked_net:
                 logger.warning("egress_blocked_ip", target=target, ip=str(ip_obj), blocked_by=str(blocked_net))
                 return False, f"Target IP {ip_obj} is in blocked network {blocked_net}"
@@ -80,7 +91,7 @@ def is_target_allowed(target: str, allow_private_for_tests: bool = False) -> tup
         resolved_ips = socket.gethostbyname_ex(raw_host)[2]
         for ip_str in resolved_ips:
             ip_obj = ipaddress.ip_address(ip_str)
-            for blocked_net in BLOCKED_NETWORKS:
+            for blocked_net in nets:
                 if ip_obj in blocked_net:
                     logger.warning("egress_blocked_dns", target=target, ip=str(ip_obj), blocked_by=str(blocked_net))
                     return False, f"Domain {raw_host} resolves to blocked IP {ip_obj} in {blocked_net}"

@@ -47,7 +47,6 @@ async def _maybe_start_being_life_loop(settings):
         from sonic.computer_use.agent import ComputerUseAgent
         from sonic.computer_use.curiosity import CuriosityLoop
         from sonic.memory.vector import get_vector_memory
-        from sonic.safety.action_policy import ActionPolicy
         from sonic.sandbox.factory import get_sandbox_provider
 
         tenant_id = os.environ.get("SONIC_BEING_TENANT", "default")
@@ -62,7 +61,10 @@ async def _maybe_start_being_life_loop(settings):
             logger.warning("being_life_loop_no_home", being_id=being.being_id)
             return None
 
-        safety = ActionPolicy(workspace_root="/home/sonic/workspace")
+        from sonic.safety.sealed import seal_default
+        # Tamper-evident safety envelope: config is frozen + hash-sealed, so a
+        # self-evolving being cannot widen its own guards at runtime.
+        safety = seal_default(workspace_root="/home/sonic/workspace")
         # Reuse a shared LLM router if available; curiosity needs an LLM.
         from sonic.llm.router import ModelRouter
         from sonic.tools.registry import get_default_registry

@@ -71,6 +71,8 @@ class ComputerUseAgent:
         llm_router: Optional[Any] = None,
         browser: Optional[Any] = None,
         security_tools: Optional[dict[str, Any]] = None,
+        safety: Optional[Any] = None,
+        self_host: bool = False,
         tenant_id: str = "default",
         engagement_id: str = "default",
         agent_id: str = "computer-use-agent",
@@ -88,6 +90,16 @@ class ComputerUseAgent:
         # invoke as a first-class reasoning action. Tools execute in-sandbox and
         # fail closed; their structured findings feed back into the observation.
         self.security_tools = security_tools or {}
+        # Optional fail-closed safety envelope (PLAN Phase 6). Required in
+        # self-host mode: the agent may NOT act autonomously without a policy.
+        self.safety = safety
+        self.self_host = self_host
+        if self_host and safety is None:
+            raise ValueError(
+                "self-host mode requires a safety policy — construct "
+                "ComputerUseAgent with safety=ActionPolicy(...) so every "
+                "autonomous action passes the fail-closed envelope."
+            )
         self.tenant_id = tenant_id
         self.engagement_id = engagement_id
         self.agent_id = agent_id
@@ -426,6 +438,34 @@ class ComputerUseAgent:
         actual_obs_str = ""
         status = "SUCCESS"
         recovery_needed = False
+
+        # ----- PLAN Phase 6: fail-closed safety envelope -----
+        # Every action — operator-issued OR self-directed (curiosity) — must pass
+        # the policy before it touches the provider. A denied action is recorded
+        # as BLOCKED and NEVER executed, and deliberately does NOT trigger the
+        # recovery path (recovery must not be able to bypass the safety gate).
+        if self.safety is not None:
+            verdict = self.safety.evaluate(action_type.value, target_resource, payload)
+            if not verdict.allowed:
+                actual_obs_str = f"Safety blocked: {verdict.reason}"
+                status = "BLOCKED"
+                logger.warning("action_blocked_by_policy",
+                               action=action_type.value, reason=verdict.reason)
+                trace = ComputerDecisionTrace(
+                    step_index=self.action_counter,
+                    action_type=action_type,
+                    target_resource=target_resource,
+                    payload=str(payload),
+                    predicted_outcome=predicted_outcome,
+                    actual_observation=actual_obs_str,
+                    expected_observation=predicted_outcome,
+                    info_gain=0.0,
+                    recovery_attempted=False,
+                    status=status,
+                )
+                self.traces.append(trace)
+                self.history.append({"action": action_type.value, "result": actual_obs_str})
+                return trace
 
         try:
             if action_type == ComputerActionType.APP_LAUNCH:

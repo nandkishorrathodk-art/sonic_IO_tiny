@@ -329,8 +329,10 @@ class EngagementManager:
             engagement_id=engagement_id,
         ))
 
+        eng = self.active_engagements.get(engagement_id, {})
         result = await agent.run({
             "engagement_id": engagement_id,
+            "scope_config": eng.get("scope") or {},
         })
         return result
 

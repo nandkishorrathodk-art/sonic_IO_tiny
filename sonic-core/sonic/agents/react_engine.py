@@ -231,6 +231,73 @@ Begin:
             "success": False,
         }
 
+    async def execute_continuous(
+        self,
+        task: str,
+        think_fn: Callable[[str], Coroutine[Any, Any, str]],
+        *,
+        context: str = "",
+        max_rounds: int = 3,
+        on_round: Optional[Callable[[int, dict[str, Any]], Optional[str]]] = None,
+        stop_when: Optional[Callable[[int, dict[str, Any]], bool]] = None,
+    ) -> dict[str, Any]:
+        """
+        Sustained, multi-round ReAct execution for autonomous pentesting.
+
+        Unlike ``execute`` (which terminates on the first Final Answer), this
+        loop treats each round's Final Answer as a *partial result* and feeds it
+        back as context for the next round — so the agent keeps probing,
+        pivoting, and chaining until:
+          * ``stop_when`` returns True (e.g. a kill-chain is confirmed), or
+          * ``max_rounds`` is exhausted, or
+          * ``on_round`` returns a non-empty new task to continue with.
+
+        Each round runs a full Thought/Action/Observation cycle (bounded by
+        ``max_iterations``), so the engine never spins idle — it always either
+        acts or stops.
+
+        Returns the accumulated results of every round plus the final answer.
+        """
+        rounds: list[dict[str, Any]] = []
+        running_context = context
+        current_task = task
+        final_answer = ""
+
+        for round_idx in range(1, max_rounds + 1):
+            logger.info("react_continuous_round", round=round_idx, max=max_rounds)
+            round_result = await self.execute(current_task, think_fn, running_context)
+            round_result["round"] = round_idx
+            rounds.append(round_result)
+
+            if round_result.get("success"):
+                final_answer = round_result["answer"]
+
+            # Caller-supplied stop condition (e.g. kill-chain confirmed).
+            if stop_when is not None and stop_when(round_idx, round_result):
+                logger.info("react_continuous_stop_when", round=round_idx)
+                break
+
+            # Caller-supplied continuation hook: return a new task to keep going.
+            if on_round is not None:
+                next_task = on_round(round_idx, round_result)
+                if not next_task:
+                    break
+                current_task = next_task
+            else:
+                # No hook → feed the partial answer back as context and loop.
+                running_context = (
+                    f"Previous round produced: {round_result.get('answer', '')}"
+                )
+
+        return {
+            "rounds": rounds,
+            "total_steps": sum(r.get("steps", 0) for r in rounds),
+            "rounds_run": len(rounds),
+            "answer": final_answer or rounds[-1].get("answer", "") if rounds else "",
+            "success": any(r.get("success") for r in rounds),
+            "observations": [obs for r in rounds for obs in r.get("observations", [])],
+        }
+
     async def _execute_tool(self, tool_name: str, argument: str) -> str:
         """Execute a registered tool or sandbox command."""
         tool = self.tools.get(tool_name)

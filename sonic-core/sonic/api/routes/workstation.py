@@ -45,6 +45,8 @@ from sonic.safety.scope import get_scope_checker, RiskLevel, SafetyVerdict
 from sonic.mission_engine.planner import MissionPlanner, PlannedAction
 from sonic.mission_engine.executor import MissionToolExecutor
 from sonic.mission_engine.tool_registry import ToolRisk
+from sonic.tools.computer_as_compute_provider import ComputerAsComputeProvider
+from sonic.tools.registry import get_default_registry
 
 logger = get_logger(__name__)
 
@@ -403,7 +405,14 @@ async def _run_mission_preflight(tenant_id: str, session_id: str, mission_id: st
         return
 
     _mission_event(state, "plan", "Typed action plan ready", f"{len(plan.actions)} allowlisted actions generated.", plan=plan.model_dump())
-    executor = MissionToolExecutor(comp)
+    # Wire the real security-scanner registry so `target_security_scan` actions
+    # dispatch a real in-sandbox scan (fail-closed) rather than "not implemented".
+    security_tools = None
+    try:
+        security_tools = get_default_registry(ComputerAsComputeProvider(comp))
+    except Exception:
+        security_tools = None
+    executor = MissionToolExecutor(comp, security_tools=security_tools)
     for action in plan.actions:
         label = action.tool
         try:

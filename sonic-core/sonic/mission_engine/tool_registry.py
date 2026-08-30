@@ -57,6 +57,10 @@ class MissionToolRegistry:
             "target_file_read", ToolPlane.TARGET_SANDBOX, ToolRisk.READ_ONLY,
             "Read a file from the target sandbox filesystem.",
         ),
+        "target_security_scan": ToolSpec(
+            "target_security_scan", ToolPlane.TARGET_SANDBOX, ToolRisk.APPROVAL_REQUIRED,
+            "Run a real security scanner (nmap/nuclei/ffuf/http) in-sandbox against the target.",
+        ),
     }
 
     @classmethod

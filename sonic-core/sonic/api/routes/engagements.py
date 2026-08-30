@@ -147,7 +147,7 @@ async def get_engagement_findings(
             detail="Engagement not found or unauthorized",
         )
 
-    report = await manager.get_findings_report(engagement_id)
+    report = await manager.get_findings_report(engagement_id, tenant_id=user.tenant_id)
     return report
 
 

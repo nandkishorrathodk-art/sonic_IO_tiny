@@ -116,7 +116,7 @@ class EmpiricalEvolutionRunner:
             return EmpiricalEvolutionResult(status="REJECTED", reason=reason, v1_f1_score=v1_f1, v2_f1_score=v2_f1, f1_gain=round(v2_f1 - v1_f1, 3), security_violations=metrics.safety_violations)
 
         # 7. Canary Rollout
-        CanaryManager.deploy_canary(cand, traffic_percent=10.0)
+        CanaryManager.deploy_canary(cand, traffic_percent=10.0, compute_provider=compute_provider, workspace_id=workspace_id)
         cand.transition_to(EvolutionState.PROMOTED)
 
         return EmpiricalEvolutionResult(

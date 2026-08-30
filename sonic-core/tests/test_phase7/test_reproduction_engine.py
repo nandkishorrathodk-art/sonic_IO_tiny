@@ -37,13 +37,12 @@ def test_reproduction_engine_simulation():
             expected_result="access_token",
         )
 
+        # FAIL-CLOSED: with no provider, reproduction is blocked — no fabricated evidence
         success, output, ev = await engine.execute_reproduction(finding, plan)
-        assert success is True
-        assert "access_token" in output
-        assert ev is not None
-        assert ev.artifact_type == ArtifactType.HTTP_RESPONSE
-        assert ev.verify_hash() is True
-        assert len(finding.evidence_items) == 1
+        assert success is False
+        assert "blocked" in output.lower()
+        assert ev is None
+        assert len(finding.evidence_items) == 0
 
     asyncio.run(_run())
 
@@ -51,7 +50,7 @@ def test_reproduction_engine_simulation():
 def test_reproduction_engine_live_mock_provider():
     async def _run():
         mock_provider = MagicMock(spec=ComputeProvider)
-        mock_provider.execute_command = AsyncMock(return_value=ExecResult(
+        mock_provider.execute = AsyncMock(return_value=ExecResult(
             command="python exploit.py",
             stdout='{"vulnerable": true, "token": "admin_jwt"}',
             stderr="",

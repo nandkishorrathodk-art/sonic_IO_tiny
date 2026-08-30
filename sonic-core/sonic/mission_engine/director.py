@@ -34,6 +34,7 @@ from sonic.mission_engine.models import (
     _now,
 )
 from sonic.mission_engine.resource_manager import MissionResourceManager
+from sonic.mission_engine.store import MissionStateStore
 
 logger = get_logger(__name__)
 
@@ -49,15 +50,51 @@ class MissionDirector:
         computer_provider: UnifiedComputerProvider,
         resource_manager: Optional[MissionResourceManager] = None,
         autonomy_level: ComputerAutonomyLevel = ComputerAutonomyLevel.L3_AUTONOMOUS,
+        state_store: Optional[MissionStateStore] = None,
     ):
         self.computer = computer_provider
         self.resource_mgr = resource_manager or MissionResourceManager()
         self.autonomy_level = autonomy_level
 
-        # Active missions state cache
+        # Active missions state cache (in-memory, persisted to store on mutation)
         self.missions: dict[str, MissionState] = {}
         self.events: dict[str, list[MissionEvent]] = {}
         self.deliverables: dict[str, list[MissionDeliverable]] = {}
+
+        # Persistent backing store (Redis with in-memory fallback)
+        self.store = state_store or MissionStateStore()
+
+    async def connect_store(self) -> bool:
+        """Initialize the state store connection. Call once at startup."""
+        return await self.store.connect()
+
+    async def _persist_mission(self, mission_id: str) -> None:
+        state = self.missions.get(mission_id)
+        if state:
+            await self.store.save_state(state)
+            events = self.events.get(mission_id, [])
+            for evt in events:
+                await self.store.append_event(evt)
+            if self.deliverables.get(mission_id):
+                await self.store.save_deliverables(mission_id, self.deliverables[mission_id])
+
+    async def restore_mission(self, mission_id: str) -> Optional[MissionState]:
+        """Load a mission from the persistent store into the in-memory cache."""
+        state = await self.store.load_state(mission_id)
+        if not state:
+            return None
+        self.missions[mission_id] = state
+        self.events[mission_id] = await self.store.load_events(mission_id)
+        self.deliverables[mission_id] = await self.store.load_deliverables(mission_id)
+        logger.info("mission_restored", mission_id=mission_id, status=state.status)
+        return state
+
+    async def restore_all(self) -> list[str]:
+        """Restore all persisted missions into the in-memory cache (startup recovery)."""
+        ids = await self.store.list_mission_ids()
+        for mid in ids:
+            await self.restore_mission(mid)
+        return ids
 
     # =============================================================
     # 1. Mission Creation & Objective Understanding
@@ -102,6 +139,7 @@ class MissionDirector:
         self.deliverables[mission_id] = []
 
         self._record_event(mission_id, "MissionStarted", {"goal": goal, "tenant_id": tenant_id})
+        await self._persist_mission(mission_id)
         logger.info("mission_created", mission_id=mission_id, goal=goal)
 
         # Automatically decompose objective into initial plan
@@ -244,14 +282,17 @@ class MissionDirector:
             state.current_next_action = "Mission completed successfully. All deliverables ready."
 
             self._record_event(mission_id, "MissionCompleted", {"outcome": "SUCCESS", "traces": len(traces)})
+            await self._persist_mission(mission_id)
 
         except Exception as e:
             logger.error("mission_coordination_failed", mission_id=mission_id, error=str(e))
             state.status = MissionStatus.FAILED
             state.outcome = MissionOutcome.FAILED
             self._record_event(mission_id, "MissionFailed", {"error": str(e)})
+            await self._persist_mission(mission_id)
 
         state.updated_at = _now()
+        await self._persist_mission(mission_id)
         return state
 
     # =============================================================
@@ -282,6 +323,7 @@ class MissionDirector:
         state.current_phase = MissionPhase.PAUSED
         state.current_next_action = "Mission paused by operator. Awaiting resume instruction."
         self._record_event(mission_id, "MissionPaused", {"actor": "operator"})
+        await self._persist_mission(mission_id)
         return True
 
     async def resume_mission(self, mission_id: str) -> bool:
@@ -291,6 +333,7 @@ class MissionDirector:
         state.current_phase = MissionPhase.ENGINEERING
         state.current_next_action = "Mission resumed. Continuing autonomous coordination."
         self._record_event(mission_id, "MissionResumed", {"actor": "operator"})
+        await self._persist_mission(mission_id)
         return True
 
     async def cancel_mission(self, mission_id: str, reason: str = "Operator cancelled") -> bool:
@@ -301,6 +344,7 @@ class MissionDirector:
         state.outcome = MissionOutcome.FAILED
         state.current_next_action = f"Mission cancelled: {reason}"
         self._record_event(mission_id, "MissionCancelled", {"reason": reason})
+        await self._persist_mission(mission_id)
         return True
 
     # =============================================================

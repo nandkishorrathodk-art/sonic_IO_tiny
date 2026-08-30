@@ -85,6 +85,8 @@ class Settings(BaseSettings):
     google_redirect_uri: str = "http://localhost:8000/auth/google/callback"
     allowed_emails: str = ""  # Comma-separated in env
     allowed_domains: str = ""  # Comma-separated in env
+    super_admin_emails: str = ""  # Comma-separated super-admin email addresses
+    tenant_admin_emails: str = ""  # Comma-separated tenant-admin email addresses
     jwt_secret: str = Field(
         default="CHANGE-ME",
         validation_alias=AliasChoices("jwt_secret", "SECRET_KEY", "JWT_SECRET"),
@@ -158,6 +160,18 @@ class Settings(BaseSettings):
         if not self.allowed_domains:
             return []
         return [d.strip() for d in self.allowed_domains.split(",") if d.strip()]
+
+    @property
+    def super_admin_emails_list(self) -> list[str]:
+        if not self.super_admin_emails:
+            return []
+        return [e.strip().lower() for e in self.super_admin_emails.split(",") if e.strip()]
+
+    @property
+    def tenant_admin_emails_list(self) -> list[str]:
+        if not self.tenant_admin_emails:
+            return []
+        return [e.strip().lower() for e in self.tenant_admin_emails.split(",") if e.strip()]
 
     @property
     def cors_origins_list(self) -> list[str]:

@@ -22,7 +22,7 @@ def test_closed_loop_observe_act_observe():
         obs1 = await agent.observe(ws.id)
 
         # Step 2: Choose action
-        action_type, target, payload, expected = agent.choose_action("Fix JWT bug", obs1, 1)
+        action_type, target, payload, expected = await agent.choose_action("Fix JWT bug", obs1, 1)
         assert action_type == ComputerActionType.APP_LAUNCH
 
         # Step 3: Execute Action

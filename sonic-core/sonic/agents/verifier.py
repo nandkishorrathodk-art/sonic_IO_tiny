@@ -16,10 +16,17 @@ This agent:
 from __future__ import annotations
 
 import json
-from typing import Any
+from typing import Any, Optional
 
 from sonic.logger import get_logger
 from sonic.agents.base import BaseAgent
+from sonic.evidence.independent_verifier import AdversarialReviewer, IndependentVerifier
+from sonic.evidence.models import (
+    EvidenceItem,
+    ProvenancedFinding,
+    ReproductionPlan,
+)
+from sonic.evidence.reproduction_engine import ReproductionEngine
 from sonic.memory.schemas import FindingStatus
 
 logger = get_logger(__name__)
@@ -29,10 +36,25 @@ class VerifierAgent(BaseAgent):
     """
     Verification agent — validates findings and filters false positives.
     Every finding MUST pass through the Verifier before being reported.
+
+    When evidence-validation engines (ReproductionEngine, IndependentVerifier,
+    AdversarialReviewer) are supplied, they are used to provide concrete
+    reproducible / falsifiable verification before the LLM heuristic verdict.
     """
 
-    def __init__(self, **kwargs: Any):
+    def __init__(
+        self,
+        *,
+        reproduction_engine: Optional[ReproductionEngine] = None,
+        independent_verifier: Optional[IndependentVerifier] = None,
+        adversarial_reviewer: Optional[AdversarialReviewer] = None,
+        **kwargs: Any,
+    ):
         super().__init__(name="VerifierAgent", **kwargs)
+        self.reproduction_engine = reproduction_engine
+        self.independent_verifier = independent_verifier
+        self.adversarial_reviewer = adversarial_reviewer
+
         self.verified_count = 0
         self.rejected_count = 0
         self.fp_count = 0
@@ -118,7 +140,101 @@ You must return a JSON object with your analysis. BE STRICT."""
         }
 
     async def _verify_finding(self, finding: dict) -> dict:
-        """Verify a single finding."""
+        """Verify a single finding, using evidence engines when available."""
+        # Attempt concrete verification via ReproductionEngine + AdversarialReviewer
+        # before falling back to the LLM heuristic verdict.
+        engine_verdict = await self._engine_verify(finding)
+        if engine_verdict is not None:
+            return engine_verdict
+
+        # LLM heuristic fallback
+        return await self._llm_verify(finding)
+
+    async def _engine_verify(self, finding: dict) -> Optional[dict]:
+        """
+        Run ReproductionEngine and AdversarialReviewer against the finding when
+        the engines and a parseable ProvenancedFinding are available. Returns a
+        structured verdict dict, or None to fall back to the LLM path.
+        """
+        try:
+            pf = ProvenancedFinding.model_validate(finding)
+        except Exception as e:
+            logger.debug("verifier_engine_skip_not_provenanced", error=str(e))
+            return None
+
+        notes_parts: list[str] = []
+        confidence = 50
+        status = "needs_more_evidence"
+        reproducible = False
+
+        # 1. ReproductionEngine — concrete PoC reproduction in sandbox
+        if self.reproduction_engine is not None and pf.reproduction_plan is not None:
+            success, output, evidence = await self.reproduction_engine.execute_reproduction(
+                pf, pf.reproduction_plan
+            )
+            reproducible = success
+            if evidence:
+                pf.evidence_items.append(evidence)
+            notes_parts.append(f"Reproduction: {'SUCCESS' if success else 'FAILED'}. {output}")
+            confidence = 80 if success else 25
+            status = "verified" if success else "rejected"
+        else:
+            notes_parts.append("Reproduction: skipped (no engine or reproduction_plan).")
+
+        # 2. AdversarialReviewer — falsification challenge
+        if self.adversarial_reviewer is not None:
+            # Use reproduction result as the adversarial challenge outcome.
+            challenge_result = {
+                "is_falsified": not reproducible,
+                "notes": "Adversarial falsification based on reproduction outcome.",
+            }
+            result = self.adversarial_reviewer.evaluate_falsification(
+                finding=pf,
+                challenge_result=challenge_result,
+                reviewer_id=self.agent_id,
+            )
+            notes_parts.append(f"Adversarial: {result.status} (reproducible={result.reproducible}).")
+            # Override status only toward stricter verdict
+            if result.status == "rejected":
+                status = "rejected"
+                confidence = min(confidence, 20)
+            elif reproducible and result.status == "verified":
+                status = "verified"
+                confidence = max(confidence, 75)
+
+        # 3. IndependentVerifier — build unbiased package and record lineage
+        if self.independent_verifier is not None:
+            pkg = self.independent_verifier.create_unbiased_verification_package(pf)
+            notes_parts.append(
+                f"Independent package built (target={pkg.get('target')}, "
+                f"vuln_class={pkg.get('vulnerability_class')})."
+            )
+
+        if status == "verified":
+            self.verified_count += 1
+        elif status == "rejected":
+            if reproducible is False and self.reproduction_engine is None:
+                self.fp_count += 1
+            else:
+                self.rejected_count += 1
+        else:
+            self.rejected_count += 1
+
+        return {
+            "finding_uid": finding.get("uid", pf.id),
+            "original_title": finding.get("title", pf.title),
+            "status": status,
+            "confidence_score": confidence,
+            "severity_adjustment": "same",
+            "adjusted_severity": finding.get("severity", pf.severity.value if hasattr(pf.severity, "value") else "medium"),
+            "evidence_quality": "strong" if reproducible else "insufficient",
+            "false_positive_indicators": [] if reproducible else ["reproduction_failed"],
+            "verification_notes": " | ".join(notes_parts),
+            "recommendations": "" if reproducible else "Re-run reproduction with a valid sandbox.",
+        }
+
+    async def _llm_verify(self, finding: dict) -> dict:
+        """LLM heuristic verification fallback."""
         finding_summary = json.dumps(finding, indent=2, default=str)
 
         prompt = f"""Review and verify this security finding:

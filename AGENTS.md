@@ -98,3 +98,36 @@ LLM integration: `configs/models.yaml` has `nvidia` as default provider
 (`NVIDIA_API_KEY`, `NVIDIA_BASE_URL`→integrate.api.nvidia.com/v1). Routed via
 `sonic/llm/providers/custom.py` `CustomLLMProvider` (OpenAI-compatible).
 Endpoint: `POST /llm/chat` (body: message, provider, model, max_tokens).
+
+## End-to-end bug-hunt pipeline (live-tested)
+Full flow verified against a dummy vulnerable target (intentionally-vulnerable
+Flask app with command-injection RCE) deployed inside a Daytona sandbox:
+1. `/auth/login` → operator token (RBAC, role clamped)
+2. `/workstation/desktop/provision?session_id=<id>` → attach Daytona sandbox as
+   computer-use workstation (env-attach via DAYTONA_SANDBOX_TENANT_ID match)
+3. `/workstation/command` (body: command, session_id, timeout) → recon via curl
+   inside the sandbox. NOTE: session_id is in the BODY, not query string.
+4. `/llm/chat` (provider=nvidia, model=meta/llama-3.2-11b-vision-instruct) →
+   LLM sub-agent analyzes recon output, hypothesizes vulnerabilities
+5. `/workstation/command` → exploit (confirmed OS command injection RCE:
+   `uid=1001(daytona)` + arbitrary file read of `/etc/os-release`)
+6. `/workstation/desktop/screenshot?session_id=<id>` → real 1024x768 PNG frame
+   from the Daytona desktop (computer_use.start() must succeed first)
+
+Key learnings:
+- `session_id` for `/workstation/command` is in the REQUEST BODY
+  (`ExecuteCommandRequest.session_id`), NOT the query string. Provision routes
+  use `Query("default")` for session_id. Mismatch causes 409 "no workstation".
+- Workstation state persists to `sonic_data/workstations.json`. If a sandbox is
+  recreated (new ID) but the state file still has the OLD ID, `terminal()`
+  fails (exit_code 126) looking up a non-existent sandbox. Delete the state
+  file or use a fresh session_id when switching sandboxes.
+- Egress guard (P0-6) REFUSES to bind engagement/target-sandbox to private/
+  loopback addresses (localhost, 172.x, 10.x, 192.168.x, 169.254.169.254).
+  This is correct SSRF/metadata protection. A dummy target inside the sandbox
+  is private, so engagement *binding* is refused — but recon/exploit still run
+  via `/workstation/command` (which executes inside the already-scoped sandbox
+  and doesn't re-check egress on curl destinations).
+- LLM analysis quality is variable (llama-3.2-11b sometimes hallucinates
+  endpoints not in recon output). Better as a hypothesis generator than
+  authoritative finder. Use a larger model (90b) for higher-stakes analysis.

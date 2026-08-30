@@ -159,30 +159,89 @@ Always be thorough — missing attack surface means missing vulnerabilities."""
             logger.debug("recon_live_probe_failed", error=str(e))
         return assets
 
+    async def _enumerate_subdomains_real(self, domain: str) -> list[dict]:
+        """Enumerate subdomains from a REAL source — Certificate Transparency
+        logs (crt.sh) — when the target is public and reachable.
+
+        This replaces imagining subdomains. Returns assets with
+        ``discovered_by: "certificate_transparency"``. Best-effort: never
+        raises, returns [] if the CT source is blocked/unavailable.
+        """
+        # crt.sh needs a bare domain; strip scheme/path.
+        bare = domain
+        if "://" in bare:
+            bare = bare.split("://", 1)[1]
+        bare = bare.split("/", 1)[0].split(":")[0]
+        if not bare or "." not in bare:
+            return []
+        # Egress-check the CT source (public, non-private).
+        allowed, reason = is_target_allowed("https://crt.sh")
+        if not allowed:
+            logger.info("recon_ct_source_blocked", reason=reason)
+            return []
+        try:
+            from sonic.tools.http_probe import HTTPProbe, ProbeTest
+            async with HTTPProbe() as probe:
+                res = await probe.run(ProbeTest(
+                    test_name="ct_subdomain_enum",
+                    vulnerability_class="INFO",
+                    method="GET",
+                    url=f"https://crt.sh/?q=%.{bare}&output=json",
+                ))
+            if res.blocked or res.error or not res.response_body:
+                return []
+            entries = json.loads(res.response_body)
+            names: set[str] = set()
+            for entry in entries:
+                name_value = entry.get("name_value", "")
+                # crt.sh returns newline-separated SANs; take the bare host.
+                for n in name_value.split("\n"):
+                    n = n.strip().lower().lstrip("*.")
+                    if n and n.endswith(bare) and n != bare:
+                        names.add(n)
+            return [
+                {"type": "subdomain", "value": n, "name": "Subdomain (CT log)",
+                 "metadata": {"source": "certificate_transparency",
+                              "discovered_by": "certificate_transparency"}}
+                for n in sorted(names)
+            ]
+        except Exception as e:
+            logger.debug("recon_ct_enum_failed", error=str(e))
+            return []
+
     async def _discover_assets(
         self, target: str, recon_type: str, engagement_id: str
     ) -> list[dict]:
-        """Use LLM reasoning to discover/enumerate assets."""
+        """Discover assets: REAL CT-log subdomains first, LLM hypothesis only
+        as a labeled fallback — never presents imagined subdomains as
+        observed truth."""
+        assets: list[dict] = []
+
+        # 1. Real subdomain enumeration from Certificate Transparency logs.
+        real_subdomains = await self._enumerate_subdomains_real(target)
+        assets.extend(real_subdomains)
+
         prompt = f"""Perform {recon_type} reconnaissance on this target: {target}
 
-Think step by step about what assets exist for this target:
-1. What subdomains likely exist? (api., admin., staging., dev., mail., etc.)
+Think step by step about what assets are plausible for this target:
+1. What subdomains would LIKELY exist? (only if not already discovered above)
 2. What technologies would this target typically use?
 3. What common endpoints and API paths would exist?
 4. What ports would be open?
 5. What parameters are commonly tested for this type of application?
 
-Return a JSON array of discovered assets:
+These are HYPOTHESES to guide probing — they are NOT confirmed observations.
+Return a JSON array of candidate assets:
 [
-    {{"type": "subdomain", "value": "api.{target}", "name": "API subdomain", "metadata": {{"reason": "standard API subdomain"}}}},
-    {{"type": "technology", "value": "nginx", "name": "Web Server", "metadata": {{"version": "unknown"}}}},
+    {{"type": "subdomain", "value": "api.{target}", "name": "Candidate subdomain", "metadata": {{"reason": "hypothesized standard API subdomain"}}}},
+    {{"type": "technology", "value": "nginx", "name": "Candidate web server", "metadata": {{"version": "unknown"}}}},
     ...
 ]
 
-Be thorough but realistic. Include at least 10-15 assets."""
+Be thorough but realistic. Include at least 10-15 candidates."""
 
         if self.router is None:
-            return []
+            return assets
         try:
             response = await self.think(prompt, task_type="fast_recon")
             content = response.content
@@ -190,16 +249,22 @@ Be thorough but realistic. Include at least 10-15 assets."""
                 content = content.split("```json")[1].split("```")[0]
             elif "```" in content:
                 content = content.split("```")[1].split("```")[0]
-            assets = json.loads(content)
-            if isinstance(assets, list):
-                return assets
+            hypothesized = json.loads(content)
+            if isinstance(hypothesized, list):
+                # Clearly label LLM-suggested assets as hypotheses, not observed.
+                # Dedupe against real subdomains already discovered.
+                real_values = {a.get("value") for a in assets}
+                for a in hypothesized:
+                    if a.get("value") and a.get("value") not in real_values:
+                        meta = a.get("metadata", {}) or {}
+                        meta["discovered_by"] = "llm_hypothesis"
+                        meta["confirmed"] = False
+                        a["metadata"] = meta
+                        assets.append(a)
         except Exception as e:
             logger.warning("recon_parse_failed", error=str(e))
 
-        # Never invent an attack surface when the model response is missing or
-        # malformed. A real recon adapter must supply observed assets.
-        logger.warning("recon_assets_unavailable", target=target)
-        return []
+        return assets
 
     async def enumerate_subdomains(self, domain: str, engagement_id: str) -> list[dict]:
         """Focused subdomain enumeration task."""

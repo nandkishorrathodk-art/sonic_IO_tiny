@@ -347,8 +347,51 @@ evidence regardless of the traces.
 ### Test baseline (after Phase 7.7)
 - 384 passed, 48 honestly skipped, 0 failures.
 
+## Honest Autonomy: Adaptive planner + real recon (Phase 7.8)
+Closed two remaining PLAN.md audit items.
+
+### Objective-adaptive mission planner (`mission_engine/planner.py`)
+Was: a single fixed 3-action plan (pwd / git status / find) for EVERY mission,
+never adapting to the objective. Now the orientation baseline is always
+prefixed, then intent-specific read-only inspection commands are derived from
+the objective text:
+- recon-intent → source-file enumeration + TODO/FIXME grep
+- web/api-intent → http/url/endpoint grep + route/server file find
+- test-intent → test-file + conftest/package.json discovery
+- db-intent → query/sql grep + migration/schema find
+Active probes remain approval-required (never silently executed). Every action
+still compiles to the allowlisted read-only tool schema.
+
+### Real recon, no hallucinated attack surface (`agents/recon.py`)
+Was: asked the LLM "what subdomains likely exist? (api., admin., staging.,
+dev., mail.)" and presented those guesses as discovered assets — hallucinated
+attack surface. Now:
+- Real subdomains come from Certificate Transparency logs (crt.sh JSON API),
+  returned with `discovered_by: "certificate_transparency"`. Best-effort:
+  egress-gated (uses `is_target_allowed`), returns [] if the CT source is
+  blocked/unavailable — never invents subdomains.
+- LLM-suggested candidates are clearly labeled `discovered_by:
+  "llm_hypothesis"` with `confirmed: False` — NOT presented as observed truth.
+- LLM subdomains already found via CT are deduped (kept as the real,
+  confirmed entry).
+- With no router, only real CT assets (if any) are returned — no imagined
+  fallback.
+
+### Done-gate (8 + 5 tests)
+- `test_mission_planner_adaptive.py` (8): orientation baseline always
+  present; recon/web/db intents add intent-specific commands; different
+  intents produce different sets; active probe is approval-required (not
+  silent); readonly objective adds no probe; empty objective raises.
+- `test_recon_honesty.py` (5): real CT subdomains labeled
+  certificate_transparency; LLM assets labeled llm_hypothesis/confirmed=False;
+  LLM subdomain deduped against real CT; CT blocked → no invented subdomains;
+  no router → only real CT assets.
+
+### Test baseline (after Phase 7.8)
+- 397 passed, 48 honestly skipped, 0 failures.
+
 ## Current test baseline
-- 384 passed, 48 honestly skipped (Docker-daemon / Daytona-live gated via
+- 397 passed, 48 honestly skipped (Docker-daemon / Daytona-live gated via
   `sonic-core/tests/conftest.py`), 0 failures.
 - The previously-pre-existing 6 model-only/fail-closed contract failures were
   resolved by PR#3's simulated-provider + execution-evidence fixes (they asserted

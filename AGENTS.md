@@ -145,6 +145,66 @@ browser, security tools, AND self-directed exploration. No hardcoded fallbacks.
   / exploit capability layer; they are out of scope per PLAN and are NOT caused
   by this work.
 
+## AI-Human layer (Phase 7 — Persistent Being + Life + Craft)
+The foundation (persistent Mind + Body + safety) is real. The "AI human" layer
+makes the being a *stable self* rather than a fresh tool on each boot:
+
+### Persistent Being Identity — `sonic/being/identity.py`
+- Before this, `agent_id` was a per-instance UUID (or the literal
+  `"computer-use-agent"`) minted fresh every boot — each restart the system
+  became a brand-new tool with no continuity. A being that forgets its own
+  identity is not alive.
+- `Being` (stable `being_id`, `name`, `tenant_id`, `born_at`) + `BeingMind`
+  (cross-session mood: `curiosity_drive`/`focus`/`satiety`, learned-facts
+  ledger, idle/goal tallies) are persisted to SQLite (write-through, mirrors
+  the Phase-1 VectorMemory pattern: stdlib `sqlite3` + read cache +
+  `reset_being_singleton()`). They share `sonic_data.db` (env
+  `SONIC_BEING_DB_PATH`/`SONIC_MEMORY_DB_PATH`).
+- `BeingMind` is distinct from `agents/cognitive_state.py:CognitiveState`
+  (per-engagement, Redis-TTL'd 24h). The being's affect survives restart;
+  `record_idle_cycle()` evolves mood deterministically from the outcome (novel
+  fact -> curiosity+satiety rise; dead-end -> satiety/boredom + focus rise).
+- `get_or_create_being(tenant_id)` is the identity equivalent of
+  `get_or_create_home(tenant_id)` for the Body: on restart the identity is
+  RE-RESOLVED from SQLite (same `being_id`, same `born_at`), not reminted.
+  Tenant isolation holds: one being per tenant, cross-tenant reads return nothing.
+
+### Always-on Life Loop — `sonic/being/life_loop.py`
+- `BeingLifeLoop` is the always-on tick that runs when no operator goal is
+  active, letting the being pursue self-directed curiosity between (and
+  independent of) API requests. Before this, `CuriosityLoop` existed but was
+  dead unless manually poked — a being that only acts when poked is a tool.
+- Each tick proposes a curious goal (LLM, novelty-biased) and pursues it via
+  the agent's REAL observe->reason->act loop. **Every autonomous action still
+  passes the Phase-6 `ActionPolicy` safety envelope** — the being cannot escape
+  it when "left to its own devices". Constructing a life loop without a safety
+  policy is refused (mirrors `ComputerUseAgent(self_host=True)`).
+- Spawned as a long-lived `asyncio.Task` in `api/main.py:lifespan()` (env-gated
+  `SONIC_ENABLE_BEING_LIFE_LOOP=1`; cancelled cleanly on shutdown; a failed
+  tick is logged and the loop continues, so one bad cycle can't kill the being).
+
+### Durable Craft — `sonic/being/craft.py`
+- `BeingCraft` persists being-authored artifacts (notes/observations/scripts)
+  on the HOST filesystem under `sonic_data/craft/<being_id>/`, so the being
+  builds a personal toolkit that survives restart — distinct from disposable
+  in-sandbox research outputs (which were durable only via git commits).
+- Files are markdown and human-readable on disk; an `index.json` lists metadata.
+  Being-scoped isolation holds between beings.
+
+### Done-gate (test_phase7_ai_human_being.py, 11 tests)
+- identity stable across restart (same being_id + born_at, not reminted);
+  first-contact provisions / second-contact re-attaches;
+  BeingMind persists + mood evolves (novel rewards, dead-end -> boredom);
+  tenant isolation; life loop refuses construction without a safety policy;
+  the life loop tick routes the being's self-directed action THROUGH the safety
+  gate (destructive idle pursuit BLOCKED, never executed, still recorded);
+  loop starts/stops cleanly + survives a failed tick; craft persists across
+  restart + being-scoped + human-readable on disk.
+
+### Test baseline (after Phase 7)
+- 343 passed, 48 honestly skipped, 6 pre-existing model-only failures
+  (unchanged).
+
 ## Current test baseline
 - 300 passed, 48 honestly skipped (Docker-daemon / Daytona-live gated via
   `sonic-core/tests/conftest.py`), 6 pre-existing failures.

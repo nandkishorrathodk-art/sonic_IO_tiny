@@ -28,6 +28,58 @@ from sonic.logger import get_logger
 logger = get_logger(__name__)
 
 
+async def _maybe_start_being_life_loop(settings):
+    """Re-attach the persistent being and start its always-on curiosity loop.
+
+    Returns the running BeingLifeLoop, or None if it could not start (no home
+    workspace, no safety policy, or live infra unavailable). Never raises — a
+    missing being loop must not block API boot.
+    """
+    import os
+    # Only run the always-on loop when explicitly enabled. Default off so test
+    # boots and headless dev don't spawn a background actor that needs a sandbox.
+    if os.environ.get("SONIC_ENABLE_BEING_LIFE_LOOP") != "1":
+        logger.info("being_life_loop_disabled", reason="SONIC_ENABLE_BEING_LIFE_LOOP!=1")
+        return None
+    try:
+        from sonic.being.identity import get_or_create_being
+        from sonic.being.life_loop import BeingLifeLoop
+        from sonic.computer_use.agent import ComputerUseAgent
+        from sonic.computer_use.curiosity import CuriosityLoop
+        from sonic.memory.vector import get_vector_memory
+        from sonic.safety.action_policy import ActionPolicy
+        from sonic.sandbox.factory import get_sandbox_provider
+
+        tenant_id = os.environ.get("SONIC_BEING_TENANT", "default")
+        being = get_or_create_being(tenant_id)
+
+        # Re-attach the home desktop (Phase 2 persistent body).
+        provider = get_sandbox_provider()
+        home = None
+        if hasattr(provider, "get_or_create_home"):
+            home = await provider.get_or_create_home(tenant_id)
+        if home is None or getattr(home, "id", None) is None:
+            logger.warning("being_life_loop_no_home", being_id=being.being_id)
+            return None
+
+        safety = ActionPolicy(workspace_root="/home/sonic/workspace")
+        # Reuse a shared LLM router if available; curiosity needs an LLM.
+        from sonic.llm.router import ModelRouter
+        router = ModelRouter.for_default() if hasattr(ModelRouter, "for_default") else ModelRouter()
+        agent = ComputerUseAgent(
+            computer_provider=provider, llm_router=router,
+            safety=safety, self_host=True, tenant_id=tenant_id, agent_id=being.being_id,
+        )
+        curiosity = CuriosityLoop(llm_router=router, vector_memory=get_vector_memory(), max_cycles=1)
+        tick_interval = float(os.environ.get("SONIC_BEING_TICK_INTERVAL", "60"))
+        loop = BeingLifeLoop(being, agent, curiosity, home.id, tick_interval=tick_interval)
+        loop.start()
+        logger.info("being_life_loop_running", being_id=being.being_id, home_id=home.id)
+        return loop
+    except Exception as e:
+        logger.warning("being_life_loop_init_failed", error=str(e))
+        return None
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -65,9 +117,26 @@ async def lifespan(app: FastAPI):
     else:
         logger.warning("graph_memory_unavailable", msg="Running without Graph Memory")
 
+    # AI-Human layer: re-attach the persistent being for the default tenant and
+    # spawn its always-on curiosity life loop. The being's identity + mind are
+    # re-resolved from SQLite (survives restart). The loop is ONLY spawned when
+    # a home workspace is available and an ActionPolicy is configured — an
+    # always-on autonomous being must not act without the safety envelope. In
+    # test/headless boots without a sandbox, this is a no-op (logged, not fatal).
+    life_loop_task = None
+    try:
+        life_loop_task = await _maybe_start_being_life_loop(settings)
+    except Exception as e:
+        logger.warning("being_life_loop_not_started", reason=str(e))
+
     yield
 
     # Shutdown
+    if life_loop_task is not None:
+        try:
+            await life_loop_task.stop()
+        except Exception as e:
+            logger.warning("being_life_loop_stop_failed", error=str(e))
     await graph.disconnect()
     logger.info("sonic_shutdown")
 

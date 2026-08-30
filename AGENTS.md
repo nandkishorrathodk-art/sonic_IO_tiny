@@ -48,9 +48,10 @@ the ephemeral `InMemoryGraph`. So if Neo4j is down, memory still persists.
 - Done-gate test: `sonic-core/tests/test_phase1_persistent_memory.py` — proves
   graph/vector/evolution memory survive restart, tenant isolation holds across
   restart, and no host `subprocess` execution was introduced.
-- **Honesty checkpoint:** Phase 1 claims ONLY persistent memory. Real reasoning
-  (hardcoded planner/director), browser-in-loop, security-tool execution, and
-  curiosity/life are NOT done (Phase 3-6, deferred per PLAN).
+- **Honesty checkpoint:** Phase 1 claims ONLY persistent memory. Reasoning,
+  browser-in-loop, security-tool execution, and curiosity/life were originally
+  deferred (Phase 3-6). They are now DONE — see "Phases 3-6 (capability
+  layer)" below.
 
 ## Persistent body + safety (Phase 2 — DONE, foundation)
 - `DaytonaComputerProvider` persists its workspace index to
@@ -71,6 +72,60 @@ the ephemeral `InMemoryGraph`. So if Neo4j is down, memory still persists.
 - **Live done-gate (Step 2.4) is environment-gated:** the full
   provision-home → screenshot → terminal → restart → re-attach cycle needs a
   real Daytona cloud desktop (`SONIC_RUN_LIVE_DAYTONA=1`). Not runnable here.
+
+## Phases 3-6 (capability layer — DONE)
+The unified observe -> reason (LLM) -> act loop now covers terminal, files, git,
+browser, security tools, AND self-directed exploration. No hardcoded fallbacks.
+
+### Phase 3 — Real computer-use reasoning
+- `sonic/computer_use/agent.py` rewritten: removed
+  `_derive_remediation_from_goal()` and `_heuristic_choose_action()` entirely.
+  Action selection is LLM-driven each step: build reasoning context from goal +
+  observation + action history -> LLM returns the next action. `observe()` reads
+  terminal output via `echo __sonic_obs_ready__` (not a hardcoded string).
+  `run_mission()` has goal-aware termination (`GOAL_COMPLETE` sentinel).
+- Done-gate: `test_phase3_real_computer_use_reasoning.py` (8 tests).
+
+### Phase 4 — Unified action surface (browser-in-loop)
+- `BROWSER_NAVIGATE / BROWSER_CLICK / BROWSER_TYPE / BROWSER_SCREENSHOT` added
+  to `ComputerActionType` and the LLM action space/parser/prompt.
+- `ComputerUseAgent` accepts an optional `BrowserAgent`; `observe()` folds the
+  live browser page state (url, title, interactive elements) into the
+  observation; `execute_action()` dispatches BROWSER_* to the browser.
+  `BrowserAgent.current_page_state()` returns the live (url, title) so the
+  observation reflects page state AFTER interactions.
+- Done-gate: `test_phase4_unified_browser_in_loop.py` (4 tests).
+
+### Phase 5 — Security-tool execution in the unified loop
+- `SECURITY_TOOL` added to the action space. `ComputerUseAgent` accepts a
+  `security_tools` registry (name -> SecurityTool). `execute_action()` builds a
+  `ToolRequest` and calls `tool.execute()`, which runs the tool INSIDE the
+  sandbox provider (fail-closed: exit 126 -> status BLOCKED). The structured
+  `ToolResult` (findings, status) is stored in `_last_tool_result` and surfaced
+  to the next reasoning step, so the LLM acts on REAL scan findings, not a
+  "scan ran" claim. Blocked/failed tools trigger recovery; recovery preserves
+  the original error cause.
+- Done-gate: `test_phase5_security_tool_execution.py` (5 tests).
+
+### Phase 6 — Curiosity / life loop (self-directed, novelty-driven)
+- `sonic/computer_use/curiosity.py`: `CuriosityLoop.propose_curious_goal()` asks
+  the LLM to propose the most informative goal from the live observation + the
+  known-facts list (novelty-biased, not a fixed idle script).
+  `measure_novelty()` reuses `NoveltyEngine`; `persist_fact()` records
+  genuinely-new facts to `VectorMemory` (Phase 1 Mind) with near-duplicate
+  dedup, so curiosity compounds across cycles. Dead-end detection flips the
+  proposal prompt into a "pivot to a different area" instruction.
+- `ComputerUseAgent.idle_cycle()` / `run_curiosity_loop()`: propose a goal,
+  pursue it via the REAL observe->reason->act loop, measure novelty, persist any
+  newly-learned fact. The same loop now drives operator goals AND self-directed
+  exploration.
+- Done-gate: `test_phase6_curiosity_life_loop.py` (5 tests).
+
+### Test baseline (after Phases 3-6)
+- 322 passed, 48 honestly skipped, 6 pre-existing model-only failures
+  (unchanged). The 6 failures assert OLD fake-success behavior in the evolution
+  / exploit capability layer; they are out of scope per PLAN and are NOT caused
+  by this work.
 
 ## Current test baseline
 - 300 passed, 48 honestly skipped (Docker-daemon / Daytona-live gated via

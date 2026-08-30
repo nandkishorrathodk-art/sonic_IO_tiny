@@ -515,3 +515,44 @@ Key learnings:
 - LLM analysis quality is variable (llama-3.2-11b sometimes hallucinates
   endpoints not in recon output). Better as a hypothesis generator than
   authoritative finder. Use a larger model (90b) for higher-stakes analysis.
+
+## Phase 7.9 — security-scan dispatch + curiosity-driven continuous_dev
+
+### Mission executor: real security scans (audit gap closed)
+- `MissionToolExecutor` previously returned "Tool adapter is not implemented"
+  for nmap/nuclei/ffuf. Fixed: `target_security_scan` is now a registered
+  `APPROVAL_REQUIRED` tool, and the executor accepts an optional
+  `SecurityToolRegistry`. When wired -> dispatches a REAL in-sandbox scan via
+  `SecurityTool.execute` and surfaces parsed findings in `evidence`. When NOT
+  wired -> BLOCKS with "security tool registry is not configured" (never the
+  generic "not implemented").
+- Provider bridge: security adapters need a `ComputeProvider` (`.execute(ws,
+  command, timeout)`), but the executor has a `ComputerProvider` (Daytona,
+  `.terminal`). The thin `sonic/tools/computer_as_compute_provider.py`
+  adapter bridges them so scanners run against the same target sandbox the
+  executor already uses — no second provisioning hierarchy.
+- Production wiring: `api/routes/workstation.py` mission loop builds the real
+  registry via `get_default_registry(ComputerAsComputeProvider(comp))`.
+- Safety: approval is enforced (AWAITING_APPROVAL without operator approval);
+  forbidden-pattern scan targets are BLOCKED by the scope checker; all scans
+  run fail-closed in-sandbox.
+
+### continuous_dev: curiosity-driven lifecycle (audit gap closed)
+- `run_curiosity_driven_lifecycle()`: each generation's patch is derived from
+  a novelty-steered goal (CuriosityLoop) + LLM-authored patch for that goal —
+  NOT the hardcoded v1->v2->v3 StreamBuffer/QueryCache demo. Honest failure
+  (`GenerationStatus.ROLLED_BACK`) when the LLM can't author a patch. The
+  scripted demo is retained as a labeled fallback when no curiosity/router is
+  wired.
+- `_derive_patch_from_goal(goal, rationale, gen_idx)` invokes the LLM to author
+  a patch for the goal; records a rolled-back generation (not a fabricated
+  success) on failure.
+
+### Test discipline (done-gate)
+- Done-gate tests must NOT import `DaytonaComputerProvider` at module top-level
+  — the conftest autouse fixture skips any module importing Daytona symbols
+  unless `SONIC_RUN_LIVE_DAYTONA=1`. Use a `_StubComputer` with a `.terminal`
+  method instead.
+- `PlannedAction` requires a `risk` field (ToolRisk) — construction without it
+  raises a pydantic ValidationError.
+- Suite as of Phase 7.9: 407 passed, 48 skipped, 0 failures.

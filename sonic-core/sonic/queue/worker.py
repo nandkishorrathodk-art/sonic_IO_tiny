@@ -17,11 +17,8 @@ from sonic.queue.job_queue import RedisJobQueue, get_job_queue
 from sonic.queue.models import Job, JobEvent, JobStatus, JobType
 from sonic.sandbox.factory import get_compute_provider
 from sonic.sandbox.provider import ComputeProvider
-from sonic.tools.adapters.ffuf_adapter import FFUFAdapter
-from sonic.tools.adapters.http_adapter import HTTPClientAdapter
-from sonic.tools.adapters.nmap_adapter import NmapAdapter
-from sonic.tools.adapters.nuclei_adapter import NucleiAdapter
 from sonic.tools.base import SecurityTool, ToolRequest, ToolResult, ToolStatus
+from sonic.tools.registry import build_security_tools
 
 logger = get_logger(__name__)
 
@@ -41,12 +38,9 @@ class SonicWorker:
         self.provider = provider or get_compute_provider()
         self.worker_id = worker_id
         self._running = False
-        self._tools: dict[str, SecurityTool] = {
-            "nmap": NmapAdapter(self.provider),
-            "nuclei": NucleiAdapter(self.provider),
-            "ffuf": FFUFAdapter(self.provider),
-            "http_client": HTTPClientAdapter(self.provider),
-        }
+        # Build the real adapter set via the shared registry so every caller
+        # (worker, director, AI-Human being loop) uses one source of truth.
+        self._tools: dict[str, SecurityTool] = build_security_tools(self.provider)
         self.browser = ContainerizedBrowser(self.provider)
 
     async def execute_job(self, job: Job) -> Job:

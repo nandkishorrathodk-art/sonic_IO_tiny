@@ -206,18 +206,51 @@ makes the being a *stable self* rather than a fresh tool on each boot:
   restart + being-scoped + human-readable on disk.
 
 ### Test baseline (after Phase 7)
-- 343 passed, 48 honestly skipped, 6 pre-existing model-only failures
-  (unchanged).
+- 353 passed, 48 honestly skipped, 0 failures (PR#3's simulated-provider fixes
+  resolved the 6 previously pre-existing model-only failures; Phase 1-7 green).
+
+## Security Tool Adapter Registry (Phase 7.5 — wire real adapters to all callers)
+Closed the audit-flagged gap: the real SecurityTool adapters (nmap/nuclei/ffuf/
+http_client) existed but were unreachable from production callers — only the
+queue worker wired them up privately, and the mission director + AI-Human being
+life loop constructed `ComputerUseAgent` with an EMPTY `security_tools=` map,
+so the agent could advertise a `SECURITY_TOOL` action to the LLM but never
+actually dispatch a scan.
+
+### `sonic/tools/registry.py` — one shared registry
+- `build_security_tools(provider)` constructs the 4 REAL adapters bound to a
+  ComputeProvider (every tool runs in-sandbox via `SecurityTool.execute` →
+  `provider.execute`; fail-closed on exit 126 — zero host execution, no stubs).
+- `SecurityToolRegistry`: name→tool lookup with `register()` plugin extension
+  point; `get_default_registry(provider)` is the production entry point.
+- Provider-scoped by design (NOT a process-global) — adapters bind to a specific
+  provider/tenant sandbox, so a global would leak a sandbox across tenants.
+
+### Wiring (one source of truth)
+- `queue/worker.py`: builds `_tools` via `build_security_tools()` (replaces the
+  private hardcoded dict).
+- `api/main.py` being life loop: passes `security_tools=get_default_registry(
+  provider).as_dict()` so the AI-Human being can run real scans during
+  self-directed curiosity.
+- `mission_engine/director.py`: passes registry tools to the engineering-phase
+  `ComputerUseAgent` (bound to the underlying `ComputeProvider`).
+
+### Done-gate (test_security_tool_registry.py, 6 tests)
+- build returns the 4 real adapters bound to the provider; registry lookup +
+  extension + provider-scoping (no global leak); worker uses the registry; the
+  agent dispatches a REAL NmapAdapter end-to-end via registry tools (canned nmap
+  stdout parsed by the real adapter, port 22 surfaced as a finding); a
+  fail-closed (exit 126) tool outcome triggers recovery through the registry path.
+
+### Test baseline (after Phase 7.5)
+- 359 passed, 48 honestly skipped, 0 failures.
 
 ## Current test baseline
-- 300 passed, 48 honestly skipped (Docker-daemon / Daytona-live gated via
-  `sonic-core/tests/conftest.py`), 6 pre-existing failures.
-- The 6 failures are pre-existing model-only/fail-closed contract tests that
-  assert the OLD fake-success behavior (e.g. `EvolutionLab(compute_provider=None)`
-  expects success but is now correctly fail-closed; `ExploitValidator` expects
-  confirmation without sandbox evidence). They are in the capability layer
-  (evolution/exploit), NOT the foundation, and are out of scope per PLAN line
-  128 ("Known pre-existing test failures ... not caused by this work").
+- 359 passed, 48 honestly skipped (Docker-daemon / Daytona-live gated via
+  `sonic-core/tests/conftest.py`), 0 failures.
+- The previously-pre-existing 6 model-only/fail-closed contract failures were
+  resolved by PR#3's simulated-provider + execution-evidence fixes (they asserted
+  the OLD fake-success behavior; now correctly supplied).
 - `test_phase20_workstation_security_and_repair.py` is now GREEN: the
   `/workstation/command` route returns 503 fail-closed (not 409) when no sandbox
   is provisioned, and `/workstation/file` validates path confinement (403) BEFORE

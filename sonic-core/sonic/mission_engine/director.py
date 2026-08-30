@@ -237,10 +237,16 @@ class MissionDirector:
 
             # 3. Phase: ENGINEERING (Delegate to ComputerUseAgent)
             state.current_phase = MissionPhase.ENGINEERING
+            # Wire the REAL security-tool adapters (in-sandbox, fail-closed) so
+            # the agent can dispatch scans as a first-class reasoning action.
+            # Bind to the underlying ComputeProvider (UnifiedComputerProvider
+            # delegates terminal exec to it; SecurityTool.execute calls execute()).
+            from sonic.tools.registry import get_default_registry
             agent = ComputerUseAgent(
                 computer_provider=self.computer,
                 autonomy_level=self.autonomy_level,
                 mode=EngineeringMissionMode.ENGINEERING_MODE,
+                security_tools=get_default_registry(self.computer.compute).as_dict(),
             )
             traces = await agent.run_mission(
                 workspace_id=ws.id,

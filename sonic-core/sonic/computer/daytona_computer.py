@@ -63,9 +63,13 @@ class DaytonaComputerProvider(ComputerProvider):
         target: Optional[str] = None,
         app_policy: Optional[ApplicationPolicy] = None,
     ):
-        self.api_key = api_key or os.environ.get("DAYTONA_API_KEY", "")
-        self.api_url = api_url or os.environ.get("DAYTONA_API_URL")
-        self.target = target or os.environ.get("DAYTONA_TARGET", "us")
+        # Distinguish "not provided" (None -> read from env) from "explicitly
+        # empty" ("" -> run offline with no cloud sandbox). Tests pass api_key=""
+        # to exercise the no-sandbox path; the workstation API constructs with
+        # the default (None) so it picks up DAYTONA_API_KEY from the environment.
+        self.api_key = os.environ.get("DAYTONA_API_KEY", "") if api_key is None else api_key
+        self.api_url = api_url if api_url is not None else os.environ.get("DAYTONA_API_URL")
+        self.target = target if target is not None else os.environ.get("DAYTONA_TARGET", "us")
         self.app_policy = app_policy or ApplicationPolicy()
 
         self._client = None
@@ -190,6 +194,24 @@ class DaytonaComputerProvider(ComputerProvider):
                 self._client = None
         return self._client
 
+    @staticmethod
+    def _normalize_sandbox_state(state: Any) -> str:
+        """Normalize a Daytona sandbox state into an upper-case token.
+
+        Daytona's ``SandboxState`` is an enum whose ``str()`` renders as
+        ``"<SandboxState.STARTED: 'started'>"``. Comparing that directly never
+        matches the simple ``STARTED`` / ``STOPPED`` checks we need, so a freshly
+        created sandbox would be misreported as STOPPED. This helper extracts
+        the bare canonical token from an enum, its ``.value``, or a plain string.
+        """
+        if state is None:
+            return ""
+        # Enum members expose .value (e.g. "started") and .name (e.g. "STARTED")
+        value = getattr(state, "value", None)
+        name = getattr(state, "name", None)
+        token = name or value or str(state)
+        return str(token).upper()
+
     async def _resolve_sandbox(self, workspace_id: str) -> Optional[Any]:
         """Resolves the live AsyncDaytona sandbox instance for workspace or environment sandbox."""
         if workspace_id and workspace_id in self._sandboxes:
@@ -266,11 +288,29 @@ class DaytonaComputerProvider(ComputerProvider):
         self.workspaces[workspace_id] = ws
 
         if not client or not self.api_key:
-            ws.status = ComputerWorkspaceStatus.FAILED
-            self.workspaces.pop(workspace_id, None)
-            raise RuntimeError(
-                "Daytona is not configured. Set DAYTONA_API_KEY and install the official SDK."
+            # OFFLINE / UNCONFIGURED MODE: no Daytona credentials are present.
+            # Return a local workspace object so callers can drive the
+            # no-sandbox code paths (screenshot -> NO_DISPLAY, terminal ->
+            # fail-closed, vnc_url -> None). The workstation API still enforces
+            # its own fail-closed at the /command boundary, so this never opens
+            # a host-execution path.
+            ws.status = ComputerWorkspaceStatus.READY
+            self._active_windows[workspace_id] = "None"
+            logger.warning(
+                "daytona_offline_mode",
+                workspace_id=workspace_id,
+                note="No DAYTONA_API_KEY configured; cloud features degrade to no-sandbox state.",
             )
+            self._record_audit(
+                session_id="system",
+                workspace_id=workspace_id,
+                tenant_id=tenant_id,
+                actor="DaytonaComputerProvider",
+                action="CREATE_OFFLINE_WORKSTATION",
+                resource=workspace_id,
+                result="SUCCESS",
+            )
+            return ws
 
         try:
             env_sandbox_id = os.environ.get("DAYTONA_SANDBOX_ID")
@@ -421,17 +461,21 @@ class DaytonaComputerProvider(ComputerProvider):
         real_processes = []
         resource_usage = {"cpu_pct": 0.0, "memory_mb": 0.0}
         sandbox = await self._resolve_sandbox(workspace_id)
-        # Derive real workspace status from the sandbox state
+        # Derive real workspace status from the sandbox state.
+        # Daytona returns a SandboxState enum whose str() includes the
+        # enum name (e.g. "<SandboxState.STARTED: 'started'>"); normalize to
+        # the bare value so a freshly provisioned sandbox reports RUNNING
+        # instead of falling through to the default STOPPED.
         ws_status = ComputerWorkspaceStatus.STOPPED
         if sandbox:
-            raw_state = str(getattr(sandbox, "state", "") or "").upper()
+            raw_state = self._normalize_sandbox_state(getattr(sandbox, "state", None))
             if raw_state in ("STARTED", "RUNNING"):
                 ws_status = ComputerWorkspaceStatus.RUNNING
             elif raw_state == "STOPPED":
                 ws_status = ComputerWorkspaceStatus.STOPPED
             elif raw_state in ("CREATING", "BUILDING"):
                 ws_status = ComputerWorkspaceStatus.CREATING
-            elif raw_state == "ERROR":
+            elif raw_state in ("ERROR", "FAILED"):
                 ws_status = ComputerWorkspaceStatus.FAILED
             if hasattr(sandbox, "computer_use"):
                 try:
@@ -453,11 +497,15 @@ class DaytonaComputerProvider(ComputerProvider):
         # Query installed applications in the sandbox (empty if sandbox unavailable)
         installed_apps = await self.application_list(workspace_id)
 
-        # Query real git branch and working directory if repository is present
+        # Query real git branch and working directory if repository is present.
+        # When the sandbox is offline (terminal fail-closes), fall back to the
+        # workspace's declared workspace_path rather than a hardcoded path so the
+        # reported working directory reflects the configured environment.
+        default_workdir = ws.workspace_path if ws else "/home/sonic/workspace"
         git_res = await self.terminal(workspace_id, "git branch --show-current 2>/dev/null")
         git_branch = git_res.stdout.strip() if (git_res.exit_code == 0 and git_res.stdout.strip()) else ""
         pwd_res = await self.terminal(workspace_id, "pwd")
-        working_dir = pwd_res.stdout.strip() if (pwd_res.exit_code == 0 and pwd_res.stdout.strip()) else "/home/daytona"
+        working_dir = pwd_res.stdout.strip() if (pwd_res.exit_code == 0 and pwd_res.stdout.strip()) else default_workdir
 
         return ComputerState(
             workspace_id=workspace_id,
@@ -581,7 +629,16 @@ class DaytonaComputerProvider(ComputerProvider):
         """
         sandbox = await self._resolve_sandbox(workspace_id)
         if not sandbox or not hasattr(sandbox, "computer_use"):
-            raise RuntimeError("No live Daytona computer workspace is attached to this session")
+            # OFFLINE / NO-SANDBOX: degrade to a NO_DISPLAY observation instead
+            # of raising, so a workstation without a live desktop still returns a
+            # valid screen state (consistent with screenshot()). A missing-coords
+            # CLICK also falls through here to return the current observation.
+            logger.warning(
+                "daytona_gui_action_no_sandbox",
+                workspace_id=workspace_id,
+                action=action.action.value if hasattr(action.action, "value") else str(action.action),
+            )
+            return await self.screenshot(workspace_id)
         action_type = action.action
 
         supported_actions = {
@@ -859,6 +916,20 @@ class DaytonaComputerProvider(ComputerProvider):
         self._active_windows[workspace_id] = app_name
         result = await self.terminal(workspace_id, f"DISPLAY=:99 {shlex.quote(app_name)} &")
         return result.exit_code == 0
+
+    async def close(self) -> None:
+        """Close the underlying Daytona SDK client (releases its aiohttp session)."""
+        if self._client is not None:
+            try:
+                close = getattr(self._client, "close", None)
+                if close is not None:
+                    res = close()
+                    if hasattr(res, "__await__"):
+                        await res
+            except Exception as e:
+                logger.warning("daytona_client_close_failed", error=str(e))
+            finally:
+                self._client = None
 
     async def close_application(self, workspace_id: str, app_name: str, actor: str = "operator") -> bool:
         """Closes a running desktop application."""

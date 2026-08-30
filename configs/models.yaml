@@ -27,11 +27,14 @@ providers:
         cost_per_1k_input: 0.0009
         cost_per_1k_output: 0.0018
         capabilities: [reasoning, coding, architecture, vision]
-      - id: meta/codellama-70b
-        speed_tier: fast
-        cost_per_1k_input: 0.0007
-        cost_per_1k_output: 0.0009
-        capabilities: [coding, static_analysis, fix_generation]
+      # NOTE: meta/codellama-70b was removed — it is EOL/404 on NVIDIA NIM.
+      # Coding/fix-generation now routes to deepseek-coder (fallback) or the
+      # 90b llama model, both live on NIM.
+      - id: deepseek-ai/deepseek-r1
+        speed_tier: medium
+        cost_per_1k_input: 0.0014
+        cost_per_1k_output: 0.0028
+        capabilities: [coding, static_analysis, fix_generation, reasoning]
 
   claude:
     name: Anthropic Claude
@@ -126,7 +129,7 @@ routing_rules:
   coding:
     description: "Code generation, fix generation, test writing"
     provider: nvidia
-    model: meta/codellama-70b
+    model: deepseek-ai/deepseek-r1
     fallback: [claude/claude-sonnet-4-20250514, deepseek/deepseek-coder]
 
   verification:

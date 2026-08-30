@@ -51,13 +51,16 @@ The most powerful, self-evolving, multi-agent AI red-team system that combines:
 
 ```bash
 # 1. Clone and enter the project
-cd _society
+git clone https://github.com/nandkishorrathodk-art/sonic.git
+cd sonic
 
 # 2. Copy environment template
 cp .env.example .env
 # Edit .env with your API keys and Google OAuth credentials
 
 # 3. Start infrastructure (Neo4j + Redis)
+#    Neo4j is OPTIONAL in dev — the backend falls back to an in-memory
+#    graph store if localhost:7687 is unreachable.
 docker-compose up -d
 
 # 4. Install Python dependencies
@@ -65,8 +68,8 @@ pip install -e sonic-core[dev]
 pip install -e sonic-cli[dev]
 
 # 5. Start the backend
-cd sonic-core
-uvicorn sonic.api.main:app --reload
+#    uvicorn is not on PATH; invoke it as a module:
+APP_ENV=development python -m uvicorn sonic.api.main:app --port 12000 --reload
 
 # 6. Use the CLI
 sonic status
@@ -76,7 +79,7 @@ sonic auth login
 ## Project Structure
 
 ```
-_society/
+sonic/
 ├── sonic-core/          # 🧠 Core Python backend (FastAPI)
 │   └── sonic/
 │       ├── auth/        # Google OAuth2 + JWT

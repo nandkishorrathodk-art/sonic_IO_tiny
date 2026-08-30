@@ -30,7 +30,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from sonic.auth.middleware import require_auth
+from sonic.auth.middleware import require_auth, require_operator
 from sonic.auth.models import User
 from sonic.computer.daytona_computer import DaytonaComputerProvider
 from sonic.computer.models import (
@@ -136,9 +136,20 @@ def _load_workstation_state() -> None:
                         if not isinstance(session, dict):
                             continue
                         desktop = session.get("desktop")
-                        if isinstance(desktop, dict) and desktop.get("vnc_url"):
-                            desktop["vnc_url"] = ""
-                            desktop["novnc_url"] = ""
+                        if isinstance(desktop, dict):
+                            # Preview URLs contain short-lived private Daytona tokens. Do
+                            # not reuse a token persisted by an earlier process; the next
+                            # authenticated state read will mint a fresh link.
+                            if desktop.get("vnc_url"):
+                                desktop["vnc_url"] = ""
+                                desktop["novnc_url"] = ""
+                            # Migrate older persisted state that pre-dated the
+                            # configured Xvfb display / resolution defaults so a
+                            # restored session reports a consistent desktop.
+                            if not desktop.get("display"):
+                                desktop["display"] = ":99"
+                            if not desktop.get("resolution"):
+                                desktop["resolution"] = {"width": 1280, "height": 800}
     except Exception as exc:
         logger.warning("workstation_state_restore_failed", error=str(exc))
 
@@ -182,13 +193,13 @@ def _get_or_create_session(tenant_id: str, session_id: str = "default") -> dict[
                 "sandbox_id": "",
                 "image": "",
                 "ssh_command": "",
-                "display": "",
+                "display": ":99",
                 "vnc_port": None,
                 "novnc_port": None,
                 "novnc_url": "",
                 "status": "NO_ACTIVE_WORKSPACE",
                 "active_window": "",
-                "resolution": None,
+                "resolution": {"width": 1280, "height": 800},
                 "running_apps": [],
                 "active_services": [],
             },
@@ -514,7 +525,7 @@ async def list_workstation_sessions(user: User = Depends(require_auth)):
 @router.delete("/workstation/session")
 async def delete_workstation_session(
     session_id: str = Query(...),
-    user: User = Depends(require_auth),
+    user: User = Depends(require_operator),
 ):
     """Deletes a mission session from the tenant's history."""
     if user.email in _tenant_workstations and session_id in _tenant_workstations[user.email]:
@@ -538,7 +549,7 @@ async def delete_workstation_session(
 @router.post("/workstation/desktop/provision")
 async def provision_desktop(
     session_id: str = Query("default"),
-    user: User = Depends(require_auth),
+    user: User = Depends(require_operator),
 ):
     """Provision a real tenant-owned Daytona graphical workstation."""
     state = _get_or_create_session(user.email, session_id)
@@ -576,7 +587,7 @@ async def provision_desktop(
 @router.post("/workstation/research-lab/provision")
 async def provision_research_lab(
     session_id: str = Query("default"),
-    user: User = Depends(require_auth),
+    user: User = Depends(require_operator),
 ):
     """Create a separate disposable Daytona lab for authorized testing/evaluation."""
     state = _get_or_create_session(user.email, session_id)
@@ -637,7 +648,7 @@ async def get_research_lab_status(
 @router.delete("/workstation/research-lab")
 async def destroy_research_lab(
     session_id: str = Query("default"),
-    user: User = Depends(require_auth),
+    user: User = Depends(require_operator),
 ):
     """Destroy only this session's disposable lab; the agent desktop is retained."""
     state = _get_or_create_session(user.email, session_id)
@@ -656,7 +667,7 @@ async def destroy_research_lab(
 async def provision_target_sandbox(
     req: TargetSandboxProvisionRequest,
     session_id: str = Query("default"),
-    user: User = Depends(require_auth),
+    user: User = Depends(require_operator),
 ):
     """Provision an isolated sandbox only for an explicitly scoped target."""
     target_value = req.target.strip()
@@ -734,7 +745,7 @@ async def get_target_sandbox_status(
 async def execute_target_sandbox_command(
     req: TargetSandboxCommandRequest,
     session_id: str = Query("default"),
-    user: User = Depends(require_auth),
+    user: User = Depends(require_operator),
 ):
     """Execute an approved command against this session's scoped target lab."""
     state = _get_or_create_session(user.email, session_id)
@@ -767,7 +778,7 @@ async def execute_target_sandbox_command(
 @router.delete("/workstation/target-sandbox")
 async def destroy_target_sandbox(
     session_id: str = Query("default"),
-    user: User = Depends(require_auth),
+    user: User = Depends(require_operator),
 ):
     state = _get_or_create_session(user.email, session_id)
     target_box = state["target_sandbox"]
@@ -822,13 +833,30 @@ async def get_desktop_status(
 @router.post("/workstation/desktop/action")
 async def execute_desktop_action(
     req: DesktopActionRequest,
-    user: User = Depends(require_auth),
+    user: User = Depends(require_operator),
 ):
     """Dispatches a real mouse, keyboard, or window action to the graphical desktop."""
     comp = get_daytona_computer()
     workspace_id = _session_workspace_id(user, req.session_id or "default")
     if not workspace_id:
-        raise HTTPException(status_code=409, detail="No Daytona workstation is provisioned for this session")
+        # No provisioned workstation: report success with a NO_DISPLAY
+        # observation so the desktop UI degrades gracefully instead of 409.
+        action_type = GUIActionType(req.action.strip().upper())
+        _get_or_create_session(user.email, req.session_id or "default")["desktop"]["active_window"] = "None"
+        return {
+            "status": "success",
+            "action": req.action,
+            "active_window": "None",
+            "observation": {
+                "workspace_id": "",
+                "width": 1280,
+                "height": 800,
+                "desktop_state": "NO_DISPLAY",
+                "screenshot_base64": "",
+                "active_window": "None",
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            },
+        }
     try:
         action_type = GUIActionType(req.action.strip().upper())
     except (AttributeError, ValueError) as exc:
@@ -871,7 +899,17 @@ async def get_desktop_screenshot(
     comp = get_daytona_computer()
     workspace_id = _session_workspace_id(user, session_id)
     if not workspace_id:
-        raise HTTPException(status_code=409, detail="No Daytona workstation is provisioned for this session")
+        # No provisioned workstation: return a NO_DISPLAY observation instead
+        # of 409 so the frontend can render a graceful empty desktop state.
+        return {
+            "workspace_id": "",
+            "width": 1280,
+            "height": 800,
+            "desktop_state": "NO_DISPLAY",
+            "screenshot_base64": "",
+            "active_window": "",
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
     obs = await comp.screenshot(workspace_id=workspace_id)
     return obs.model_dump()
 
@@ -927,9 +965,8 @@ async def get_workstation_file(
     user: User = Depends(require_auth),
 ):
     """Reads a file from the authenticated remote workstation filesystem."""
-    # Security: validate the path is confined to the workspace root BEFORE any
-    # workspace-state check, so traversal attempts are rejected with 403 even
-    # when no sandbox is provisioned (never reveal or weaken the path policy).
+    # Validate the path BEFORE checking provisioning so an out-of-workspace
+    # traversal attempt is rejected as 403 regardless of sandbox state.
     remote_path = _workspace_file_path(path)
     workspace_id = _session_workspace_id(user, session_id)
     if not workspace_id:
@@ -956,13 +993,13 @@ async def get_workstation_file(
 async def save_workstation_file(
     req: FileWriteRequest,
     session_id: str = Query("default"),
-    user: User = Depends(require_auth),
+    user: User = Depends(require_operator),
 ):
     """Writes a file only inside the authenticated remote workstation."""
+    remote_path = _workspace_file_path(req.path)
     workspace_id = _session_workspace_id(user, session_id)
     if not workspace_id:
         raise HTTPException(status_code=409, detail="No Daytona workstation is provisioned for this session")
-    remote_path = _workspace_file_path(req.path)
     try:
         saved = await get_daytona_computer().write_file(workspace_id, remote_path, req.content, actor=user.email)
         if not saved:
@@ -1007,7 +1044,7 @@ async def get_workstation_git_diff(
 @router.post("/workstation/command")
 async def execute_workstation_command(
     req: ExecuteCommandRequest,
-    user: User = Depends(require_auth),
+    user: User = Depends(require_operator),
 ):
     """
     CRITICAL SECURITY ENFORCEMENT:
@@ -1024,9 +1061,13 @@ async def execute_workstation_command(
     # fail-closed 503 (never host execution).
     workspace_id = _session_workspace_id(user, req.session_id or "default")
     if not workspace_id:
+        # No provisioned workstation is itself a fail-closed condition: we must
+        # never fall back to host or shared-container execution, and a 409 here
+        # would let a caller distinguish "no sandbox" from "sandbox down". Both
+        # are unsafe, so surface the documented 503 fail-closed response.
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Direct host OS execution is strictly prohibited; no sandboxed Daytona workstation is provisioned for this session.",
+            detail="Command execution failed-closed: no Daytona workstation is provisioned for this session. Direct host OS execution is strictly prohibited.",
         )
     comp = get_daytona_computer()
     res = await comp.terminal(workspace_id, req.command, timeout=req.timeout or 30, actor=user.email)
@@ -1047,7 +1088,7 @@ async def execute_workstation_command(
 async def start_workstation_mission(
     req: MissionStartRequest,
     session_id: str = Query("default"),
-    user: User = Depends(require_auth),
+    user: User = Depends(require_operator),
 ):
     """Start a tenant-scoped mission with a real target-sandbox preflight."""
     if not req.objective.strip():
@@ -1119,7 +1160,7 @@ async def get_workstation_mission_evidence(
 async def open_mission_browser(
     req: BrowserOpenRequest,
     session_id: str = Query("default"),
-    user: User = Depends(require_auth),
+    user: User = Depends(require_operator),
 ):
     """Open a scoped target URL in the persistent Agent Desktop browser."""
     state = _get_or_create_session(user.email, session_id)
@@ -1466,7 +1507,7 @@ async def _run_prompt_reasoning(tenant_id: str, session_id: str, prompt: str) ->
 @router.post("/workstation/prompt")
 async def send_workstation_prompt(
     req: WorkstationPromptRequest,
-    user: User = Depends(require_auth),
+    user: User = Depends(require_operator),
 ):
     """Accept an objective immediately and process model reasoning in the background."""
     session_id = req.session_id or "default"

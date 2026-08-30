@@ -112,7 +112,7 @@ Return hypotheses as a JSON array. Quality > Quantity."""
         findings: list[dict],
         technologies: list[str],
     ) -> list[dict]:
-        """Generate creative vulnerability hypotheses."""
+        """Generate creative vulnerability hypotheses (LLM + deterministic fallback)."""
         context_parts = [f"TARGET: {target}"]
 
         if assets:
@@ -150,15 +150,122 @@ Return JSON array:
 
 Generate 5-8 high-quality hypotheses. Avoid generic/obvious ones."""
 
-        response = await self.think(prompt, task_type="hypothesis")
+        if self.router is not None:
+            try:
+                response = await self.think(prompt, task_type="hypothesis")
+                content = response.content
+                if "```json" in content:
+                    content = content.split("```json")[1].split("```")[0]
+                elif "```" in content:
+                    content = content.split("```")[1].split("```")[0]
+                hypotheses = json.loads(content)
+                if isinstance(hypotheses, list) and hypotheses:
+                    return hypotheses
+            except Exception as e:
+                logger.warning("hypothesis_llm_failed", error=str(e))
 
-        try:
-            content = response.content
-            if "```json" in content:
-                content = content.split("```json")[1].split("```")[0]
-            elif "```" in content:
-                content = content.split("```")[1].split("```")[0]
-            hypotheses = json.loads(content)
-            return hypotheses if isinstance(hypotheses, list) else []
-        except Exception:
+        # Deterministic fallback: synthesize hypotheses from asset richness so the
+        # pipeline keeps producing testable ideas even with no LLM configured.
+        return self._synth_hypotheses_from_assets(target, assets, technologies, findings)
+
+    def _synth_hypotheses_from_assets(
+        self,
+        target: str,
+        assets: list[dict],
+        technologies: list[str],
+        findings: list[dict],
+    ) -> list[dict]:
+        """
+        Build a prioritized hypothesis queue from the discovered attack surface
+        WITHOUT an LLM. Each asset is scored by "richness" (parameters, auth
+        hints, forms, interesting paths) so the dynamic agent tests the juiciest
+        targets first. This makes the system useful even with no model.
+        """
+        if not assets and not target:
             return []
+
+        tech_lower = {t.lower() for t in technologies}
+        # Tech-stack → likely vulnerability classes
+        tech_hints: list[tuple[str, str, int]] = []
+        if any("php" in t for t in tech_lower):
+            tech_hints.append(("PHP Object Injection via unserialize()", "RCE", 8))
+        if any("wordpress" in t or "wp" in t for t in tech_lower):
+            tech_hints.append(("WordPress plugin endpoint enumeration", "LFI/RCE", 7))
+        if any("express" in t or "node" in t for t in tech_lower):
+            tech_hints.append(("Prototype pollution via JSON body", "XSS/RCE", 6))
+        if any("django" in t or "flask" in t for t in tech_lower):
+            tech_hints.append(("Debug mode / debug toolbar exposure", "Info Leak", 5))
+        if any("tomcat" in t or "jenkins" in t for t in tech_lower):
+            tech_hints.append(("Default-credential / manager app exposure", "RCE", 9))
+
+        hypotheses: list[dict] = []
+        # Score each asset by richness to prioritize the juiciest first.
+        scored: list[tuple[int, dict]] = []
+        for a in assets:
+            value = (a.get("value") or "").lower()
+            meta = a.get("metadata", {}) if isinstance(a.get("metadata"), dict) else {}
+            score = 0
+            atype = (a.get("type") or "").lower()
+            if atype == "endpoint" or "url" in atype:
+                score += 3
+            if any(tok in value for tok in ("login", "auth", "signin", "token", "oauth")):
+                score += 4
+            if any(tok in value for tok in ("admin", "internal", "debug", "api", "upload")):
+                score += 3
+            if a.get("parameters") or meta.get("parameters"):
+                score += 2
+            if a.get("requires_auth") or meta.get("requires_auth"):
+                score += 2
+            scored.append((score, a))
+        scored.sort(key=lambda x: x[0], reverse=True)
+
+        # Generate one hypothesis per juicy asset, capped.
+        for score, a in scored[:8]:
+            value = a.get("value") or target
+            if not value:
+                continue
+            if not value.startswith("http"):
+                value = f"https://{value}"
+            vuln_class = "IDOR"
+            priority = max(5, min(10, 5 + score))
+            if "auth" in value.lower() or "token" in value.lower():
+                vuln_class = "Auth Bypass"
+                priority = max(6, priority)
+            elif "upload" in value.lower():
+                vuln_class = "File Upload Bypass"
+            elif "api" in value.lower():
+                vuln_class = "Broken Object Level Auth"
+            hypotheses.append({
+                "title": f"Test {vuln_class} on {value}",
+                "description": f"Deterministic hypothesis: {value} looks like a high-value "
+                               f"endpoint (richness score {score}). Test for {vuln_class}.",
+                "vulnerability_class": vuln_class,
+                "rationale": f"Asset richness signals ({score}); auto-generated without LLM.",
+                "test_plan": f"Send crafted requests to {value} probing for {vuln_class} signals.",
+                "priority": priority,
+                "impact_if_confirmed": "Unauthorized access or data exposure.",
+            })
+
+        # Add tech-stack hypotheses.
+        for title, vclass, prio in tech_hints[:3]:
+            hypotheses.append({
+                "title": title, "description": f"Detected tech suggests {title}.",
+                "vulnerability_class": vclass, "rationale": "Tech fingerprint match.",
+                "test_plan": f"Probe for {title} indicators.", "priority": prio,
+                "impact_if_confirmed": "Remote code execution or access bypass.",
+            })
+
+        # If we have existing findings, propose a chaining hypothesis.
+        if findings:
+            classes = {f.get("vulnerability_class", "") for f in findings}
+            hypotheses.append({
+                "title": "Chain existing findings into a deeper exploit",
+                "description": "Combine the confirmed low/medium findings into a higher-impact chain.",
+                "vulnerability_class": "Chaining",
+                "rationale": f"Already confirmed: {', '.join(sorted(classes))}",
+                "test_plan": "Use confirmed access to pivot to adjacent functionality.",
+                "priority": 9,
+                "impact_if_confirmed": "Privilege escalation or wider data exposure.",
+            })
+
+        return hypotheses

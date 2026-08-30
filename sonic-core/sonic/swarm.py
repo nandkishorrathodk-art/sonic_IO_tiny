@@ -19,6 +19,7 @@ from typing import Any, Optional
 from sonic.agents.base import BaseAgent
 from sonic.agents.cognitive_state import EngagementBudget
 from sonic.agents.director import Director
+from sonic.agents.dynamic_execution import DynamicExecutionAgent
 from sonic.agents.engagement import EngagementManager
 from sonic.agents.hypothesis import HypothesisGenerator
 from sonic.agents.orchestrator import MetaOrchestrator
@@ -112,6 +113,7 @@ class SwarmRunner:
             ("orchestrator", MetaOrchestrator),
             ("recon", ReconAgent),
             ("static", StaticReasoningAgent),
+            ("dynamic", DynamicExecutionAgent),
             ("hypothesis", HypothesisGenerator),
             ("verifier", VerifierAgent),
         ]
@@ -310,7 +312,7 @@ class SwarmRunner:
             "static": "static",
             "hypothesis": "hypothesis",
             "verifier": "verifier",
-            "dynamic": "recon",       # dynamic testing falls back to recon agent
+            "dynamic": "dynamic",     # autonomous pentest loop
             "orchestrator": "orchestrator",
         }
 
@@ -373,6 +375,41 @@ class SwarmRunner:
         state = self.director.get_engagement_state(engagement_id)
         graph = self.director.get_task_graph(engagement_id)
 
+        # Sustained pivot loop: when the first pass produced findings, feed them
+        # back as new hypotheses so the dynamic agent keeps probing/chaining
+        # (the "keep going" behaviour of a real pentester), bounded by max_pivots.
+        pivot_rounds = 0
+        max_pivots = max_iterations // 5 if max_iterations >= 5 else 0
+        while all_findings and pivot_rounds < max_pivots:
+            pivot_rounds += 1
+            logger.info("dispatch_pivot_round", engagement_id=engagement_id, round=pivot_rounds)
+            dynamic_agent = self._agents.get("dynamic")
+            if dynamic_agent is None:
+                break
+            scope = {"target": state.get("target", "")} if isinstance(state, dict) else {}
+            pivot_result = await self._execute_single_task(
+                dynamic_agent,
+                {
+                    "agent_type": "dynamic",
+                    "task_id": f"pivot-{pivot_rounds}",
+                    "target": (state or {}).get("target", ""),
+                    "engagement_id": engagement_id,
+                    "findings": all_findings[-10:],
+                    "scope_config": scope,
+                    "task": "follow_up_exploitation",
+                },
+                engagement_id,
+            )
+            if isinstance(pivot_result, dict):
+                all_outputs.append(pivot_result)
+                completed += 1
+                for f in pivot_result.get("findings", []):
+                    all_findings.append(f)
+                    self.metrics.record_finding(f.get("severity", "medium"))
+            # Stop pivoting when a round produces no new findings.
+            if not (isinstance(pivot_result, dict) and pivot_result.get("findings")):
+                break
+
         return {
             "dispatchable_tasks": [],
             "cognitive_state": state,
@@ -381,8 +418,9 @@ class SwarmRunner:
             "findings": all_findings,
             "tasks_completed": completed,
             "tasks_failed": failed,
+            "pivot_rounds": pivot_rounds,
             "summary": {
-                "target": "",
+                "target": (state or {}).get("target", "") if isinstance(state, dict) else "",
                 "total_findings": len(all_findings),
                 "critical": sum(1 for f in all_findings if f.get("severity") == "critical"),
                 "high": sum(1 for f in all_findings if f.get("severity") == "high"),

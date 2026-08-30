@@ -20,6 +20,7 @@ import json
 from sonic.logger import get_logger
 from sonic.agents.base import BaseAgent
 from sonic.memory.schemas import AssetNode, AssetType
+from sonic.sandbox.egress import is_target_allowed
 
 logger = get_logger(__name__)
 
@@ -64,8 +65,9 @@ Always be thorough — missing attack surface means missing vulnerabilities."""
 
         logger.info("recon_starting", target=target, recon_type=recon_type)
 
-        # Use LLM to plan and simulate recon (tool execution in Phase 2)
+        # LLM-reasoned asset planning + real HTTP enrichment (when permitted).
         assets = await self._discover_assets(target, recon_type, engagement_id)
+        assets = await self._enrich_with_live_probe(target, assets)
 
         # Store assets in Graph Memory
         stored_count = 0
@@ -99,6 +101,64 @@ Always be thorough — missing attack surface means missing vulnerabilities."""
         self._log_action("recon_complete", {"assets_found": len(assets)})
         return result
 
+    async def _enrich_with_live_probe(self, target: str, assets: list[dict]) -> list[dict]:
+        """
+        Augment LLM-planned assets with REAL observations from a live probe
+        (HTTP tech fingerprint + reachable URL) when the target is public and
+        in-scope. Best-effort: never raises, never invents assets when the
+        probe is blocked or unavailable.
+        """
+        if not target:
+            return assets
+        normalized = target if target.startswith("http") else f"https://{target}"
+        allowed, reason = is_target_allowed(normalized)
+        if not allowed:
+            logger.info("recon_live_probe_skipped", target=target, reason=reason)
+            return assets
+
+        try:
+            from sonic.tools.http_probe import HTTPProbe, ProbeTest
+
+            live_assets: list[dict] = []
+            async with HTTPProbe() as probe:
+                test = ProbeTest(
+                    test_name="recon_baseline",
+                    vulnerability_class="INFO",
+                    method="GET",
+                    url=normalized,
+                )
+                res = await probe.run(test)
+            if not res.blocked and res.error == "":
+                if res.status_code:
+                    live_assets.append({
+                        "type": "url", "value": res.url, "name": "Live root URL",
+                        "metadata": {"status_code": res.status_code,
+                                     "discovered_by": "live_probe"},
+                    })
+                server = res.response_headers.get("server") or res.response_headers.get("Server")
+                if server:
+                    live_assets.append({
+                        "type": "technology", "value": server, "name": "Web Server",
+                        "metadata": {"source": "http_header",
+                                     "discovered_by": "live_probe"},
+                    })
+                powered = res.response_headers.get("x-powered-by") or res.response_headers.get("X-Powered-By")
+                if powered:
+                    live_assets.append({
+                        "type": "technology", "value": powered, "name": "Backend",
+                        "metadata": {"source": "x-powered-by",
+                                     "discovered_by": "live_probe"},
+                    })
+            # Merge live assets without duplicating existing values
+            existing = {a.get("value") for a in assets}
+            for la in live_assets:
+                if la.get("value") and la.get("value") not in existing:
+                    assets.append(la)
+                    existing.add(la.get("value"))
+        except Exception as e:
+            logger.debug("recon_live_probe_failed", error=str(e))
+        return assets
+
     async def _discover_assets(
         self, target: str, recon_type: str, engagement_id: str
     ) -> list[dict]:
@@ -121,9 +181,10 @@ Return a JSON array of discovered assets:
 
 Be thorough but realistic. Include at least 10-15 assets."""
 
-        response = await self.think(prompt, task_type="fast_recon")
-
+        if self.router is None:
+            return []
         try:
+            response = await self.think(prompt, task_type="fast_recon")
             content = response.content
             if "```json" in content:
                 content = content.split("```json")[1].split("```")[0]

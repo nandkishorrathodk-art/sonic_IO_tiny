@@ -28,6 +28,8 @@ from sonic.evidence.models import (
 )
 from sonic.evidence.reproduction_engine import ReproductionEngine
 from sonic.memory.schemas import FindingStatus
+from sonic.safety.rate_limiter import get_rate_limiter
+from sonic.tools.http_probe import HTTPProbe, ProbeResult, ProbeTest
 
 logger = get_logger(__name__)
 
@@ -37,9 +39,14 @@ class VerifierAgent(BaseAgent):
     Verification agent — validates findings and filters false positives.
     Every finding MUST pass through the Verifier before being reported.
 
-    When evidence-validation engines (ReproductionEngine, IndependentVerifier,
-    AdversarialReviewer) are supplied, they are used to provide concrete
-    reproducible / falsifiable verification before the LLM heuristic verdict.
+    Verification is layered, strictest-first:
+        1. HTTP reproduction (HTTPProbe) — re-fire the saved request and check
+           the same vulnerability signal re-appears in the REAL response.
+        2. ReproductionEngine / AdversarialReviewer / IndependentVerifier
+           (sandbox PoC reproduction + falsification), when supplied.
+        3. LLM heuristic verdict — strict, evidence-focused.
+
+    A finding only becomes "verified" when concrete proof survives.
     """
 
     def __init__(
@@ -48,16 +55,21 @@ class VerifierAgent(BaseAgent):
         reproduction_engine: Optional[ReproductionEngine] = None,
         independent_verifier: Optional[IndependentVerifier] = None,
         adversarial_reviewer: Optional[AdversarialReviewer] = None,
+        scope_config: Optional[dict] = None,
+        enable_http_reproduction: bool = True,
         **kwargs: Any,
     ):
         super().__init__(name="VerifierAgent", **kwargs)
         self.reproduction_engine = reproduction_engine
         self.independent_verifier = independent_verifier
         self.adversarial_reviewer = adversarial_reviewer
+        self.scope_config = scope_config or {}
+        self.enable_http_reproduction = enable_http_reproduction
 
         self.verified_count = 0
         self.rejected_count = 0
         self.fp_count = 0
+        self.reproduced_count = 0
 
     def get_system_prompt(self) -> str:
         return """You are the Verifier Agent of SONIC-REDA, an autonomous AI red-team system.
@@ -140,15 +152,188 @@ You must return a JSON object with your analysis. BE STRICT."""
         }
 
     async def _verify_finding(self, finding: dict) -> dict:
-        """Verify a single finding, using evidence engines when available."""
-        # Attempt concrete verification via ReproductionEngine + AdversarialReviewer
-        # before falling back to the LLM heuristic verdict.
+        """Verify a single finding, layered strictest-first."""
+        # 1. HTTP reproduction (real re-fire) — strongest concrete proof
+        repro = await self._http_reproduce(finding)
+        if repro is not None:
+            return repro
+
+        # 2. Evidence engines (sandbox reproduction + adversarial review)
         engine_verdict = await self._engine_verify(finding)
         if engine_verdict is not None:
             return engine_verdict
 
-        # LLM heuristic fallback
+        # 3. LLM heuristic fallback
         return await self._llm_verify(finding)
+
+    async def _http_reproduce(self, finding: dict) -> Optional[dict]:
+        """
+        Re-fire the finding's original request against the target and check
+        that the same vulnerability signal re-appears in the REAL response.
+
+        Returns a structured verdict when reproduction was attempted, or None
+        when the finding has no reproducible request (skip to next layer).
+        """
+        if not self.enable_http_reproduction:
+            return None
+
+        # Reconstruct a probe test from the finding's saved request.
+        test = self._test_from_finding(finding)
+        if test is None:
+            return None
+
+        scope_config = finding.get("scope_config") or self.scope_config
+        try:
+            async with HTTPProbe(
+                scope_checker=self.scope,
+                rate_limiter=get_rate_limiter(),
+                scope_config=scope_config,
+            ) as probe:
+                result = await probe.run(test)
+        except Exception as e:
+            logger.warning("verifier_http_repro_failed", error=str(e))
+            return {
+                "finding_uid": finding.get("uid", finding.get("id", "")),
+                "original_title": finding.get("title", ""),
+                "status": "needs_more_evidence",
+                "confidence_score": 30,
+                "severity_adjustment": "same",
+                "adjusted_severity": finding.get("severity", "medium"),
+                "evidence_quality": "insufficient",
+                "false_positive_indicators": ["reproduction_error"],
+                "verification_notes": f"HTTP reproduction error: {e}",
+                "recommendations": "Re-run verification with network access.",
+            }
+
+        notes = []
+        if result.blocked:
+            self.rejected_count += 1
+            return self._repro_verdict(
+                finding, result, status="rejected", confidence=15,
+                quality="insufficient",
+                notes=[f"Reproduction blocked: {result.block_reason}"],
+                fp_indicators=["reproduction_blocked"],
+                recommendations="Ensure the target is in-scope and reachable.",
+            )
+        if result.error:
+            self.rejected_count += 1
+            return self._repro_verdict(
+                finding, result, status="needs_more_evidence", confidence=25,
+                quality="insufficient",
+                notes=[f"Reproduction error: {result.error}"],
+                fp_indicators=["reproduction_error"],
+                recommendations="Re-run when the target is reachable.",
+            )
+
+        reproduced = result.is_vulnerable
+        if reproduced:
+            self.reproduced_count += 1
+            self.verified_count += 1
+            return self._repro_verdict(
+                finding, result, status="verified", confidence=max(85, result.confidence),
+                quality="strong",
+                notes=[f"Reproduced: signal re-observed ({json.dumps(result.signals)}). "
+                       f"Status {result.status_code}, latency {result.elapsed_seconds}s."],
+                fp_indicators=[],
+                recommendations="",
+            )
+        # Signal absent in the re-fire → likely false positive or environment change.
+        self.fp_count += 1
+        return self._repro_verdict(
+            finding, result, status="false_positive", confidence=20,
+            quality="weak",
+            notes=["Reproduction failed: the vulnerability signal did NOT re-appear "
+                   "in the real response. Likely a false positive or transient state."],
+            fp_indicators=["signal_not_reproducible", "reproduction_failed"],
+            recommendations="Re-confirm with the original payload/parameters.",
+        )
+
+    def _test_from_finding(self, finding: dict) -> Optional[ProbeTest]:
+        """Reconstruct a ProbeTest from a finding's stored request/evidence."""
+        # Prefer an explicit url on the finding.
+        url = finding.get("url") or finding.get("target_asset") or ""
+        method = finding.get("method", "GET").upper() if finding.get("method") else "GET"
+        payload = finding.get("poc", "") or finding.get("payload", "")
+        raw_request = finding.get("raw_request", "") or finding.get("request", "") or ""
+
+        # Parse URL + method out of a raw HTTP request if no explicit url.
+        if not url and raw_request:
+            parsed = self._parse_raw_request(raw_request)
+            if parsed:
+                method, url, headers, body = parsed
+                return ProbeTest(
+                    test_name=f"repro_{finding.get('uid', '')}",
+                    vulnerability_class=finding.get("vulnerability_class", "unknown"),
+                    method=method, url=url, headers=headers, body=body,
+                    payload=payload,
+                    expected_if_vulnerable=finding.get("expected_if_vulnerable", ""),
+                    severity_if_confirmed=finding.get("severity", "medium"),
+                )
+        if not url:
+            return None
+        return ProbeTest(
+            test_name=f"repro_{finding.get('uid', '')}",
+            vulnerability_class=finding.get("vulnerability_class", "unknown"),
+            method=method, url=url,
+            headers=finding.get("headers", {}) or {},
+            body=finding.get("body", "") or "",
+            payload=payload,
+            expected_if_vulnerable=finding.get("expected_if_vulnerable", ""),
+            severity_if_confirmed=finding.get("severity", "medium"),
+        )
+
+    @staticmethod
+    def _parse_raw_request(raw: str) -> Optional[tuple]:
+        """Best-effort parse of a raw HTTP request into (method, url, headers, body)."""
+        lines = raw.replace("\r\n", "\n").split("\n")
+        if not lines or " " not in lines[0]:
+            return None
+        parts = lines[0].split()
+        if len(parts) < 2:
+            return None
+        method = parts[0].upper()
+        path = parts[1]
+        headers: dict[str, str] = {}
+        host = ""
+        i = 1
+        while i < len(lines) and lines[i].strip():
+            if ":" in lines[i]:
+                k, v = lines[i].split(":", 1)
+                k, v = k.strip(), v.strip()
+                headers[k] = v
+                if k.lower() == "host":
+                    host = v
+            i += 1
+        body = "\n".join(lines[i:]).strip()
+        if not host:
+            return None
+        scheme = "https"
+        url = f"{scheme}://{host}{path}"
+        return method, url, headers, body
+
+    def _repro_verdict(self, finding: dict, result: ProbeResult, *,
+                       status: str, confidence: int, quality: str,
+                       notes: list[str], fp_indicators: list[str],
+                       recommendations: str) -> dict:
+        return {
+            "finding_uid": finding.get("uid", finding.get("id", "")),
+            "original_title": finding.get("title", ""),
+            "status": status,
+            "confidence_score": confidence,
+            "severity_adjustment": "same",
+            "adjusted_severity": finding.get("severity", "medium"),
+            "evidence_quality": quality,
+            "false_positive_indicators": fp_indicators,
+            "verification_notes": " | ".join(notes),
+            "recommendations": recommendations,
+            "reproduction": {
+                "status_code": result.status_code,
+                "signals": result.signals,
+                "is_vulnerable": result.is_vulnerable,
+                "elapsed_seconds": result.elapsed_seconds,
+                "verdict": result.verdict,
+            },
+        }
 
     async def _engine_verify(self, finding: dict) -> Optional[dict]:
         """

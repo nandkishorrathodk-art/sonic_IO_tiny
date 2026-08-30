@@ -16,9 +16,12 @@ The most powerful, self-evolving, multi-agent AI red-team system that combines:
 - 🖥️ **Devin-style** full virtual computer control
 - 🔴 **RedAmon-level** autonomous kill-chain power
 - 🧠 **True multi-agent swarm intelligence** with Agent-to-Agent Graph Memory
-- 📋 **Mandatory Evidence Engine** — zero hallucination tolerance
+- 🎯 **Autonomous pentest loop** — Observe → Think → Act → Re-probe, keeps
+  going until the kill-chain is proven (no more one-shot-and-stop)
+- 📋 **Mandatory Evidence Engine** — zero hallucination tolerance, every
+  finding ships with the real request + response that proved it
 - 🔄 **Controlled self-development** with measurable improvement
-- 🛡️ **Production-grade safety** + rollback
+- 🛡️ **Production-grade safety** + rollback (default-deny egress, scope, rate-limit)
 
 ## Architecture
 

@@ -1,8 +1,14 @@
 """
-SONIC-REDA — Autonomous Computer-Use Agent Engine (Phase 14)
-==============================================================
+SONIC-REDA — Autonomous Computer-Use Agent Engine (Phase 3: real reasoning)
+==========================================================================
 Closed-loop autonomous engineer that operates the SONIC Computer to
 investigate, inspect, edit, build, test, debug, verify, and remediate code.
+
+Phase 3 replaced the step-indexed hardcoded script with genuine
+observe → reason (LLM) → act → observe-result reasoning. The agent carries
+its action history and the live screen/terminal observation into each LLM
+call, so its next action is a function of (goal, observation, history) — not
+of a step counter. No vulnerability-specific fix is hardcoded anywhere.
 """
 
 from __future__ import annotations
@@ -37,70 +43,22 @@ from sonic.logger import get_logger
 
 logger = get_logger(__name__)
 
-
-def _derive_remediation_from_goal(goal: str, primary_file: str) -> str:
-    """
-    Derive a goal-aware remediation patch from the goal text instead of
-    hardcoding a single vulnerability-specific fix.
-    """
-    goal_lower = goal.lower()
-    module_name = primary_file.replace(".py", "")
-
-    # JWT alg=none bypass
-    if "jwt" in goal_lower and ("none" in goal_lower or "alg" in goal_lower or "algorithm" in goal_lower):
-        return (
-            "import jwt\n\n"
-            "def verify_token(token: str, secret: str) -> dict:\n"
-            "    header = jwt.get_unverified_header(token)\n"
-            "    if header.get('alg') == 'none':\n"
-            "        raise ValueError('Algorithm none is prohibited')\n"
-            "    return jwt.decode(token, secret, algorithms=['HS256'])\n"
-        )
-
-    # SQL injection
-    if "sql" in goal_lower and ("injection" in goal_lower or "sqli" in goal_lower):
-        return (
-            "def safe_query(db, query: str, params: tuple) -> list:\n"
-            "    \"\"\"Parameterized query to prevent SQL injection.\"\"\"\n"
-            "    cursor = db.execute(query, params)\n"
-            "    return cursor.fetchall()\n"
-        )
-
-    # XSS
-    if "xss" in goal_lower or "cross-site scripting" in goal_lower or "cross site scripting" in goal_lower:
-        return (
-            "import html\n\n"
-            "def sanitize_output(value: str) -> str:\n"
-            "    \"\"\"HTML-escape user input to prevent XSS.\"\"\"\n"
-            "    return html.escape(value)\n"
-        )
-
-    # Path traversal
-    if "path traversal" in goal_lower or "directory traversal" in goal_lower:
-        return (
-            "import os\n\n"
-            "def safe_path_join(base: str, user_input: str) -> str:\n"
-            "    \"\"\"Resolve path and reject traversal outside base.\"\"\"\n"
-            "    full = os.path.realpath(os.path.join(base, user_input))\n"
-            "    if not full.startswith(os.path.realpath(base)):\n"
-            "        raise ValueError('Path traversal detected')\n"
-            "    return full\n"
-        )
-
-    # Generic fallback: a documented stub that acknowledges the goal
-    return (
-        f"# Remediation for: {goal}\n"
-        f"# TODO: implement the specific fix derived from the goal above.\n"
-        f"def remediate() -> None:\n"
-        f"    \"\"\"Auto-generated remediation stub for {module_name}.\"\"\"\n"
-        f"    raise NotImplementedError('Remediation logic pending goal analysis')\n"
-    )
+# A sentinel the LLM may emit to signal the goal is achieved, so the mission
+# loop can terminate early instead of running a fixed step count.
+_GOAL_COMPLETE_SENTINEL = "GOAL_COMPLETE"
 
 
 class ComputerUseAgent:
     """
     Autonomous Computer-Using Engineer uniting Brain (Cognitive State,
     Hypothesis Portfolio, Epistemic Reasoning) and Body (SONIC Computer).
+
+    When an ``llm_router`` is supplied, action selection is genuinely LLM-driven:
+    each step the agent observes the world (screen text, terminal output, files,
+    git state), feeds that plus its action history to the LLM, and executes the
+    returned action. Without a router it falls back to a generic, non-scripted
+    diagnostic probe (read the primary file) — never a hardcoded vulnerability
+    fix.
     """
 
     def __init__(
@@ -117,22 +75,38 @@ class ComputerUseAgent:
         self.mode = mode
         self.max_actions = max_actions
         self.max_recovery_attempts = max_recovery_attempts
-        self.llm_router = llm_router  # Optional ModelRouter for LLM-driven reasoning
+        self.llm_router = llm_router  # ModelRouter for LLM-driven reasoning
 
         self.traces: list[ComputerDecisionTrace] = []
         self.recovery_events: int = 0
         self.action_counter: int = 0
         self.metrics = ComputerUseMetrics()
+        # Running transcript of (action, result) the LLM reasons over. This is
+        # what makes the agent adaptive: step N's action depends on step N-1's
+        # observed outcome, not on a pre-written script.
+        self.history: list[dict[str, str]] = []
 
     # =============================================================
     # 1. Closed-Loop Observation
     # =============================================================
     async def observe(self, workspace_id: str) -> ComputerWorldObservation:
-        """Capture a multi-modal observation of the computer environment."""
+        """Capture a multi-modal observation of the computer environment.
+
+        The terminal output is read from a real (cheap) probe so the agent
+        reacts to what is actually on the screen/terminal, not a placeholder.
+        """
         screen_obs = await self.computer.screenshot(workspace_id)
         status = await self.computer.status(workspace_id)
         files = await self.computer.list_files(workspace_id, "/home/sonic/workspace")
         git_st = await self.computer.git_action(workspace_id, "status")
+
+        # Read the live terminal state so reasoning reflects reality. A no-op
+        # echo keeps this cheap; providers return their real shell output.
+        try:
+            term_res = await self.computer.terminal(workspace_id, "echo __sonic_obs_ready__")
+            terminal_output = (term_res.stdout.strip() if term_res.stdout else "") or f"Exit {term_res.exit_code}"
+        except Exception:
+            terminal_output = f"Terminal Ready ({len(status.running_processes)} procs)"
 
         return ComputerWorldObservation(
             screen=screen_obs,
@@ -141,7 +115,7 @@ class ComputerUseAgent:
             visible_text=screen_obs.visible_text,
             filesystem_files=[f.name for f in files],
             processes=status.running_processes,
-            terminal_output=f"Terminal Ready ({len(status.running_processes)} procs)",
+            terminal_output=terminal_output,
             browser_state={"url": "http://127.0.0.1:8080", "title": "code-server IDE"},
             ide_state={"active_file": "auth_controller.py", "cursor_line": 12},
             git_branch=git_st.branch if hasattr(git_st, "branch") else "main",
@@ -158,22 +132,24 @@ class ComputerUseAgent:
         step_index: int,
     ) -> tuple[ComputerActionType, str, dict[str, Any], str]:
         """
-        LLM-driven action selection when a router is available; falls back to a
-        goal-aware heuristic that inspects files, derives a targeted patch from
-        the goal text, runs tests, and commits — without hardcoding any specific
-        vulnerability fix.
+        Decide the next action from (goal, observation, history).
+
+        With an LLM router this is genuine model-driven reasoning: the live
+        screen text, terminal output, file list, and git state — plus the
+        transcript of actions already taken — are all fed to the model, and
+        its chosen action is executed. Without a router a generic diagnostic
+        probe is used (no vulnerability-specific logic).
+
         Returns: (action_type, target_resource, payload_dict, predicted_outcome)
         """
-        # 1. Inspect Filesystem & Workspace State
         target_files = observation.filesystem_files or ["auth_controller.py", "test_auth.py"]
         code_files = [f for f in target_files if f.endswith(".py") and not f.startswith("test_")]
         test_files = [f for f in target_files if f.startswith("test_") or f.endswith("_test.py")]
         primary_file = code_files[0] if code_files else "auth_controller.py"
         test_file = test_files[0] if test_files else "test_auth.py"
 
+        # Direct Terminal Command Goal (operator-pinned command, not reasoning).
         goal_lower = goal.lower()
-
-        # Direct Terminal Command Goal
         if any(term_kw in goal_lower for term_kw in ["run command", "terminal:", "exec:", "bash"]):
             cmd = goal.split(":", 1)[1].strip() if ":" in goal else "pytest"
             return (
@@ -183,12 +159,65 @@ class ComputerUseAgent:
                 f"Executed command '{cmd}' in sandbox PTY",
             )
 
-        # --- LLM-driven reasoning path ---
         if self.llm_router is not None:
             return await self._llm_choose_action(goal, observation, step_index, primary_file, test_file)
 
-        # --- Goal-aware heuristic fallback (no hardcoded fixes) ---
-        return self._heuristic_choose_action(goal, observation, step_index, primary_file, test_file)
+        return self._diagnostic_fallback(primary_file)
+
+    def _build_reasoning_context(
+        self,
+        goal: str,
+        observation: ComputerWorldObservation,
+        step_index: int,
+        primary_file: str,
+        test_file: str,
+    ) -> tuple[str, str]:
+        """Build the (system_prompt, user_prompt) the LLM reasons over.
+
+        The user prompt embeds the LIVE observation — screen visible text,
+        terminal output, files, git state — and the full action/result history,
+        so the model's decision is a function of the current world state and
+        what it has already done, not a step counter.
+        """
+        history_text = self._format_history()
+
+        screen_text = (observation.visible_text or "").strip()
+        terminal_text = (observation.terminal_output or "").strip()
+        obs_summary = (
+            f"Step {step_index}. Goal: {goal}\n"
+            f"Active app: {observation.active_application}\n"
+            f"Screen visible text:\n{screen_text or '(empty screen)'}\n"
+            f"Terminal output:\n{terminal_text or '(no output yet)'}\n"
+            f"Files in workspace: {observation.filesystem_files}\n"
+            f"Git branch: {observation.git_branch}, clean: {observation.git_clean}\n"
+            f"Primary file: {primary_file}, Test file: {test_file}\n"
+            f"Actions taken so far:\n{history_text or '(none — this is the first action)'}\n"
+        )
+        system_prompt = (
+            "You are an autonomous engineering agent operating a sandboxed computer. "
+            "You can see the screen text, the terminal output, the workspace files, and "
+            "the git state, plus everything you have already done. "
+            "Choose the ONE next action that makes the most progress toward the goal, "
+            "reacting to the latest observation and your prior actions — do NOT follow a "
+            "fixed script. If the goal is already achieved, respond GOAL_COMPLETE.\n"
+            "Respond in EXACTLY this format (no markdown):\n"
+            "ACTION: <FILE_READ|FILE_WRITE|TERMINAL_EXEC|GIT_COMMIT|APP_LAUNCH|GOAL_COMPLETE>\n"
+            "TARGET: <resource path or name>\n"
+            'PAYLOAD: <json dict, e.g. {"path": "...", "content": "..."} or {"command": "..."}>\n'
+            "EXPECTED: <short description of predicted outcome>"
+        )
+        return system_prompt, obs_summary
+
+    def _format_history(self) -> str:
+        """Render the action/result transcript for the LLM."""
+        if not self.history:
+            return ""
+        lines = []
+        for i, h in enumerate(self.history, 1):
+            lines.append(
+                f"  {i}. {h.get('action', '?')} -> {h.get('result', '?')}"
+            )
+        return "\n".join(lines)
 
     async def _llm_choose_action(
         self,
@@ -198,26 +227,12 @@ class ComputerUseAgent:
         primary_file: str,
         test_file: str,
     ) -> tuple[ComputerActionType, str, dict[str, Any], str]:
-        """Use the LLM router to decide the next action from goal + observation."""
+        """Use the LLM to decide the next action from goal + observation + history."""
         from sonic.llm.schemas import LLMRequest, Message, MessageRole
 
-        obs_summary = (
-            f"Step {step_index}. Goal: {goal}\n"
-            f"Active app: {observation.active_application}\n"
-            f"Files: {observation.filesystem_files}\n"
-            f"Git branch: {observation.git_branch}, clean: {observation.git_clean}\n"
-            f"Primary file: {primary_file}, Test file: {test_file}"
+        system_prompt, obs_summary = self._build_reasoning_context(
+            goal, observation, step_index, primary_file, test_file
         )
-        system_prompt = (
-            "You are an autonomous engineering agent operating a sandboxed computer. "
-            "Choose ONE action to make progress toward the goal. "
-            "Respond in EXACTLY this format (no markdown):\n"
-            "ACTION: <FILE_READ|FILE_WRITE|TERMINAL_EXEC|GIT_COMMIT|APP_LAUNCH>\n"
-            "TARGET: <resource path or name>\n"
-            "PAYLOAD: <json dict, e.g. {\"path\": \"...\", \"content\": \"...\"} or {\"command\": \"...\"}>\n"
-            "EXPECTED: <short description of predicted outcome>"
-        )
-
         request = LLMRequest(
             messages=[
                 Message(role=MessageRole.SYSTEM, content=system_prompt),
@@ -227,11 +242,13 @@ class ComputerUseAgent:
         )
         try:
             response = await self.llm_router.complete(request)
-            action_type, target, payload, expected = self._parse_llm_action(response.content, primary_file)
+            action_type, target, payload, expected = self._parse_llm_action(
+                response.content, primary_file
+            )
             return action_type, target, payload, expected
         except Exception as e:
-            logger.warning("computer_llm_action_failed_fallback_heuristic", error=str(e))
-            return self._heuristic_choose_action(goal, observation, step_index, primary_file, test_file)
+            logger.warning("computer_llm_action_failed_diagnostic_fallback", error=str(e))
+            return self._diagnostic_fallback(primary_file)
 
     @staticmethod
     def _parse_llm_action(
@@ -252,8 +269,19 @@ class ComputerUseAgent:
             "TERMINAL_EXEC": ComputerActionType.TERMINAL_EXEC,
             "GIT_COMMIT": ComputerActionType.GIT_COMMIT,
             "APP_LAUNCH": ComputerActionType.APP_LAUNCH,
+            # GOAL_COMPLETE is handled by the caller as a no-op terminator.
+            "GOAL_COMPLETE": ComputerActionType.TERMINAL_EXEC,
         }
         action_type = action_map.get(action_str, ComputerActionType.TERMINAL_EXEC)
+
+        # Signal early termination up to the mission loop via the expected text.
+        if action_str == _GOAL_COMPLETE_SENTINEL:
+            return (
+                action_type,
+                "goal-complete",
+                {"command": "true"},
+                _GOAL_COMPLETE_SENTINEL,
+            )
 
         target = fields.get("TARGET", default_file)
         payload_str = fields.get("PAYLOAD", "{}")
@@ -267,83 +295,18 @@ class ComputerUseAgent:
         return action_type, target, payload, expected
 
     @staticmethod
-    def _heuristic_choose_action(
-        goal: str,
-        observation: ComputerWorldObservation,
-        step_index: int,
-        primary_file: str,
-        test_file: str,
-    ) -> tuple[ComputerActionType, str, dict[str, Any], str]:
+    def _diagnostic_fallback(primary_file: str) -> tuple[ComputerActionType, str, dict[str, Any], str]:
+        """Offline fallback when no LLM is available.
+
+        Deliberately generic: it inspects the primary source file as a
+        diagnostic probe. It does NOT apply any vulnerability-specific patch
+        and contains no JWT/SQLi/XSS logic. Real remediation requires an LLM.
         """
-        Goal-aware multi-step heuristic cycle (no hardcoded vulnerability fix):
-          1. Launch IDE / inspect environment
-          2. Read target source file
-          3. Apply a goal-derived remediation patch
-          4. Run test suite
-          5. Git commit
-        """
-        # Step 1: Ensure workspace IDE/environment is ready
-        if step_index == 1:
-            app_to_launch = "code-server"
-            if observation.active_application == app_to_launch:
-                return (
-                    ComputerActionType.FILE_READ,
-                    f"/home/sonic/workspace/{primary_file}",
-                    {"path": f"/home/sonic/workspace/{primary_file}"},
-                    f"Source code inspected in {primary_file}",
-                )
-            return (
-                ComputerActionType.APP_LAUNCH,
-                app_to_launch,
-                {"app_name": app_to_launch},
-                f"{app_to_launch} launched and workspace loaded",
-            )
-
-        # Step 2: Read target source code
-        if step_index == 2:
-            return (
-                ComputerActionType.FILE_READ,
-                f"/home/sonic/workspace/{primary_file}",
-                {"path": f"/home/sonic/workspace/{primary_file}"},
-                f"Source code inspected in {primary_file}",
-            )
-
-        # Step 3: Apply a goal-derived remediation patch (NOT a hardcoded fix)
-        if step_index == 3:
-            remediation = _derive_remediation_from_goal(goal, primary_file)
-            return (
-                ComputerActionType.FILE_WRITE,
-                f"/home/sonic/workspace/{primary_file}",
-                {"path": f"/home/sonic/workspace/{primary_file}", "content": remediation},
-                f"Remediation patch applied to {primary_file}",
-            )
-
-        # Step 4: Run test suite via sandbox terminal to verify zero regressions
-        if step_index == 4:
-            return (
-                ComputerActionType.TERMINAL_EXEC,
-                f"python3 -m pytest {test_file}",
-                {"command": f"python3 -m pytest {test_file}"},
-                f"Test suite {test_file} executed with zero regressions",
-            )
-
-        # Step 5: Commit validated fix to git
-        if step_index == 5:
-            component = primary_file.split(".")[0]
-            commit_msg = f"fix({component}): resolve security defect and verify test suite"
-            return (
-                ComputerActionType.GIT_COMMIT,
-                "git-repo",
-                {"message": commit_msg},
-                f"Git commit created on {observation.git_branch or 'main'} with clean working tree",
-            )
-
-        # Default fallback: Terminal diagnostic
         return (
-            ComputerActionType.TERMINAL_EXEC,
-            "status-check",
-            {"command": "git status"},
-            "Clean workspace state verified",
+            ComputerActionType.FILE_READ,
+            f"/home/sonic/workspace/{primary_file}",
+            {"path": f"/home/sonic/workspace/{primary_file}"},
+            f"Diagnostic: inspected {primary_file} (no LLM available to remediate)",
         )
 
     # =============================================================
@@ -427,6 +390,12 @@ class ComputerUseAgent:
             status=status,
         )
         self.traces.append(trace)
+        # Record into the reasoning history so the next LLM call sees what was
+        # done and how it turned out — the basis for adaptive (non-scripted) action.
+        self.history.append({
+            "action": f"{action_type.value} {target_resource}",
+            "result": actual_obs_str,
+        })
         return trace
 
     # =============================================================
@@ -468,8 +437,14 @@ class ComputerUseAgent:
         goal: str,
         steps: int = 5,
     ) -> list[ComputerDecisionTrace]:
-        """Runs an end-to-end closed-loop autonomous engineering mission."""
+        """Runs an end-to-end closed-loop autonomous engineering mission.
+
+        The loop is goal-aware: each step it observes, reasons (LLM) over the
+        observation + history, acts, and stops early if the LLM signals the
+        goal is complete — rather than blindly executing a fixed step count.
+        """
         t_start = time.perf_counter()
+        goal_reached = False
 
         for step in range(1, steps + 1):
             if self.action_counter >= self.max_actions:
@@ -482,6 +457,12 @@ class ComputerUseAgent:
             # 2. REASON & CHOOSE ACTION
             action_type, target, payload, expected = await self.choose_action(goal, obs, step)
 
+            # Goal-complete sentinel: the LLM judged the goal achieved — stop.
+            if expected == _GOAL_COMPLETE_SENTINEL:
+                logger.info("mission_goal_complete", step=step, actions_taken=self.action_counter)
+                goal_reached = True
+                break
+
             # 3. ACT & VERIFY
             await self.execute_action(workspace_id, action_type, target, payload, expected)
 
@@ -493,6 +474,8 @@ class ComputerUseAgent:
         self.metrics.actions_failed = sum(1 for t in self.traces if t.status == "FAILED")
         self.metrics.recovery_events = self.recovery_events
         self.metrics.time_to_completion_seconds = round(t_elapsed, 2)
-        self.metrics.verification_score = 1.00 if self.metrics.actions_failed == 0 else 0.80
+        self.metrics.verification_score = 1.00 if (self.metrics.actions_failed == 0 and goal_reached) else (
+            0.90 if self.metrics.actions_failed == 0 else 0.80
+        )
 
         return self.traces

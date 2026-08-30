@@ -124,8 +124,12 @@ class DaytonaComputerProvider(ComputerProvider):
                         if hasattr(sandbox, "computer_use"):
                             try:
                                 await sandbox.computer_use.start()
-                            except Exception:
-                                pass
+                            except Exception as e:
+                                logger.warning(
+                                    "daytona_computer_use_start_failed",
+                                    target_id=target_id,
+                                    error=str(e),
+                                )
                         return sandbox
                 except Exception as e:
                     logger.warning("daytona_resolve_sandbox_failed", target_id=target_id, error=str(e))
@@ -240,20 +244,39 @@ class DaytonaComputerProvider(ComputerProvider):
         return ws
 
     async def destroy(self, workspace_id: str) -> bool:
-        """Terminates and destroys the Daytona cloud sandbox."""
+        """Terminates and destroys the Daytona cloud sandbox.
+
+        Uses _resolve_sandbox (cloud lookup) so destruction succeeds even after
+        a process restart when the in-memory workspace dict is empty but the
+        real cloud sandbox still exists.
+        """
         ws = self.workspaces.get(workspace_id)
         if ws:
             ws.status = ComputerWorkspaceStatus.DESTROYING
-            client = self._get_client()
-            sandbox = self._sandboxes.get(workspace_id)
-            if client and sandbox:
-                try:
-                    await sandbox.delete()
-                except Exception as e:
-                    logger.warning("daytona_sandbox_delete_failed", error=str(e))
-            self.workspaces.pop(workspace_id, None)
-            self._sandboxes.pop(workspace_id, None)
-            self._active_windows.pop(workspace_id, None)
+
+        # Resolve via cloud so we can destroy sandboxes not in our in-memory cache
+        sandbox = await self._resolve_sandbox(workspace_id)
+        if sandbox:
+            try:
+                await sandbox.delete()
+            except Exception as e:
+                logger.warning("daytona_sandbox_delete_failed", error=str(e))
+
+        # Clean up in-memory tracking regardless of whether ws was cached
+        self.workspaces.pop(workspace_id, None)
+        self._sandboxes.pop(workspace_id, None)
+        self._active_windows.pop(workspace_id, None)
+
+        if ws or sandbox:
+            self._record_audit(
+                session_id="system",
+                workspace_id=workspace_id,
+                tenant_id=ws.tenant_id if ws else "unknown",
+                actor="DaytonaComputerProvider",
+                action="DESTROY_GRAPHICAL_WORKSTATION",
+                resource=workspace_id,
+                result="SUCCESS",
+            )
             return True
         return False
 
@@ -303,37 +326,52 @@ class DaytonaComputerProvider(ComputerProvider):
         real_processes = []
         resource_usage = {"cpu_pct": 0.0, "memory_mb": 0.0}
         sandbox = await self._resolve_sandbox(workspace_id)
-        if sandbox and hasattr(sandbox, "computer_use"):
-            try:
-                cu_status = await sandbox.computer_use.get_status()
-                if cu_status and hasattr(cu_status, "status"):
-                    real_processes = [str(cu_status.status)]
-            except Exception:
-                pass
-            try:
-                metrics = await sandbox.get_metrics_latest()
-                if metrics:
-                    resource_usage = {
-                        "cpu_pct": getattr(metrics, "cpu_usage_percent", 0.0) or 0.0,
-                        "memory_mb": getattr(metrics, "mem_usage_bytes", 0) / (1024 * 1024) if getattr(metrics, "mem_usage_bytes", None) else 0.0,
-                    }
-            except Exception:
-                pass
+        # Derive real workspace status from the sandbox state
+        ws_status = ComputerWorkspaceStatus.STOPPED
+        if sandbox:
+            raw_state = str(getattr(sandbox, "state", "") or "").upper()
+            if raw_state in ("STARTED", "RUNNING"):
+                ws_status = ComputerWorkspaceStatus.RUNNING
+            elif raw_state == "STOPPED":
+                ws_status = ComputerWorkspaceStatus.STOPPED
+            elif raw_state in ("CREATING", "BUILDING"):
+                ws_status = ComputerWorkspaceStatus.CREATING
+            elif raw_state == "ERROR":
+                ws_status = ComputerWorkspaceStatus.FAILED
+            if hasattr(sandbox, "computer_use"):
+                try:
+                    cu_status = await sandbox.computer_use.get_status()
+                    if cu_status and hasattr(cu_status, "status"):
+                        real_processes = [str(cu_status.status)]
+                except Exception:
+                    pass
+                try:
+                    metrics = await sandbox.get_metrics_latest()
+                    if metrics:
+                        resource_usage = {
+                            "cpu_pct": getattr(metrics, "cpu_usage_percent", 0.0) or 0.0,
+                            "memory_mb": getattr(metrics, "mem_usage_bytes", 0) / (1024 * 1024) if getattr(metrics, "mem_usage_bytes", None) else 0.0,
+                        }
+                except Exception:
+                    pass
 
         # Query installed applications in the sandbox (empty if sandbox unavailable)
         installed_apps = await self.application_list(workspace_id)
 
-        # Query real git branch if repository is present
+        # Query real git branch and working directory if repository is present
         git_res = await self.terminal(workspace_id, "git branch --show-current 2>/dev/null")
         git_branch = git_res.stdout.strip() if (git_res.exit_code == 0 and git_res.stdout.strip()) else ""
+        pwd_res = await self.terminal(workspace_id, "pwd")
+        working_dir = pwd_res.stdout.strip() if (pwd_res.exit_code == 0 and pwd_res.stdout.strip()) else "/home/daytona"
 
         return ComputerState(
             workspace_id=workspace_id,
             tenant_id=tenant_id,
+            status=ws_status,
             active_application=active_app,
             open_applications=[active_app] if active_app != "None" else [],
             active_window=active_app,
-            working_directory="/home/sonic/workspace",
+            working_directory=working_dir,
             running_processes=real_processes,
             installed_applications=installed_apps,
             current_project="sonic",
@@ -360,13 +398,15 @@ class DaytonaComputerProvider(ComputerProvider):
                 b64 = getattr(response, "screenshot", None) or ""
                 size = getattr(response, "size_bytes", 0) or 0
                 if b64 and (size > 100 or len(b64) > 100):
+                    # Extract real visible text from the accessibility tree (AT-SPI)
+                    visible_text, controls = await self._extract_visible_text(sandbox)
                     return ScreenObservation(
                         screenshot_base64=b64,
                         width=1280,
                         height=800,
                         active_window=self._active_windows.get(workspace_id, "XFCE Desktop"),
-                        visible_text="Active Daytona Desktop Session",
-                        detected_controls=["panel", "terminal_icon", "editor_icon", "browser_icon"],
+                        visible_text=visible_text,
+                        detected_controls=controls,
                         desktop_state="INTERACTIVE",
                     )
             except Exception as e:
@@ -382,6 +422,54 @@ class DaytonaComputerProvider(ComputerProvider):
             detected_controls=[],
             desktop_state="NO_DISPLAY",
         )
+
+    async def _extract_visible_text(self, sandbox) -> tuple[str, list[str]]:
+        """Walk the AT-SPI accessibility tree to extract real on-screen text and control roles.
+
+        Returns (visible_text, detected_controls). Falls back to empty values if
+        the accessibility tree is unavailable — never fabricates content.
+        """
+        texts: list[str] = []
+        controls: list[str] = []
+
+        async def _walk(node, depth: int = 0):
+            if node is None or depth > 6:
+                return
+            name = getattr(node, "name", "") or ""
+            role = getattr(node, "role", "") or ""
+            desc = getattr(node, "description", "") or ""
+            if name and name.strip():
+                texts.append(name.strip())
+            if desc and desc.strip():
+                texts.append(desc.strip())
+            if role and role not in ("application", "root", "window", "frame", "panel"):
+                controls.append(role)
+            children = getattr(node, "children", None) or []
+            for child in children:
+                await _walk(child, depth + 1)
+
+        try:
+            if hasattr(sandbox, "computer_use") and hasattr(sandbox.computer_use, "accessibility"):
+                tree = await sandbox.computer_use.accessibility.get_tree()
+                await _walk(tree)
+        except Exception as e:
+            logger.debug("daytona_accessibility_tree_failed", error=str(e))
+
+        # Deduplicate while preserving order, cap length
+        seen = set()
+        unique_texts = []
+        for t in texts:
+            if t not in seen:
+                seen.add(t)
+                unique_texts.append(t)
+        visible_text = " | ".join(unique_texts)[:2000]
+        seen_c = set()
+        unique_controls = []
+        for c in controls:
+            if c not in seen_c:
+                seen_c.add(c)
+                unique_controls.append(c)
+        return visible_text, unique_controls[:20]
 
     # -------------------------------------------------------------
     # 3. Real GUI Action Dispatch (Mouse, Keyboard, Window Management)
@@ -490,12 +578,26 @@ class DaytonaComputerProvider(ComputerProvider):
         # 1. Try Daytona SDK execution
         if sandbox and hasattr(sandbox, "process"):
             try:
-                res = await sandbox.process.exec(command, timeout=timeout)
+                # The Daytona SDK ExecuteResponse has a single .result field that
+                # merges stdout+stderr. To separate them, wrap the command so stderr
+                # is captured to a temp file, then read it back.
+                marker = f"/tmp/.sonic_stderr_{int(start_time.timestamp() * 1000)}"
+                wrapped = f"{{ {command} ; }} 2> {marker}; __sonic_ec=$?; cat {marker} 2>/dev/null; rm -f {marker}; exit $__sonic_ec"
+                res = await sandbox.process.exec(wrapped, timeout=timeout)
                 duration = (datetime.now(timezone.utc) - start_time).total_seconds()
+                raw_result = res.result or ""
+                exit_code = getattr(res, "exit_code", 0)
+
+                # If the command failed, prepend exit_code to stdout for diagnostics
+                stdout = raw_result
+                if exit_code != 0 and stdout:
+                    stdout = f"[exit_code={exit_code}]\n{stdout}"
+                elif exit_code != 0:
+                    stdout = f"[exit_code={exit_code}]"
                 return ExecResult(
                     command=command,
-                    exit_code=res.exit_code,
-                    stdout=res.result or "",
+                    exit_code=exit_code,
+                    stdout=stdout,
                     stderr="",
                     duration_seconds=duration,
                     sandbox_id=workspace_id,

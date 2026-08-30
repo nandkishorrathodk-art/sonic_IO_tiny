@@ -46,12 +46,29 @@ class ProviderName(StrEnum):
 # Request Models
 # ============================================
 
+class ImageContent(BaseModel):
+    """An image attached to a message (base64 or URL)."""
+    base64: Optional[str] = None  # Raw base64 data (no data: prefix)
+    url: Optional[str] = None     # Image URL
+    media_type: str = "image/png"  # MIME type when base64 is used
+
+
 class Message(BaseModel):
-    """A single message in a conversation."""
+    """A single message in a conversation.
+
+    For multimodal/vision requests, set `content` to the text prompt and
+    `images` to a list of ImageContent. Providers will merge them into the
+    appropriate multipart format (OpenAI content array, Anthropic content blocks).
+    """
     role: MessageRole
     content: str
+    images: list[ImageContent] = Field(default_factory=list)
     name: Optional[str] = None  # For tool messages
     tool_call_id: Optional[str] = None  # For tool responses
+
+    @property
+    def has_images(self) -> bool:
+        return bool(self.images)
 
 
 class ToolDefinition(BaseModel):

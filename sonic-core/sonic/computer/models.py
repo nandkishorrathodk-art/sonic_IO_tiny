@@ -142,6 +142,7 @@ class ComputerState(BaseModel):
     """Complete persistent state representation of the SONIC Computer."""
     workspace_id: str
     tenant_id: str
+    status: ComputerWorkspaceStatus = ComputerWorkspaceStatus.READY
     active_application: str = "Desktop"
     open_applications: list[str] = Field(default_factory=lambda: ["Desktop", "Terminal"])
     active_window: str = "Terminal"

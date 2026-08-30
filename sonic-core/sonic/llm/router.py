@@ -143,12 +143,14 @@ class ModelRouter:
                 logger.debug("provider_skipped_no_url", name=provider_name)
                 continue
 
-            # Get first model as default
+            # Get first model as default, rest as fallback chain
             models = pconfig.get("models", [])
             if not models:
                 continue
 
             first_model = models[0]
+            # Remaining models serve as model-level fallback (EOL/not-found recovery)
+            fallback_model_ids = [m["id"] for m in models[1:]]
             speed_map = {"fast": SpeedTier.FAST, "medium": SpeedTier.MEDIUM, "slow": SpeedTier.SLOW}
 
             router.add_provider_from_config(
@@ -160,6 +162,7 @@ class ModelRouter:
                 cost_per_1k_output=first_model.get("cost_per_1k_output", 0.0),
                 speed_tier=speed_map.get(first_model.get("speed_tier", "medium"), SpeedTier.MEDIUM),
                 capabilities=first_model.get("capabilities", []),
+                fallback_models=fallback_model_ids,
             )
 
         # Load routing rules
@@ -369,12 +372,23 @@ class ModelRouter:
         return sum(r.cost_usd for r in records)
 
     def get_stats(self) -> dict:
-        """Get router-level statistics."""
+        """Get router-level statistics.
+
+        Provider stats are derived from cost_records (single source of truth) so
+        they never diverge from the router-level totals on partial failures or
+        provider fallback.
+        """
+        provider_stats: dict[str, dict] = {}
+        for name, provider in self.providers.items():
+            prov_records = [r for r in self.cost_records if r.provider.value == provider.provider_name.value]
+            provider_stats[name] = {
+                "provider": provider.provider_name,
+                "total_requests": len(prov_records),
+                "total_tokens": sum(r.input_tokens + r.output_tokens for r in prov_records),
+                "total_cost_usd": round(sum(r.cost_usd for r in prov_records), 6),
+            }
         return {
-            "providers": {
-                name: provider.get_stats()
-                for name, provider in self.providers.items()
-            },
+            "providers": provider_stats,
             "total_cost_usd": round(self.get_total_cost(), 6),
             "total_requests": len(self.cost_records),
             "routing_rules": list(self.routing_rules.keys()),

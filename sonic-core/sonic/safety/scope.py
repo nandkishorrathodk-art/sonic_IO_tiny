@@ -130,6 +130,52 @@ class ScopeChecker:
 
         return SafetyVerdict.ALLOWED
 
+    # Patterns that indicate destructive or high-risk operations
+    _DESTRUCTIVE_PATTERNS = [
+        re.compile(r"\brm\s+-rf?\b", re.IGNORECASE),
+        re.compile(r"\bmkfs\b", re.IGNORECASE),
+        re.compile(r"\bdd\b.*\bof=/dev/", re.IGNORECASE),
+        re.compile(r">\s*/dev/sd", re.IGNORECASE),
+        re.compile(r"\bshutdown\b", re.IGNORECASE),
+        re.compile(r"\breboot\b", re.IGNORECASE),
+        re.compile(r"\bhalt\b", re.IGNORECASE),
+        re.compile(r"\b:()\{\s*:\|:&\s*\};:", re.IGNORECASE),  # fork bomb
+    ]
+    # Patterns that indicate intrusive but non-destructive operations
+    _INTRUSIVE_PATTERNS = [
+        re.compile(r"\bnmap\b.*\s(-sS|-sA|-sO|-O|--script)", re.IGNORECASE),
+        re.compile(r"\bhydra\b", re.IGNORECASE),
+        re.compile(r"\bsqlmap\b", re.IGNORECASE),
+        re.compile(r"\bmetasploit\b|\bmsfconsole\b", re.IGNORECASE),
+        re.compile(r"\bexploit\b", re.IGNORECASE),
+        re.compile(r"\bnikto\b.*\s(-Tuning|4|5|6|7|8|9)", re.IGNORECASE),
+        re.compile(r"\bcurl\b.*\|\s*(sh|bash)", re.IGNORECASE),  # curl|sh
+        re.compile(r"\bwget\b.*\|\s*(sh|bash)", re.IGNORECASE),
+        re.compile(r"\bchmod\s+\+x\b.*\&\&.*\./", re.IGNORECASE),
+    ]
+
+    def classify_command_risk(self, command: str) -> RiskLevel:
+        """Classify a shell command's risk level by inspecting its content.
+
+        L2_FORBIDDEN: destructive ops (rm -rf, mkfs, dd to device, shutdown, fork bombs)
+        L1_NEEDS_APPROVAL: intrusive ops (exploits, brute-force, aggressive scans, curl|sh)
+        L0_SAFE: read-only / recon (curl, ls, cat, grep, nmap default scan, etc.)
+        """
+        if not command or not command.strip():
+            return RiskLevel.L0_SAFE
+
+        for pattern in self._DESTRUCTIVE_PATTERNS:
+            if pattern.search(command):
+                logger.warning("command_classified_destructive", command=command[:200])
+                return RiskLevel.L2_FORBIDDEN
+
+        for pattern in self._INTRUSIVE_PATTERNS:
+            if pattern.search(command):
+                logger.info("command_classified_intrusive", command=command[:200])
+                return RiskLevel.L1_NEEDS_APPROVAL
+
+        return RiskLevel.L0_SAFE
+
     def is_target_in_scope(self, target: str, scope_config: dict) -> bool:
         """
         Check if a target (domain/IP/URL) is within the engagement scope.
@@ -141,16 +187,17 @@ class ScopeChecker:
         targets = scope_config.get("targets", {})
         exclusions = scope_config.get("exclusions", {})
 
-        # Check exclusions first
+        # Check exclusions first — fullmatch to prevent suffix-bypass
+        # (re.match only anchors start; evil.x.com.attacker.com would match *.x.com)
         for excluded_domain in exclusions.get("domains", []):
-            pattern = excluded_domain.replace("*.", r".*\.").replace("*", ".*")
-            if re.match(pattern, target, re.IGNORECASE):
+            pattern = self._domain_to_regex(excluded_domain)
+            if re.fullmatch(pattern, target, re.IGNORECASE):
                 return False
 
         # Check allowed domains
         for allowed_domain in targets.get("domains", []):
-            pattern = allowed_domain.replace("*.", r".*\.").replace("*", ".*")
-            if re.match(pattern, target, re.IGNORECASE):
+            pattern = self._domain_to_regex(allowed_domain)
+            if re.fullmatch(pattern, target, re.IGNORECASE):
                 return True
 
         # Check allowed IPs
@@ -162,10 +209,18 @@ class ScopeChecker:
     def is_egress_allowed(self, destination: str) -> bool:
         """Check if outbound traffic to this destination is allowed."""
         for allowed in self._allowed_egress:
-            pattern = allowed.replace("*.", r".*\.").replace("*", ".*")
-            if re.match(pattern, destination, re.IGNORECASE):
+            pattern = self._domain_to_regex(allowed)
+            if re.fullmatch(pattern, destination, re.IGNORECASE):
                 return True
         return False
+
+    @staticmethod
+    def _domain_to_regex(domain: str) -> str:
+        """Convert a domain glob (*.example.com, *.*) to a fully-anchored regex."""
+        # Escape regex metacharacters, then restore glob semantics for * and .
+        escaped = re.escape(domain)
+        escaped = escaped.replace(r"\*", ".*").replace(r"\.", r"\.")
+        return escaped
 
     @property
     def kill_switch_enabled(self) -> bool:

@@ -44,10 +44,27 @@ def is_target_allowed(target: str, allow_private_for_tests: bool = False) -> tup
         parsed = urlparse(raw_host)
         raw_host = parsed.hostname or raw_host
 
-    if ":" in raw_host and not raw_host.startswith("["):
+    # Strip IPv6 brackets if present (guard for non-urlparse paths)
+    if raw_host.startswith("[") and "]" in raw_host:
+        raw_host = raw_host[1:raw_host.index("]")]
+
+    # Try parsing as IP first — handles both IPv4 and IPv6 (::1, fc00::, etc.)
+    # without port-stripping mangling IPv6 addresses.
+    try:
+        ip_obj = ipaddress.ip_address(raw_host)
+        for blocked_net in BLOCKED_NETWORKS:
+            if ip_obj in blocked_net:
+                logger.warning("egress_blocked_ip", target=target, ip=str(ip_obj), blocked_by=str(blocked_net))
+                return False, f"Target IP {ip_obj} is in blocked network {blocked_net}"
+        return True, "Allowed"
+    except ValueError:
+        pass  # Not a bare IP — may be host:port or domain
+
+    # Strip port for host:port format (IPv6 already handled above)
+    if ":" in raw_host:
         raw_host = raw_host.split(":")[0]
 
-    # 1. Check if direct IP address
+    # Try again as IP after port strip (e.g. "127.0.0.1:8080")
     try:
         ip_obj = ipaddress.ip_address(raw_host)
         for blocked_net in BLOCKED_NETWORKS:
@@ -58,7 +75,7 @@ def is_target_allowed(target: str, allow_private_for_tests: bool = False) -> tup
     except ValueError:
         pass  # Host is a domain name
 
-    # 2. Check DNS resolution
+    # Check DNS resolution
     try:
         resolved_ips = socket.gethostbyname_ex(raw_host)[2]
         for ip_str in resolved_ips:

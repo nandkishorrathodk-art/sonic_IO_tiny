@@ -42,7 +42,7 @@ from sonic.computer.models import (
 )
 from sonic.logger import get_logger
 from sonic.safety.scope import get_scope_checker, RiskLevel, SafetyVerdict
-from sonic.mission_engine.planner import MissionPlanner
+from sonic.mission_engine.planner import MissionPlanner, PlannedAction
 from sonic.mission_engine.executor import MissionToolExecutor
 from sonic.mission_engine.tool_registry import ToolRisk
 
@@ -746,11 +746,15 @@ async def execute_target_sandbox_command(
         raise HTTPException(status_code=403, detail="Target sandbox has no verified engagement scope")
     if not req.command.strip():
         raise HTTPException(status_code=400, detail="Command cannot be empty")
-    verdict = get_scope_checker().check_action(req.command, RiskLevel.L0_SAFE)
+    # Classify risk from the actual command content — not a hardcoded level
+    risk = get_scope_checker().classify_command_risk(req.command)
+    verdict = get_scope_checker().check_action(req.command, risk)
+    if verdict == SafetyVerdict.BLOCKED:
+        raise HTTPException(status_code=403, detail=f"Target command blocked by safety policy — destructive operation detected ({risk.value})")
+    if verdict == SafetyVerdict.NEEDS_APPROVAL and not req.approved:
+        raise HTTPException(status_code=409, detail=f"Target command classified as {risk.value} (intrusive) — requires explicit operator approval")
     if verdict != SafetyVerdict.ALLOWED:
         raise HTTPException(status_code=403, detail=f"Target command blocked by safety policy ({verdict.value})")
-    if not req.approved:
-        raise HTTPException(status_code=409, detail="Target command requires explicit operator approval")
     result = await get_daytona_computer().terminal(workspace_id, req.command, timeout=req.timeout, actor=user.email)
     return {
         "status": "completed",
@@ -1240,10 +1244,15 @@ async def _run_autonomous_desktop_loop(
 
     command = _extract_terminal_command(prompt)
     if command:
-        verdict = get_scope_checker().check_action(command, RiskLevel.L0_SAFE)
-        if verdict != SafetyVerdict.ALLOWED:
-            message = f"Terminal command blocked by safety policy ({verdict.value}); no command was executed."
+        risk = get_scope_checker().classify_command_risk(command)
+        verdict = get_scope_checker().check_action(command, risk)
+        if verdict == SafetyVerdict.BLOCKED:
+            message = f"Terminal command blocked by safety policy — destructive operation detected ({risk.value}); no command was executed."
             _append_worklog(state, "error", "Terminal command blocked", message)
+            return observations, message, True
+        if verdict == SafetyVerdict.NEEDS_APPROVAL:
+            message = f"Terminal command classified as {risk.value} (intrusive) — requires operator approval; no command was executed."
+            _append_worklog(state, "error", "Terminal command needs approval", message)
             return observations, message, True
         result = await computer.terminal(desktop_id, command, timeout=120, actor=tenant_id)
         output = (result.stdout + ("\n" + result.stderr if result.stderr else "")).strip()[:8000]

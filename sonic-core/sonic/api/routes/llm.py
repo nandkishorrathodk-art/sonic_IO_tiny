@@ -9,13 +9,13 @@ from __future__ import annotations
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from sonic.auth.middleware import require_auth
 from sonic.auth.models import User
 from sonic.config import CONFIGS_DIR
 from sonic.llm.router import ModelRouter
-from sonic.llm.schemas import LLMRequest, Message, MessageRole
+from sonic.llm.schemas import ImageContent, LLMRequest, Message, MessageRole
 
 router = APIRouter()
 
@@ -32,9 +32,20 @@ def get_model_router() -> ModelRouter:
     return _model_router
 
 
+class ChatImageInput(BaseModel):
+    """Image input for multimodal chat (base64 or URL)."""
+    base64: str | None = None
+    url: str | None = None
+    media_type: str = "image/png"
+
+
 class ChatRequest(BaseModel):
-    """Simple chat request for testing."""
+    """Simple chat request for testing.
+
+    Supports multimodal/vision: pass `images` to send screenshots to vision models.
+    """
     message: str
+    images: list[ChatImageInput] = Field(default_factory=list)
     provider: str | None = None  # Explicit provider name
     model: str | None = None  # Explicit model override
     task_type: str | None = None  # Routing hint
@@ -61,7 +72,14 @@ async def chat(
 
     llm_request = LLMRequest(
         messages=[
-            Message(role=MessageRole.USER, content=request.message),
+            Message(
+                role=MessageRole.USER,
+                content=request.message,
+                images=[
+                    ImageContent(base64=img.base64, url=img.url, media_type=img.media_type)
+                    for img in request.images
+                ],
+            ),
         ],
         model=request.model,
         temperature=request.temperature,

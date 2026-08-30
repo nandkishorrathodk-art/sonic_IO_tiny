@@ -105,6 +105,29 @@ def _is_transport_error(error: Exception) -> bool:
     )
 
 
+def _is_model_not_found_error(error: Exception) -> bool:
+    """Identify model-not-found / EOL / deprecated model errors.
+
+    These indicate the model name is invalid or has been retired, not a
+    transient transport failure. Used to trigger model-level fallback.
+    """
+    error_text = f"{type(error).__name__} {error}".lower()
+    return any(
+        marker in error_text
+        for marker in (
+            "model not found",
+            "does not exist",
+            "model_not_found",
+            "deprecat",
+            "no longer available",
+            "has been retired",
+            "not a valid model",
+            "invalid model",
+            "404",
+        )
+    )
+
+
 class CustomLLMProvider(LLMProvider):
     """
     Universal LLM Provider — works with ANY OpenAI-compatible API.
@@ -132,6 +155,7 @@ class CustomLLMProvider(LLMProvider):
         capabilities: list[str] | None = None,
         speed_tier: SpeedTier = SpeedTier.MEDIUM,
         timeout_seconds: int = 120,
+        fallback_models: list[str] | None = None,
     ):
         # Map name to ProviderName enum if possible, else use CLAUDE as fallback
         try:
@@ -147,6 +171,8 @@ class CustomLLMProvider(LLMProvider):
 
         self.name = name
         self.default_model = default_model
+        # Model-level fallback chain (tried when the primary model is EOL/not-found)
+        self.fallback_models: list[str] = fallback_models or []
         self.cost_per_1k_input = cost_per_1k_input
         self.cost_per_1k_output = cost_per_1k_output
         self.max_context_tokens = max_context_tokens
@@ -190,19 +216,46 @@ class CustomLLMProvider(LLMProvider):
     # ============================================
 
     def _to_openai_messages(self, request: LLMRequest) -> list[dict]:
-        """Convert SONIC messages to OpenAI format."""
-        return [
-            {"role": msg.role.value, "content": msg.content}
-            for msg in request.messages
-        ]
+        """Convert SONIC messages to OpenAI format (with multimodal/vision support)."""
+        messages = []
+        for msg in request.messages:
+            if msg.has_images:
+                # Build multipart content array for vision models
+                content_parts: list[dict] = []
+                if msg.content:
+                    content_parts.append({"type": "text", "text": msg.content})
+                for img in msg.images:
+                    if img.base64:
+                        data_url = f"data:{img.media_type};base64,{img.base64}"
+                        content_parts.append({"type": "image_url", "image_url": {"url": data_url}})
+                    elif img.url:
+                        content_parts.append({"type": "image_url", "image_url": {"url": img.url}})
+                messages.append({"role": msg.role.value, "content": content_parts})
+            else:
+                messages.append({"role": msg.role.value, "content": msg.content})
+        return messages
 
     def _to_anthropic_messages(self, request: LLMRequest) -> tuple[str, list[dict]]:
-        """Convert SONIC messages to Anthropic format (separate system prompt)."""
+        """Convert SONIC messages to Anthropic format (separate system prompt + vision blocks)."""
         system_prompt = ""
         messages = []
         for msg in request.messages:
             if msg.role == MessageRole.SYSTEM:
                 system_prompt = msg.content
+            elif msg.has_images:
+                # Anthropic vision: content blocks with text + image
+                content_blocks: list[dict] = []
+                if msg.content:
+                    content_blocks.append({"type": "text", "text": msg.content})
+                for img in msg.images:
+                    if img.base64:
+                        content_blocks.append({
+                            "type": "image",
+                            "source": {"type": "base64", "media_type": img.media_type, "data": img.base64},
+                        })
+                    elif img.url:
+                        content_blocks.append({"type": "image", "source": {"type": "url", "url": img.url}})
+                messages.append({"role": msg.role.value, "content": content_blocks})
             else:
                 messages.append({"role": msg.role.value, "content": msg.content})
         return system_prompt, messages
@@ -248,11 +301,43 @@ class CustomLLMProvider(LLMProvider):
     # ============================================
 
     async def complete(self, request: LLMRequest) -> LLMResponse:
-        """Send a completion request. Auto-detects Anthropic vs OpenAI format."""
-        if self.is_anthropic:
-            return await self._complete_anthropic(request)
-        else:
-            return await self._complete_openai(request)
+        """Send a completion request. Auto-detects Anthropic vs OpenAI format.
+
+        On model-not-found/EOL errors, retries with configured fallback_models
+        before re-raising to the router's provider-level fallback chain.
+        """
+        original_model = request.model or self.default_model
+        try:
+            if self.is_anthropic:
+                return await self._complete_anthropic(request)
+            else:
+                return await self._complete_openai(request)
+        except Exception as e:
+            if _is_model_not_found_error(e) and self.fallback_models:
+                logger.warning(
+                    "model_not_found_trying_fallbacks",
+                    name=self.name,
+                    original_model=original_model,
+                    fallbacks=self.fallback_models,
+                    error=str(e),
+                )
+                for fb_model in self.fallback_models:
+                    if fb_model == original_model:
+                        continue
+                    try:
+                        request.model = fb_model
+                        logger.info("model_fallback_attempt", name=self.name, model=fb_model)
+                        if self.is_anthropic:
+                            return await self._complete_anthropic(request)
+                        else:
+                            return await self._complete_openai(request)
+                    except Exception as fb_err:
+                        if _is_model_not_found_error(fb_err):
+                            logger.warning("model_fallback_also_not_found", name=self.name, model=fb_model)
+                            continue
+                        raise  # Different error — propagate
+                # All fallbacks exhausted — re-raise original
+            raise
 
     async def _complete_openai(self, request: LLMRequest) -> LLMResponse:
         """Complete via OpenAI-compatible API (works for most providers)."""

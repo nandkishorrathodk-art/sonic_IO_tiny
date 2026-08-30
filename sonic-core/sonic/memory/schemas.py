@@ -310,6 +310,12 @@ SCHEMA_INIT_QUERIES = [
     "CREATE INDEX IF NOT EXISTS FOR (n:Agent) ON (n.agent_id)",
     "CREATE INDEX IF NOT EXISTS FOR (n:Engagement) ON (n.status)",
 
+    # Multi-tenant isolation indexes — ensure tenant_id filtering is fast
+    "CREATE INDEX IF NOT EXISTS FOR (n:Engagement) ON (n.tenant_id)",
+    "CREATE INDEX IF NOT EXISTS FOR (n:Asset) ON (n.tenant_id)",
+    "CREATE INDEX IF NOT EXISTS FOR (n:Finding) ON (n.tenant_id)",
+    "CREATE INDEX IF NOT EXISTS FOR (n:Hypothesis) ON (n.tenant_id)",
+
     # Full-text indexes for search
     "CREATE FULLTEXT INDEX findingSearch IF NOT EXISTS FOR (n:Finding) ON EACH [n.title, n.description, n.vulnerability_class]",
     "CREATE FULLTEXT INDEX assetSearch IF NOT EXISTS FOR (n:Asset) ON EACH [n.value, n.name]",

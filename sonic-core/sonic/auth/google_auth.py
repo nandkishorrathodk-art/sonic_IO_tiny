@@ -242,16 +242,30 @@ async def authenticate_with_google(code: str) -> AuthToken:
             "Contact an admin to get access."
         )
 
-    # Step 4: Create user + JWT
+    # Step 4: Determine role from config (no longer hardcoded OPERATOR for everyone)
+    email_lower = email.lower()
+    settings = get_settings()
+    if email_lower in settings.super_admin_emails_list:
+        role = UserRole.SUPER_ADMIN
+    elif email_lower in settings.tenant_admin_emails_list:
+        role = UserRole.TENANT_ADMIN
+    else:
+        role = UserRole.OPERATOR
+
+    # Derive tenant_id from email domain (enables multi-tenant isolation by org)
+    domain = email.split("@")[1] if "@" in email else "default"
+    tenant_id = domain if domain else "default"
+
     user = User(
         email=email,
         name=google_user.get("name", ""),
         picture=google_user.get("picture"),
         google_id=str(google_user.get("id", "")),
-        role=UserRole.OPERATOR,  # Default role; admins set in config
+        role=role,
+        tenant_id=tenant_id,
         last_login=datetime.now(timezone.utc),
     )
 
     auth_token = create_jwt_token(user)
-    logger.info("auth_success", email=email, role=user.role)
+    logger.info("auth_success", email=email, role=user.role, tenant_id=user.tenant_id)
     return auth_token

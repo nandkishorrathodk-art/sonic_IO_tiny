@@ -59,10 +59,10 @@ class ReproductionEngine:
         # 2. Live ComputeProvider Execution (FAIL-CLOSED)
         cmd = plan.poc_command or (plan.steps[0] if plan.steps else "echo 'No PoC'")
         try:
-            exec_res = await self.provider.execute_command(
+            exec_res = await self.provider.execute(
                 workspace_id=workspace_id,
                 command=cmd,
-                timeout_seconds=timeout_seconds,
+                timeout=timeout_seconds,
             )
 
             stdout = exec_res.stdout or ""
@@ -83,7 +83,7 @@ class ReproductionEngine:
                 source_type="sandbox_runtime",
                 source_agent="reproduction-engine",
                 tool_name="poc_runner",
-                execution_id=getattr(exec_res, "execution_id", f"exec-{finding.id}"),
+                execution_id=f"exec-{finding.id}-{exec_res.sandbox_id or workspace_id}",
                 sandbox_id=workspace_id,
                 artifact_type=ArtifactType.TOOL_OUTPUT,
                 raw_content=combined_output,

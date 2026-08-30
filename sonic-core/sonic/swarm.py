@@ -166,19 +166,17 @@ class SwarmRunner:
                 scope=scope_config or {"target": target},
                 tenant_id=tenant_id,
             )
-            # Get initial dispatchable tasks
-            dispatchable = self.director.get_dispatchable_tasks(engagement_id)
-            state = self.director.get_engagement_state(engagement_id)
-            graph = self.director.get_task_graph(engagement_id)
+
+            # Dispatch → worker → on_task_completed loop
+            results = await self._run_dispatch_loop(engagement_id, tenant_id)
 
             self.metrics.active_engagements -= 1
             return {
                 "engagement_id": engagement_id,
                 "target": target,
+                "tenant_id": tenant_id,
                 "mode": "director",
-                "dispatchable_tasks": dispatchable,
-                "cognitive_state": state,
-                "task_graph": graph,
+                **results,
             }
 
         # Legacy flow (backward compatibility)
@@ -287,6 +285,136 @@ class SwarmRunner:
         self.metrics.active_engagements -= 1
         logger.info("engagement_completed", target=target, findings=len(verified_findings))
         return results
+
+    async def _run_dispatch_loop(
+        self,
+        engagement_id: str,
+        tenant_id: str,
+        max_iterations: int = 50,
+    ) -> dict[str, Any]:
+        """
+        Core dispatch → worker → on_task_completed loop.
+
+        Repeatedly:
+            1. Fetch dispatchable tasks from the Director.
+            2. Map each task's agent_type to a swarm agent.
+            3. Run the agent and collect its output.
+            4. Report completion via Director.on_task_completed.
+        Until the task graph is complete or the iteration budget is exhausted.
+        """
+        logger.info("dispatch_loop_starting", engagement_id=engagement_id)
+
+        # agent_type → swarm agent name mapping
+        agent_map = {
+            "recon": "recon",
+            "static": "static",
+            "hypothesis": "hypothesis",
+            "verifier": "verifier",
+            "dynamic": "recon",       # dynamic testing falls back to recon agent
+            "orchestrator": "orchestrator",
+        }
+
+        all_outputs: list[dict[str, Any]] = []
+        all_findings: list[dict[str, Any]] = []
+        completed = 0
+        failed = 0
+
+        for iteration in range(max_iterations):
+            dispatchable = self.director.get_dispatchable_tasks(engagement_id)
+
+            if not dispatchable:
+                # Check if graph is complete
+                graph = self.director._graphs.get(engagement_id)
+                if graph is not None and graph.is_complete():
+                    logger.info(
+                        "dispatch_loop_complete",
+                        engagement_id=engagement_id,
+                        iterations=iteration,
+                        completed=completed,
+                        failed=failed,
+                    )
+                    break
+                # No dispatchable tasks but not complete — could be running tasks
+                # or blocked. Brief yield then continue.
+                await asyncio.sleep(0.01)
+                continue
+
+            # Dispatch tasks concurrently (up to max_parallel handled by Director)
+            tasks_to_run = []
+            for task_payload in dispatchable:
+                agent_type = task_payload.get("agent_type", "recon")
+                agent_name = agent_map.get(agent_type, "recon")
+                agent = self._agents.get(agent_name)
+                if agent is None:
+                    # No agent available — mark as failed
+                    await self.director.on_task_completed(
+                        engagement_id=engagement_id,
+                        task_id=task_payload.get("task_id", ""),
+                        result={"status": "failed", "error": f"No agent for type {agent_type}"},
+                    )
+                    failed += 1
+                    continue
+                tasks_to_run.append(self._execute_single_task(agent, task_payload, engagement_id))
+
+            if tasks_to_run:
+                outputs = await asyncio.gather(*tasks_to_run, return_exceptions=True)
+                for out in outputs:
+                    if isinstance(out, Exception):
+                        logger.warning("task_execution_error", error=str(out))
+                        failed += 1
+                    elif isinstance(out, dict):
+                        all_outputs.append(out)
+                        completed += 1
+                        # Collect findings
+                        for f in out.get("findings", []):
+                            all_findings.append(f)
+                            self.metrics.record_finding(f.get("severity", "medium"))
+
+        state = self.director.get_engagement_state(engagement_id)
+        graph = self.director.get_task_graph(engagement_id)
+
+        return {
+            "dispatchable_tasks": [],
+            "cognitive_state": state,
+            "task_graph": graph,
+            "outputs": all_outputs,
+            "findings": all_findings,
+            "tasks_completed": completed,
+            "tasks_failed": failed,
+            "summary": {
+                "target": "",
+                "total_findings": len(all_findings),
+                "critical": sum(1 for f in all_findings if f.get("severity") == "critical"),
+                "high": sum(1 for f in all_findings if f.get("severity") == "high"),
+                "medium": sum(1 for f in all_findings if f.get("severity") == "medium"),
+                "status": "completed",
+            },
+        }
+
+    async def _execute_single_task(
+        self,
+        agent: BaseAgent,
+        task_payload: dict[str, Any],
+        engagement_id: str,
+    ) -> dict[str, Any]:
+        """Run a single agent task and report completion to the Director."""
+        task_id = task_payload.get("task_id", "")
+        try:
+            result = await agent.run(task_payload)
+            await self.director.on_task_completed(
+                engagement_id=engagement_id,
+                task_id=task_id,
+                result=result,
+            )
+            return result
+        except Exception as e:
+            logger.error("single_task_failed", task_id=task_id, error=str(e))
+            await self.director.on_task_completed(
+                engagement_id=engagement_id,
+                task_id=task_id,
+                result={"status": "failed", "error": str(e)},
+            )
+            raise
 
     def get_status(self) -> dict[str, Any]:
         """Get current swarm status."""

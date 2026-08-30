@@ -173,7 +173,7 @@ def test_computer_use_agent_closed_loop(daytona_computer):
         obs = await agent.observe(ws.id)
         assert obs.screen.width == 1280
 
-        decision = agent.choose_action(
+        decision = await agent.choose_action(
             goal="Open VS Code and run test verification",
             observation=obs,
             step_index=1,

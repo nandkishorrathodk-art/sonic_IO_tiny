@@ -352,11 +352,12 @@ class EngagementManager:
         return {"error": "Engagement not found"}
 
 
-    async def get_findings_report(self, engagement_id: str) -> dict:
-        """Get all verified findings for reporting."""
+    async def get_findings_report(self, engagement_id: str, tenant_id: str | None = None) -> dict:
+        """Get all verified findings for reporting, scoped by tenant_id."""
         findings = await self.memory.find_findings(
             engagement_id,
             status=FindingStatus.VERIFIED,
+            tenant_id=tenant_id,
         )
 
         # Sort by severity

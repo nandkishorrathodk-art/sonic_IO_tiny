@@ -70,6 +70,10 @@ class ComputerUseAgent:
         max_recovery_attempts: int = 5,
         llm_router: Optional[Any] = None,
         browser: Optional[Any] = None,
+        security_tools: Optional[dict[str, Any]] = None,
+        tenant_id: str = "default",
+        engagement_id: str = "default",
+        agent_id: str = "computer-use-agent",
     ):
         self.computer = computer_provider
         self.autonomy_level = autonomy_level
@@ -80,6 +84,13 @@ class ComputerUseAgent:
         # Optional BrowserAgent so the same observe->reason->act loop can drive a
         # real web browser (navigate/click/type/screenshot) — unified computer-use.
         self.browser = browser
+        # Optional registry of SecurityTool adapters (name -> tool) the agent can
+        # invoke as a first-class reasoning action. Tools execute in-sandbox and
+        # fail closed; their structured findings feed back into the observation.
+        self.security_tools = security_tools or {}
+        self.tenant_id = tenant_id
+        self.engagement_id = engagement_id
+        self.agent_id = agent_id
 
         self.traces: list[ComputerDecisionTrace] = []
         self.recovery_events: int = 0
@@ -92,6 +103,9 @@ class ComputerUseAgent:
         # Last captured browser page state, carried into the next observation so
         # the LLM sees the current page even between browser actions.
         self._last_browser_snapshot: Optional[Any] = None
+        # Last structured security-tool result, surfaced to the next reasoning
+        # step so the LLM acts on real scan findings rather than a claim.
+        self._last_tool_result: Optional[Any] = None
 
     # =============================================================
     # 1. Closed-Loop Observation
@@ -242,31 +256,49 @@ class ComputerUseAgent:
                 f"title={bs.get('title', '')}\n"
                 f"Interactive elements: {el_summary}\n"
             )
+        tool_lines = ""
+        if self._last_tool_result is not None:
+            tr = self._last_tool_result
+            findings = getattr(tr, "parsed_data", []) or []
+            status = getattr(tr, "status", "?")
+            tool_name = getattr(tr, "tool_name", "?")
+            findings_excerpt = str(findings[:5])[:400]
+            tool_lines = (
+                f"Last security-tool result: tool={tool_name}, status={status}, "
+                f"findings_count={len(findings)}\n"
+                f"Findings excerpt: {findings_excerpt}\n"
+            )
+        available_tools = ", ".join(sorted(self.security_tools.keys())) if self.security_tools else "(none)"
         obs_summary = (
             f"Step {step_index}. Goal: {goal}\n"
             f"Active app: {observation.active_application}\n"
             f"Screen visible text:\n{screen_text or '(empty screen)'}\n"
             f"Terminal output:\n{terminal_text or '(no output yet)'}\n"
-            f"{browser_lines}"
+            f"{browser_lines}{tool_lines}"
             f"Files in workspace: {observation.filesystem_files}\n"
             f"Git branch: {observation.git_branch}, clean: {observation.git_clean}\n"
             f"Primary file: {primary_file}, Test file: {test_file}\n"
+            f"Available security tools: {available_tools}\n"
             f"Actions taken so far:\n{history_text or '(none — this is the first action)'}\n"
         )
         system_prompt = (
             "You are an autonomous engineering agent operating a sandboxed computer with "
-            "a terminal, a filesystem, git, and (when available) a web browser. "
+            "a terminal, a filesystem, git, a web browser (when available), and registered "
+            "security scanning tools (when available). "
             "You can see the screen text, the terminal output, the workspace files, the "
-            "git state, the current browser page, and everything you have already done. "
+            "git state, the current browser page, the last scan findings, and everything "
+            "you have already done. "
             "Choose the ONE next action that makes the most progress toward the goal, "
             "reacting to the latest observation and your prior actions — do NOT follow a "
             "fixed script. If the goal is already achieved, respond GOAL_COMPLETE.\n"
             "Respond in EXACTLY this format (no markdown):\n"
             "ACTION: <FILE_READ|FILE_WRITE|TERMINAL_EXEC|GIT_COMMIT|APP_LAUNCH|"
-            "BROWSER_NAVIGATE|BROWSER_CLICK|BROWSER_TYPE|BROWSER_SCREENSHOT|GOAL_COMPLETE>\n"
-            "TARGET: <resource path, name, url, or css selector>\n"
+            "BROWSER_NAVIGATE|BROWSER_CLICK|BROWSER_TYPE|BROWSER_SCREENSHOT|"
+            "SECURITY_TOOL|GOAL_COMPLETE>\n"
+            "TARGET: <resource path, name, url, css selector, or scan target>\n"
             'PAYLOAD: <json dict, e.g. {"path": "...", "content": "..."}, '
-            '{"command": "..."}, {"url": "..."}, {"selector": "...", "text": "..."}>\n'
+            '{"command": "..."}, {"url": "..."}, {"selector": "...", "text": "..."}, '
+            '{"tool": "nmap", "target": "10.0.0.5", "args": "-sV"}>\n'
             "EXPECTED: <short description of predicted outcome>"
         )
         return system_prompt, obs_summary
@@ -336,6 +368,7 @@ class ComputerUseAgent:
             "BROWSER_CLICK": ComputerActionType.BROWSER_CLICK,
             "BROWSER_TYPE": ComputerActionType.BROWSER_TYPE,
             "BROWSER_SCREENSHOT": ComputerActionType.BROWSER_SCREENSHOT,
+            "SECURITY_TOOL": ComputerActionType.SECURITY_TOOL,
             # GOAL_COMPLETE is handled by the caller as a no-op terminator.
             "GOAL_COMPLETE": ComputerActionType.TERMINAL_EXEC,
         }
@@ -462,6 +495,38 @@ class ComputerUseAgent:
                 self._last_browser_snapshot = snap
                 actual_obs_str = f"Screenshot captured: {getattr(snap, 'url', '')}"
 
+            elif action_type == ComputerActionType.SECURITY_TOOL:
+                tool_name = payload.get("tool", target_resource)
+                scan_target = payload.get("target", target_resource)
+                args = payload.get("args", "")
+                tool = self.security_tools.get(tool_name)
+                if tool is None:
+                    actual_obs_str = f"Unknown security tool: {tool_name}"
+                    recovery_needed = True
+                else:
+                    from sonic.tools.base import ToolRequest
+                    options = {"args": args} if args else {}
+                    req = ToolRequest(
+                        tenant_id=self.tenant_id,
+                        engagement_id=self.engagement_id,
+                        workspace_id=workspace_id,
+                        agent_id=self.agent_id,
+                        tool_name=tool_name,
+                        target=scan_target,
+                        options=options,
+                    )
+                    result = await tool.execute(req)
+                    self._last_tool_result = result
+                    findings = getattr(result, "parsed_data", []) or []
+                    actual_obs_str = (
+                        f"Tool {tool_name} status={getattr(result, 'status', '?')} "
+                        f"findings={len(findings)}"
+                    )
+                    # Fail-closed: a blocked/failed tool is a recovery trigger.
+                    status_val = str(getattr(result, "status", ""))
+                    if status_val in ("blocked", "failed", "timed_out"):
+                        recovery_needed = True
+
         except Exception as e:
             actual_obs_str = f"Error: {str(e)}"
             recovery_needed = True
@@ -470,7 +535,7 @@ class ComputerUseAgent:
         # Adaptive Closed-Loop Recovery if needed
         if recovery_needed and self.recovery_events < self.max_recovery_attempts:
             rec_trace = await self.recover(workspace_id, action_type, actual_obs_str)
-            actual_obs_str = f"Recovered: {rec_trace}"
+            actual_obs_str = f"{actual_obs_str} | Recovered: {rec_trace}"
             status = "RECOVERED"
 
         trace = ComputerDecisionTrace(

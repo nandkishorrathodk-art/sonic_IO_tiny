@@ -58,6 +58,8 @@ class ComputerActionType(StrEnum):
     BROWSER_CLICK = "BROWSER_CLICK"
     BROWSER_TYPE = "BROWSER_TYPE"
     BROWSER_SCREENSHOT = "BROWSER_SCREENSHOT"
+    # Security-tool execution: structured, in-sandbox, fail-closed scanning.
+    SECURITY_TOOL = "SECURITY_TOOL"
 
 
 # ============================================

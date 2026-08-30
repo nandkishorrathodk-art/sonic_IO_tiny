@@ -193,7 +193,7 @@ export function ComputerSurface({
       {/* Main Surface Body: noVNC Stream / Live Interactive Desktop */}
       <div
         onClick={handleDesktopClick}
-        className="flex-1 bg-[#06080D] relative flex items-center justify-center overflow-hidden cursor-crosshair select-none"
+        className="flex-1 bg-[#06080D] relative flex items-center justify-center overflow-hidden cursor-crosshair"
         style={{ minHeight: 0 }}
       >
         {/* Priority 1: Real interactive noVNC desktop via iframe */}

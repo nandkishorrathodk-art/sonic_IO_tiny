@@ -133,7 +133,7 @@ export function CodeViewer({
         <div className="flex-1 overflow-y-auto p-3 font-mono text-xs leading-relaxed bg-[#0D1117]">
           {fileContent.length ? fileContent.map((line, i) => (
             <div key={i} className="flex hover:bg-[#161B22]/50 leading-5">
-              <span className="w-10 text-right pr-4 text-[#484F58] select-none font-mono text-[11px]">
+              <span className="w-10 text-right pr-4 text-[#484F58] font-mono text-[11px]">
                 {i + 1}
               </span>
               <span className="flex-1 whitespace-pre text-[#C9D1D9]">{line}</span>

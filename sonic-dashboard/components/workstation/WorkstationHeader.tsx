@@ -1,5 +1,5 @@
 import React from "react";
-import { GitBranch, Maximize2, MoreHorizontal, PanelLeft, Zap, ShieldCheck } from "lucide-react";
+import { GitBranch, Maximize2, MoreHorizontal, PanelLeft, PanelLeftClose, Zap, ShieldCheck } from "lucide-react";
 import { StatusBadge } from "../common/StatusBadge";
 import { SystemStatus } from "../../types/workstation";
 
@@ -21,17 +21,16 @@ export function WorkstationHeader({
   connectionStatus,
 }: WorkstationHeaderProps) {
   return (
-    <header className="h-10 border-b border-[#21262D] bg-[#12151A] px-3 flex items-center justify-between text-xs z-10 select-none">
+    <header className="h-10 border-b border-[#21262D] bg-[#12151A] px-3 flex items-center justify-between text-xs z-10">
       <div className="flex items-center gap-2.5 min-w-0">
-        {!sidebarOpen && (
-          <button
-            onClick={() => setSidebarOpen(true)}
-            className="text-[#8B949E] hover:text-white p-1 rounded hover:bg-[#21262D] transition mr-1"
-            title="Open sidebar"
-          >
-            <PanelLeft className="w-4 h-4" />
-          </button>
-        )}
+        <button
+          onClick={() => setSidebarOpen(!sidebarOpen)}
+          className="text-[#8B949E] hover:text-white p-1 rounded hover:bg-[#21262D] transition mr-1"
+          title={sidebarOpen ? "Collapse sidebar" : "Open sidebar"}
+          aria-label={sidebarOpen ? "Collapse sidebar" : "Open sidebar"}
+        >
+          {sidebarOpen ? <PanelLeftClose className="w-4 h-4" /> : <PanelLeft className="w-4 h-4" />}
+        </button>
         <span className="font-semibold text-white truncate max-w-xs">{sessionName}</span>
         
         {/* Real Git metadata only appears after the backend returns it. */}

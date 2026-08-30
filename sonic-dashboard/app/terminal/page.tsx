@@ -164,7 +164,7 @@ export default function TerminalPage() {
           ))}
 
           <div className="flex items-center gap-2 mt-2 pt-2 border-t border-slate-800">
-            <span className="text-emerald-400 font-bold select-none">sonic@sandbox:~$</span>
+            <span className="text-emerald-400 font-bold">sonic@sandbox:~$</span>
             <input
               ref={inputRef}
               type="text"

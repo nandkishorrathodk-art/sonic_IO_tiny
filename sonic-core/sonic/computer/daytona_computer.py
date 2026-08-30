@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import os
 import shlex
+import asyncio
 from datetime import datetime, timezone
 from typing import Any, Optional
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
@@ -295,7 +296,7 @@ class DaytonaComputerProvider(ComputerProvider):
     async def status(self, workspace_id: str) -> ComputerState:
         """Returns the real-time operational state of the graphical desktop."""
         ws = self.workspaces.get(workspace_id)
-        tenant_id = ws.tenant_id if ws else "default"
+        tenant_id = ws.tenant_id if ws else ""
         active_app = self._active_windows.get(workspace_id, "None")
 
         # Query real running processes from sandbox
@@ -324,7 +325,7 @@ class DaytonaComputerProvider(ComputerProvider):
 
         # Query real git branch if repository is present
         git_res = await self.terminal(workspace_id, "git branch --show-current 2>/dev/null")
-        git_branch = git_res.stdout.strip() if (git_res.exit_code == 0 and git_res.stdout.strip()) else "main"
+        git_branch = git_res.stdout.strip() if (git_res.exit_code == 0 and git_res.stdout.strip()) else ""
 
         return ComputerState(
             workspace_id=workspace_id,
@@ -400,6 +401,18 @@ class DaytonaComputerProvider(ComputerProvider):
             raise RuntimeError("No live Daytona computer workspace is attached to this session")
         action_type = action.action
 
+        supported_actions = {
+            GUIActionType.CLICK,
+            GUIActionType.DOUBLE_CLICK,
+            GUIActionType.TYPE,
+            GUIActionType.KEYPRESS,
+            GUIActionType.MOVE,
+            GUIActionType.OPEN_APP,
+            GUIActionType.CLOSE_APP,
+        }
+        if action_type not in supported_actions:
+            raise RuntimeError(f"Daytona GUI action {action_type.value} is not supported by this provider")
+
         if action_type in [GUIActionType.CLICK, GUIActionType.DOUBLE_CLICK]:
             if action.x is None or action.y is None:
                 logger.warning("daytona_gui_click_missing_coordinates", action=action_type.value, x=action.x, y=action.y)
@@ -411,6 +424,12 @@ class DaytonaComputerProvider(ComputerProvider):
                 if action_type in [GUIActionType.CLICK, GUIActionType.DOUBLE_CLICK]:
                     await cu.mouse.move(action.x, action.y)
                     await cu.mouse.click(button="left")
+                    if action_type == GUIActionType.DOUBLE_CLICK:
+                        await asyncio.sleep(0.08)
+                        await cu.mouse.click(button="left")
+
+                elif action_type == GUIActionType.MOVE:
+                    await cu.mouse.move(action.x, action.y)
 
                 elif action_type == GUIActionType.TYPE and action.text:
                     await cu.keyboard.type(action.text)
@@ -426,6 +445,11 @@ class DaytonaComputerProvider(ComputerProvider):
                     except Exception:
                         pass
 
+                elif action_type == GUIActionType.CLOSE_APP and action.app_name:
+                    await sandbox.process.exec(f"pkill -f -- {shlex.quote(action.app_name)}")
+                    if self._active_windows.get(workspace_id) == action.app_name:
+                        self._active_windows[workspace_id] = "XFCE Desktop"
+
             except Exception as e:
                 logger.error("daytona_gui_action_dispatch_error", error=str(e))
                 raise RuntimeError(f"Daytona GUI action failed: {e}") from e
@@ -434,9 +458,9 @@ class DaytonaComputerProvider(ComputerProvider):
             self._active_windows[workspace_id] = action.app_name
 
         self._record_audit(
-            session_id="gui",
+            session_id=ws.engagement_id if ws else "unknown",
             workspace_id=workspace_id,
-            tenant_id="default",
+            tenant_id=ws.tenant_id if ws else actor,
             actor=actor,
             action=f"GUI_{action_type.value}",
             resource=action.app_name or "screen",
@@ -503,7 +527,7 @@ class DaytonaComputerProvider(ComputerProvider):
             except Exception as e:
                 logger.warning("daytona_fs_read_failed", error=str(e), path=path)
 
-        res = await self.terminal(workspace_id, f"cat {path}")
+        res = await self.terminal(workspace_id, f"cat -- {shlex.quote(path)}")
         if res.exit_code == 0:
             return res.stdout
         return f"# Error reading file {path} from sandbox"
@@ -524,7 +548,7 @@ class DaytonaComputerProvider(ComputerProvider):
 
     async def list_files(self, workspace_id: str, path: str = ".") -> list[FileEntry]:
         """Lists files inside the sandbox directory."""
-        res = await self.terminal(workspace_id, f"ls -la {path}")
+        res = await self.terminal(workspace_id, f"ls -la -- {shlex.quote(path)}")
         entries = []
         if res.exit_code == 0:
             for line in res.stdout.splitlines():
@@ -648,7 +672,8 @@ class DaytonaComputerProvider(ComputerProvider):
 
     async def install_application(self, workspace_id: str, package_name: str, actor: str = "operator") -> tuple[bool, str]:
         """Installs an application inside the sandbox."""
-        res = await self.terminal(workspace_id, f"apt-get update && apt-get install -y {package_name}")
+        safe_package = shlex.quote(package_name.strip())
+        res = await self.terminal(workspace_id, f"apt-get update && apt-get install -y -- {safe_package}", actor=actor)
         return (res.exit_code == 0, res.stdout or res.stderr)
 
     async def uninstall_application(self, workspace_id: str, package_name: str, actor: str = "operator") -> bool:
@@ -672,7 +697,7 @@ class DaytonaComputerProvider(ComputerProvider):
         if action == "status":
             res = await self.terminal(workspace_id, "git status --porcelain")
             branch_res = await self.terminal(workspace_id, "git branch --show-current")
-            branch = branch_res.stdout.strip() if (branch_res.exit_code == 0 and branch_res.stdout.strip()) else "main"
+            branch = branch_res.stdout.strip() if (branch_res.exit_code == 0 and branch_res.stdout.strip()) else ""
             return GitStatusInfo(
                 branch=branch,
                 is_clean=(len(res.stdout.strip()) == 0),

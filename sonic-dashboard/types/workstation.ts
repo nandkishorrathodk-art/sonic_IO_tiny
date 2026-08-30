@@ -6,7 +6,7 @@ export type WorkstationTab = "desktop" | "code" | "changes" | "research" | "evid
 
 export interface WorklogItem {
   id: string;
-  type: "action" | "command" | "read" | "write" | "event" | "evidence" | "thought";
+  type: "action" | "command" | "read" | "write" | "event" | "evidence" | "thought" | "response";
   title: string;
   content?: string;
   command?: string;

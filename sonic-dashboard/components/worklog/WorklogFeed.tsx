@@ -16,6 +16,8 @@ import {
   GitBranch,
   MoreHorizontal,
   Maximize2,
+  PanelRightOpen,
+  PanelRightClose,
 } from "lucide-react";
 import { WorklogItem } from "../../types/workstation";
 
@@ -27,6 +29,8 @@ interface WorklogFeedProps {
   onSelectFile?: (filePath: string) => void;
   sessionName?: string;
   gitBranch?: string;
+  rightPanelOpen?: boolean;
+  onToggleRightPanel?: () => void;
 }
 
 export function WorklogFeed({
@@ -37,6 +41,8 @@ export function WorklogFeed({
   onSelectFile,
   sessionName = "",
   gitBranch = "",
+  rightPanelOpen = true,
+  onToggleRightPanel,
 }: WorklogFeedProps) {
   const [promptText, setPromptText] = useState("");
   const [activeMode, setActiveMode] = useState<"Normal" | "Autonomous" | "Pair-Program">("Normal");
@@ -68,7 +74,7 @@ export function WorklogFeed({
   const displayItems: WorklogItem[] = worklog || [];
 
   return (
-    <div className="flex flex-col h-full bg-[#0D1117] text-[#C9D1D9] overflow-hidden select-none font-sans">
+    <div className="flex flex-col h-full bg-[#0D1117] text-[#C9D1D9] overflow-hidden font-sans">
       {/* Devin Stream Session Header */}
       <div className="h-10 border-b border-[#21262D] bg-[#0D1117] px-4 flex items-center justify-between text-xs shrink-0">
         <div className="flex items-center gap-2 min-w-0">
@@ -100,6 +106,17 @@ export function WorklogFeed({
           >
             <Maximize2 className="w-3.5 h-3.5" />
           </button>
+          {onToggleRightPanel && (
+            <button
+              type="button"
+              onClick={onToggleRightPanel}
+              className="p-1 rounded text-[#8B949E] hover:text-white hover:bg-[#21262D] transition"
+              title={rightPanelOpen ? "Hide Computer panel" : "Show Computer panel"}
+              aria-label={rightPanelOpen ? "Hide Computer panel" : "Show Computer panel"}
+            >
+              {rightPanelOpen ? <PanelRightClose className="w-4 h-4" /> : <PanelRightOpen className="w-4 h-4" />}
+            </button>
+          )}
         </div>
       </div>
 
@@ -136,6 +153,19 @@ export function WorklogFeed({
                     {item.content}
                   </div>
                 )}
+              </div>
+            );
+          }
+
+          // The model's user-facing answer is a response, not hidden
+          // chain-of-thought. Render it as an assistant message.
+          if (item.type === "response") {
+            return (
+              <div key={itemId} className="flex justify-start pr-8 my-2">
+                <div className="max-w-[90%] rounded-2xl rounded-bl-sm bg-[#161B22] border border-[#30363D] px-4 py-2.5 text-[#E6EDF3] text-xs">
+                  <div className="text-[10px] text-[#8AB4F8] font-medium mb-0.5">SONIC</div>
+                  <p className="text-[12px] leading-relaxed whitespace-pre-wrap">{item.content}</p>
+                </div>
               </div>
             );
           }
@@ -354,11 +384,10 @@ export function WorklogFeed({
               <button
                 type="button"
                 onClick={() => setIsRecording(!isRecording)}
-                className={`p-1.5 rounded-full transition ${
-                  isRecording
+                className={`p-1.5 rounded-full transition ${isRecording
                     ? "bg-red-500/20 text-red-400 border border-red-500/50 animate-pulse"
                     : "text-[#8B949E] hover:text-white hover:bg-[#21262D]"
-                }`}
+                  }`}
                 title={isRecording ? "Stop voice dictation" : "Voice dictation"}
               >
                 <Mic className="w-4 h-4" />

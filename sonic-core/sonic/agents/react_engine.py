@@ -260,31 +260,31 @@ def create_default_tool_registry(sandbox: Optional[DaytonaSandbox] = None) -> To
         if sandbox:
             res = await sandbox.execute(f"nmap {args}", timeout=120)
             return res.stdout + res.stderr
-        return "SIMULATED: nmap scan completed. Open ports: 22/ssh, 80/http, 443/https, 8080/http-proxy"
+        raise RuntimeError("No isolated sandbox is attached; nmap execution is unavailable")
 
     async def run_nuclei(args: str) -> str:
         if sandbox:
             res = await sandbox.execute(f"nuclei {args}", timeout=180)
             return res.stdout + res.stderr
-        return 'SIMULATED: [{"template-id":"test","info":{"name":"Test Finding","severity":"medium"},"matched-at":"http://target.com/test"}]'
+        raise RuntimeError("No isolated sandbox is attached; nuclei execution is unavailable")
 
     async def run_ffuf(args: str) -> str:
         if sandbox:
             res = await sandbox.execute(f"ffuf {args}", timeout=120)
             return res.stdout + res.stderr
-        return 'SIMULATED: {"results":[{"input":{"FUZZ":"admin"},"url":"http://target.com/admin","status":200,"length":1420}]}'
+        raise RuntimeError("No isolated sandbox is attached; ffuf execution is unavailable")
 
     async def run_curl(args: str) -> str:
         if sandbox:
             res = await sandbox.execute(f"curl -s {args}", timeout=30)
             return res.stdout[:3000]
-        return "SIMULATED: HTTP/1.1 200 OK\nContent-Type: text/html\n\n<html><body>Response</body></html>"
+        raise RuntimeError("No isolated sandbox is attached; HTTP execution is unavailable")
 
     async def run_httpx(args: str) -> str:
         if sandbox:
             res = await sandbox.execute(f"httpx {args}", timeout=60)
             return res.stdout + res.stderr
-        return "SIMULATED: http://target.com [200] [text/html] [nginx/1.18]"
+        raise RuntimeError("No isolated sandbox is attached; httpx execution is unavailable")
 
     registry.register(ToolDefinition(
         name="nmap", description="Port scan and service detection",

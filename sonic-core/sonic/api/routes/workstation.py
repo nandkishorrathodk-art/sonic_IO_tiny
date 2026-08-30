@@ -17,6 +17,9 @@ import asyncio
 import hashlib
 import json
 import os
+import posixpath
+import re
+import shlex
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -30,7 +33,13 @@ from pydantic import BaseModel, Field
 from sonic.auth.middleware import require_auth
 from sonic.auth.models import User
 from sonic.computer.daytona_computer import DaytonaComputerProvider
-from sonic.computer.models import GUIAction, GUIActionType, ComputerWorkspaceType, ComputerProfile
+from sonic.computer.models import (
+    ApplicationPolicy,
+    GUIAction,
+    GUIActionType,
+    ComputerWorkspaceType,
+    ComputerProfile,
+)
 from sonic.logger import get_logger
 from sonic.safety.scope import get_scope_checker, RiskLevel, SafetyVerdict
 from sonic.mission_engine.planner import MissionPlanner
@@ -244,6 +253,17 @@ def _get_or_create_session(tenant_id: str, session_id: str = "default") -> dict[
     }:
         session["mission_name"] = "New conversation"
         session["current_action"] = "Ready when you are."
+    # Older builds stored the model's user-facing answer as a thought entry.
+    # Migrate that persisted shape so the UI does not label an answer as
+    # hidden reasoning.
+    migrated_response_labels = False
+    for item in session.get("worklog", []):
+        if isinstance(item, dict) and item.get("title") == "AI Task Analysis":
+            item["type"] = "response"
+            item["title"] = "SONIC Response"
+            migrated_response_labels = True
+    if migrated_response_labels:
+        _persist_workstation_state()
     return session
 
 
@@ -275,6 +295,22 @@ def _session_target_id(user: User, session_id: str) -> str:
         return ""
     target = state.get("target_sandbox", {})
     return str(target.get("workspace_id") or target.get("sandbox_id") or "")
+
+
+_WORKSPACE_ROOT = "/home/sonic/workspace"
+
+
+def _workspace_file_path(path: str) -> str:
+    """Normalize a user path and keep it inside the remote workspace root."""
+    raw = str(path or "").strip()
+    if not raw:
+        raise HTTPException(status_code=400, detail="File path cannot be empty")
+    candidate = posixpath.normpath(
+        raw if raw.startswith("/") else posixpath.join(_WORKSPACE_ROOT, raw)
+    )
+    if candidate != _WORKSPACE_ROOT and not candidate.startswith(f"{_WORKSPACE_ROOT}/"):
+        raise HTTPException(status_code=400, detail="File path must stay inside the workstation workspace")
+    return candidate
 
 
 def _timestamp() -> str:
@@ -422,8 +458,11 @@ async def get_workstation_state(
     workspace_id = _session_workspace_id(user, session_id)
     if workspace_id:
         comp = get_daytona_computer()
-        branch = await comp.terminal(workspace_id, "git branch --show-current 2>/dev/null", actor=user.email)
-        state["git_branch"] = branch.stdout.strip() if branch.exit_code == 0 else ""
+        try:
+            branch = await comp.terminal(workspace_id, "git branch --show-current 2>/dev/null", actor=user.email)
+            state["git_branch"] = branch.stdout.strip() if branch.exit_code == 0 else ""
+        except Exception:
+            state["git_branch"] = ""
 
     # Ensure desktop status reflects live Daytona / X11 stream. Preview links
     # carry a private auth token and are single-session URLs; refreshing one on
@@ -777,7 +816,16 @@ async def execute_desktop_action(
     workspace_id = _session_workspace_id(user, req.session_id or "default")
     if not workspace_id:
         raise HTTPException(status_code=409, detail="No Daytona workstation is provisioned for this session")
-    action_type = GUIActionType(req.action.upper()) if hasattr(GUIActionType, req.action.upper()) else GUIActionType.CLICK
+    try:
+        action_type = GUIActionType(req.action.strip().upper())
+    except (AttributeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=f"Unsupported desktop action: {req.action}") from exc
+    if action_type in {GUIActionType.CLICK, GUIActionType.DOUBLE_CLICK, GUIActionType.MOVE} and not req.coordinates:
+        raise HTTPException(status_code=400, detail=f"Desktop action {action_type.value} requires coordinates")
+    if action_type == GUIActionType.TYPE and not req.text:
+        raise HTTPException(status_code=400, detail="Desktop TYPE action requires text")
+    if action_type == GUIActionType.KEYPRESS and not req.key:
+        raise HTTPException(status_code=400, detail="Desktop KEYPRESS action requires a key")
     x = req.coordinates[0] if req.coordinates else None
     y = req.coordinates[1] if req.coordinates else None
     gui_act = GUIAction(
@@ -855,7 +903,7 @@ async def get_workstation_tree(
     workspace_id = _session_workspace_id(user, session_id)
     if not workspace_id:
         raise HTTPException(status_code=409, detail="No Daytona workstation is provisioned for this session")
-    result = await get_daytona_computer().list_files(workspace_id, "/home/daytona")
+    result = await get_daytona_computer().list_files(workspace_id, _WORKSPACE_ROOT)
     return {"files": [entry.path for entry in result]}
 
 
@@ -869,7 +917,7 @@ async def get_workstation_file(
     workspace_id = _session_workspace_id(user, session_id)
     if not workspace_id:
         raise HTTPException(status_code=409, detail="No Daytona workstation is provisioned for this session")
-    remote_path = path if path.startswith("/") else f"/home/daytona/{path.lstrip('/')}"
+    remote_path = _workspace_file_path(path)
     try:
         content = await get_daytona_computer().read_file(workspace_id, remote_path)
         if content.startswith(f"# Error reading file {remote_path}"):
@@ -898,12 +946,14 @@ async def save_workstation_file(
     workspace_id = _session_workspace_id(user, session_id)
     if not workspace_id:
         raise HTTPException(status_code=409, detail="No Daytona workstation is provisioned for this session")
-    remote_path = req.path if req.path.startswith("/") else f"/home/daytona/{req.path.lstrip('/')}"
+    remote_path = _workspace_file_path(req.path)
     try:
         saved = await get_daytona_computer().write_file(workspace_id, remote_path, req.content, actor=user.email)
         if not saved:
             raise HTTPException(status_code=502, detail="Daytona filesystem rejected the write")
         return {"status": "saved", "path": req.path, "bytes": len(req.content)}
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to save file: {str(e)}")
 
@@ -921,16 +971,21 @@ async def get_workstation_git_diff(
         comp = get_daytona_computer()
         diff = await comp.terminal(workspace_id, "git diff HEAD", actor=user.email)
         status_result = await comp.terminal(workspace_id, "git status --short", actor=user.email)
+        if diff.exit_code == 126 or status_result.exit_code == 126:
+            raise HTTPException(status_code=503, detail="Daytona workstation is unreachable; git diff failed closed")
+        if diff.exit_code != 0:
+            raise HTTPException(status_code=502, detail=(diff.stderr or "git diff failed").strip())
+        if status_result.exit_code != 0:
+            raise HTTPException(status_code=502, detail=(status_result.stderr or "git status failed").strip())
         diff_text = diff.stdout.strip() or status_result.stdout.strip() or "Working tree clean. No uncommitted modifications."
         return {
             "diff": diff_text,
             "success": True,
         }
+    except HTTPException:
+        raise
     except Exception as e:
-        return {
-            "diff": f"Error running git diff: {str(e)}",
-            "success": False,
-        }
+        raise HTTPException(status_code=503, detail=f"Failed to read git diff from workstation: {str(e)}") from e
 
 
 @router.post("/workstation/command")
@@ -946,46 +1001,26 @@ async def execute_workstation_command(
     """
     logger.info("sandbox_command_execution_requested", user=user.email, command=req.command)
 
-    # 1. Execute against the authenticated tenant/session's Daytona workspace.
+    # Execute only against the authenticated tenant/session's Daytona workspace.
+    # A shared Docker container is never a safe fallback for a tenant-scoped
+    # request because it can cross session boundaries and is not the agent's
+    # actual workstation.
     workspace_id = _session_workspace_id(user, req.session_id or "default")
-    if workspace_id:
-        comp = get_daytona_computer()
-        res = await comp.terminal(workspace_id, req.command, timeout=req.timeout or 30, actor=user.email)
-        if res.exit_code != 126:
-            return {
-                "command": req.command,
-                "exit_code": res.exit_code,
-                "output": (res.stdout + ("\n" + res.stderr if res.stderr else "")).strip(),
-                "execution_environment": f"daytona_cloud_sandbox ({workspace_id[:8]})",
-            }
-
-    # 2. Try Docker sandbox container ('sonic-sandbox')
-    try:
-        check_proc = await asyncio.create_subprocess_exec(
-            "docker", "inspect", "-f", "{{.State.Running}}", "sonic-sandbox",
-            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+    if not workspace_id:
+        raise HTTPException(status_code=409, detail="Provision a Daytona workstation before executing commands")
+    comp = get_daytona_computer()
+    res = await comp.terminal(workspace_id, req.command, timeout=req.timeout or 30, actor=user.email)
+    if res.exit_code == 126:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Command execution failed-closed: the tenant-owned Daytona workstation is unreachable; host and shared-container execution are prohibited.",
         )
-        stdout, stderr = await check_proc.communicate()
-        if stdout.decode().strip() == "true":
-            exec_proc = await asyncio.create_subprocess_exec(
-                "docker", "exec", "-i", "sonic-sandbox", "/bin/bash", "-c", req.command,
-                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
-            )
-            out, err = await asyncio.wait_for(exec_proc.communicate(), timeout=req.timeout or 30)
-            return {
-                "command": req.command,
-                "exit_code": exec_proc.returncode,
-                "output": (out.decode("utf-8", errors="replace") + err.decode("utf-8", errors="replace")).strip(),
-                "execution_environment": "docker_sandbox",
-            }
-    except Exception:
-        pass
-
-    # FAIL CLOSED: Never fallback to host execution
-    raise HTTPException(
-        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-        detail="Command execution failed-closed: Dedicated sandbox container (Daytona Cloud or local Docker) is not reachable. Direct host OS execution is strictly prohibited by SONIC Security Invariants.",
-    )
+    return {
+        "command": req.command,
+        "exit_code": res.exit_code,
+        "output": (res.stdout + ("\n" + res.stderr if res.stderr else "")).strip(),
+        "execution_environment": f"daytona_cloud_sandbox ({workspace_id[:8]})",
+    }
 
 
 @router.post("/workstation/mission/start")
@@ -1091,11 +1126,142 @@ async def open_mission_browser(
     return result.model_dump()
 
 
+_PACKAGE_PLACEHOLDERS = {
+    "a", "an", "the", "application", "app", "package", "on", "in",
+    "your", "my", "the", "desktop", "workstation", "sandbox", "and",
+}
+
+
+def _is_action_prompt(prompt: str) -> bool:
+    lower = prompt.strip().lower()
+    # Only classify an objective as executable when it starts with an explicit
+    # operator imperative. Arbitrary pasted research/web text may contain words
+    # like "testing" or "check" and must remain a normal reasoning request.
+    prefix = r"(?:(?:please|can you|could you|will you)\s+)?"
+    imperative = (
+        r"(?:install|open|launch|run|execute|test|scan|inspect|list|show|"
+        r"start|stop|close|download|create|edit|fix|build|clone)\b"
+    )
+    if re.match(prefix + imperative, lower):
+        return True
+    return bool(re.search(r"\b(?:open|launch)\s+(?:terminal|browser|chrome|code)\b", lower))
+
+
+def _extract_install_package(prompt: str) -> str:
+    """Extract a simple apt package name without allowing shell syntax."""
+    match = re.search(
+        r"\binstall(?:\s+(?:the|an|a))?(?:\s+(?:application|app|package))?\s+([a-z0-9][a-z0-9+_.-]*)\b",
+        prompt.lower(),
+    )
+    if not match:
+        return ""
+    package = match.group(1)
+    return "" if package in _PACKAGE_PLACEHOLDERS else package
+
+
+def _extract_terminal_command(prompt: str) -> str:
+    """Read an explicit command only; never infer one from a vague request."""
+    match = re.search(
+        r"(?:run|execute)\s+(?:command\s*)?[:\-]?\s*[`\"]?(.+?)[`\"]?$|"
+        r"terminal\s*[:\-]\s*[`\"]?(.+?)[`\"]?$",
+        prompt.strip(),
+        re.IGNORECASE,
+    )
+    if not match:
+        return ""
+    return (match.group(1) or match.group(2) or "").strip()
+
+
+def _append_worklog(state: dict[str, Any], item_type: str, title: str, content: str) -> None:
+    state["worklog"].append({
+        "id": f"wl-{len(state['worklog']) + 1}",
+        "type": item_type,
+        "title": title,
+        "content": content,
+    })
+
+
+async def _run_autonomous_desktop_loop(
+    state: dict[str, Any],
+    desktop_id: str,
+    tenant_id: str,
+    prompt: str,
+) -> tuple[list[str], str | None, bool]:
+    """Execute a bounded, explicit action sequence in the real Daytona desktop.
+
+    The model is used for explanation, never as a source of fabricated command
+    output. Only explicit operator intents are executed and every result comes
+    directly from the remote sandbox PTY/GUI plane.
+    """
+    computer = get_daytona_computer()
+    lower = prompt.lower()
+    observations: list[str] = []
+
+    if "install" in lower:
+        package = _extract_install_package(prompt)
+        if not package:
+            message = "Tell me the exact package name to install (for example: 'install htop'). No package was guessed or installed."
+            _append_worklog(state, "action", "Waiting for package name", message)
+            return observations, message, False
+        allowed, reason = ApplicationPolicy().is_package_allowed(package)
+        if not allowed:
+            message = f"Installation blocked by the sandbox package policy: {reason}"
+            _append_worklog(state, "error", "Package installation blocked", message)
+            return observations, message, True
+        ok, output = await computer.install_application(desktop_id, package, actor=tenant_id)
+        result_text = (output or "(package manager returned no output)").strip()[:8000]
+        observations.append(f"install {package}: exit={'0' if ok else 'non-zero'}\n{result_text}")
+        _append_worklog(
+            state,
+            "action" if ok else "error",
+            f"Install {package}",
+            f"Real Daytona package-manager result:\n{result_text}",
+        )
+        verify = await computer.terminal(
+            desktop_id,
+            f"dpkg-query -W -f='${{Status}}' -- {shlex.quote(package)} 2>/dev/null || true",
+            actor=tenant_id,
+        )
+        verify_text = (verify.stdout + ("\n" + verify.stderr if verify.stderr else "")).strip()[:4000]
+        observations.append(f"verify {package}: exit={verify.exit_code}\n{verify_text}")
+        _append_worklog(state, "action", f"Verify {package}", f"Real package verification:\n{verify_text or '(no package status returned)'}")
+        if not ok:
+            return observations, f"The real Daytona package installation failed for `{package}`. See the terminal result above; no success was claimed.", True
+        return observations, None, False
+
+    command = _extract_terminal_command(prompt)
+    if command:
+        verdict = get_scope_checker().check_action(command, RiskLevel.L0_SAFE)
+        if verdict != SafetyVerdict.ALLOWED:
+            message = f"Terminal command blocked by safety policy ({verdict.value}); no command was executed."
+            _append_worklog(state, "error", "Terminal command blocked", message)
+            return observations, message, True
+        result = await computer.terminal(desktop_id, command, timeout=120, actor=tenant_id)
+        output = (result.stdout + ("\n" + result.stderr if result.stderr else "")).strip()[:8000]
+        observations.append(f"{command}: exit={result.exit_code}\n{output}")
+        _append_worklog(state, "action" if result.exit_code == 0 else "error", "Terminal command", f"`{command}`\nReal Daytona result:\n{output or '(no output)'}")
+        if result.exit_code != 0:
+            return observations, f"The real Daytona command exited with code {result.exit_code}. No successful result was claimed.", True
+        return observations, None, False
+
+    if any(term in lower for term in ("test", "scan", "check", "inspect", "list files", "show files")):
+        for command in ("pwd", "ls -la /home/sonic/workspace 2>/dev/null | head -40", "git -C /home/sonic/workspace status --short 2>/dev/null || true"):
+            result = await computer.terminal(desktop_id, command, timeout=120, actor=tenant_id)
+            output = (result.stdout + ("\n" + result.stderr if result.stderr else "")).strip()[:6000]
+            observations.append(f"{command}: exit={result.exit_code}\n{output}")
+            _append_worklog(state, "action" if result.exit_code == 0 else "error", "Desktop inspection step", f"`{command}`\nReal Daytona result:\n{output or '(no output)'}")
+        return observations, None, False
+
+    return observations, None, False
+
+
 async def _run_prompt_reasoning(tenant_id: str, session_id: str, prompt: str) -> None:
     """Resolve an objective asynchronously so a slow provider cannot block the UI request."""
     state = _get_or_create_session(tenant_id, session_id)
     reasoning_available = False
+    llm_configured = False
     desktop_cycle_completed = False
+    action_blocked = False
     desktop_context = "No tenant-owned desktop observation is available for this session."
     try:
         from sonic.llm.providers.custom import CustomLLMProvider
@@ -1105,6 +1271,18 @@ async def _run_prompt_reasoning(tenant_id: str, session_id: str, prompt: str) ->
         # that powers the noVNC display. This proves/uses agent access without
         # silently clicking or typing on the user's desktop.
         desktop_id = str(state.get("desktop", {}).get("workspace_id") or state.get("desktop", {}).get("sandbox_id") or "")
+        if _is_action_prompt(prompt) and not desktop_id:
+            message = (
+                "Action blocked: this session has no tenant-owned Daytona desktop. "
+                "Provision the Agent Desktop first; no terminal command or GUI action was executed."
+            )
+            _append_worklog(state, "error", "Execution Blocked", message)
+            _append_worklog(state, "response", "SONIC Response", message)
+            state["thought_summary"] = message
+            state["status"] = "BLOCKED"
+            state["current_action"] = "Execution blocked — provision a live Daytona desktop"
+            _persist_workstation_state()
+            return
         if desktop_id:
             try:
                 computer = get_daytona_computer()
@@ -1160,6 +1338,27 @@ async def _run_prompt_reasoning(tenant_id: str, session_id: str, prompt: str) ->
                     "content": "The live desktop could not be observed; no GUI action was performed.",
                 })
 
+        # Execute explicit operator actions as a bounded real loop before asking
+        # the model for a summary. This prevents a language-only response from
+        # pretending that a command was run or an app was installed.
+        if desktop_id and _is_action_prompt(prompt):
+            action_observations, action_message, action_blocked = await _run_autonomous_desktop_loop(
+                state, desktop_id, tenant_id, prompt
+            )
+            if action_observations:
+                desktop_context += "\nReal action results:\n" + "\n\n".join(action_observations)
+            if action_message:
+                state["thought_summary"] = action_message
+                _append_worklog(state, "response", "SONIC Response", action_message)
+                state["status"] = "BLOCKED" if action_blocked else "IDLE"
+                state["current_action"] = (
+                    "Execution blocked — review the real sandbox result"
+                    if action_blocked
+                    else "Idle — Waiting for operator input"
+                )
+                _persist_workstation_state()
+                return
+
         nvidia_key = os.environ.get("NVIDIA_API_KEY")
         nvidia_url = os.environ.get("NVIDIA_BASE_URL", "https://integrate.api.nvidia.com/v1")
         if not nvidia_key:
@@ -1175,6 +1374,7 @@ async def _run_prompt_reasoning(tenant_id: str, session_id: str, prompt: str) ->
                 "content": unavailable_msg,
             })
         else:
+            llm_configured = True
             llm = CustomLLMProvider(
                 name="nvidia",
                 base_url=nvidia_url,
@@ -1185,8 +1385,11 @@ async def _run_prompt_reasoning(tenant_id: str, session_id: str, prompt: str) ->
                 "You are SONIC-REDA, an elite Autonomous AI Engineer & Security Researcher. "
                 "You have access to a live Daytona Linux workstation, bash terminal, and git repository. "
                 "Respond concisely and helpfully to the operator's prompt or question. Give clear engineering insights. "
-                "Use only the live observation supplied in the request; never claim a GUI action was performed unless "
-                "an explicit tool result is present."
+                "Use only the live observation and REAL action results supplied in the request; never claim a command, "
+                "install, GUI action, or terminal output happened unless an explicit real tool result is present. "
+                "If no real action result exists, say that execution was blocked or ask for the missing information. "
+                "For an informational question or pasted research/web text, answer or ask what the operator wants "
+                "analyzed; do not call it blocked merely because the desktop observation is unavailable."
             )
             messages = [
                 Message(role=MessageRole.SYSTEM, content=system_prompt),
@@ -1203,14 +1406,18 @@ async def _run_prompt_reasoning(tenant_id: str, session_id: str, prompt: str) ->
                 state["thought_summary"] = llm_res.content
                 state["worklog"].append({
                     "id": f"wl-{len(state['worklog']) + 1}",
-                    "type": "thought",
-                    "title": "AI Task Analysis",
+                    "type": "response",
+                    "title": "SONIC Response",
                     "content": llm_res.content,
                 })
             else:
                 raise RuntimeError("LLM returned no reasoning content")
     except Exception as llm_err:
         logger.warning("workstation_llm_reasoning_failed", error=str(llm_err))
+        state["thought_summary"] = (
+            "LLM provider is configured but unreachable or returned an error. "
+            "No model-driven action was performed. Check NVIDIA_BASE_URL/network connectivity."
+        )
         state["worklog"].append({
             "id": f"wl-{len(state['worklog']) + 1}",
             "type": "error",
@@ -1218,12 +1425,14 @@ async def _run_prompt_reasoning(tenant_id: str, session_id: str, prompt: str) ->
             "content": f"LLM reasoning failed; no autonomous execution was performed: {llm_err}",
         })
 
-    state["status"] = "IDLE" if (reasoning_available or desktop_cycle_completed) else "BLOCKED"
+    state["status"] = "IDLE" if (not action_blocked and (reasoning_available or desktop_cycle_completed)) else "BLOCKED"
     state["current_action"] = (
         "Idle — Ready for next task"
         if reasoning_available
         else "Agent desktop cycle complete — LLM reasoning unavailable"
         if desktop_cycle_completed
+        else "Execution blocked — LLM provider unreachable"
+        if llm_configured
         else "Execution blocked — configure a live LLM provider"
     )
     _persist_workstation_state()

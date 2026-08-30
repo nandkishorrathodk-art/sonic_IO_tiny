@@ -135,14 +135,10 @@ Be thorough but realistic. Include at least 10-15 assets."""
         except Exception as e:
             logger.warning("recon_parse_failed", error=str(e))
 
-        # Fallback: basic asset list
-        return [
-            {"type": "domain", "value": target, "name": "Primary target", "metadata": {}},
-            {"type": "subdomain", "value": f"www.{target}", "name": "WWW", "metadata": {}},
-            {"type": "subdomain", "value": f"api.{target}", "name": "API", "metadata": {}},
-            {"type": "subdomain", "value": f"admin.{target}", "name": "Admin panel", "metadata": {}},
-            {"type": "technology", "value": "unknown", "name": "Web server", "metadata": {}},
-        ]
+        # Never invent an attack surface when the model response is missing or
+        # malformed. A real recon adapter must supply observed assets.
+        logger.warning("recon_assets_unavailable", target=target)
+        return []
 
     async def enumerate_subdomains(self, domain: str, engagement_id: str) -> list[dict]:
         """Focused subdomain enumeration task."""

@@ -16,6 +16,7 @@ import asyncio
 import os
 from datetime import datetime, timezone
 from typing import Any, Optional
+from urllib.parse import urlparse
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
@@ -29,6 +30,7 @@ from sonic.computer.daytona_computer import DaytonaComputerProvider
 from sonic.computer.models import ComputerWorkspaceType, ComputerProfile
 from sonic.meta.experiment import get_experiment_manager
 from sonic.observability.metrics import get_metrics
+from sonic.safety.scope import get_scope_checker
 
 logger = get_logger(__name__)
 
@@ -44,7 +46,9 @@ _system_state: dict[str, Any] = {
     "findings": [],
     "assets": [],
     "engagements": [],
-    "active_scan": None,
+    # Scans are keyed by tenant; a single global slot would let one user's
+    # scan overwrite another user's status and leak target metadata.
+    "active_scans": {},
 }
 
 
@@ -104,10 +108,19 @@ async def get_live_stats(user: User = Depends(require_auth)):
     """Live dashboard stats scoped to current user/tenant."""
     metrics = get_metrics()
     memory = get_memory_sync()
-    mem_stats = await memory.get_stats() if hasattr(memory, 'get_stats') else {}
+    if hasattr(memory, "get_stats"):
+        try:
+            mem_stats = await memory.get_stats(tenant_id=user.email)
+        except TypeError:
+            # Backends that cannot apply tenant filtering must not contribute
+            # global counts to a tenant-scoped response.
+            mem_stats = {}
+    else:
+        mem_stats = {}
 
-    findings = [f for f in _system_state["findings"] if f.get("tenant_id", "default") in (user.email, "default")]
-    assets = [a for a in _system_state["assets"] if a.get("tenant_id", "default") in (user.email, "default")]
+    findings = [f for f in _system_state["findings"] if f.get("tenant_id") == user.email]
+    assets = [a for a in _system_state["assets"] if a.get("tenant_id") == user.email]
+    agents = [a for a in _system_state["agents"] if a.get("tenant_id") == user.email]
 
     critical = sum(1 for f in findings if f.get("severity", "").upper() == "CRITICAL")
     high = sum(1 for f in findings if f.get("severity", "").upper() == "HIGH")
@@ -115,15 +128,15 @@ async def get_live_stats(user: User = Depends(require_auth)):
 
     return {
         "assets_mapped": len(assets),
-        "active_hypotheses": mem_stats.get("hypothesiss", 0),
+        "active_hypotheses": mem_stats.get("hypotheses", mem_stats.get("hypothesiss", 0)),
         "verified_findings": len(findings),
         "critical_count": critical,
         "high_count": high,
         "medium_count": medium,
         "evidence_rate": "100%" if findings else "N/A",
         "false_positives": 0,
-        "active_agents": len([a for a in _system_state["agents"] if a["status"] in ("running", "active")]),
-        "total_agents": len(_system_state["agents"]),
+        "active_agents": len([a for a in agents if a["status"] in ("running", "active")]),
+        "total_agents": len(agents),
         "llm_requests": metrics.llm_requests_total,
         "graph_nodes": mem_stats.get("total_nodes", 0),
         "memory_backend": type(memory).__name__,
@@ -134,20 +147,20 @@ async def get_live_stats(user: User = Depends(require_auth)):
 @router.get("/agents")
 async def get_live_agents(user: User = Depends(require_auth)):
     """Live agent status scoped to tenant."""
-    return {"agents": _system_state["agents"]}
+    return {"agents": [a for a in _system_state["agents"] if a.get("tenant_id") == user.email]}
 
 
 @router.get("/findings")
 async def get_live_findings(user: User = Depends(require_auth)):
     """Live findings feed scoped to tenant."""
-    findings = [f for f in _system_state["findings"] if f.get("tenant_id", "default") in (user.email, "default")]
+    findings = [f for f in _system_state["findings"] if f.get("tenant_id") == user.email]
     return {"findings": findings}
 
 
 @router.get("/assets")
 async def get_live_assets(user: User = Depends(require_auth)):
     """Live discovered assets scoped to tenant."""
-    assets = [a for a in _system_state["assets"] if a.get("tenant_id", "default") in (user.email, "default")]
+    assets = [a for a in _system_state["assets"] if a.get("tenant_id") == user.email]
     return {"assets": assets}
 
 
@@ -164,6 +177,12 @@ async def launch_scan(request: ScanRequest, user: User = Depends(require_auth)):
     """
     from sonic.swarm import get_swarm_runner
 
+    target_host = urlparse(request.target if "://" in request.target else f"//{request.target}").hostname or ""
+    if not target_host or not request.scope:
+        raise HTTPException(status_code=400, detail="Target and explicit engagement scope are required")
+    if not get_scope_checker().is_target_in_scope(target_host, request.scope):
+        raise HTTPException(status_code=403, detail="Target is outside the supplied engagement scope")
+
     runner = get_swarm_runner()
 
     # Register tenant-scoped agent activities
@@ -177,15 +196,19 @@ async def launch_scan(request: ScanRequest, user: User = Depends(require_auth)):
     for name, atype, task in agent_names:
         register_agent(name, atype, "Configured LLM", "active", task, tenant_id=user.email)
 
-    _system_state["active_scan"] = {
+    scan = {
         "target": request.target,
         "started_at": datetime.now(timezone.utc).isoformat(),
         "launched_by": user.email,
         "status": "running",
     }
+    _system_state["active_scans"][user.email] = scan
 
     try:
-        results = await runner.run_engagement(request.target, request.scope)
+        # Keep the legacy synchronous pipeline until the director worker is
+        # attached; explicitly passing the tenant prevents accidental global
+        # state if the runner changes its default mode.
+        results = await runner.run_engagement(request.target, request.scope, tenant_id=user.email, use_director=False)
 
         for f in results.get("findings", []):
             record_finding(f, tenant_id=user.email)
@@ -196,8 +219,8 @@ async def launch_scan(request: ScanRequest, user: User = Depends(require_auth)):
         for name, atype, _ in agent_names:
             register_agent(name, atype, "Configured LLM", "idle", "Scan completed", tenant_id=user.email)
 
-        _system_state["active_scan"]["status"] = "completed"
-        _system_state["active_scan"]["completed_at"] = datetime.now(timezone.utc).isoformat()
+        scan["status"] = "completed"
+        scan["completed_at"] = datetime.now(timezone.utc).isoformat()
 
         return {
             "status": "completed",
@@ -209,7 +232,7 @@ async def launch_scan(request: ScanRequest, user: User = Depends(require_auth)):
 
     except Exception as e:
         logger.error("scan_failed", target=request.target, user=user.email, error=str(e))
-        _system_state["active_scan"]["status"] = "failed"
+        scan["status"] = "failed"
         for name, atype, _ in agent_names:
             register_agent(name, atype, "Configured LLM", "error", str(e)[:100], tenant_id=user.email)
         return {"status": "error", "error": str(e)}
@@ -218,7 +241,7 @@ async def launch_scan(request: ScanRequest, user: User = Depends(require_auth)):
 @router.get("/scan/status")
 async def get_scan_status(user: User = Depends(require_auth)):
     """Get current scan status."""
-    return {"scan": _system_state.get("active_scan")}
+    return {"scan": _system_state.get("active_scans", {}).get(user.email)}
 
 
 # ============================================
@@ -234,6 +257,11 @@ async def get_live_graph(user: User = Depends(require_auth)):
         raw_rels = memory._relationships
         nodes = []
         for uid, data in raw_nodes.items():
+            # Memory records are tenant-owned. Older records without an
+            # explicit tenant marker are intentionally omitted rather than
+            # exposed across users.
+            if data.get("tenant_id") != user.email:
+                continue
             label = data.get("_label", "Unknown")
             nodes.append({
                 "id": uid,
@@ -241,19 +269,21 @@ async def get_live_graph(user: User = Depends(require_auth)):
                 "type": label,
                 "properties": {k: v for k, v in data.items() if not k.startswith("_")},
             })
+        node_ids = {node["id"] for node in nodes}
         edges = [
             {"source": r["from_uid"], "target": r["to_uid"], "type": r["type"]}
             for r in raw_rels
+            if r.get("from_uid") in node_ids and r.get("to_uid") in node_ids
         ]
-        return {"nodes": nodes, "edges": edges, "backend": "InMemoryGraph"}
+        return {"nodes": nodes, "edges": edges, "backend": "InMemoryGraph", "tenant_id": user.email}
     else:
-        return {"nodes": [], "edges": [], "backend": "Neo4j"}
+        return {"nodes": [], "edges": [], "backend": "Neo4j", "tenant_id": user.email}
 
 
 @router.get("/evidence")
 async def get_live_evidence(user: User = Depends(require_auth)):
     """Retrieve full verified evidence packages."""
-    findings = [f for f in _system_state["findings"] if f.get("tenant_id", "default") in (user.email, "default")]
+    findings = [f for f in _system_state["findings"] if f.get("tenant_id") == user.email]
     return {
         "findings": findings,
         "count": len(findings),

@@ -51,32 +51,10 @@ class ReproductionEngine:
             tenant_id=finding.tenant_id,
         )
 
-        # 1. Fallback reproduction evaluation if no live container provider is injected
+        # 1. No provider means no execution. Never manufacture an HTTP response
+        # or evidence item when a live isolated runtime is unavailable.
         if not self.provider:
-            if plan.poc_command or plan.steps:
-                target_host = plan.target or "target.local"
-                expected_token = plan.expected_result or "access_token_verified"
-                output_payload = (
-                    f"HTTP/1.1 200 OK\r\n"
-                    f"Host: {target_host}\r\n"
-                    f"Content-Type: application/json\r\n\r\n"
-                    f'{{"status": "reproduced", "{expected_token}": "eyJhbGciOiJub25lIn0...", "target": "{target_host}"}}'
-                )
-                ev_item = EvidenceItem(
-                    tenant_id=finding.tenant_id,
-                    engagement_id=finding.engagement_id,
-                    finding_id=finding.id,
-                    source_type="reproduction_sandbox",
-                    source_agent="reproduction-engine",
-                    tool_name="curl",
-                    artifact_type=ArtifactType.HTTP_RESPONSE,
-                    raw_content=output_payload,
-                )
-                ev_item.compute_and_set_hash()
-                finding.add_evidence(ev_item)
-                return True, output_payload, ev_item
-            else:
-                return False, "Reproduction failed: Empty PoC or steps", None
+            return False, "Reproduction blocked: no isolated execution provider is attached", None
 
         # 2. Live ComputeProvider Execution (FAIL-CLOSED)
         cmd = plan.poc_command or (plan.steps[0] if plan.steps else "echo 'No PoC'")

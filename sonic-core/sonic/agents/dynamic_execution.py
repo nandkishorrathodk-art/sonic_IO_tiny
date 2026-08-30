@@ -92,7 +92,8 @@ Return test plans as JSON arrays of test cases."""
             target, test_type, hypotheses, assets
         )
 
-        # Execute tests (simulated in MVP, real HTTP in Phase 2)
+        # Execute only with a real HTTP/sandbox adapter. Simulated responses
+        # are deliberately disabled because they can become false findings.
         results = []
         for test in test_cases:
             result = await self._execute_test(test, engagement_id)
@@ -197,46 +198,12 @@ Use safe, non-destructive payloads only."""
             return []
 
     async def _execute_test(self, test: dict, engagement_id: str) -> dict:
-        """
-        Execute a single test case.
-        MVP: Simulated via LLM reasoning.
-        Phase 2: Real HTTP requests via sandbox.
-        """
-        prompt = f"""Simulate executing this security test and predict the likely outcome:
-
-TEST: {json.dumps(test, indent=2)}
-
-Based on common web application behavior, would this test likely reveal a vulnerability?
-
-Return JSON:
-{{
-    "test_name": "{test.get('test_name', '')}",
-    "is_vulnerable": true/false,
-    "title": "finding title if vulnerable",
-    "vulnerability_class": "...",
-    "severity": "...",
-    "description": "what was found",
-    "poc": "step by step reproduction",
-    "impact": "what attacker can do",
-    "confidence": 0-100,
-    "request": "the exact request sent",
-    "response": "simulated response",
-    "reasoning": "why you think this is/isn't vulnerable"
-}}"""
-
-        response = await self.think(prompt, task_type="reasoning")
-        self.requests_sent += 1
-
-        try:
-            content = response.content
-            if "```json" in content:
-                content = content.split("```json")[1].split("```")[0]
-            elif "```" in content:
-                content = content.split("```")[1].split("```")[0]
-            return json.loads(content)
-        except Exception:
-            return {
-                "test_name": test.get("test_name", ""),
-                "is_vulnerable": False,
-                "reasoning": "Failed to parse test result",
-            }
+        """Execute a single test case using an attached real adapter."""
+        return {
+            "test_name": test.get("test_name", ""),
+            "is_vulnerable": False,
+            "status": "BLOCKED",
+            "request": "",
+            "response": "",
+            "reasoning": "Real HTTP execution adapter is not attached; simulated test results are disabled.",
+        }

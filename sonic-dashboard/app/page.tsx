@@ -9,6 +9,7 @@ import {
   FileCheck2,
   Dna,
   Compass,
+  PanelRightClose,
 } from "lucide-react";
 import { api } from "../lib/api";
 import { WorkstationState, SystemStatus, WorkstationTab, CommandResult } from "../types/workstation";
@@ -25,6 +26,7 @@ import { MissionView } from "../components/mission/MissionView";
 
 export default function SonicDevinWorkstation() {
   const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [rightPanelOpen, setRightPanelOpen] = useState(true);
   const [activeTab, setActiveTab] = useState<WorkstationTab>("desktop");
   const [connectionStatus, setConnectionStatus] = useState<SystemStatus>("CONNECTING");
   // Keep the landing view isolated from the legacy/default history. A fresh
@@ -72,6 +74,9 @@ export default function SonicDevinWorkstation() {
   const handleNewSession = async () => {
     const newSessionId = `mission-${Math.random().toString(36).substring(2, 7)}`;
     setSessionId(newSessionId);
+    setActiveFile("");
+    setFileContent([]);
+    setGitDiff("");
     setCommandLogs([]);
     await fetchWorkstationData(newSessionId);
   };
@@ -135,11 +140,26 @@ export default function SonicDevinWorkstation() {
       if (res?.state) {
         setWorkstationState(res.state);
       }
+
+      // The prompt endpoint queues background reasoning and returns before the
+      // model finishes. Keep this conversation in a working state until the
+      // backend publishes the real response or a fail-closed terminal result.
+      for (let attempt = 0; attempt < 90; attempt += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+        try {
+          const nextState = await api.getWorkstationState(sessionId);
+          setWorkstationState(nextState);
+          if (nextState?.status !== "RUNNING") break;
+        } catch {
+          // The existing five-second refresh remains responsible for recovery
+          // if a transient state poll fails.
+        }
+      }
       await fetchDiff();
       try {
         const sessions = await api.listSessions();
         if (sessions) setSessionList(sessions);
-      } catch {}
+      } catch { }
     } catch (err: any) {
       alert(`Execution error: ${err.message}`);
     } finally {
@@ -173,7 +193,7 @@ export default function SonicDevinWorkstation() {
   };
 
   return (
-    <div className="flex flex-col h-screen w-screen bg-[#0D0F12] text-[#E6EDF3] overflow-hidden font-sans select-none">
+    <div className="flex flex-col h-screen w-screen bg-[#0D0F12] text-[#E6EDF3] overflow-hidden font-sans">
       {/* Offline Alert Banner */}
       {connectionStatus === "OFFLINE" && (
         <OfflineBanner onRetry={() => fetchWorkstationData(sessionId)} message={errorMessage || undefined} />
@@ -189,6 +209,10 @@ export default function SonicDevinWorkstation() {
           currentSessionId={sessionId}
           onSelectSession={(id) => {
             setSessionId(id);
+            setActiveFile("");
+            setFileContent([]);
+            setGitDiff("");
+            setCommandLogs([]);
             fetchWorkstationData(id);
           }}
           onNewSession={handleNewSession}
@@ -210,30 +234,35 @@ export default function SonicDevinWorkstation() {
           {/* 2-Column Split Workspace */}
           <div className="flex-1 grid grid-cols-12 overflow-hidden">
             {/* Left Column: Worklog Execution Stream (Col 6) */}
-            <div className="col-span-6 border-r border-[#21262D] flex flex-col h-full bg-[#0D0F12] overflow-hidden">
+            <div className={`${rightPanelOpen ? "col-span-6" : "col-span-12"} border-r border-[#21262D] flex flex-col h-full bg-[#0D0F12] overflow-hidden`}>
               <WorklogFeed
                 worklog={workstationState?.worklog || []}
-                currentAction={workstationState?.worklog?.length ? workstationState.current_action : undefined}
+                currentAction={
+                  loading || workstationState?.status === "RUNNING"
+                    ? workstationState?.current_action
+                    : undefined
+                }
                 loading={loading}
                 onSendPrompt={handleSendPrompt}
                 onSelectFile={fetchFile}
                 sessionName={workstationState?.mission_name || ""}
                 gitBranch={workstationState?.git_branch || ""}
+                rightPanelOpen={rightPanelOpen}
+                onToggleRightPanel={() => setRightPanelOpen((open) => !open)}
               />
             </div>
 
             {/* Right Column: Dynamic Tab Surface (Col 6) */}
-            <div className="col-span-6 flex flex-col h-full bg-[#0D0F12] overflow-hidden">
+            {rightPanelOpen && <div className="col-span-6 flex flex-col h-full bg-[#0D0F12] overflow-hidden">
               {/* Tab Switcher Bar */}
               <div className="h-10 border-b border-[#21262D] bg-[#12151A] px-3 flex items-center justify-between text-xs">
-                <div className="flex items-center gap-1">
+                <div className="flex items-center gap-1 min-w-0">
                   <button
                     onClick={() => setActiveTab("desktop")}
-                    className={`px-3 py-1 rounded text-xs font-medium flex items-center gap-1.5 transition ${
-                      activeTab === "desktop"
+                    className={`px-3 py-1 rounded text-xs font-medium flex items-center gap-1.5 transition ${activeTab === "desktop"
                         ? "bg-[#21262D] text-white font-semibold"
                         : "text-[#8B949E] hover:text-white"
-                    }`}
+                      }`}
                   >
                     <Monitor className="w-3.5 h-3.5 text-[#3FB950]" />
                     <span>Computer</span>
@@ -241,11 +270,10 @@ export default function SonicDevinWorkstation() {
 
                   <button
                     onClick={() => setActiveTab("code")}
-                    className={`px-3 py-1 rounded text-xs font-medium flex items-center gap-1.5 transition ${
-                      activeTab === "code"
+                    className={`px-3 py-1 rounded text-xs font-medium flex items-center gap-1.5 transition ${activeTab === "code"
                         ? "bg-[#21262D] text-white font-semibold"
                         : "text-[#8B949E] hover:text-white"
-                    }`}
+                      }`}
                   >
                     <FileText className="w-3.5 h-3.5 text-[#58A6FF]" />
                     <span>Code</span>
@@ -256,22 +284,20 @@ export default function SonicDevinWorkstation() {
                       setActiveTab("changes");
                       fetchDiff();
                     }}
-                    className={`px-3 py-1 rounded text-xs font-medium flex items-center gap-1.5 transition ${
-                      activeTab === "changes"
+                    className={`px-3 py-1 rounded text-xs font-medium flex items-center gap-1.5 transition ${activeTab === "changes"
                         ? "bg-[#21262D] text-white font-semibold"
                         : "text-[#8B949E] hover:text-white"
-                    }`}
+                      }`}
                   >
                     <span>Changes</span>
                   </button>
 
                   <button
                     onClick={() => setActiveTab("research")}
-                    className={`px-3 py-1 rounded text-xs font-medium flex items-center gap-1.5 transition ${
-                      activeTab === "research"
+                    className={`px-3 py-1 rounded text-xs font-medium flex items-center gap-1.5 transition ${activeTab === "research"
                         ? "bg-[#21262D] text-white font-semibold"
                         : "text-[#8B949E] hover:text-white"
-                    }`}
+                      }`}
                   >
                     <Share2 className="w-3.5 h-3.5 text-purple-400" />
                     <span>Research</span>
@@ -279,11 +305,10 @@ export default function SonicDevinWorkstation() {
 
                   <button
                     onClick={() => setActiveTab("evidence")}
-                    className={`px-3 py-1 rounded text-xs font-medium flex items-center gap-1.5 transition ${
-                      activeTab === "evidence"
+                    className={`px-3 py-1 rounded text-xs font-medium flex items-center gap-1.5 transition ${activeTab === "evidence"
                         ? "bg-[#21262D] text-white font-semibold"
                         : "text-[#8B949E] hover:text-white"
-                    }`}
+                      }`}
                   >
                     <FileCheck2 className="w-3.5 h-3.5 text-emerald-400" />
                     <span>Evidence</span>
@@ -291,11 +316,10 @@ export default function SonicDevinWorkstation() {
 
                   <button
                     onClick={() => setActiveTab("evolution")}
-                    className={`px-3 py-1 rounded text-xs font-medium flex items-center gap-1.5 transition ${
-                      activeTab === "evolution"
+                    className={`px-3 py-1 rounded text-xs font-medium flex items-center gap-1.5 transition ${activeTab === "evolution"
                         ? "bg-[#21262D] text-white font-semibold"
                         : "text-[#8B949E] hover:text-white"
-                    }`}
+                      }`}
                   >
                     <Dna className="w-3.5 h-3.5 text-pink-400" />
                     <span>Evolution</span>
@@ -303,16 +327,24 @@ export default function SonicDevinWorkstation() {
 
                   <button
                     onClick={() => setActiveTab("mission")}
-                    className={`px-3 py-1 rounded text-xs font-medium flex items-center gap-1.5 transition ${
-                      activeTab === "mission"
+                    className={`px-3 py-1 rounded text-xs font-medium flex items-center gap-1.5 transition ${activeTab === "mission"
                         ? "bg-[#21262D] text-white font-semibold"
                         : "text-[#8B949E] hover:text-white"
-                    }`}
+                      }`}
                   >
                     <Compass className="w-3.5 h-3.5 text-cyan-400" />
                     <span>Mission</span>
                   </button>
                 </div>
+                <button
+                  type="button"
+                  onClick={() => setRightPanelOpen(false)}
+                  className="p-1 rounded text-[#8B949E] hover:text-white hover:bg-[#21262D] transition shrink-0"
+                  title="Hide Computer panel"
+                  aria-label="Hide Computer panel"
+                >
+                  <PanelRightClose className="w-4 h-4" />
+                </button>
               </div>
 
               {/* Tab Surface Body */}
@@ -348,13 +380,13 @@ export default function SonicDevinWorkstation() {
 
                 {activeTab === "research" && <ResearchView />}
 
-                {activeTab === "evidence" && <EvidenceView />}
+                {activeTab === "evidence" && <EvidenceView sessionId={sessionId} />}
 
-                {activeTab === "evolution" && <EvolutionView />}
+                {activeTab === "evolution" && <EvolutionView sessionId={sessionId} />}
 
-                {activeTab === "mission" && <MissionView workstationState={workstationState} />}
+                {activeTab === "mission" && <MissionView workstationState={workstationState} sessionId={sessionId} />}
               </div>
-            </div>
+            </div>}
           </div>
         </div>
       </div>

@@ -296,8 +296,7 @@ class ComputerUseAgent:
 
         # Recovery strategy 2: Restore workspace snapshot or re-verify file
         if failed_action_type == ComputerActionType.FILE_READ:
-            await self.computer.write_file(workspace_id, "/home/sonic/workspace/auth_controller.py", "# Default fallback auth")
-            return "Re-created missing target file in workspace"
+            return "Recovery blocked: the missing file must be restored from a real workspace snapshot or repository checkout"
 
         # Recovery strategy 3: Terminal PTY reset
         if failed_action_type == ComputerActionType.TERMINAL_EXEC:

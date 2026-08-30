@@ -97,7 +97,7 @@ class SwarmRunner:
             self.router.register_provider("custom", provider)
             logger.info("llm_provider_registered", model=self.llm_model)
         else:
-            logger.warning("no_llm_configured", note="Agents will use simulated responses")
+            logger.warning("no_llm_configured", note="Agent reasoning is unavailable until an LLM provider is configured")
 
         # 3. Safety
         self.scope_checker = ScopeChecker()

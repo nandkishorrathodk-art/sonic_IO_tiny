@@ -47,7 +47,7 @@ export function WorkstationSidebar({
     <aside
       className={`${
         sidebarOpen ? "w-[260px]" : "w-0"
-      } transition-all duration-200 ease-in-out border-r border-[#21262D] bg-[#12151A] flex flex-col flex-shrink-0 z-30 overflow-hidden select-none`}
+      } transition-all duration-200 ease-in-out border-r border-[#21262D] bg-[#12151A] flex flex-col flex-shrink-0 z-30 overflow-hidden`}
     >
       {/* Workspace Header */}
       <div className="p-3 border-b border-[#21262D] flex items-center justify-between">

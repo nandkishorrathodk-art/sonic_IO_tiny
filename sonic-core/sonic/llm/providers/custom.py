@@ -71,6 +71,8 @@ import time
 import uuid
 from typing import Any, AsyncIterator, Optional
 
+import httpx
+
 from sonic.logger import get_logger
 from sonic.llm.base import LLMProvider
 
@@ -92,6 +94,15 @@ from sonic.llm.schemas import (
 def _is_anthropic_endpoint(base_url: str) -> bool:
     """Check if this is an Anthropic Claude endpoint (needs different API format)."""
     return "anthropic.com" in base_url.lower()
+
+
+def _is_transport_error(error: Exception) -> bool:
+    """Identify SDK transport failures that are safe to retry with raw HTTPX."""
+    error_text = f"{type(error).__name__} {error}".lower()
+    return any(
+        marker in error_text
+        for marker in ("connection", "connecterror", "timeout", "ssl", "transport", "network")
+    )
 
 
 class CustomLLMProvider(LLMProvider):
@@ -263,7 +274,21 @@ class CustomLLMProvider(LLMProvider):
             if request.stop_sequences:
                 kwargs["stop"] = request.stop_sequences
 
-            response = await self._openai_client.chat.completions.create(**kwargs)
+            try:
+                response = await self._openai_client.chat.completions.create(**kwargs)
+            except Exception as sdk_error:
+                # The OpenAI SDK can fail at the Windows TLS/transport layer even
+                # when the same OpenAI-compatible endpoint is reachable via
+                # HTTPX. Retry only transport failures; API/auth errors must
+                # remain visible and must not be hidden by a second request.
+                if not _is_transport_error(sdk_error):
+                    raise
+                logger.warning(
+                    "provider_sdk_transport_failed_using_httpx",
+                    name=self.name,
+                    error=str(sdk_error),
+                )
+                return await self._complete_httpx_openai(model, messages, request, tools)
             choice = response.choices[0]
 
             # Extract tool calls

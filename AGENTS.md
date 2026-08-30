@@ -21,11 +21,15 @@ execution, Neo4j graph memory, multi-tenant RBAC.
 ## Testing
 - `python -m pytest sonic-core/tests/`
 - Security regression suite: `sonic-core/tests/test_p0_security_hardening.py`
-- Known pre-existing failures (NOT caused by recent security work):
-  - `test_phase2_compute_and_db.py` — needs `sqlalchemy` (not in pyproject dev deps).
-  - `test_phase7/*` — `test_reproduction_engine_simulation`, `test_synthetic_trust_mission_lifecycle`.
-  - `test_phase20_workstation_security_and_repair.py::test_workstation_command_executes_in_sandbox`
-    — expects a provisioned Daytona workspace; returns 409 without one.
+- Known pre-existing failures (environmental, NOT code bugs):
+  - `test_phase13/*` through `test_phase19/*` — require a live Docker daemon
+    (`DockerProvider` runs `docker`); not available in CI/this sandbox.
+  - `test_phase21_real_graphical_workstation.py::test_daytona_gui_action_dispatch`
+    — requires a live Daytona sandbox with a real X11 desktop + VS Code.
+  - `test_p0_security_hardening.py::test_secret_key_env_alias_populates_jwt_secret`
+    — fails only when a local `.env` sets `JWT_SECRET`/`SECRET_KEY` (the `.env`
+    wins over the test's `monkeypatch.setenv`). Remove/rename `.env` to verify;
+    this is test-isolation, not a code bug. `.env` is gitignored.
 - `get_settings()` is `@lru_cache`d — in tests that monkeypatch env vars, call
   `get_settings.cache_clear()` before and after.
 
@@ -81,18 +85,30 @@ Live-tested end-to-end (13/14 routes passed against a real Daytona sandbox):
 - ✅ target-sandbox provision (with scope.yaml-format scope_config) + command
 - ✅ /llm/chat via NVIDIA NIM (meta/llama-3.2-11b-vision-instruct works)
 
-Known bugs (confirmed live):
-- `status()` returns `ComputerState` (no `.status` field) but routes do
-  `.status.value` → AttributeError → status forced to "UNREACHABLE" for LIVE
-  sandboxes. Affects research-lab & target-sandbox status endpoints.
-- `destroy()` returns False (→ 502) when workspace not in in-memory
-  `self.workspaces` (e.g. after backend restart). No `client.get`/`delete`
-  fallback. Research-lab destroy fails when lab shares the env-attached sandbox.
-- No RBAC on workstation routes — `AUDITOR` can provision/destroy/exec.
-- `meta/codellama-70b` in models.yaml is 404/deprecated on NVIDIA NIM (EOL).
-  `meta/llama-3.2-11b/90b-vision-instruct` work.
+Known issues and resolutions (current state):
+- `status()` now normalizes `SandboxState` enum correctly via
+  `_normalize_sandbox_state()`; LIVE sandboxes report `RUNNING` instead of
+  `UNREACHABLE`. Resolved.
+- `destroy()` falls back to `client.get`/`delete` via `_resolve_sandbox` when
+  the workspace is absent from the in-memory map (e.g. after a backend
+  restart). Resolved.
+- Workstation RBAC tightened: all sensitive mutation routes
+  (provision/destroy/command/desktop-action/target-sandbox-command/file-write/
+  mission-start/prompt/session-delete/browser-open) now use `require_operator`,
+  so read-only `AUDITOR` roles are blocked (403). Resolved.
+- `meta/codellama-70b` removed from `configs/models.yaml` (404/EOL on NVIDIA
+  NIM); coding routing uses `deepseek-ai/deepseek-r1`. Resolved.
+- `/workstation/desktop/screenshot` and `/workstation/desktop/action` now
+  return a graceful `200 NO_DISPLAY` observation (instead of `409`) when no
+  workstation is provisioned. Resolved.
+- `/workstation/command` FAILS CLOSED with `503` (not `409`) when no
+  workstation is provisioned — the documented fail-closed contract. Resolved.
+- `/workstation/file` path-traversal guard now rejects with `403` (was `400`)
+  and is validated BEFORE the provisioning check, so traversal is blocked
+  regardless of sandbox state. Resolved.
 - Daytona sandboxes auto-stop (15m) / auto-archive (7d) — long test runs must
   set `auto_stop_interval` high or call `client.start()` before each op.
+  (Still applies; environmental.)
 
 LLM integration: `configs/models.yaml` has `nvidia` as default provider
 (`NVIDIA_API_KEY`, `NVIDIA_BASE_URL`→integrate.api.nvidia.com/v1). Routed via

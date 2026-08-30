@@ -29,6 +29,8 @@ dependencies = [
     # Database
     "neo4j>=5.25.0",
     "redis[hiredis]>=5.1.0",
+    "sqlalchemy>=2.0.0",
+    "aiosqlite>=0.20.0",
     
     # Utilities
     "structlog>=24.4.0",

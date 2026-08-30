@@ -131,9 +131,14 @@ def test_jwt_secret_allows_default_in_development():
 
 def test_secret_key_env_alias_populates_jwt_secret(monkeypatch):
     """SECRET_KEY env var (used by docker-compose.prod.yml) must populate jwt_secret."""
+    # Isolate alias resolution: clear the other jwt_secret aliases (settable from
+    # a local .env in dev/live-testing environments) so SECRET_KEY is the only
+    # source for jwt_secret, matching the docker-compose.env contract.
     monkeypatch.setenv("SECRET_KEY", "from-secret-key-env-var-" + "x" * 30)
     monkeypatch.setenv("APP_ENV", "production")
-    s = Settings()
+    monkeypatch.delenv("JWT_SECRET", raising=False)
+    monkeypatch.delenv("jwt_secret", raising=False)
+    s = Settings(_env_file=None)
     assert s.jwt_secret == "from-secret-key-env-var-" + "x" * 30
     ok, _ = s.validate_jwt_secret()
     assert ok is True

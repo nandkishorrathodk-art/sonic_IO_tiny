@@ -11,11 +11,44 @@ from sonic.evolution.models import (
 )
 from sonic.evolution.lab import EvolutionLab
 from sonic.evolution.comparator import BaselineComparator
+from sonic.sandbox.provider import ComputeProvider, ExecResult, WorkspaceState
+
+
+class _PassingComputeProvider(ComputeProvider):
+    """Simulated disposable sandbox where every staged command succeeds.
+
+    Lets the evolution-lab test exercise the real fail-closed pipeline
+    (which rejects candidates when no compute provider is attached) without a
+    live Docker daemon, instead of asserting a synthetic pass.
+    """
+
+    async def create_workspace(self, config):
+        return True
+
+    async def execute(self, workspace_id, command, cwd=None, env=None, timeout=120):
+        return ExecResult(command=command, exit_code=0, stdout="ok", stderr="")
+
+    async def read_file(self, workspace_id, path):
+        return b""
+
+    async def write_file(self, workspace_id, path, data):
+        return True
+
+    async def destroy_workspace(self, workspace_id):
+        return True
+
+    async def get_state(self, workspace_id):
+        return WorkspaceState.RUNNING
+
+
+def _detected_fixtures():
+    # One true-positive fixture: detected + expected vulnerable -> f1 = 1.0
+    return [{"id": "fx-1", "expected_vulnerable": True, "evaluator": lambda candidate: True}]
 
 
 def test_evolution_lab_candidate_run_success():
     async def _run():
-        lab = EvolutionLab(compute_provider=None)
+        lab = EvolutionLab(compute_provider=_PassingComputeProvider())
         candidate = EvolutionCandidate(
             hypothesis_id="hyp-01",
             parent_version="v1.0.0",
@@ -23,7 +56,7 @@ def test_evolution_lab_candidate_run_success():
             changes=[{"target": "agent_strategies", "diff": "+ add_rule"}],
         )
 
-        pipeline_res, metrics = await lab.run_candidate_pipeline(candidate)
+        pipeline_res, metrics = await lab.run_candidate_pipeline(candidate, ground_truth_fixtures=_detected_fixtures())
         assert pipeline_res.passed_all_critical is True
         assert pipeline_res.syntax_passed is True
         assert pipeline_res.security_tests_passed is True
@@ -36,7 +69,7 @@ def test_evolution_lab_candidate_run_success():
 
 def test_evolution_lab_security_failure_rejection():
     async def _run():
-        lab = EvolutionLab(compute_provider=None)
+        lab = EvolutionLab(compute_provider=_PassingComputeProvider())
         candidate = EvolutionCandidate(
             hypothesis_id="hyp-02",
             parent_version="v1.0.0",

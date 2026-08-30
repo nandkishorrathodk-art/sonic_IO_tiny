@@ -422,11 +422,8 @@ class DaytonaComputerProvider(ComputerProvider):
             try:
                 cu = sandbox.computer_use
                 if action_type in [GUIActionType.CLICK, GUIActionType.DOUBLE_CLICK]:
-                    await cu.mouse.move(action.x, action.y)
-                    await cu.mouse.click(button="left")
-                    if action_type == GUIActionType.DOUBLE_CLICK:
-                        await asyncio.sleep(0.08)
-                        await cu.mouse.click(button="left")
+                    # SDK AsyncMouse.click(x, y, button, double) — positional x, y required
+                    await cu.mouse.click(action.x, action.y, button="left", double=(action_type == GUIActionType.DOUBLE_CLICK))
 
                 elif action_type == GUIActionType.MOVE:
                     await cu.mouse.move(action.x, action.y)
@@ -439,9 +436,11 @@ class DaytonaComputerProvider(ComputerProvider):
 
                 elif action_type == GUIActionType.OPEN_APP and action.app_name:
                     self._active_windows[workspace_id] = action.app_name
-                    # Launch the app on DISPLAY :99 via process exec
+                    # Launch the app on the computer_use Xvfb display (:0) via process exec.
+                    # app_name may include args (e.g. 'chromium --no-sandbox URL'), so run
+                    # via the shell to preserve them rather than shlex.quote-ing the whole string.
                     try:
-                        await sandbox.process.exec(f"DISPLAY=:99 {shlex.quote(action.app_name)} &")
+                        await sandbox.process.exec(f"DISPLAY=:0 {action.app_name} &")
                     except Exception:
                         pass
 
@@ -457,6 +456,7 @@ class DaytonaComputerProvider(ComputerProvider):
         if action.app_name:
             self._active_windows[workspace_id] = action.app_name
 
+        ws = self.workspaces.get(workspace_id)
         self._record_audit(
             session_id=ws.engagement_id if ws else "unknown",
             workspace_id=workspace_id,

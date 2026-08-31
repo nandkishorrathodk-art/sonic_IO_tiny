@@ -248,6 +248,23 @@ class DaytonaComputerProvider(ComputerProvider):
                         return sandbox
                 except Exception as e:
                     logger.warning("daytona_resolve_sandbox_failed", target_id=target_id, error=str(e))
+                    # Auto-heal: If sandbox was deleted/expired on Daytona Cloud, auto-provision a fresh one
+                    try:
+                        logger.info("daytona_auto_healing_provisioning_fresh_sandbox")
+                        sandbox = await client.create()
+                        if sandbox:
+                            if hasattr(sandbox, "computer_use"):
+                                try:
+                                    await sandbox.computer_use.start()
+                                except Exception:
+                                    pass
+                            self._sandboxes[sandbox.id] = sandbox
+                            if workspace_id:
+                                self._sandboxes[workspace_id] = sandbox
+                            os.environ["DAYTONA_SANDBOX_ID"] = sandbox.id
+                            return sandbox
+                    except Exception as heal_err:
+                        logger.error("daytona_auto_heal_failed", error=str(heal_err))
         return None
 
     # -------------------------------------------------------------

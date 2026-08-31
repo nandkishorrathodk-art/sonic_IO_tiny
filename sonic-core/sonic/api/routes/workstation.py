@@ -1485,7 +1485,21 @@ async def _run_autonomous_desktop_loop(
     lower = prompt.lower()
     observations: list[str] = []
 
-    # 1. Application / package installation
+    # 1. Window & Process Closing
+    if any(k in lower for k in ("close terminal", "kill terminal", "exit terminal", "close your terminal", "close window", "band karo", "close app", "close browser")):
+        if any(b in lower for b in ("browser", "chromium", "chrome")):
+            kill_cmd = "pkill -9 chromium || pkill -9 chromium-browse || true"
+            window_name = "Chromium Browser"
+        else:
+            kill_cmd = "pkill -9 xfce4-terminal || killall xfce4-terminal || true"
+            window_name = "Terminal"
+        res = await computer.terminal(desktop_id, kill_cmd, timeout=10, actor=tenant_id)
+        state["desktop"]["active_window"] = "None"
+        observations.append(f"Closed {window_name} on display :99 via `{kill_cmd}` (exit={res.exit_code}).")
+        _append_worklog(state, "action", f"Closed {window_name}", f"Agent executed `{kill_cmd}` to close the active application on Daytona Graphical Desktop.")
+        return observations, None, False
+
+    # 2. Application / package installation
     if "install" in lower:
         package = _extract_install_package(prompt)
         if package:
@@ -1515,7 +1529,7 @@ async def _run_autonomous_desktop_loop(
                 return observations, f"The real Daytona package installation failed for `{package}`. See the terminal result above; no success was claimed.", True
             return observations, None, False
 
-    # 2. Explicit terminal command execution
+    # 3. Explicit terminal command execution
     command = _extract_terminal_command(prompt)
     if command:
         risk = get_scope_checker().classify_command_risk(command)
@@ -1534,9 +1548,9 @@ async def _run_autonomous_desktop_loop(
         _append_worklog(state, "action" if result.exit_code == 0 else "error", "Terminal Command Executed", f"`{command}`\nReal Daytona result:\n{output or '(no output)'}")
         return observations, None, False
 
-    # 3. Web Browsing on Desktop
+    # 4. Web Browsing on Desktop
     app_name, target_url = _detect_requested_app(prompt)
-    if app_name == "chromium" and not any(k in lower for k in ("bug", "recon", "scan", "rce", "exploit")):
+    if app_name == "chromium" and not any(k in lower for k in ("bug", "recon", "scan", "rce", "exploit", "pentest", "vulnerab")):
         target_url = target_url or "https://www.google.com"
 
         # Launch GUI browser in X11 graphical desktop
@@ -1562,48 +1576,71 @@ async def _run_autonomous_desktop_loop(
         observations.append(f"Desktop GUI: Chromium browser launched on display :99 pointing to {target_url}.")
         return observations, None, False
 
-    # 4. Security Recon / Bug Hunting / Target Analysis
+    # 5. Autonomous Multi-Phase Security Recon & Bug Hunting Loop
     target = _extract_target_url_or_domain(prompt, state)
-    is_security_recon = any(k in lower for k in ("bug", "recon", "scan", "test", "check", "try", "karo", "dhundo", "bounty", "vulnerability", "audit", "opensea", "rce", "xss", "sqli"))
+    is_security_recon = any(k in lower for k in ("bug", "recon", "scan", "test", "check", "try", "karo", "dhundo", "bounty", "vulnerability", "audit", "opensea", "rce", "xss", "sqli", "pentest"))
 
     if is_security_recon:
-        # Step A: Inspect sandbox system environment
+        # Step A: Sandbox Environment Verification
         env_cmd = "whoami; pwd; uname -a"
         env_res = await computer.terminal(desktop_id, env_cmd, timeout=30, actor=tenant_id)
         env_out = (env_res.stdout + ("\n" + env_res.stderr if env_res.stderr else "")).strip()
         observations.append(f"Workstation Sandbox Environment:\n{env_out}")
         _append_worklog(state, "action", "Sandbox Environment Verified", f"`{env_cmd}`\n{env_out}")
 
-        # Step B: If target domain found, run targeted safe recon
+        # Step B: Multi-Phase Security Reconnaissance
         if target:
             target_clean = re.sub(r"^https?://", "", target).strip("/")
             target_clean = re.sub(r"[^a-zA-Z0-9.:-]", "", target_clean)
             if target_clean:
                 target_url = shlex.quote(f"https://{target_clean}")
-                recon_cmds = [
+                recon_steps = [
                     (
-                        f"HTTP Headers Recon ({target_clean})",
+                        f"Phase 1: DNS & Infrastructure ({target_clean})",
+                        f"dig +short A {target_clean} && dig +short CNAME {target_clean}",
+                    ),
+                    (
+                        f"Phase 2: Port & Service Discovery ({target_clean})",
+                        f"nmap -sV -Pn -p 80,443 --open --max-retries 1 {target_clean} 2>/dev/null || true",
+                    ),
+                    (
+                        f"Phase 3: HTTP Security Headers ({target_clean})",
                         f"curl -s -I -L --max-time 10 {target_url} | head -n 35",
                     ),
                     (
-                        f"Robots & Endpoints ({target_clean})",
-                        f"curl -s --max-time 10 {shlex.quote(f'https://{target_clean}/robots.txt')} | head -n 35",
+                        f"Phase 4: CORS & Method Probe ({target_clean})",
+                        f"curl -s -I -X OPTIONS -H \"Origin: https://attacker.com\" --max-time 10 {target_url} | head -n 25",
                     ),
                     (
-                        f"HTTP Methods & CORS ({target_clean})",
-                        f"curl -s -I -X OPTIONS --max-time 10 {target_url} | head -n 25",
-                    ),
-                    (
-                        f"Security Policy ({target_clean})",
-                        f"curl -s -I --max-time 10 {shlex.quote(f'https://{target_clean}/.well-known/security.txt')} 2>/dev/null | head -n 25",
+                        f"Phase 5: Security Policy & Endpoints ({target_clean})",
+                        f"curl -s -I --max-time 10 {shlex.quote(f'https://{target_clean}/.well-known/security.txt')} 2>/dev/null | head -n 20",
                     ),
                 ]
-                for title, cmd in recon_cmds:
-                    res = await computer.terminal(desktop_id, cmd, timeout=30, actor=tenant_id)
+                for title, cmd in recon_steps:
+                    res = await computer.terminal(desktop_id, cmd, timeout=40, actor=tenant_id)
                     out = (res.stdout + ("\n" + res.stderr if res.stderr else "")).strip()
                     if out:
                         observations.append(f"{title} [`{cmd}`]: exit={res.exit_code}\n{out[:4000]}")
                         _append_worklog(state, "action", title, f"`{cmd}`\nReal Daytona output:\n{out[:4000]}")
+                        # Auto-record evidence into state
+                        ev_payload = {
+                            "tool": title,
+                            "target": target_clean,
+                            "command": cmd,
+                            "exit_code": res.exit_code,
+                            "output": out[:4000],
+                        }
+                        ev_digest = hashlib.sha256(json.dumps(ev_payload, sort_keys=True).encode("utf-8")).hexdigest()
+                        state.setdefault("evidence", []).append({
+                            "id": f"ev-{uuid.uuid4().hex[:8]}",
+                            "title": title,
+                            "target": target_clean,
+                            "severity": "INFORMATIONAL",
+                            "verified": True,
+                            "sha256": ev_digest,
+                            "output": out[:4000],
+                            "captured_at": _timestamp(),
+                        })
         else:
             # General workspace inspection
             ws_cmd = "ls -la /home/daytona 2>/dev/null || ls -la"
@@ -1614,7 +1651,7 @@ async def _run_autonomous_desktop_loop(
 
         return observations, None, False
 
-    # 5. General GUI Application Launch (Terminal, Editor, Files)
+    # 6. General GUI Application Launch (Terminal, Editor, Files)
     detected_app, app_args = _detect_requested_app(prompt)
     if detected_app:
         launch_cmd = f"DISPLAY=:99 {detected_app} {app_args} >/dev/null 2>&1 &"
@@ -1632,7 +1669,7 @@ async def _run_autonomous_desktop_loop(
         _append_worklog(state, "action", f"Opened {detected_app}", f"Agent opened `{detected_app}` on the Daytona Linux graphical desktop.")
         return observations, None, False
 
-    # 6. General workspace inspection
+    # 7. General workspace inspection
     if any(term in lower for term in ("inspect", "list files", "show files", "workspace")):
         for command in ("pwd", "ls -la /home/daytona 2>/dev/null || ls -la", "git -C /home/sonic/workspace status --short 2>/dev/null || true"):
             result = await computer.terminal(desktop_id, command, timeout=60, actor=tenant_id)

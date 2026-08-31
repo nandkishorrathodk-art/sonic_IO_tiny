@@ -1231,17 +1231,28 @@ def _extract_target_url_or_domain(prompt: str, state: dict[str, Any] | None = No
     # Match domain names (e.g. opensea.io, api.example.com) or full URLs
     url_match = re.search(r"https?://([a-zA-Z0-9.-]+\.[a-zA-Z]{2,})(?:[^\s]*)", prompt)
     if url_match:
-        return url_match.group(1).lower()
+        target = url_match.group(1).lower()
+        if state is not None:
+            state["active_target"] = target
+        return target
     domain_match = re.search(r"\b([a-zA-Z0-9-]+\.(?:io|com|org|net|app|co|dev|xyz|ai|me))\b", prompt, re.IGNORECASE)
     if domain_match:
-        return domain_match.group(1).lower()
+        target = domain_match.group(1).lower()
+        if state is not None:
+            state["active_target"] = target
+        return target
+    # Check session state active target
+    if state and state.get("active_target"):
+        return state["active_target"]
     # Check recent worklog context for mentioned targets if available
     if state and "worklog" in state:
-        for item in reversed(state["worklog"][-6:]):
+        for item in reversed(state["worklog"][-10:]):
             content = str(item.get("content", ""))
             sub_match = re.search(r"\b([a-zA-Z0-9-]+\.(?:io|com|org|net|app|co|dev|xyz|ai|me))\b", content, re.IGNORECASE)
             if sub_match:
-                return sub_match.group(1).lower()
+                target = sub_match.group(1).lower()
+                state["active_target"] = target
+                return target
     return ""
 
 
@@ -1564,10 +1575,10 @@ async def _run_prompt_reasoning(tenant_id: str, session_id: str, prompt: str) ->
                 "You are SONIC-REDA, an elite Autonomous AI Engineer & Security Researcher. "
                 "You have real-time live execution access to the Daytona Linux workstation and bash terminal.\n\n"
                 "YOUR CORE BEHAVIOR:\n"
-                "1. ACT PROACTIVELY: When the operator gives a task (recon, bug hunting, testing, analysis, command execution), analyze the real sandbox execution results provided in context.\n"
-                "2. PROVIDE SPECIFIC TECHNICAL FINDINGS: Break down HTTP headers, technologies, exposed endpoints, security headers, potential vulnerability hypotheses (e.g. CORS, CSP, XSS, Broken Links, API flaws, Smart Contract interfaces), and attack surface.\n"
-                "3. CONCRETE NEXT STEPS: Always give clear, actionable next steps or commands to run in the workstation.\n"
-                "4. LANGUAGE: Always respond in clear, professional, concise English. If the operator speaks in Hindi, Hinglish, or another language, understand the intent fully and respond exclusively in English.\n"
+                "1. ACT PROACTIVELY: Analyze the target and real sandbox execution results provided in context.\n"
+                "2. TARGET-FOCUSED FINDINGS: When evaluating a web target (such as opensea.io) for bugs or vulnerability classes (such as RCE, Broken Links, CORS, API flaws, Smart Contract integration), assess the actual attack surface from the headers, endpoints, and architecture. Explain why direct server-side RCE on modern CDN/WAF-fronted edge architectures is rare and focus on realistic high-impact targets in scope (e.g., API endpoints, MCP servers, smart contract logic, client SDKs, subdomains).\n"
+                "3. AUTONOMOUS AGENT ROLE: Do NOT tell the operator to manually run basic terminal commands on their machine. You are the AI researcher executing actions on their behalf in the Daytona sandbox.\n"
+                "4. LANGUAGE: Always respond in clear, professional, concise English.\n"
                 "5. GROUNDED IN REALITY: Ground your analysis strictly in the real Daytona terminal output provided."
             )
             messages = [

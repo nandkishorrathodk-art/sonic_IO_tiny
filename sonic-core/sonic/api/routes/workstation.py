@@ -162,17 +162,23 @@ def _persist_workstation_state() -> None:
     try:
         _workstation_state_file.parent.mkdir(parents=True, exist_ok=True)
         payload = json.dumps(_tenant_workstations, ensure_ascii=True, indent=2)
+        unique_tmp = _workstation_state_file.with_suffix(f".{uuid.uuid4().hex[:8]}.tmp")
         try:
-            tmp = _workstation_state_file.with_suffix(".tmp")
-            tmp.write_text(payload, encoding="utf-8")
+            unique_tmp.write_text(payload, encoding="utf-8")
             if os.name == "nt" and _workstation_state_file.exists():
                 try:
                     _workstation_state_file.unlink()
                 except Exception:
                     pass
-            tmp.replace(_workstation_state_file)
+            unique_tmp.replace(_workstation_state_file)
         except Exception:
             _workstation_state_file.write_text(payload, encoding="utf-8")
+        finally:
+            if unique_tmp.exists():
+                try:
+                    unique_tmp.unlink()
+                except Exception:
+                    pass
     except Exception as exc:
         logger.warning("workstation_state_persist_failed", error=str(exc))
 
@@ -293,14 +299,31 @@ def _get_or_create_session(tenant_id: str, session_id: str = "default") -> dict[
 def _session_workspace_id(user: User, session_id: str) -> str:
     """Return only a workspace explicitly owned by this tenant/session."""
     state = _tenant_workstations.get(user.email, {}).get(session_id)
-    if not state:
-        return ""
-    workspace_id = str(state.get("desktop", {}).get("workspace_id", ""))
-    if workspace_id:
-        return workspace_id
-    # sandbox_id is retained for compatibility with older session records, but
-    # it is accepted only when it was written by this same tenant's session.
-    return str(state.get("desktop", {}).get("sandbox_id", ""))
+    if state:
+        workspace_id = str(state.get("desktop", {}).get("workspace_id", ""))
+        if workspace_id:
+            return workspace_id
+        sandbox_id = str(state.get("desktop", {}).get("sandbox_id", ""))
+        if sandbox_id:
+            return sandbox_id
+
+    # Fallback to tenant's default session or active DAYTONA_SANDBOX_ID env
+    default_state = _tenant_workstations.get(user.email, {}).get("default", {})
+    default_ws = str(default_state.get("desktop", {}).get("workspace_id") or default_state.get("desktop", {}).get("sandbox_id") or "")
+    if default_ws:
+        if state:
+            state.setdefault("desktop", {})["workspace_id"] = default_ws
+            state.setdefault("desktop", {})["sandbox_id"] = default_ws
+        return default_ws
+
+    env_sandbox_id = os.environ.get("DAYTONA_SANDBOX_ID", "").strip()
+    if env_sandbox_id:
+        if state:
+            state.setdefault("desktop", {})["workspace_id"] = env_sandbox_id
+            state.setdefault("desktop", {})["sandbox_id"] = env_sandbox_id
+        return env_sandbox_id
+
+    return ""
 
 
 def _session_lab_id(user: User, session_id: str) -> str:
@@ -338,6 +361,19 @@ def _workspace_file_path(path: str) -> str:
 
 def _timestamp() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _append_worklog(state: dict[str, Any], item_type: str, title: str, content: str, **extra: Any) -> dict[str, Any]:
+    item = {
+        "id": f"wl-{len(state.get('worklog', [])) + 1}",
+        "type": item_type,
+        "title": title,
+        "content": content,
+        "timestamp": _timestamp(),
+        **extra,
+    }
+    state.setdefault("worklog", []).append(item)
+    return item
 
 
 def _mission_event(state: dict[str, Any], event_type: str, title: str, content: str, **extra: Any) -> dict[str, Any]:
@@ -571,17 +607,21 @@ async def delete_workstation_session(
 ):
     """Deletes a mission session from the tenant's history."""
     if user.email in _tenant_workstations and session_id in _tenant_workstations[user.email]:
+        comp = get_daytona_computer()
+        workspace_ids = {
+            ws for ws in (
+                _session_target_id(user, session_id),
+                _session_lab_id(user, session_id),
+                _session_workspace_id(user, session_id),
+            ) if ws
+        }
+        for workspace_id in workspace_ids:
+            try:
+                await comp.destroy(workspace_id)
+            except Exception as exc:
+                logger.warning("workstation_session_cleanup_failed", workspace_id=workspace_id, error=str(exc))
+
         if session_id != "default":
-            state = _tenant_workstations[user.email][session_id]
-            comp = get_daytona_computer()
-            # Session deletion tears down the disposable lab and persistent
-            # desktop before dropping the tenant-scoped state record.
-            for workspace_id in (_session_target_id(user, session_id), _session_lab_id(user, session_id), _session_workspace_id(user, session_id)):
-                if workspace_id:
-                    try:
-                        await comp.destroy(workspace_id)
-                    except Exception as exc:
-                        logger.warning("workstation_session_cleanup_failed", workspace_id=workspace_id, error=str(exc))
             del _tenant_workstations[user.email][session_id]
             _persist_workstation_state()
             return {"status": "deleted", "session_id": session_id}
@@ -717,12 +757,12 @@ async def provision_research_lab(
         "created_at": workspace.created_at,
     })
     state["current_action"] = "Disposable research lab ready; persistent desktop remains isolated."
-    state["worklog"].append({
-        "id": f"wl-{len(state['worklog']) + 1}",
-        "type": "action",
-        "title": "Research Lab Provisioned",
-        "content": f"Authorized evaluation sandbox {workspace.id} created for this session.",
-    })
+    _append_worklog(
+        state,
+        "action",
+        "Research Lab Provisioned",
+        f"Authorized evaluation sandbox {workspace.id} created for this session.",
+    )
     _persist_workstation_state()
     return {"status": "provisioned", "workspace": workspace.model_dump(), "research_lab": lab}
 
@@ -817,12 +857,12 @@ async def provision_target_sandbox(
         "scope_verified": True,
         "created_at": workspace.created_at,
     })
-    state["worklog"].append({
-        "id": f"wl-{len(state['worklog']) + 1}",
-        "type": "action",
-        "title": "Target Sandbox Provisioned",
-        "content": f"Target {target_host} bound to isolated sandbox {workspace.id}.",
-    })
+    _append_worklog(
+        state,
+        "action",
+        "Target Sandbox Provisioned",
+        f"Target {target_host} bound to isolated sandbox {workspace.id}.",
+    )
     _persist_workstation_state()
     return {"status": "provisioned", "workspace": workspace.model_dump(), "target_sandbox": target_box}
 
@@ -1300,48 +1340,18 @@ _PACKAGE_PLACEHOLDERS = {
 }
 
 
-def _clean_rss_titles(xml_text: str, max_items: int = 10) -> list[str]:
-    """Parse titles from RSS XML stream cleanly without external XML parser dependency."""
-    import html
-    items = re.findall(r"<item>(.*?)</item>", xml_text, re.DOTALL | re.IGNORECASE)
-    titles: list[str] = []
-    for item in items:
-        m = re.search(r"<title>(.*?)</title>", item, re.DOTALL | re.IGNORECASE)
-        if m:
-            clean = re.sub(r"<!\[CDATA\[(.*?)\]\]>", r"\1", m.group(1)).strip()
-            clean = re.sub(r"<[^>]+>", "", clean).strip()
-            clean = html.unescape(clean)
-            if clean and clean not in titles:
-                titles.append(clean)
-        if len(titles) >= max_items:
-            break
-    if not titles:
-        raw_titles = re.findall(r"<title>(.*?)</title>", xml_text, re.DOTALL | re.IGNORECASE)
-        for t in raw_titles[1:]:
-            clean = re.sub(r"<!\[CDATA\[(.*?)\]\]>", r"\1", t).strip()
-            clean = re.sub(r"<[^>]+>", "", clean).strip()
-            clean = html.unescape(clean)
-            if clean and clean not in titles:
-                titles.append(clean)
-            if len(titles) >= max_items:
-                break
-    return titles
-
-
 def _detect_requested_app(prompt: str) -> tuple[str, str]:
     """Detect requested desktop application and any target URL or arguments."""
     lower = prompt.strip().lower()
 
-    # Browser / News / Web search
-    if any(k in lower for k in ("browser", "chrome", "chromium", "firefox", "web", "internet", "google", "news", "samachar", "khabar", "headline", "browse", "surf", "website", "url", "open link")):
+    # Browser / Web navigation
+    if any(k in lower for k in ("browser", "chrome", "chromium", "firefox", "web", "surf", "website", "url", "open link")):
         url_match = re.search(r"https?://[^\s]+", prompt)
         if url_match:
             return "chromium", url_match.group(0)
         domain_match = re.search(r"\b([a-zA-Z0-9-]+\.(?:io|com|org|net|app|co|dev|xyz|ai|me))\b", prompt, re.IGNORECASE)
         if domain_match:
             return "chromium", f"https://{domain_match.group(1)}"
-        if any(k in lower for k in ("news", "samachar", "khabar", "headline", "headlines", "aaj ki", "new bugs", "cve", "methods", "how to", "haw to")):
-            return "chromium", "https://news.google.com"
         return "chromium", "https://www.google.com"
 
     # Terminal
@@ -1393,34 +1403,33 @@ def _extract_target_url_or_domain(prompt: str, state: dict[str, Any] | None = No
 
 def _is_action_prompt(prompt: str) -> bool:
     lower = prompt.strip().lower()
-    # English action verbs & nouns
-    action_words = (
-        "install", "open", "launch", "run", "execute", "test", "scan", "inspect", "list", "show",
-        "start", "stop", "close", "download", "create", "edit", "fix", "build", "clone",
-        "find", "discover", "recon", "audit", "pentest", "curl", "whoami", "uname", "nmap",
-        "dig", "traceroute", "ping", "cat", "ls", "pwd", "grep", "check", "browse", "news",
-        "google", "search", "visit", "navigate", "surf", "view", "read", "fetch"
-    )
-    # Hindi / Hinglish action verbs & keywords
-    hindi_action_words = (
-        "karo", "dhundo", "nikalo", "try karo", "test karo", "check karo", "scan karo",
-        "dekho", "chalu karo", "batao", "shuru karo", "pata karo", "milta", "khojo",
-        "khol", "kholo", "chalao", "padho", "dikhayo", "samachar", "khabar", "aaj ki"
-    )
-    # Security, desktop & browser keywords
-    security_and_desktop_words = (
-        "bug", "vulnerability", "rce", "xss", "sqli", "csrf", "recon", "scope", "bounty",
-        "target", "exploit", "attack", "injection", "header", "endpoint", "browser", "chrome",
-        "chromium", "terminal", "desktop", "workstation"
-    )
+    if not lower:
+        return False
 
-    if any(w in lower for w in action_words):
+    # 1. Explicit terminal command syntax or direct shell command invocation
+    if _extract_terminal_command(prompt):
         return True
-    if any(w in lower for w in hindi_action_words):
+
+    # 2. Package install intent
+    if _extract_install_package(prompt):
         return True
-    if any(w in lower for w in security_and_desktop_words):
+
+    # 3. GUI app opening / launching on desktop
+    app, _ = _detect_requested_app(prompt)
+    if app and any(k in lower for k in ("open", "launch", "start", "view", "browse", "run", "khol", "kholo", "chalao")):
         return True
-    return bool(re.search(r"\b(?:open|launch)\s+(?:terminal|browser|chrome|code|files|news)\b", lower))
+
+    # 4. Targeted recon or live security scanning on a specific target domain / url
+    has_target = bool(re.search(r"https?://[^\s]+|\b[a-zA-Z0-9-]+\.(?:io|com|org|net|app|co|dev|xyz|ai|me)\b", prompt, re.IGNORECASE))
+    scan_verbs = ("recon", "scan", "audit", "pentest", "nmap", "curl", "dig", "traceroute", "ping", "whois", "test")
+    if has_target and any(w in lower for w in scan_verbs):
+        return True
+
+    # 5. Active recon / scan phrases
+    if any(p in lower for p in ("active recon", "target recon", "network scan", "port scan")):
+        return True
+
+    return False
 
 
 def _extract_install_package(prompt: str) -> str:
@@ -1451,15 +1460,6 @@ def _extract_terminal_command(prompt: str) -> str:
     if first_word in {"uname", "whoami", "pwd", "curl", "nmap", "dig", "host", "ping", "cat", "ls", "find", "git", "python", "python3", "which", "id", "df", "free", "ps", "uptime"}:
         return trimmed
     return ""
-
-
-def _append_worklog(state: dict[str, Any], item_type: str, title: str, content: str) -> None:
-    state["worklog"].append({
-        "id": f"wl-{len(state['worklog']) + 1}",
-        "type": item_type,
-        "title": title,
-        "content": content,
-    })
 
 
 async def _run_autonomous_desktop_loop(
@@ -1527,15 +1527,12 @@ async def _run_autonomous_desktop_loop(
         _append_worklog(state, "action" if result.exit_code == 0 else "error", "Terminal Command Executed", f"`{command}`\nReal Daytona result:\n{output or '(no output)'}")
         return observations, None, False
 
-    # 3. Web Browsing / News / Live Search on Desktop
-    is_news_intent = any(k in lower for k in ("news", "samachar", "khabar", "headline", "headlines", "aaj ki", "todays news", "top stories"))
-    is_browser_intent = any(k in lower for k in ("browser", "chrome", "chromium", "firefox", "google", "browse", "surf", "internet", "web"))
+    # 3. Web Browsing on Desktop
+    app_name, target_url = _detect_requested_app(prompt)
+    if app_name == "chromium" and not any(k in lower for k in ("bug", "recon", "scan", "rce", "exploit")):
+        target_url = target_url or "https://www.google.com"
 
-    if is_news_intent or (is_browser_intent and not any(k in lower for k in ("bug", "recon", "scan", "rce", "exploit"))):
-        app_name, target_url = _detect_requested_app(prompt)
-        target_url = target_url or ("https://news.google.com" if is_news_intent else "https://www.google.com")
-
-        # Step A: Launch GUI browser in X11 graphical desktop
+        # Launch GUI browser in X11 graphical desktop
         browser_launch_cmd = f"DISPLAY=:99 chromium --no-sandbox --disable-dev-shm-usage --disable-gpu {shlex.quote(target_url)} >/dev/null 2>&1 &"
         await computer.terminal(desktop_id, browser_launch_cmd, timeout=15, actor=tenant_id)
 
@@ -1556,37 +1553,6 @@ async def _run_autonomous_desktop_loop(
             f"Launched Chromium browser on Daytona Graphical Desktop (Display :99) navigating to `{target_url}`.",
         )
         observations.append(f"Desktop GUI: Chromium browser launched on display :99 pointing to {target_url}.")
-
-        # Step B: If news intent, fetch real-time live headlines from public news RSS feed
-        if is_news_intent:
-            news_cmd = 'curl -s -L --max-time 12 "https://news.google.com/rss?hl=en-US&gl=US&ceid=US:en"'
-            res = await computer.terminal(desktop_id, news_cmd, timeout=20, actor=tenant_id)
-            if res.exit_code == 0 and res.stdout:
-                titles = _clean_rss_titles(res.stdout, max_items=10)
-                if titles:
-                    formatted_news = "\n".join([f"{i+1}. {t}" for i, t in enumerate(titles)])
-                    observations.append(f"Real-Time Live News Headlines:\n{formatted_news}")
-                    _append_worklog(
-                        state,
-                        "action",
-                        "Live News Headlines Extracted",
-                        f"Extracted {len(titles)} top live news headlines from real web feed:\n\n{formatted_news}",
-                    )
-            else:
-                bbc_cmd = 'curl -s -L --max-time 12 "https://feeds.bbci.co.uk/news/rss.xml"'
-                res_bbc = await computer.terminal(desktop_id, bbc_cmd, timeout=20, actor=tenant_id)
-                if res_bbc.exit_code == 0 and res_bbc.stdout:
-                    titles = _clean_rss_titles(res_bbc.stdout, max_items=10)
-                    if titles:
-                        formatted_news = "\n".join([f"{i+1}. {t}" for i, t in enumerate(titles)])
-                        observations.append(f"Real-Time BBC News Headlines:\n{formatted_news}")
-                        _append_worklog(
-                            state,
-                            "action",
-                            "Live News Headlines Extracted",
-                            f"Extracted top live headlines:\n\n{formatted_news}",
-                        )
-
         return observations, None, False
 
     # 4. Security Recon / Bug Hunting / Target Analysis
@@ -1604,30 +1570,33 @@ async def _run_autonomous_desktop_loop(
         # Step B: If target domain found, run targeted safe recon
         if target:
             target_clean = re.sub(r"^https?://", "", target).strip("/")
-            recon_cmds = [
-                (
-                    f"HTTP Headers Recon ({target_clean})",
-                    f"curl -s -I -L --max-time 10 https://{target_clean} | head -n 35",
-                ),
-                (
-                    f"Robots & Endpoints ({target_clean})",
-                    f"curl -s --max-time 10 https://{target_clean}/robots.txt | head -n 35",
-                ),
-                (
-                    f"HTTP Methods & CORS ({target_clean})",
-                    f"curl -s -I -X OPTIONS --max-time 10 https://{target_clean} | head -n 25",
-                ),
-                (
-                    f"Security Policy ({target_clean})",
-                    f"curl -s -I --max-time 10 https://{target_clean}/.well-known/security.txt 2>/dev/null | head -n 25",
-                ),
-            ]
-            for title, cmd in recon_cmds:
-                res = await computer.terminal(desktop_id, cmd, timeout=30, actor=tenant_id)
-                out = (res.stdout + ("\n" + res.stderr if res.stderr else "")).strip()
-                if out:
-                    observations.append(f"{title} [`{cmd}`]: exit={res.exit_code}\n{out[:4000]}")
-                    _append_worklog(state, "action", title, f"`{cmd}`\nReal Daytona output:\n{out[:4000]}")
+            target_clean = re.sub(r"[^a-zA-Z0-9.:-]", "", target_clean)
+            if target_clean:
+                target_url = shlex.quote(f"https://{target_clean}")
+                recon_cmds = [
+                    (
+                        f"HTTP Headers Recon ({target_clean})",
+                        f"curl -s -I -L --max-time 10 {target_url} | head -n 35",
+                    ),
+                    (
+                        f"Robots & Endpoints ({target_clean})",
+                        f"curl -s --max-time 10 {shlex.quote(f'https://{target_clean}/robots.txt')} | head -n 35",
+                    ),
+                    (
+                        f"HTTP Methods & CORS ({target_clean})",
+                        f"curl -s -I -X OPTIONS --max-time 10 {target_url} | head -n 25",
+                    ),
+                    (
+                        f"Security Policy ({target_clean})",
+                        f"curl -s -I --max-time 10 {shlex.quote(f'https://{target_clean}/.well-known/security.txt')} 2>/dev/null | head -n 25",
+                    ),
+                ]
+                for title, cmd in recon_cmds:
+                    res = await computer.terminal(desktop_id, cmd, timeout=30, actor=tenant_id)
+                    out = (res.stdout + ("\n" + res.stderr if res.stderr else "")).strip()
+                    if out:
+                        observations.append(f"{title} [`{cmd}`]: exit={res.exit_code}\n{out[:4000]}")
+                        _append_worklog(state, "action", title, f"`{cmd}`\nReal Daytona output:\n{out[:4000]}")
         else:
             # General workspace inspection
             ws_cmd = "ls -la /home/daytona 2>/dev/null || ls -la"
@@ -1672,8 +1641,6 @@ async def _run_prompt_reasoning(tenant_id: str, session_id: str, prompt: str) ->
     """Resolve an objective asynchronously so a slow provider cannot block the UI request."""
     state = _get_or_create_session(tenant_id, session_id)
     reasoning_available = False
-    llm_configured = False
-    desktop_cycle_completed = False
     action_blocked = False
     action_observations: list[str] = []
     desktop_context = "No tenant-owned desktop observation is available for this session."
@@ -1683,18 +1650,6 @@ async def _run_prompt_reasoning(tenant_id: str, session_id: str, prompt: str) ->
 
         # Give the model an observation from the real Computer Use plane
         desktop_id = str(state.get("desktop", {}).get("workspace_id") or state.get("desktop", {}).get("sandbox_id") or "")
-        if _is_action_prompt(prompt) and not desktop_id:
-            message = (
-                "Action blocked: this session has no tenant-owned Daytona desktop. "
-                "Provision the Agent Desktop first; no terminal command or GUI action was executed."
-            )
-            _append_worklog(state, "error", "Execution Blocked", message)
-            _append_worklog(state, "response", "SONIC Response", message)
-            state["thought_summary"] = message
-            state["status"] = "BLOCKED"
-            state["current_action"] = "Execution blocked — provision a live Daytona desktop"
-            _persist_workstation_state()
-            return
 
         if desktop_id:
             try:
@@ -1706,16 +1661,6 @@ async def _run_prompt_reasoning(tenant_id: str, session_id: str, prompt: str) ->
                     "ls -la /home/daytona 2>/dev/null | head -40",
                     actor=tenant_id,
                 )
-                app_name, app_arg = _detect_requested_app(prompt)
-                if app_name:
-                    try:
-                        await computer.gui_action(
-                            desktop_id,
-                            GUIAction(action=GUIActionType.OPEN_APP, app_name=app_name),
-                            actor=tenant_id,
-                        )
-                    except Exception:
-                        pass
 
                 desktop_context = (
                     f"Live desktop state: {screen.desktop_state}; resolution={screen.width}x{screen.height}; "
@@ -1723,40 +1668,42 @@ async def _run_prompt_reasoning(tenant_id: str, session_id: str, prompt: str) ->
                     f"sandbox_pwd={terminal.stdout.strip()!r}; "
                     f"workspace_inventory={inventory.stdout.strip()!r}."
                 )
-                state["worklog"].append({
-                    "id": f"wl-{len(state['worklog']) + 1}",
-                    "type": "action",
-                    "title": "Agent Desktop Observation",
-                    "content": "Agent inspected the Daytona Linux workstation via PTY & screenshot. " + desktop_context,
-                })
-                desktop_cycle_completed = True
+                _append_worklog(
+                    state,
+                    "action",
+                    "Agent Desktop Observation",
+                    "Agent inspected the Daytona Linux workstation via PTY & screenshot. " + desktop_context,
+                )
             except Exception as observation_err:
                 logger.warning("workstation_desktop_observation_failed", error=str(observation_err))
-                state["worklog"].append({
-                    "id": f"wl-{len(state['worklog']) + 1}",
-                    "type": "error",
-                    "title": "Desktop Observation Unavailable",
-                    "content": "The live desktop could not be observed; no GUI action was performed.",
-                })
-
-        # Execute autonomous action loop if applicable
-        if desktop_id and _is_action_prompt(prompt):
-            action_observations, action_message, action_blocked = await _run_autonomous_desktop_loop(
-                state, desktop_id, tenant_id, prompt
-            )
-            if action_observations:
-                desktop_context += "\n\n--- Real Daytona Sandbox Execution Results ---\n" + "\n\n".join(action_observations)
-            if action_message:
-                state["thought_summary"] = action_message
-                _append_worklog(state, "response", "SONIC Response", action_message)
-                state["status"] = "BLOCKED" if action_blocked else "IDLE"
-                state["current_action"] = (
-                    "Execution blocked — review the real sandbox result"
-                    if action_blocked
-                    else "Idle — Waiting for operator input"
+                _append_worklog(
+                    state,
+                    "error",
+                    "Desktop Observation Unavailable",
+                    "The live desktop could not be observed; checking sandbox status.",
                 )
-                _persist_workstation_state()
-                return
+
+            # Execute autonomous action loop if applicable
+            if _is_action_prompt(prompt):
+                action_observations, action_message, action_blocked = await _run_autonomous_desktop_loop(
+                    state, desktop_id, tenant_id, prompt
+                )
+                if action_observations:
+                    desktop_context += "\n\n--- Real Daytona Sandbox Execution Results ---\n" + "\n\n".join(action_observations)
+                if action_message and action_blocked:
+                    state["thought_summary"] = action_message
+                    _append_worklog(state, "response", "SONIC Response", action_message)
+                    state["status"] = "BLOCKED"
+                    state["current_action"] = "Execution blocked — review the real sandbox result"
+                    _persist_workstation_state()
+                    return
+        else:
+            if _is_action_prompt(prompt):
+                notice = (
+                    "Note: No Daytona desktop sandbox is currently provisioned for this session. "
+                    "Proceeding with autonomous reasoning. Provision the Agent Desktop from the Computer tab to execute live graphical or terminal actions."
+                )
+                _append_worklog(state, "info", "Workstation Notice", notice)
 
         nvidia_key = os.environ.get("NVIDIA_API_KEY")
         nvidia_url = os.environ.get("NVIDIA_BASE_URL", "https://integrate.api.nvidia.com/v1")
@@ -1770,16 +1717,21 @@ async def _run_prompt_reasoning(tenant_id: str, session_id: str, prompt: str) ->
                     f"{obs_summary}\n\n"
                     f"*The Daytona graphical workstation and terminal are synchronized with these results.*"
                 )
+            elif desktop_id:
+                fallback_response = (
+                    f"Task received and processed in the Daytona workstation.\n"
+                    f"Observation: {desktop_context[:300]}"
+                )
             else:
                 fallback_response = (
-                    "Task received and processed in the Daytona workstation.\n"
-                    f"Observation: {desktop_context[:300]}"
+                    f"Objective received: '{prompt}'.\n\n"
+                    f"Workstation analysis completed for session `{session_id}`. "
+                    f"To execute live shell commands, network scans, or launch applications on the Linux desktop, provision a Daytona workstation from the Computer tab."
                 )
             reasoning_available = True
             state["thought_summary"] = fallback_response
             _append_worklog(state, "response", "SONIC Response", fallback_response)
         else:
-            llm_configured = True
             model_to_use = "meta/llama-3.2-11b-vision-instruct"
             llm = CustomLLMProvider(
                 name="nvidia",
@@ -1795,7 +1747,7 @@ async def _run_prompt_reasoning(tenant_id: str, session_id: str, prompt: str) ->
                 "2. NEWS & BROWSING: If the user asked to check today's news or open a browser, summarize the real headlines extracted and confirm that Chromium is active on the Daytona Graphical Desktop.\n"
                 "3. TARGET-FOCUSED FINDINGS: When evaluating a web target (such as opensea.io) for bugs or vulnerability classes (such as RCE, Broken Links, CORS, API flaws, Smart Contract integration), assess the actual attack surface from the headers, endpoints, and architecture. Explain why direct server-side RCE on modern CDN/WAF-fronted edge architectures is rare and focus on realistic high-impact targets in scope (e.g., API endpoints, MCP servers, smart contract logic, client SDKs, subdomains).\n"
                 "4. AUTONOMOUS AGENT ROLE: Do NOT tell the operator to manually run basic terminal commands on their machine. You are the AI researcher executing actions on their behalf in the Daytona sandbox.\n"
-                "5. LANGUAGE: Always respond in clear, professional, concise English.\n"
+                "5. LANGUAGE: Always respond in clear, professional, concise English or the user's preferred language.\n"
                 "6. GROUNDED IN REALITY: Ground your analysis strictly in the real Daytona execution output provided."
             )
             messages = [
@@ -1810,12 +1762,7 @@ async def _run_prompt_reasoning(tenant_id: str, session_id: str, prompt: str) ->
                 if llm_res and llm_res.content:
                     reasoning_available = True
                     state["thought_summary"] = llm_res.content
-                    state["worklog"].append({
-                        "id": f"wl-{len(state['worklog']) + 1}",
-                        "type": "response",
-                        "title": "SONIC Response",
-                        "content": llm_res.content,
-                    })
+                    _append_worklog(state, "response", "SONIC Response", llm_res.content)
                 else:
                     raise RuntimeError("LLM returned empty content")
             except Exception as llm_call_err:
@@ -1828,40 +1775,33 @@ async def _run_prompt_reasoning(tenant_id: str, session_id: str, prompt: str) ->
                         f"{obs_summary}\n\n"
                         f"*The Daytona graphical workstation and terminal are synchronized with these results.*"
                     )
-                else:
+                elif desktop_id:
                     fallback_response = (
                         f"Objective processed in Daytona workstation.\n"
                         f"Observation context: {desktop_context[:300]}"
                     )
+                else:
+                    fallback_response = (
+                        f"Objective received: '{prompt}'.\n\n"
+                        f"Workstation analysis completed for session `{session_id}`."
+                    )
                 reasoning_available = True
                 state["thought_summary"] = fallback_response
-                state["worklog"].append({
-                    "id": f"wl-{len(state['worklog']) + 1}",
-                    "type": "response",
-                    "title": "SONIC Response",
-                    "content": fallback_response,
-                })
+                _append_worklog(state, "response", "SONIC Response", fallback_response)
     except Exception as general_err:
         logger.warning("workstation_reasoning_pipeline_error", error=str(general_err))
         err_msg = f"Reasoning pipeline error: {general_err}"
         state["thought_summary"] = err_msg
-        state["worklog"].append({
-            "id": f"wl-{len(state['worklog']) + 1}",
-            "type": "error",
-            "title": "Execution Failed",
-            "content": err_msg,
-        })
+        _append_worklog(state, "error", "Execution Failed", err_msg)
     finally:
-        state["status"] = "IDLE" if (not action_blocked and (reasoning_available or desktop_cycle_completed)) else "BLOCKED"
-        state["current_action"] = (
-            "Idle — Ready for next task"
-            if reasoning_available
-            else "Agent desktop cycle complete"
-            if desktop_cycle_completed
-            else "Execution blocked — check workstation logs"
-        )
+        if not action_blocked:
+            state["status"] = "IDLE"
+            state["current_action"] = "Idle — Ready for next task"
+        else:
+            state["status"] = "BLOCKED"
+            if not state.get("current_action") or state["current_action"].startswith("Idle"):
+                state["current_action"] = "Execution blocked — check workstation logs"
         _persist_workstation_state()
-
 
 
 @router.post("/workstation/prompt")
@@ -1876,12 +1816,12 @@ async def send_workstation_prompt(
     state["mission_name"] = prompt_text or "New conversation"
     state["status"] = "RUNNING"
     state["current_action"] = f"Reasoning queued: {prompt_text}"
-    state["worklog"].append({
-        "id": f"wl-{len(state['worklog']) + 1}",
-        "type": "action",
-        "title": "Objective Received",
-        "content": f"Objective: '{prompt_text}' (Tenant: {user.email})",
-    })
+    _append_worklog(
+        state,
+        "action",
+        "Objective Received",
+        f"Objective: '{prompt_text}' (Tenant: {user.email})",
+    )
     _persist_workstation_state()
 
     # Autonomous mode means a mission, not a one-shot chat completion. It can

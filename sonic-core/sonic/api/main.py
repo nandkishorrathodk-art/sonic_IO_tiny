@@ -172,6 +172,7 @@ app = FastAPI(
 
 # ---- CORS ----
 settings = get_settings()
+logger.info("cors_configured", origins=settings.cors_origins_list)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins_list,
@@ -193,16 +194,6 @@ app.include_router(live.router, prefix="/live", tags=["Live Dashboard"])
 app.include_router(jobs.router, prefix="/jobs", tags=["Async Jobs"])
 app.include_router(workstation.router, tags=["Workstation"])
 
-
-# CORS — Allow Dashboard to fetch from API
-from fastapi.middleware.cors import CORSMiddleware
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=settings.cors_origins_list,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
 
 
 from fastapi.responses import PlainTextResponse

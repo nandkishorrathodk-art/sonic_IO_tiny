@@ -28,11 +28,18 @@ logger = get_logger(__name__)
 
 router = APIRouter()
 
+# Docker Compose exposes only these tenant execution sandboxes. Never accept a
+# caller-controlled container name: an authenticated user must not be able to
+# open a shell in SONIC's databases, control-plane containers, or any other
+# Docker workload on the host.
+_ALLOWED_TERMINAL_CONTAINERS = {"sonic-sandbox-debian", "sonic-sandbox-kali"}
+_DEFAULT_TERMINAL_CONTAINER = "sonic-sandbox-debian"
+
 
 class ContainerTerminalSession:
     """Manages an isolated container PTY terminal session."""
 
-    def __init__(self, session_id: str, container_name: str = "sonic-sandbox", cols: int = 120, rows: int = 30):
+    def __init__(self, session_id: str, container_name: str = _DEFAULT_TERMINAL_CONTAINER, cols: int = 120, rows: int = 30):
         self.session_id = session_id
         self.container_name = container_name
         self.cols = cols
@@ -112,7 +119,7 @@ _sessions: dict[str, ContainerTerminalSession] = {}
 async def terminal_websocket(
     websocket: WebSocket,
     token: Optional[str] = Query(None),
-    container: str = Query("sonic-sandbox"),
+    container: str = Query(_DEFAULT_TERMINAL_CONTAINER),
 ):
     """
     Authenticated WebSocket endpoint for isolated container terminal sessions.
@@ -128,6 +135,15 @@ async def terminal_websocket(
         await websocket.send_json({
             "type": "error",
             "data": "\x1b[1;31m[AUTH ERROR] Authentication required. Please provide a valid JWT token.\x1b[0m\r\n"
+        })
+        await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+        return
+
+    if container not in _ALLOWED_TERMINAL_CONTAINERS:
+        logger.warning("terminal_ws_container_rejected", user=user.email, container=container)
+        await websocket.send_json({
+            "type": "error",
+            "data": "\x1b[1;31m[POLICY ERROR] Requested container is not an approved terminal sandbox.\x1b[0m\r\n",
         })
         await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
         return

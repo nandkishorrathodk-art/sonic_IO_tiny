@@ -133,10 +133,13 @@ export default function SonicDevinWorkstation() {
     return () => clearInterval(interval);
   }, [sessionId]);
 
-  const handleSendPrompt = async (prompt: string) => {
+  const handleSendPrompt = async (prompt: string, mode: "Normal" | "Autonomous" | "Pair-Program") => {
     setLoading(true);
     try {
-      const res = await api.sendPrompt(prompt, sessionId);
+      const res = await api.sendPrompt(prompt, sessionId, mode.toLowerCase());
+      if (mode === "Autonomous") {
+        setActiveTab("mission");
+      }
       if (res?.state) {
         setWorkstationState(res.state);
       }

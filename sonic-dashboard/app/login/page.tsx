@@ -19,6 +19,7 @@ import {
 } from "lucide-react";
 import Link from "next/link";
 import { setAuthToken } from "../../lib/auth";
+import { API_BASE } from "../../lib/api";
 
 export default function LoginPage() {
   const router = useRouter();
@@ -28,8 +29,6 @@ export default function LoginPage() {
   const [role, setRole] = useState("operator");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-
-  const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:8000";
 
   const handleLogin = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
@@ -55,10 +54,10 @@ export default function LoginPage() {
       const data = await res.json();
       if (data?.access_token) {
         setAuthToken(data.access_token, {
-          email,
-          name,
-          role,
-          tenant_id: tenantId,
+          email: data.user?.email || email,
+          name: data.user?.name || name,
+          role: data.user?.role || "operator",
+          tenant_id: data.user?.tenant_id || tenantId,
         });
         router.push("/");
       } else {

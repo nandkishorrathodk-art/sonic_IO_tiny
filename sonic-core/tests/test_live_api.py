@@ -85,11 +85,11 @@ def test_terminal_websocket_unauthenticated_rejection():
 
 
 
-def test_terminal_websocket_authenticated_connect():
-    """Test that authenticated WebSocket connection attempts to reach container, not host."""
+def test_terminal_websocket_rejects_non_sandbox_container():
+    """A caller cannot select an arbitrary Docker container for terminal access."""
     _, token = get_auth_headers()
-    # When container is not running, it gracefully reports container not running rather than running on host
     with client.websocket_connect(f"/terminal/ws/terminal?token={token}&container=non-existent-sandbox") as ws:
         msg = ws.receive_json()
         assert msg["type"] == "error"
-        assert "SANDBOX NOTICE" in msg["data"] or "not running" in msg["data"]
+        assert "POLICY ERROR" in msg["data"]
+        assert "not an approved terminal sandbox" in msg["data"]

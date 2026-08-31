@@ -188,10 +188,10 @@ export const api = {
   getGitDiff: (sessionId = "default") =>
     apiClient<{ diff: string; success: boolean }>(`/workstation/git-diff?session_id=${encodeURIComponent(sessionId)}`),
 
-  sendPrompt: (prompt: string, sessionId = "default") =>
+  sendPrompt: (prompt: string, sessionId = "default", mode = "normal") =>
     apiClient<any>("/workstation/prompt", {
       method: "POST",
-      body: JSON.stringify({ prompt, session_id: sessionId }),
+      body: JSON.stringify({ prompt, session_id: sessionId, mode }),
     }),
 
   executeCommand: (command: string, sessionId = "default") =>

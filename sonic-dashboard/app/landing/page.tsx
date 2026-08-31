@@ -22,17 +22,21 @@ import {
   CheckCircle,
   Play,
 } from "lucide-react";
-import { api } from "../../lib/api";
+import { API_BASE } from "../../lib/api";
 
 export default function LandingPage() {
   const [systemHealth, setSystemHealth] = useState<any>(null);
 
   useEffect(() => {
-    fetch("http://127.0.0.1:8000/health")
+    const controller = new AbortController();
+    fetch(`${API_BASE}/health`, { signal: controller.signal })
       .then((res) => res.json())
       .then((data) => setSystemHealth(data))
       .catch(() => {});
+    return () => controller.abort();
   }, []);
+
+  const isHealthy = systemHealth?.overall_status === "healthy";
 
   return (
     <div className="min-h-screen bg-[#07090E] text-slate-100 flex flex-col font-sans relative overflow-x-hidden selection:bg-blue-600 selection:text-white">
@@ -90,8 +94,8 @@ export default function LandingPage() {
       <section className="px-6 md:px-12 pt-20 pb-16 max-w-7xl mx-auto flex flex-col items-center text-center space-y-8 z-10">
         {/* Status Chip */}
         <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-blue-950/80 border border-blue-800/60 text-blue-300 text-xs font-mono shadow-inner">
-          <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-          <span>PHASE 21 LIVE: Daytona noVNC Workstation & NVIDIA NIM LLM</span>
+          <span className={`w-2 h-2 rounded-full ${isHealthy ? "bg-emerald-400 animate-pulse" : "bg-slate-500"}`} />
+          <span>{isHealthy ? "CONTROL PLANE ONLINE" : "CONTROL PLANE STATUS UNKNOWN"}</span>
         </div>
 
         {/* Hero Title */}

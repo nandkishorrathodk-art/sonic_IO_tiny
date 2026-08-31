@@ -36,6 +36,7 @@ class MissionActionPlan(BaseModel):
     target: str
     target_workspace_id: str
     actions: list[PlannedAction] = Field(default_factory=list)
+    requires_active_testing: bool = False
     created_at: str = Field(default_factory=_now)
 
 
@@ -119,7 +120,6 @@ class MissionPlanner:
                 risk=ToolRisk.APPROVAL_REQUIRED,
                 requires_approval=True,
             ))
-
         for action in actions:
             MissionToolRegistry.get(action.tool)
         return MissionActionPlan(
@@ -128,4 +128,37 @@ class MissionPlanner:
             target=target.strip(),
             target_workspace_id=target_workspace_id,
             actions=actions,
+            requires_active_testing=any(
+                word in objective.lower()
+                for word in ("scan", "test", "probe", "audit", "pentest")
+            ),
         )
+
+    def build_follow_up_actions(
+        self,
+        plan: MissionActionPlan,
+        completed_action_ids: set[str],
+    ) -> list[PlannedAction]:
+        """Produce the next bounded discovery batch from completed evidence.
+
+        This is deliberately deterministic rather than an unconstrained model
+        command generator: every action is read-only, allowlisted by the
+        executor, and recorded before the next batch is considered.
+        """
+        initial_ids = {action.action_id for action in plan.actions}
+        if not initial_ids.issubset(completed_action_ids):
+            return []
+
+        follow_up = [
+            PlannedAction(
+                tool="target_shell_readonly",
+                input={"command": "git log -5 --oneline 2>/dev/null || true"},
+                risk=ToolRisk.READ_ONLY,
+            ),
+            PlannedAction(
+                tool="target_shell_readonly",
+                input={"command": "find . -maxdepth 3 -type f | grep -E '(README|requirements|package\\.json|pyproject\\.toml|Dockerfile|compose)' | head -100"},
+                risk=ToolRisk.READ_ONLY,
+            ),
+        ]
+        return follow_up

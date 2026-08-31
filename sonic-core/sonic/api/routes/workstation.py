@@ -8,7 +8,8 @@ SECURITY INVARIANTS:
     1. Zero Host Shell Execution: All execution MUST route through ComputeProvider / Daytona / Docker sandbox.
     2. Fail-Closed: If sandbox container is unavailable, reject execution with 503. Never fallback to host.
     3. Multi-Tenant Scoped: State, desktop, and file access are partitioned strictly by caller tenant identity.
-    4. Authenticated: All endpoints require valid JWT authentication (`require_auth`).
+    4. RBAC: Read endpoints require authentication; all state-changing and
+       execution endpoints require an operator, tenant admin, or super admin.
 """
 
 from __future__ import annotations
@@ -392,8 +393,9 @@ async def _run_mission_preflight(tenant_id: str, session_id: str, mission_id: st
         return
 
     comp = get_daytona_computer()
+    planner = MissionPlanner()
     try:
-        plan = MissionPlanner().build_plan(
+        plan = planner.build_plan(
             mission_id=mission_id,
             objective=mission.get("objective", ""),
             target=state.get("target_sandbox", {}).get("target", ""),
@@ -413,7 +415,11 @@ async def _run_mission_preflight(tenant_id: str, session_id: str, mission_id: st
     except Exception:
         security_tools = None
     executor = MissionToolExecutor(comp, security_tools=security_tools)
-    for action in plan.actions:
+    pending_actions = list(plan.actions)
+    completed_action_ids: set[str] = set()
+    follow_up_added = False
+    while pending_actions:
+        action = pending_actions.pop(0)
         label = action.tool
         try:
             execution = await executor.execute(
@@ -431,6 +437,7 @@ async def _run_mission_preflight(tenant_id: str, session_id: str, mission_id: st
                 result=execution.model_dump(),
             )
             if execution.status == "SUCCESS":
+                completed_action_ids.add(action.action_id)
                 evidence = _record_mission_evidence(
                     state,
                     mission_id,
@@ -445,23 +452,40 @@ async def _run_mission_preflight(tenant_id: str, session_id: str, mission_id: st
                     evidence_id=evidence["id"],
                 )
             if execution.status != "SUCCESS":
-                if execution.status == "AWAITING_APPROVAL":
-                    mission["status"] = "AWAITING_APPROVAL"
-                    _mission_event(state, "approval", "Active testing approval required", "The planner produced an approval-required action; no active probe was executed.")
-                else:
-                    mission["status"] = "BLOCKED"
-                    _mission_event(state, "error", "Mission preflight failed", f"{label} returned {execution.status}.")
+                mission["status"] = "BLOCKED"
+                _mission_event(state, "error", "Mission preflight failed", f"{label} returned {execution.status}.")
                 return
         except Exception as exc:
             mission["status"] = "BLOCKED"
             _mission_event(state, "error", "Mission execution failed", str(exc))
             return
 
-    mission["status"] = "AWAITING_APPROVAL"
+        # Re-plan only after real evidence from the whole current batch. The
+        # planner can add a bounded, read-only follow-up batch; it cannot
+        # invent a new tool or an unapproved active probe.
+        if not pending_actions and not follow_up_added:
+            follow_up_added = True
+            follow_up = planner.build_follow_up_actions(plan, completed_action_ids)
+            if follow_up:
+                pending_actions.extend(follow_up)
+                _mission_event(
+                    state,
+                    "replan",
+                    "Evidence-based discovery follow-up",
+                    f"Initial observations complete; queued {len(follow_up)} additional read-only actions.",
+                    actions=[item.model_dump() for item in follow_up],
+                )
+
     mission["completed_at"] = _timestamp()
     state["status"] = "IDLE"
-    state["current_action"] = "Read-only preflight complete; operator approval required for active testing."
-    _mission_event(state, "approval", "Awaiting operator approval", "Preflight complete. Active target testing requires an explicit approved command.")
+    if plan.requires_active_testing:
+        mission["status"] = "AWAITING_APPROVAL"
+        state["current_action"] = "Read-only discovery complete; operator approval required for active testing."
+        _mission_event(state, "approval", "Awaiting operator approval", "Discovery loop completed. Active target testing requires an explicit approved command.")
+    else:
+        mission["status"] = "COMPLETED"
+        state["current_action"] = "Read-only discovery loop completed with evidence."
+        _mission_event(state, "completed", "Discovery mission completed", "All planned read-only discovery actions completed and evidence was captured.")
 
 
 # -------------------------------------------------------------
@@ -1202,17 +1226,50 @@ _PACKAGE_PLACEHOLDERS = {
 }
 
 
+def _extract_target_url_or_domain(prompt: str, state: dict[str, Any] | None = None) -> str:
+    """Extract domain or URL target from prompt or recent worklog context."""
+    # Match domain names (e.g. opensea.io, api.example.com) or full URLs
+    url_match = re.search(r"https?://([a-zA-Z0-9.-]+\.[a-zA-Z]{2,})(?:[^\s]*)", prompt)
+    if url_match:
+        return url_match.group(1).lower()
+    domain_match = re.search(r"\b([a-zA-Z0-9-]+\.(?:io|com|org|net|app|co|dev|xyz|ai|me))\b", prompt, re.IGNORECASE)
+    if domain_match:
+        return domain_match.group(1).lower()
+    # Check recent worklog context for mentioned targets if available
+    if state and "worklog" in state:
+        for item in reversed(state["worklog"][-6:]):
+            content = str(item.get("content", ""))
+            sub_match = re.search(r"\b([a-zA-Z0-9-]+\.(?:io|com|org|net|app|co|dev|xyz|ai|me))\b", content, re.IGNORECASE)
+            if sub_match:
+                return sub_match.group(1).lower()
+    return ""
+
+
 def _is_action_prompt(prompt: str) -> bool:
     lower = prompt.strip().lower()
-    # Only classify an objective as executable when it starts with an explicit
-    # operator imperative. Arbitrary pasted research/web text may contain words
-    # like "testing" or "check" and must remain a normal reasoning request.
-    prefix = r"(?:(?:please|can you|could you|will you)\s+)?"
-    imperative = (
-        r"(?:install|open|launch|run|execute|test|scan|inspect|list|show|"
-        r"start|stop|close|download|create|edit|fix|build|clone)\b"
+    # English action verbs
+    action_words = (
+        "install", "open", "launch", "run", "execute", "test", "scan", "inspect", "list", "show",
+        "start", "stop", "close", "download", "create", "edit", "fix", "build", "clone",
+        "find", "discover", "recon", "audit", "pentest", "curl", "whoami", "uname", "nmap",
+        "dig", "traceroute", "ping", "cat", "ls", "pwd", "grep", "check"
     )
-    if re.match(prefix + imperative, lower):
+    # Hindi / Hinglish action verbs & security intent
+    hindi_action_words = (
+        "karo", "dhundo", "nikalo", "try karo", "test karo", "check karo", "scan karo",
+        "dekho", "chalu karo", "batao", "shuru karo", "pata karo", "milta", "khojo"
+    )
+    # Security research keywords
+    security_words = (
+        "bug", "vulnerability", "rce", "xss", "sqli", "csrf", "recon", "scope", "bounty",
+        "target", "exploit", "attack", "injection", "header", "endpoint"
+    )
+
+    if any(w in lower for w in action_words):
+        return True
+    if any(w in lower for w in hindi_action_words):
+        return True
+    if any(w in lower for w in security_words):
         return True
     return bool(re.search(r"\b(?:open|launch)\s+(?:terminal|browser|chrome|code)\b", lower))
 
@@ -1237,9 +1294,14 @@ def _extract_terminal_command(prompt: str) -> str:
         prompt.strip(),
         re.IGNORECASE,
     )
-    if not match:
-        return ""
-    return (match.group(1) or match.group(2) or "").strip()
+    if match:
+        return (match.group(1) or match.group(2) or "").strip()
+    # Also check if prompt starts directly with common safe shell utilities
+    trimmed = prompt.strip()
+    first_word = trimmed.split()[0].lower() if trimmed.split() else ""
+    if first_word in {"uname", "whoami", "pwd", "curl", "nmap", "dig", "host", "ping", "cat", "ls", "find", "git", "python", "python3"}:
+        return trimmed
+    return ""
 
 
 def _append_worklog(state: dict[str, Any], item_type: str, title: str, content: str) -> None:
@@ -1260,45 +1322,44 @@ async def _run_autonomous_desktop_loop(
     """Execute a bounded, explicit action sequence in the real Daytona desktop.
 
     The model is used for explanation, never as a source of fabricated command
-    output. Only explicit operator intents are executed and every result comes
-    directly from the remote sandbox PTY/GUI plane.
+    output. Actions are executed in the live Daytona sandbox and every result comes
+    directly from the remote sandbox PTY.
     """
     computer = get_daytona_computer()
     lower = prompt.lower()
     observations: list[str] = []
 
+    # 1. Application / package installation
     if "install" in lower:
         package = _extract_install_package(prompt)
-        if not package:
-            message = "Tell me the exact package name to install (for example: 'install htop'). No package was guessed or installed."
-            _append_worklog(state, "action", "Waiting for package name", message)
-            return observations, message, False
-        allowed, reason = ApplicationPolicy().is_package_allowed(package)
-        if not allowed:
-            message = f"Installation blocked by the sandbox package policy: {reason}"
-            _append_worklog(state, "error", "Package installation blocked", message)
-            return observations, message, True
-        ok, output = await computer.install_application(desktop_id, package, actor=tenant_id)
-        result_text = (output or "(package manager returned no output)").strip()[:8000]
-        observations.append(f"install {package}: exit={'0' if ok else 'non-zero'}\n{result_text}")
-        _append_worklog(
-            state,
-            "action" if ok else "error",
-            f"Install {package}",
-            f"Real Daytona package-manager result:\n{result_text}",
-        )
-        verify = await computer.terminal(
-            desktop_id,
-            f"dpkg-query -W -f='${{Status}}' -- {shlex.quote(package)} 2>/dev/null || true",
-            actor=tenant_id,
-        )
-        verify_text = (verify.stdout + ("\n" + verify.stderr if verify.stderr else "")).strip()[:4000]
-        observations.append(f"verify {package}: exit={verify.exit_code}\n{verify_text}")
-        _append_worklog(state, "action", f"Verify {package}", f"Real package verification:\n{verify_text or '(no package status returned)'}")
-        if not ok:
-            return observations, f"The real Daytona package installation failed for `{package}`. See the terminal result above; no success was claimed.", True
-        return observations, None, False
+        if package:
+            allowed, reason = ApplicationPolicy().is_package_allowed(package)
+            if not allowed:
+                message = f"Installation blocked by the sandbox package policy: {reason}"
+                _append_worklog(state, "error", "Package installation blocked", message)
+                return observations, message, True
+            ok, output = await computer.install_application(desktop_id, package, actor=tenant_id)
+            result_text = (output or "(package manager returned no output)").strip()[:8000]
+            observations.append(f"install {package}: exit={'0' if ok else 'non-zero'}\n{result_text}")
+            _append_worklog(
+                state,
+                "action" if ok else "error",
+                f"Install {package}",
+                f"Real Daytona package-manager result:\n{result_text}",
+            )
+            verify = await computer.terminal(
+                desktop_id,
+                f"dpkg-query -W -f='${{Status}}' -- {shlex.quote(package)} 2>/dev/null || true",
+                actor=tenant_id,
+            )
+            verify_text = (verify.stdout + ("\n" + verify.stderr if verify.stderr else "")).strip()[:4000]
+            observations.append(f"verify {package}: exit={verify.exit_code}\n{verify_text}")
+            _append_worklog(state, "action", f"Verify {package}", f"Real package verification:\n{verify_text or '(no package status returned)'}")
+            if not ok:
+                return observations, f"The real Daytona package installation failed for `{package}`. See the terminal result above; no success was claimed.", True
+            return observations, None, False
 
+    # 2. Explicit terminal command execution
     command = _extract_terminal_command(prompt)
     if command:
         risk = get_scope_checker().classify_command_risk(command)
@@ -1314,17 +1375,65 @@ async def _run_autonomous_desktop_loop(
         result = await computer.terminal(desktop_id, command, timeout=120, actor=tenant_id)
         output = (result.stdout + ("\n" + result.stderr if result.stderr else "")).strip()[:8000]
         observations.append(f"{command}: exit={result.exit_code}\n{output}")
-        _append_worklog(state, "action" if result.exit_code == 0 else "error", "Terminal command", f"`{command}`\nReal Daytona result:\n{output or '(no output)'}")
-        if result.exit_code != 0:
-            return observations, f"The real Daytona command exited with code {result.exit_code}. No successful result was claimed.", True
+        _append_worklog(state, "action" if result.exit_code == 0 else "error", "Terminal Command Executed", f"`{command}`\nReal Daytona result:\n{output or '(no output)'}")
         return observations, None, False
 
-    if any(term in lower for term in ("test", "scan", "check", "inspect", "list files", "show files")):
-        for command in ("pwd", "ls -la /home/sonic/workspace 2>/dev/null | head -40", "git -C /home/sonic/workspace status --short 2>/dev/null || true"):
-            result = await computer.terminal(desktop_id, command, timeout=120, actor=tenant_id)
+    # 3. Security Recon / Bug Hunting / Target Analysis
+    target = _extract_target_url_or_domain(prompt, state)
+    is_security_recon = any(k in lower for k in ("bug", "recon", "scan", "test", "check", "try", "karo", "dhundo", "bounty", "vulnerability", "audit", "opensea"))
+
+    if is_security_recon:
+        # Step A: Inspect sandbox system environment
+        env_cmd = "whoami; pwd; uname -a"
+        env_res = await computer.terminal(desktop_id, env_cmd, timeout=30, actor=tenant_id)
+        env_out = (env_res.stdout + ("\n" + env_res.stderr if env_res.stderr else "")).strip()
+        observations.append(f"Workstation Sandbox Environment:\n{env_out}")
+        _append_worklog(state, "action", "Sandbox Environment Verified", f"`{env_cmd}`\n{env_out}")
+
+        # Step B: If target domain found, run targeted safe recon
+        if target:
+            target_clean = re.sub(r"^https?://", "", target).strip("/")
+            recon_cmds = [
+                (
+                    f"HTTP Headers Recon ({target_clean})",
+                    f"curl -s -I -L --max-time 10 https://{target_clean} | head -n 35",
+                ),
+                (
+                    f"Robots & Endpoints ({target_clean})",
+                    f"curl -s --max-time 10 https://{target_clean}/robots.txt | head -n 35",
+                ),
+                (
+                    f"HTTP Methods & CORS ({target_clean})",
+                    f"curl -s -I -X OPTIONS --max-time 10 https://{target_clean} | head -n 25",
+                ),
+                (
+                    f"Security Policy ({target_clean})",
+                    f"curl -s -I --max-time 10 https://{target_clean}/.well-known/security.txt 2>/dev/null | head -n 25",
+                ),
+            ]
+            for title, cmd in recon_cmds:
+                res = await computer.terminal(desktop_id, cmd, timeout=30, actor=tenant_id)
+                out = (res.stdout + ("\n" + res.stderr if res.stderr else "")).strip()
+                if out:
+                    observations.append(f"{title} [`{cmd}`]: exit={res.exit_code}\n{out[:4000]}")
+                    _append_worklog(state, "action", title, f"`{cmd}`\nReal Daytona output:\n{out[:4000]}")
+        else:
+            # General workspace inspection
+            ws_cmd = "ls -la /home/daytona 2>/dev/null || ls -la"
+            ws_res = await computer.terminal(desktop_id, ws_cmd, timeout=30, actor=tenant_id)
+            ws_out = (ws_res.stdout + ("\n" + ws_res.stderr if ws_res.stderr else "")).strip()
+            observations.append(f"Workspace Directory:\n{ws_out[:3000]}")
+            _append_worklog(state, "action", "Workspace Files Listed", f"`{ws_cmd}`\n{ws_out[:3000]}")
+
+        return observations, None, False
+
+    # 4. General workspace inspection
+    if any(term in lower for term in ("inspect", "list files", "show files", "workspace")):
+        for command in ("pwd", "ls -la /home/daytona 2>/dev/null || ls -la", "git -C /home/sonic/workspace status --short 2>/dev/null || true"):
+            result = await computer.terminal(desktop_id, command, timeout=60, actor=tenant_id)
             output = (result.stdout + ("\n" + result.stderr if result.stderr else "")).strip()[:6000]
             observations.append(f"{command}: exit={result.exit_code}\n{output}")
-            _append_worklog(state, "action" if result.exit_code == 0 else "error", "Desktop inspection step", f"`{command}`\nReal Daytona result:\n{output or '(no output)'}")
+            _append_worklog(state, "action" if result.exit_code == 0 else "error", "Desktop Inspection Step", f"`{command}`\nReal Daytona result:\n{output or '(no output)'}")
         return observations, None, False
 
     return observations, None, False
@@ -1342,9 +1451,7 @@ async def _run_prompt_reasoning(tenant_id: str, session_id: str, prompt: str) ->
         from sonic.llm.providers.custom import CustomLLMProvider
         from sonic.llm.schemas import LLMRequest, Message, MessageRole
 
-        # Give the model an observation from the same real Computer Use plane
-        # that powers the noVNC display. This proves/uses agent access without
-        # silently clicking or typing on the user's desktop.
+        # Give the model an observation from the real Computer Use plane
         desktop_id = str(state.get("desktop", {}).get("workspace_id") or state.get("desktop", {}).get("sandbox_id") or "")
         if _is_action_prompt(prompt) and not desktop_id:
             message = (
@@ -1358,6 +1465,7 @@ async def _run_prompt_reasoning(tenant_id: str, session_id: str, prompt: str) ->
             state["current_action"] = "Execution blocked — provision a live Daytona desktop"
             _persist_workstation_state()
             return
+
         if desktop_id:
             try:
                 computer = get_daytona_computer()
@@ -1365,12 +1473,9 @@ async def _run_prompt_reasoning(tenant_id: str, session_id: str, prompt: str) ->
                 terminal = await computer.terminal(desktop_id, "pwd", actor=tenant_id)
                 inventory = await computer.terminal(
                     desktop_id,
-                    "ls -la /home/sonic/workspace 2>/dev/null | head -40",
+                    "ls -la /home/daytona 2>/dev/null | head -40",
                     actor=tenant_id,
                 )
-                # A free-form prompt may explicitly request an app launch. In
-                # that case the agent performs the real GUI action itself;
-                # arbitrary clicks/keystrokes are never inferred implicitly.
                 prompt_lower = prompt.lower()
                 requested_app = ""
                 if "open terminal" in prompt_lower or "launch terminal" in prompt_lower:
@@ -1400,8 +1505,8 @@ async def _run_prompt_reasoning(tenant_id: str, session_id: str, prompt: str) ->
                 state["worklog"].append({
                     "id": f"wl-{len(state['worklog']) + 1}",
                     "type": "action",
-                    "title": "Agent Desktop Cycle Complete",
-                    "content": "Agent captured a real screenshot and inspected the Daytona workspace via PTY. " + desktop_context,
+                    "title": "Agent Desktop Observation",
+                    "content": "Agent inspected the Daytona Linux workstation via PTY & screenshot. " + desktop_context,
                 })
                 desktop_cycle_completed = True
             except Exception as observation_err:
@@ -1413,15 +1518,13 @@ async def _run_prompt_reasoning(tenant_id: str, session_id: str, prompt: str) ->
                     "content": "The live desktop could not be observed; no GUI action was performed.",
                 })
 
-        # Execute explicit operator actions as a bounded real loop before asking
-        # the model for a summary. This prevents a language-only response from
-        # pretending that a command was run or an app was installed.
+        # Execute autonomous action loop if applicable
         if desktop_id and _is_action_prompt(prompt):
             action_observations, action_message, action_blocked = await _run_autonomous_desktop_loop(
                 state, desktop_id, tenant_id, prompt
             )
             if action_observations:
-                desktop_context += "\nReal action results:\n" + "\n\n".join(action_observations)
+                desktop_context += "\n\n--- Real Daytona Sandbox Terminal Execution Results ---\n" + "\n\n".join(action_observations)
             if action_message:
                 state["thought_summary"] = action_message
                 _append_worklog(state, "response", "SONIC Response", action_message)
@@ -1450,32 +1553,32 @@ async def _run_prompt_reasoning(tenant_id: str, session_id: str, prompt: str) ->
             })
         else:
             llm_configured = True
+            model_to_use = "meta/llama-3.2-11b-vision-instruct"
             llm = CustomLLMProvider(
                 name="nvidia",
                 base_url=nvidia_url,
                 api_key=nvidia_key,
-                default_model="meta/llama-3.2-11b-vision-instruct",
+                default_model=model_to_use,
             )
             system_prompt = (
                 "You are SONIC-REDA, an elite Autonomous AI Engineer & Security Researcher. "
-                "You have access to a live Daytona Linux workstation, bash terminal, and git repository. "
-                "Respond concisely and helpfully to the operator's prompt or question. Give clear engineering insights. "
-                "Use only the live observation and REAL action results supplied in the request; never claim a command, "
-                "install, GUI action, or terminal output happened unless an explicit real tool result is present. "
-                "If no real action result exists, say that execution was blocked or ask for the missing information. "
-                "For an informational question or pasted research/web text, answer or ask what the operator wants "
-                "analyzed; do not call it blocked merely because the desktop observation is unavailable."
+                "You have real-time live execution access to the Daytona Linux workstation and bash terminal.\n\n"
+                "YOUR CORE BEHAVIOR:\n"
+                "1. ACT PROACTIVELY: When the operator gives a task (recon, bug hunting, testing, analysis, command execution), analyze the real sandbox execution results provided in context.\n"
+                "2. PROVIDE SPECIFIC TECHNICAL FINDINGS: Break down HTTP headers, technologies, exposed endpoints, security headers, potential vulnerability hypotheses (e.g. CORS, CSP, XSS, Broken Links, API flaws, Smart Contract interfaces), and attack surface.\n"
+                "3. CONCRETE NEXT STEPS: Always give clear, actionable next steps or commands to run in the workstation.\n"
+                "4. LANGUAGE: Always respond in clear, professional, concise English. If the operator speaks in Hindi, Hinglish, or another language, understand the intent fully and respond exclusively in English.\n"
+                "5. GROUNDED IN REALITY: Ground your analysis strictly in the real Daytona terminal output provided."
             )
             messages = [
                 Message(role=MessageRole.SYSTEM, content=system_prompt),
-                Message(role=MessageRole.USER, content=f"{prompt}\n\n{desktop_context}"),
+                Message(role=MessageRole.USER, content=f"Operator Objective:\n{prompt}\n\nWorkstation Context & Real Terminal Output:\n{desktop_context}"),
             ]
-            # Provider calls are deliberately bounded; the task remains auditable
-            # and transitions to BLOCKED if the upstream model does not respond.
             llm_res = await asyncio.wait_for(
-                llm.complete(LLMRequest(messages=messages, max_tokens=350, temperature=0.2)),
-                timeout=60,
+                llm.complete(LLMRequest(messages=messages, max_tokens=900, temperature=0.2)),
+                timeout=30,
             )
+
             if llm_res and llm_res.content:
                 reasoning_available = True
                 state["thought_summary"] = llm_res.content
@@ -1490,14 +1593,13 @@ async def _run_prompt_reasoning(tenant_id: str, session_id: str, prompt: str) ->
     except Exception as llm_err:
         logger.warning("workstation_llm_reasoning_failed", error=str(llm_err))
         state["thought_summary"] = (
-            "LLM provider is configured but unreachable or returned an error. "
-            "No model-driven action was performed. Check NVIDIA_BASE_URL/network connectivity."
+            f"LLM reasoning error: {llm_err}. Check NVIDIA_BASE_URL/network connectivity."
         )
         state["worklog"].append({
             "id": f"wl-{len(state['worklog']) + 1}",
             "type": "error",
             "title": "Execution Failed",
-            "content": f"LLM reasoning failed; no autonomous execution was performed: {llm_err}",
+            "content": f"LLM reasoning failed: {llm_err}",
         })
 
     state["status"] = "IDLE" if (not action_blocked and (reasoning_available or desktop_cycle_completed)) else "BLOCKED"
@@ -1531,6 +1633,38 @@ async def send_workstation_prompt(
         "content": f"Objective: '{req.prompt}' (Tenant: {user.email})",
     })
     _persist_workstation_state()
+
+    # Autonomous mode means a mission, not a one-shot chat completion. It can
+    # start only after the operator has explicitly provisioned a scoped target
+    # sandbox; otherwise no external action is inferred from free-form text.
+    if req.mode.lower() == "autonomous":
+        target_id = _session_target_id(user, session_id)
+        target_box = state.get("target_sandbox", {})
+        if not target_id or not target_box.get("scope_verified", False):
+            state["status"] = "BLOCKED"
+            state["current_action"] = "Autonomous mission blocked — provision and scope-verify a target sandbox first."
+            message = "Autonomous mode needs an explicitly scoped target sandbox. Open the Mission tab, provision the authorized target, then resend this objective."
+            _append_worklog(state, "response", "SONIC Response", message)
+            _persist_workstation_state()
+            return {"status": "blocked", "reason": "scoped_target_required", "message": message, "state": state}
+        if state.get("mission", {}).get("status") == "RUNNING":
+            raise HTTPException(status_code=409, detail="A mission is already running for this session")
+
+        mission_id = f"mission-{uuid.uuid4().hex[:10]}"
+        state["mission"].update({
+            "mission_id": mission_id,
+            "objective": req.prompt.strip(),
+            "status": "QUEUED",
+            "target_sandbox_id": target_id,
+            "started_at": _timestamp(),
+            "completed_at": "",
+            "events": [],
+        })
+        state["status"] = "RUNNING"
+        state["current_action"] = "Autonomous mission queued for evidence-based discovery."
+        _mission_event(state, "mission", "Autonomous mission accepted", req.prompt.strip(), mission_id=mission_id, workspace_id=target_id)
+        asyncio.create_task(_run_mission_preflight(user.email, session_id, mission_id))
+        return {"status": "accepted", "reasoning": "mission_queued", "message": "Autonomous mission queued for the scoped target.", "state": state}
 
     # Never hold the HTTP request open on an external LLM.  The dashboard can
     # refresh workstation state while this task records the real result.

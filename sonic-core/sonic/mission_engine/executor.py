@@ -29,7 +29,7 @@ class ActionExecutionResult(BaseModel):
 class MissionToolExecutor:
     """Fail-closed executor for the typed mission tool registry."""
 
-    _READONLY_COMMANDS = ("pwd", "git status", "find ", "ls", "whoami", "uname")
+    _READONLY_COMMANDS = ("pwd", "git status", "git log", "find ", "ls", "whoami", "uname")
 
     def __init__(self, computer: DaytonaComputerProvider, security_tools: SecurityToolRegistry | None = None):
         self.computer = computer

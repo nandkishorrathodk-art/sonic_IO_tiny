@@ -25,7 +25,7 @@ interface WorklogFeedProps {
   worklog: WorklogItem[];
   currentAction?: string;
   loading: boolean;
-  onSendPrompt: (prompt: string) => Promise<void>;
+  onSendPrompt: (prompt: string, mode: "Normal" | "Autonomous" | "Pair-Program") => Promise<void>;
   onSelectFile?: (filePath: string) => void;
   sessionName?: string;
   gitBranch?: string;
@@ -67,7 +67,7 @@ export function WorklogFeed({
     if (!promptText.trim() || loading) return;
     const text = promptText;
     setPromptText("");
-    await onSendPrompt(text);
+    await onSendPrompt(text, activeMode);
   };
 
   // Empty means a genuinely new chat. Never seed fabricated timeline entries.

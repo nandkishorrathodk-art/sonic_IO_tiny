@@ -89,7 +89,7 @@ class Settings(BaseSettings):
     tenant_admin_emails: str = ""  # Comma-separated tenant-admin email addresses
     jwt_secret: str = Field(
         default="CHANGE-ME",
-        validation_alias=AliasChoices("jwt_secret", "SECRET_KEY", "JWT_SECRET"),
+        validation_alias=AliasChoices("SECRET_KEY", "JWT_SECRET", "jwt_secret"),
     )
     jwt_algorithm: str = "HS256"
     jwt_expiry_hours: int = 24
@@ -113,7 +113,12 @@ class Settings(BaseSettings):
     app_host: str = "0.0.0.0"
     app_port: int = 8000
     log_level: str = "INFO"
-    cors_origins: str = "http://localhost:3000,http://localhost:8000"
+    cors_origins: str = (
+        "http://localhost:3000,http://127.0.0.1:3000,"
+        "http://localhost:8000,http://127.0.0.1:8000,"
+        "http://localhost:12000,http://127.0.0.1:12000,"
+        "http://localhost:12001,http://127.0.0.1:12001"
+    )
 
     # ---- Computed Properties ----
 

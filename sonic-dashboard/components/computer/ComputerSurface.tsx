@@ -5,8 +5,9 @@ import {
   Minimize2,
   RefreshCw,
   Monitor,
-  ExternalLink,
-  MousePointer,
+  Bot,
+  Shield,
+  Eye,
 } from "lucide-react";
 import { DesktopState, CommandResult } from "../../types/workstation";
 import { api } from "../../lib/api";
@@ -38,36 +39,6 @@ export function ComputerSurface({
   const [screenshotBase64, setScreenshotBase64] = useState<string | null>(null);
   const [fullscreen, setFullscreen] = useState(false);
   const [loadingScreen, setLoadingScreen] = useState(false);
-  const [vncUrl, setVncUrl] = useState<string | null>(null);
-  const [mouseCoords, setMouseCoords] = useState<{ x: number; y: number } | null>(null);
-  const [lastClick, setLastClick] = useState<{ x: number; y: number; id: number } | null>(null);
-  // Daytona's proxy auth callback uses redirect+cookie which Chrome blocks
-  // inside cross-origin iframes.  When this happens the iframe renders a JSON
-  // 400 error instead of the noVNC desktop.  We detect this and fall back to
-  // screenshot-based live preview while keeping "Open Tab" for the real thing.
-  const [iframeAuthFailed, setIframeAuthFailed] = useState(false);
-
-  // Resolve VNC URL from desktopState or fetch it from stream endpoint
-  useEffect(() => {
-    const stateUrl = desktopState?.vnc_url;
-    if (stateUrl) {
-      setVncUrl(stateUrl);
-      setIframeAuthFailed(false);
-    } else {
-      setVncUrl(null);
-      setIframeAuthFailed(false);
-      api
-        .getDesktopStream(sessionId)
-        .then((data) => {
-          if (data?.vnc_url) {
-            setVncUrl(data.vnc_url);
-          }
-        })
-        .catch(() => {
-          // Stream endpoint unavailable
-        });
-    }
-  }, [desktopState?.vnc_url, sessionId]);
 
   const fetchScreenshot = async () => {
     try {
@@ -85,81 +56,19 @@ export function ComputerSurface({
     }
   };
 
-  const refreshStream = async () => {
-    try {
-      setLoadingScreen(true);
-      const data = await api.getDesktopStream(sessionId);
-      if (data?.vnc_url) {
-        setVncUrl(data.vnc_url);
-        setIframeAuthFailed(false);
-      }
-    } catch {
-      // Keep the current live URL if the preview refresh is temporarily unavailable.
-    } finally {
-      setLoadingScreen(false);
-    }
-  };
-
-  // Screenshot polling: run when there is no working iframe stream
-  const useScreenshots = !vncUrl || iframeAuthFailed;
+  // Poll live screenshot from Daytona sandbox every 3 seconds for read-only agent monitoring
   useEffect(() => {
-    if (useScreenshots) {
-      fetchScreenshot();
-      const interval = setInterval(fetchScreenshot, 3000);
-      return () => clearInterval(interval);
-    }
-  }, [useScreenshots, sessionId]);
-
-  // When iframe loads, probe for auth failure after a short delay.
-  useEffect(() => {
-    if (vncUrl && !iframeAuthFailed) {
-      const timer = setTimeout(() => {
-        setIframeAuthFailed(true);
-      }, 4000);
-      return () => clearTimeout(timer);
-    }
-  }, [vncUrl]);
-
-  const handleMouseMove = (e: React.MouseEvent<HTMLDivElement>) => {
-    const rect = e.currentTarget.getBoundingClientRect();
-    if (rect.width > 0 && rect.height > 0) {
-      const x = Math.max(0, Math.min(1280, Math.round((e.clientX - rect.left) * (1280 / rect.width))));
-      const y = Math.max(0, Math.min(800, Math.round((e.clientY - rect.top) * (800 / rect.height))));
-      setMouseCoords({ x, y });
-    }
-  };
-
-  const handleMouseLeave = () => {
-    setMouseCoords(null);
-  };
-
-  const handleDesktopClick = async (e: React.MouseEvent<HTMLDivElement>) => {
-    const rect = e.currentTarget.getBoundingClientRect();
-    const x = Math.max(0, Math.min(1280, Math.round((e.clientX - rect.left) * (1280 / rect.width))));
-    const y = Math.max(0, Math.min(800, Math.round((e.clientY - rect.top) * (800 / rect.height))));
-    setLastClick({ x, y, id: Date.now() });
-
-    // Only dispatch click coordinates in screenshot mode (not iframe)
-    if (vncUrl && !iframeAuthFailed) return;
-
-    try {
-      await api.executeDesktopAction({
-        action: "click",
-        coordinates: [x, y],
-        sessionId,
-      });
-      await fetchScreenshot();
-    } catch {
-      // ignore
-    }
-  };
+    fetchScreenshot();
+    const interval = setInterval(fetchScreenshot, 3000);
+    return () => clearInterval(interval);
+  }, [sessionId]);
 
   const hasScreenshot = Boolean(screenshotBase64 && screenshotBase64.length > 100);
-  const isLive = Boolean(vncUrl || desktopState?.vnc_url || hasScreenshot);
+  const isLive = Boolean(desktopState?.workspace_id || desktopState?.sandbox_id || hasScreenshot);
   const resolution = desktopState?.resolution;
   const displayLabel = [
     desktopState?.display,
-    resolution?.width && resolution?.height ? `${resolution.width}x${resolution.height}` : "",
+    resolution?.width && resolution?.height ? `${resolution.width}x${resolution.height}` : "1280x800",
   ]
     .filter(Boolean)
     .join(" ");
@@ -181,9 +90,9 @@ export function ComputerSurface({
             )}
           </span>
           {isLive ? (
-            <span className="flex items-center gap-1 text-[10px] text-[#3FB950] font-semibold bg-[#238636]/15 border border-[#238636]/30 px-1.5 py-0.5 rounded">
-              <span className="w-1.5 h-1.5 rounded-full bg-[#3FB950] animate-pulse"></span>
-              <span>LIVE DESKTOP {hasScreenshot ? "(screenshot)" : "(noVNC)"}</span>
+            <span className="flex items-center gap-1.5 text-[10px] text-emerald-400 font-semibold bg-emerald-950/50 border border-emerald-500/30 px-2 py-0.5 rounded">
+              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
+              <span>AGENT CONTROLLED</span>
             </span>
           ) : (
             <span className="flex items-center gap-1 text-[10px] text-[#8B949E] font-semibold bg-[#21262D]/60 border border-[#30363D] px-1.5 py-0.5 rounded">
@@ -194,24 +103,10 @@ export function ComputerSurface({
         </div>
 
         <div className="flex items-center gap-2">
-          {mouseCoords && (
-            <span className="hidden sm:flex items-center gap-1 text-[10px] font-mono text-emerald-400 bg-emerald-950/40 border border-emerald-500/30 px-2 py-0.5 rounded">
-              <MousePointer className="w-3 h-3 text-emerald-400" />
-              <span>X:{mouseCoords.x} Y:{mouseCoords.y}</span>
-            </span>
-          )}
-          {vncUrl && (
-            <a
-              href={vncUrl}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="p-1 hover:bg-[#21262D] rounded text-[#8B949E] hover:text-white transition flex items-center gap-1 text-[11px]"
-              title="Open full interactive Daytona noVNC Desktop in new tab (recommended)"
-            >
-              <ExternalLink className="w-3.5 h-3.5" />
-              <span className="hidden sm:inline">Open noVNC Tab</span>
-            </a>
-          )}
+          <span className="hidden sm:flex items-center gap-1 text-[10px] font-mono text-slate-400 bg-[#0D1117] border border-[#30363D] px-2 py-0.5 rounded">
+            <Eye className="w-3 h-3 text-slate-400" />
+            <span>Read-Only Monitor</span>
+          </span>
           <button
             onClick={async (e) => { e.stopPropagation(); await fetchScreenshot(); }}
             className="p-1 hover:bg-[#21262D] rounded text-[#8B949E] hover:text-white transition"
@@ -229,99 +124,61 @@ export function ComputerSurface({
         </div>
       </div>
 
-      {/* Main Surface Body: Live Screenshot Desktop / noVNC new-tab fallback */}
+      {/* Main Surface Body: Read-Only Autonomous Agent Live Screen */}
       <div
-        className="flex-1 bg-[#06080D] relative flex items-center justify-center overflow-hidden cursor-crosshair select-none"
+        className="flex-1 bg-[#06080D] relative flex items-center justify-center overflow-hidden select-none"
         style={{ minHeight: 0 }}
       >
         {hasScreenshot ? (
-          /* Live interactive X11 desktop canvas with coordinate click dispatch */
-          <div
-            onClick={handleDesktopClick}
-            onMouseMove={handleMouseMove}
-            onMouseLeave={handleMouseLeave}
-            className="w-full h-full max-w-[1280px] max-h-[800px] aspect-[16/10] rounded border border-[#21262D] bg-[#000000] relative shadow-2xl overflow-hidden flex items-center justify-center m-2 group"
-          >
+          /* Live read-only X11 desktop canvas for agent monitoring */
+          <div className="w-full h-full max-w-[1280px] max-h-[800px] aspect-[16/10] rounded border border-[#21262D] bg-[#000000] relative shadow-2xl overflow-hidden flex items-center justify-center m-2">
             <img
               src={`data:image/png;base64,${screenshotBase64}`}
               alt="Daytona Graphical Desktop"
               className="w-full h-full object-contain pointer-events-none select-none"
             />
 
-            {/* Live Cursor Coordinate HUD Pill */}
-            <div className="absolute top-2.5 left-2.5 z-20 flex items-center gap-1.5 px-2 py-0.5 rounded-md bg-black/80 border border-[#30363D] text-[11px] font-mono text-emerald-400 shadow-md backdrop-blur-sm pointer-events-none">
-              <MousePointer className="w-3 h-3 text-emerald-400 animate-pulse" />
-              <span>{mouseCoords ? `X: ${mouseCoords.x} | Y: ${mouseCoords.y}` : "1280x800 Interactive"}</span>
+            {/* Exclusive Autonomous Control Badge */}
+            <div className="absolute top-2.5 left-2.5 z-20 flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-black/80 border border-emerald-500/30 text-[11px] font-mono text-emerald-400 shadow-lg backdrop-blur-sm pointer-events-none">
+              <Bot className="w-3.5 h-3.5 text-emerald-400" />
+              <span>SONIC Autonomous Desktop</span>
+              <span className="text-[9px] text-slate-400 uppercase tracking-wider ml-1 bg-slate-800 px-1 py-0.2 rounded">Live Feed</span>
             </div>
 
-            {/* Click Ripple Indicator */}
-            {lastClick && (
-              <div
-                key={lastClick.id}
-                style={{
-                  left: `${(lastClick.x / 1280) * 100}%`,
-                  top: `${(lastClick.y / 800) * 100}%`,
-                }}
-                className="absolute w-6 h-6 -ml-3 -mt-3 rounded-full border-2 border-emerald-400 bg-emerald-500/30 pointer-events-none animate-ping duration-700 z-30"
-              />
-            )}
-
-            {vncUrl && (
-              <div className="absolute bottom-2 right-2 z-10">
-                <a
-                  href={vncUrl}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-[#238636]/80 hover:bg-[#238636] border border-[#3FB950]/40 text-[10px] font-mono text-white transition shadow-lg backdrop-blur-sm"
-                  onClick={(e) => e.stopPropagation()}
-                >
-                  <ExternalLink className="w-3 h-3" />
-                  <span>Open Interactive noVNC</span>
-                </a>
-              </div>
-            )}
+            {/* Security Guarantee Pill */}
+            <div className="absolute bottom-2.5 right-2.5 z-20 flex items-center gap-1.5 px-2 py-0.5 rounded bg-black/70 border border-[#30363D] text-[10px] font-mono text-slate-400 backdrop-blur-sm pointer-events-none">
+              <Shield className="w-3 h-3 text-blue-400" />
+              <span>Agent Sandboxed (Fail-Closed)</span>
+            </div>
           </div>
         ) : isLive ? (
-
           /* Loading state while first screenshot is captured */
           <div className="w-full h-full max-w-[1280px] max-h-[800px] aspect-[16/10] rounded border border-[#21262D] bg-[#0A0D14] flex flex-col items-center justify-center p-6 text-center space-y-3 m-3">
-            <div className="w-12 h-12 rounded-full bg-[#161B22] border border-[#238636]/30 flex items-center justify-center text-[#3FB950]">
+            <div className="w-12 h-12 rounded-full bg-[#161B22] border border-emerald-500/30 flex items-center justify-center text-emerald-400">
               <RefreshCw className="w-6 h-6 animate-spin" />
             </div>
             <div className="space-y-1">
               <h3 className="text-sm font-semibold text-white font-mono">
-                Connecting to live desktop…
+                Connecting to live agent desktop…
               </h3>
               <p className="text-xs text-[#8B949E] font-mono max-w-md">
-                Capturing real-time screenshot from your Daytona workstation. The display will appear momentarily.
+                Streaming real-time view from SONIC's Daytona workstation. The display will appear momentarily.
               </p>
             </div>
-            {vncUrl && (
-              <a
-                href={vncUrl}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#238636]/25 hover:bg-[#238636]/40 border border-[#3FB950]/40 text-xs font-mono text-[#3FB950] transition"
-                onClick={(e) => e.stopPropagation()}
-              >
-                <ExternalLink className="w-3.5 h-3.5" />
-                <span>Open Interactive noVNC in New Tab</span>
-              </a>
-            )}
           </div>
         ) : (
-          /* Explicit disconnected state — zero fake data */
+          /* Explicit disconnected state */
           <div className="w-full h-full max-w-[1280px] max-h-[800px] aspect-[16/10] rounded border border-[#21262D] bg-[#0A0D14] flex flex-col items-center justify-center p-6 text-center space-y-3 m-3">
             <div className="w-12 h-12 rounded-full bg-[#161B22] border border-[#30363D] flex items-center justify-center text-[#8B949E]">
               <Monitor className="w-6 h-6" />
             </div>
             <div className="space-y-1">
-            <h3 className="text-sm font-semibold text-white font-mono">
+              <h3 className="text-sm font-semibold text-white font-mono">
                 No live display — sandbox disconnected
               </h3>
               <p className="text-xs text-[#8B949E] font-mono max-w-md">
                 No tenant-owned Daytona workstation is attached to this session. Provision one to create a real
-                remote desktop; display streaming will remain unavailable until the provider returns a live URL.
+                remote desktop for SONIC to control.
               </p>
             </div>
             <div className="flex items-center gap-2">

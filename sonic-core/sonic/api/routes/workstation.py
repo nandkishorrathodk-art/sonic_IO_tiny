@@ -1413,27 +1413,31 @@ def _is_action_prompt(prompt: str) -> bool:
     if not lower:
         return False
 
-    # 1. Explicit terminal command syntax or direct shell command invocation
+    # 1. Window / Process closing commands
+    if any(k in lower for k in ("close terminal", "kill terminal", "exit terminal", "close your terminal", "close window", "band karo", "close app", "close browser")):
+        return True
+
+    # 2. Explicit terminal command syntax or direct shell command invocation
     if _extract_terminal_command(prompt):
         return True
 
-    # 2. Package install intent
+    # 3. Package install intent
     if _extract_install_package(prompt):
         return True
 
-    # 3. GUI app opening / launching on desktop
+    # 4. GUI app opening / launching on desktop
     app, _ = _detect_requested_app(prompt)
     if app and any(k in lower for k in ("open", "launch", "start", "view", "browse", "run", "khol", "kholo", "chalao")):
         return True
 
-    # 4. Targeted recon or live security scanning on a specific target domain / url
+    # 5. Targeted recon, bug bounty, bug hunting or live security scanning
     has_target = bool(re.search(r"https?://[^\s]+|\b[a-zA-Z0-9-]+\.(?:io|com|org|net|app|co|dev|xyz|ai|me)\b", prompt, re.IGNORECASE))
-    scan_verbs = ("recon", "scan", "audit", "pentest", "nmap", "curl", "dig", "traceroute", "ping", "whois", "test")
+    scan_verbs = ("recon", "scan", "audit", "pentest", "nmap", "curl", "dig", "traceroute", "ping", "whois", "test", "bug", "bounty", "vulnerability", "rce", "xss", "sqli", "cors", "graphql")
     if has_target and any(w in lower for w in scan_verbs):
         return True
 
-    # 5. Active recon / scan phrases
-    if any(p in lower for p in ("active recon", "target recon", "network scan", "port scan")):
+    # 6. Active recon / bug hunting phrases without explicit target url
+    if any(p in lower for p in ("active recon", "target recon", "network scan", "port scan", "bug hunt", "bug bounty", "find bug", "look for bug", "find bugs", "security audit", "start pentest")):
         return True
 
     return False
@@ -1588,7 +1592,7 @@ async def _run_autonomous_desktop_loop(
         observations.append(f"Workstation Sandbox Environment:\n{env_out}")
         _append_worklog(state, "action", "Sandbox Environment Verified", f"`{env_cmd}`\n{env_out}")
 
-        # Step B: Multi-Phase Security Reconnaissance
+        # Step B: Multi-Phase Deep Security Assessment
         if target:
             target_clean = re.sub(r"^https?://", "", target).strip("/")
             target_clean = re.sub(r"[^a-zA-Z0-9.:-]", "", target_clean)
@@ -1596,24 +1600,32 @@ async def _run_autonomous_desktop_loop(
                 target_url = shlex.quote(f"https://{target_clean}")
                 recon_steps = [
                     (
-                        f"Phase 1: DNS & Infrastructure ({target_clean})",
-                        f"dig +short A {target_clean} && dig +short CNAME {target_clean}",
+                        f"Phase 1: DNS & Infrastructure Mapping ({target_clean})",
+                        f"dig +short A {target_clean} && dig +short CNAME {target_clean} && dig +short TXT {target_clean} | head -n 8",
                     ),
                     (
                         f"Phase 2: Port & Service Discovery ({target_clean})",
                         f"nmap -sV -Pn -p 80,443 --open --max-retries 1 {target_clean} 2>/dev/null || true",
                     ),
                     (
-                        f"Phase 3: HTTP Security Headers ({target_clean})",
+                        f"Phase 3: HTTP Security Headers & Transport ({target_clean})",
                         f"curl -s -I -L --max-time 10 {target_url} | head -n 35",
                     ),
                     (
-                        f"Phase 4: CORS & Method Probe ({target_clean})",
+                        f"Phase 4: CORS & HTTP Method Probe ({target_clean})",
                         f"curl -s -I -X OPTIONS -H \"Origin: https://attacker.com\" --max-time 10 {target_url} | head -n 25",
                     ),
                     (
-                        f"Phase 5: Security Policy & Endpoints ({target_clean})",
-                        f"curl -s -I --max-time 10 {shlex.quote(f'https://{target_clean}/.well-known/security.txt')} 2>/dev/null | head -n 20",
+                        f"Phase 5: Client-Side JS Chunks & Endpoint Discovery ({target_clean})",
+                        f"curl -s -L --max-time 10 {target_url} | grep -oE 'https?://[a-zA-Z0-9./_=-]+\\.js' | head -n 15 || true",
+                    ),
+                    (
+                        f"Phase 6: GraphQL & API Introspection Probe ({target_clean})",
+                        f"curl -s -I --max-time 10 {shlex.quote(f'https://{target_clean}/graphql')} 2>/dev/null | head -n 15 && curl -s -I --max-time 10 {shlex.quote(f'https://{target_clean}/api/v2')} 2>/dev/null | head -n 15 || true",
+                    ),
+                    (
+                        f"Phase 7: Security Policy & Responsible Disclosure ({target_clean})",
+                        f"curl -s -I --max-time 10 {shlex.quote(f'https://{target_clean}/.well-known/security.txt')} 2>/dev/null | head -n 20 && curl -s --max-time 10 {shlex.quote(f'https://{target_clean}/robots.txt')} | head -n 25 || true",
                     ),
                 ]
                 for title, cmd in recon_steps:
@@ -1622,7 +1634,7 @@ async def _run_autonomous_desktop_loop(
                     if out:
                         observations.append(f"{title} [`{cmd}`]: exit={res.exit_code}\n{out[:4000]}")
                         _append_worklog(state, "action", title, f"`{cmd}`\nReal Daytona output:\n{out[:4000]}")
-                        # Auto-record evidence into state
+                        # Auto-record evidence into state with SHA-256 custody digest
                         ev_payload = {
                             "tool": title,
                             "target": target_clean,

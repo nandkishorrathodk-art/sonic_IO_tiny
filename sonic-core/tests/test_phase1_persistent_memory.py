@@ -60,7 +60,11 @@ def isolated_memory_db(tmp_path, monkeypatch):
     for suffix in ("", "-wal", "-shm"):
         p = Path(db_file + suffix)
         if p.exists():
-            p.unlink()
+            try:
+                p.unlink()
+            except PermissionError:
+                pass
+
 
 
 def test_persistent_graph_memory_survives_restart(isolated_memory_db):

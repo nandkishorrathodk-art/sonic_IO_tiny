@@ -6,6 +6,7 @@ import {
   RefreshCw,
   Monitor,
   ExternalLink,
+  MousePointer,
 } from "lucide-react";
 import { DesktopState, CommandResult } from "../../types/workstation";
 import { api } from "../../lib/api";
@@ -38,6 +39,8 @@ export function ComputerSurface({
   const [fullscreen, setFullscreen] = useState(false);
   const [loadingScreen, setLoadingScreen] = useState(false);
   const [vncUrl, setVncUrl] = useState<string | null>(null);
+  const [mouseCoords, setMouseCoords] = useState<{ x: number; y: number } | null>(null);
+  const [lastClick, setLastClick] = useState<{ x: number; y: number; id: number } | null>(null);
   // Daytona's proxy auth callback uses redirect+cookie which Chrome blocks
   // inside cross-origin iframes.  When this happens the iframe renders a JSON
   // 400 error instead of the noVNC desktop.  We detect this and fall back to
@@ -108,14 +111,8 @@ export function ComputerSurface({
   }, [useScreenshots, sessionId]);
 
   // When iframe loads, probe for auth failure after a short delay.
-  // We can't read cross-origin content, but the Daytona proxy error page is
-  // very small; a successful noVNC page is interactive. We use a simple
-  // timer: if the iframe loaded, assume it might have failed and start
-  // fetching screenshots as a background fallback regardless.
   useEffect(() => {
     if (vncUrl && !iframeAuthFailed) {
-      // Give the iframe a few seconds to complete Daytona's auth callback.
-      // If it fails the user will at least have live screenshots available.
       const timer = setTimeout(() => {
         setIframeAuthFailed(true);
       }, 4000);
@@ -123,19 +120,33 @@ export function ComputerSurface({
     }
   }, [vncUrl]);
 
+  const handleMouseMove = (e: React.MouseEvent<HTMLDivElement>) => {
+    const rect = e.currentTarget.getBoundingClientRect();
+    if (rect.width > 0 && rect.height > 0) {
+      const x = Math.max(0, Math.min(1280, Math.round((e.clientX - rect.left) * (1280 / rect.width))));
+      const y = Math.max(0, Math.min(800, Math.round((e.clientY - rect.top) * (800 / rect.height))));
+      setMouseCoords({ x, y });
+    }
+  };
+
+  const handleMouseLeave = () => {
+    setMouseCoords(null);
+  };
+
   const handleDesktopClick = async (e: React.MouseEvent<HTMLDivElement>) => {
+    const rect = e.currentTarget.getBoundingClientRect();
+    const x = Math.max(0, Math.min(1280, Math.round((e.clientX - rect.left) * (1280 / rect.width))));
+    const y = Math.max(0, Math.min(800, Math.round((e.clientY - rect.top) * (800 / rect.height))));
+    setLastClick({ x, y, id: Date.now() });
+
     // Only dispatch click coordinates in screenshot mode (not iframe)
     if (vncUrl && !iframeAuthFailed) return;
 
-    const rect = e.currentTarget.getBoundingClientRect();
-    const x = Math.round((e.clientX - rect.left) * (1280 / rect.width));
-    const y = Math.round((e.clientY - rect.top) * (800 / rect.height));
-
     try {
-        await api.executeDesktopAction({
-          action: "click",
-          coordinates: [x, y],
-          sessionId,
+      await api.executeDesktopAction({
+        action: "click",
+        coordinates: [x, y],
+        sessionId,
       });
       await fetchScreenshot();
     } catch {
@@ -153,9 +164,6 @@ export function ComputerSurface({
     .filter(Boolean)
     .join(" ");
 
-  // Show screenshot-based live preview instead of broken iframe
-  const showScreenshots = iframeAuthFailed || !vncUrl;
-
   return (
     <div
       className={`flex-1 rounded-lg border border-[#21262D] bg-[#161B22] flex flex-col overflow-hidden shadow-2xl ${
@@ -166,7 +174,7 @@ export function ComputerSurface({
       <div className="h-9 border-b border-[#21262D] bg-[#161B22] px-3 flex items-center justify-between text-xs font-mono text-[#8B949E]">
         <div className="flex items-center gap-2">
           <Cloud className="w-3.5 h-3.5 text-[#58A6FF]" />
-            <span className="text-white font-semibold flex items-center gap-1.5 truncate text-[12px]">
+          <span className="text-white font-semibold flex items-center gap-1.5 truncate text-[12px]">
             <span>Daytona Linux Workstation</span>
             {displayLabel && (
               <span className="text-[10px] text-slate-400 font-normal font-mono">({displayLabel})</span>
@@ -186,6 +194,12 @@ export function ComputerSurface({
         </div>
 
         <div className="flex items-center gap-2">
+          {mouseCoords && (
+            <span className="hidden sm:flex items-center gap-1 text-[10px] font-mono text-emerald-400 bg-emerald-950/40 border border-emerald-500/30 px-2 py-0.5 rounded">
+              <MousePointer className="w-3 h-3 text-emerald-400" />
+              <span>X:{mouseCoords.x} Y:{mouseCoords.y}</span>
+            </span>
+          )}
           {vncUrl && (
             <a
               href={vncUrl}
@@ -217,18 +231,41 @@ export function ComputerSurface({
 
       {/* Main Surface Body: Live Screenshot Desktop / noVNC new-tab fallback */}
       <div
-        onClick={handleDesktopClick}
-        className="flex-1 bg-[#06080D] relative flex items-center justify-center overflow-hidden cursor-crosshair"
+        className="flex-1 bg-[#06080D] relative flex items-center justify-center overflow-hidden cursor-crosshair select-none"
         style={{ minHeight: 0 }}
       >
         {hasScreenshot ? (
           /* Live interactive X11 desktop canvas with coordinate click dispatch */
-          <div className="w-full h-full max-w-[1280px] max-h-[800px] aspect-[16/10] rounded border border-[#21262D] bg-[#000000] relative shadow-2xl overflow-hidden flex items-center justify-center m-2">
+          <div
+            onClick={handleDesktopClick}
+            onMouseMove={handleMouseMove}
+            onMouseLeave={handleMouseLeave}
+            className="w-full h-full max-w-[1280px] max-h-[800px] aspect-[16/10] rounded border border-[#21262D] bg-[#000000] relative shadow-2xl overflow-hidden flex items-center justify-center m-2 group"
+          >
             <img
               src={`data:image/png;base64,${screenshotBase64}`}
               alt="Daytona Graphical Desktop"
-              className="w-full h-full object-contain pointer-events-none"
+              className="w-full h-full object-contain pointer-events-none select-none"
             />
+
+            {/* Live Cursor Coordinate HUD Pill */}
+            <div className="absolute top-2.5 left-2.5 z-20 flex items-center gap-1.5 px-2 py-0.5 rounded-md bg-black/80 border border-[#30363D] text-[11px] font-mono text-emerald-400 shadow-md backdrop-blur-sm pointer-events-none">
+              <MousePointer className="w-3 h-3 text-emerald-400 animate-pulse" />
+              <span>{mouseCoords ? `X: ${mouseCoords.x} | Y: ${mouseCoords.y}` : "1280x800 Interactive"}</span>
+            </div>
+
+            {/* Click Ripple Indicator */}
+            {lastClick && (
+              <div
+                key={lastClick.id}
+                style={{
+                  left: `${(lastClick.x / 1280) * 100}%`,
+                  top: `${(lastClick.y / 800) * 100}%`,
+                }}
+                className="absolute w-6 h-6 -ml-3 -mt-3 rounded-full border-2 border-emerald-400 bg-emerald-500/30 pointer-events-none animate-ping duration-700 z-30"
+              />
+            )}
+
             {vncUrl && (
               <div className="absolute bottom-2 right-2 z-10">
                 <a
@@ -245,6 +282,7 @@ export function ComputerSurface({
             )}
           </div>
         ) : isLive ? (
+
           /* Loading state while first screenshot is captured */
           <div className="w-full h-full max-w-[1280px] max-h-[800px] aspect-[16/10] rounded border border-[#21262D] bg-[#0A0D14] flex flex-col items-center justify-center p-6 text-center space-y-3 m-3">
             <div className="w-12 h-12 rounded-full bg-[#161B22] border border-[#238636]/30 flex items-center justify-center text-[#3FB950]">

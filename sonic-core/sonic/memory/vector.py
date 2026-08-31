@@ -18,6 +18,7 @@ import json
 import math
 import os
 import re
+import zlib
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Optional
@@ -53,13 +54,13 @@ class DenseVectorizer:
             return vec
 
         for token in tokens:
-            h = hash(token) % self.dim
+            h = (zlib.crc32(token.encode("utf-8")) & 0xFFFFFFFF) % self.dim
             vec[h] += 1.0
 
         # Also hash 3-grams for substring matching
         for i in range(len(text) - 2):
             trigram = text[i : i + 3].lower()
-            h = hash(trigram) % self.dim
+            h = (zlib.crc32(trigram.encode("utf-8")) & 0xFFFFFFFF) % self.dim
             vec[h] += 0.5
 
         # L2 Normalize
@@ -194,4 +195,11 @@ def get_vector_memory() -> VectorMemory:
 def reset_vector_memory_singleton() -> None:
     """Clear the cached VectorMemory singleton (used by tests to simulate a restart)."""
     global _vector_memory
-    _vector_memory = None
+    if _vector_memory is not None:
+        if getattr(_vector_memory, "_db", None) is not None:
+            try:
+                _vector_memory._db.close()
+            except Exception:
+                pass
+        _vector_memory = None
+

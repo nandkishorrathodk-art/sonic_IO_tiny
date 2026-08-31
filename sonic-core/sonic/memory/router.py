@@ -79,4 +79,16 @@ def get_memory_sync() -> MemoryBackend:
 def reset_memory_singleton() -> None:
     """Clear the cached memory backend (used by tests to simulate a restart)."""
     global _active_memory
-    _active_memory = None
+    if _active_memory is not None:
+        db_conn = getattr(_active_memory, "_db", None)
+        if db_conn is not None:
+            try:
+                # Close underlying synchronous sqlite3 connection if present
+                if hasattr(db_conn, "_conn") and db_conn._conn:
+                    db_conn._conn.close()
+                elif hasattr(db_conn, "close"):
+                    db_conn.close()
+            except Exception:
+                pass
+        _active_memory = None
+

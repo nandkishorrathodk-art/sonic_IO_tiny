@@ -32,7 +32,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from sonic.auth.middleware import require_auth, require_operator
-from sonic.auth.models import User
+from sonic.auth.models import User, UserRole
 from sonic.computer.daytona_computer import DaytonaComputerProvider
 from sonic.computer.models import (
     ApplicationPolicy,
@@ -191,6 +191,12 @@ def _get_or_create_session(tenant_id: str, session_id: str = "default") -> dict[
     if tenant_id not in _tenant_workstations:
         _tenant_workstations[tenant_id] = {}
 
+    env_sandbox_id = os.environ.get("DAYTONA_SANDBOX_ID", "").strip()
+    active_ws = env_sandbox_id
+    if tenant_id in _tenant_workstations and "default" in _tenant_workstations[tenant_id]:
+        def_desk = _tenant_workstations[tenant_id]["default"].get("desktop", {})
+        active_ws = str(def_desk.get("workspace_id") or def_desk.get("sandbox_id") or "") or active_ws
+
     if session_id not in _tenant_workstations[tenant_id]:
         _tenant_workstations[tenant_id][session_id] = {
             "session_id": session_id,
@@ -202,20 +208,21 @@ def _get_or_create_session(tenant_id: str, session_id: str = "default") -> dict[
             "latest_commit": "",
             "active_file": "",
             "elapsed_seconds": 0,
-            "thought_summary": "No workstation provisioned for this session.",
+            "thought_summary": "Ready for security research and engineering tasks.",
             "current_action": "Ready when you are.",
             "worklog": [],
             "evidence": [],
             "desktop": {
-                "os_name": "",
-                "sandbox_id": "",
-                "image": "",
+                "os_name": "Ubuntu Linux (Daytona Cloud)" if active_ws else "",
+                "workspace_id": active_ws,
+                "sandbox_id": active_ws,
+                "image": "daytonaio/workspace-project:latest",
                 "ssh_command": "",
                 "display": ":99",
                 "vnc_port": None,
                 "novnc_port": None,
                 "novnc_url": "",
-                "status": "NO_ACTIVE_WORKSPACE",
+                "status": "LIVE" if active_ws else "NO_ACTIVE_WORKSPACE",
                 "active_window": "",
                 "resolution": {"width": 1280, "height": 800},
                 "running_apps": [],
@@ -1649,7 +1656,10 @@ async def _run_prompt_reasoning(tenant_id: str, session_id: str, prompt: str) ->
         from sonic.llm.schemas import LLMRequest, Message, MessageRole
 
         # Give the model an observation from the real Computer Use plane
-        desktop_id = str(state.get("desktop", {}).get("workspace_id") or state.get("desktop", {}).get("sandbox_id") or "")
+        mock_user = User(email=tenant_id, name="Operator", role=UserRole.OPERATOR, tenant_id=tenant_id)
+        desktop_id = _session_workspace_id(mock_user, session_id)
+        if not desktop_id:
+            desktop_id = str(state.get("desktop", {}).get("workspace_id") or state.get("desktop", {}).get("sandbox_id") or "")
 
         if desktop_id:
             try:
@@ -1740,15 +1750,13 @@ async def _run_prompt_reasoning(tenant_id: str, session_id: str, prompt: str) ->
                 default_model=model_to_use,
             )
             system_prompt = (
-                "You are SONIC-REDA, an elite Autonomous AI Engineer & Security Researcher. "
-                "You have real-time live execution access to the Daytona Linux workstation and bash terminal.\n\n"
-                "YOUR CORE BEHAVIOR:\n"
-                "1. ACT PROACTIVELY: Analyze the target, news, browser state, and real sandbox execution results provided in context.\n"
-                "2. NEWS & BROWSING: If the user asked to check today's news or open a browser, summarize the real headlines extracted and confirm that Chromium is active on the Daytona Graphical Desktop.\n"
-                "3. TARGET-FOCUSED FINDINGS: When evaluating a web target (such as opensea.io) for bugs or vulnerability classes (such as RCE, Broken Links, CORS, API flaws, Smart Contract integration), assess the actual attack surface from the headers, endpoints, and architecture. Explain why direct server-side RCE on modern CDN/WAF-fronted edge architectures is rare and focus on realistic high-impact targets in scope (e.g., API endpoints, MCP servers, smart contract logic, client SDKs, subdomains).\n"
-                "4. AUTONOMOUS AGENT ROLE: Do NOT tell the operator to manually run basic terminal commands on their machine. You are the AI researcher executing actions on their behalf in the Daytona sandbox.\n"
-                "5. LANGUAGE: Always respond in clear, professional, concise English or the user's preferred language.\n"
-                "6. GROUNDED IN REALITY: Ground your analysis strictly in the real Daytona execution output provided."
+                "You are SONIC-REDA, an elite Autonomous AI Security Researcher & Bug Hunter. "
+                "You have live, direct execution access to a dedicated Daytona Linux workstation and sandbox terminal.\n\n"
+                "CRITICAL INSTRUCTIONS:\n"
+                "1. REAL RESULTS ONLY: Ground your analysis strictly and exclusively in the real terminal outputs and sandbox environment provided in context. NEVER fabricate scan outputs, imaginary IP addresses, or fake Apache server banners.\n"
+                "2. TARGET RECON & VULNERABILITY ANALYSIS: When analyzing a target like opensea.io, report the real findings from the headers, endpoints, and architecture provided in context. For web applications fronted by Cloudflare, note that port scans against Cloudflare edge IPs show Cloudflare proxies, and direct server RCE is not present at the CDN edge. Focus on realistic in-scope vectors: API endpoints, embedded wallet integrations, GraphQL mutations, CORS misconfigurations, smart contract integrations, and SDKs.\n"
+                "3. AUTONOMOUS ACTIONS: You execute actions in the Daytona sandbox on the operator's behalf. Summarize what has been executed and provide concrete technical deductions.\n"
+                "4. LANGUAGE: Respond in clear, professional English or the user's preferred language."
             )
             messages = [
                 Message(role=MessageRole.SYSTEM, content=system_prompt),

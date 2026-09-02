@@ -128,6 +128,7 @@ class ComputerUseAgent:
         # Last structured security-tool result, surfaced to the next reasoning
         # step so the LLM acts on real scan findings rather than a claim.
         self._last_tool_result: Optional[Any] = None
+        self._last_screenshot_b64: str = ""
 
     # =============================================================
     # 1. Closed-Loop Observation
@@ -142,6 +143,8 @@ class ComputerUseAgent:
         reasoning loop can drive web interaction.
         """
         screen_obs = await self.computer.screenshot(workspace_id)
+        # Store screenshot for vision-in-the-loop (VLM image input)
+        self._last_screenshot_b64 = getattr(screen_obs, "screenshot_base64", "")
         status = await self.computer.status(workspace_id)
         files = await self.computer.list_files(workspace_id, "/home/sonic/workspace")
         git_st = await self.computer.git_action(workspace_id, "status")
@@ -321,15 +324,19 @@ class ComputerUseAgent:
             "a new one (TOOL_AUTHOR) and verify it (TOOL_RUN); when a gap needs a "
             "new METHOD rather than a new tool, invent a technique (METHOD_INVENT). "
             "If the goal is already achieved, respond GOAL_COMPLETE.\n"
+            "You can see the desktop screenshot and interact with GUI elements by clicking at coordinates.\n"
             "Respond in EXACTLY this format (no markdown):\n"
-            "ACTION: <FILE_READ|FILE_WRITE|TERMINAL_EXEC|GIT_COMMIT|APP_LAUNCH|"
-            "BROWSER_NAVIGATE|BROWSER_CLICK|BROWSER_TYPE|BROWSER_SCREENSHOT|"
-            "SECURITY_TOOL|TOOL_AUTHOR|TOOL_RUN|METHOD_INVENT|GOAL_COMPLETE>\n"
+            "ACTION: <GUI_CLICK|GUI_DOUBLE_CLICK|GUI_TYPE|GUI_KEYPRESS|GUI_MOVE|GUI_SCROLL|GUI_SCREENSHOT|FILE_READ|FILE_WRITE|TERMINAL_EXEC|GIT_COMMIT|APP_LAUNCH|BROWSER_NAVIGATE|BROWSER_CLICK|BROWSER_TYPE|BROWSER_SCREENSHOT|SECURITY_TOOL|TOOL_AUTHOR|TOOL_RUN|METHOD_INVENT|GOAL_COMPLETE>\n"
             "TARGET: <resource path, name, url, css selector, or scan target>\n"
             'PAYLOAD: <json dict, e.g. {"path": "...", "content": "..."}, '
             '{"command": "..."}, {"url": "..."}, {"selector": "...", "text": "..."}, '
             '{"tool": "<any registered security tool name>", "target": "...", '
             '"args": "..."}>\n'
+            'For GUI_CLICK/GUI_DOUBLE_CLICK/GUI_MOVE: TARGET is "x,y" pixel coordinates\n'
+            'For GUI_TYPE: PAYLOAD is {"text": "..."}\n'
+            'For GUI_KEYPRESS: PAYLOAD is {"key": "Return|Tab|Escape|ctrl+c|..."}\n'
+            'For GUI_SCROLL: TARGET is "x,y" and PAYLOAD is {"delta": -3} (negative=down, positive=up)\n'
+            'For GUI_SCREENSHOT: no target or payload needed\n'
             "EXPECTED: <short description of predicted outcome>"
         )
         return system_prompt, obs_summary
@@ -354,15 +361,26 @@ class ComputerUseAgent:
         test_file: str,
     ) -> tuple[ComputerActionType, str, dict[str, Any], str]:
         """Use the LLM to decide the next action from goal + observation + history."""
-        from sonic.llm.schemas import LLMRequest, Message, MessageRole
+        from sonic.llm.schemas import ImageContent, LLMRequest, Message, MessageRole
 
         system_prompt, obs_summary = self._build_reasoning_context(
             goal, observation, step_index, primary_file, test_file
         )
+        # Build the user message — multimodal (image+text) when screenshot available.
+        images: list[ImageContent] = []
+        if self._last_screenshot_b64:
+            raw_b64 = self._last_screenshot_b64
+            if "," in raw_b64:
+                raw_b64 = raw_b64.split(",", 1)[1]
+            images = [ImageContent(base64=raw_b64, media_type="image/png")]
+            user_text = f"{obs_summary}\n\nBased on the desktop screenshot and observation above, choose the next action."
+        else:
+            user_text = obs_summary
+
         request = LLMRequest(
             messages=[
                 Message(role=MessageRole.SYSTEM, content=system_prompt),
-                Message(role=MessageRole.USER, content=obs_summary),
+                Message(role=MessageRole.USER, content=user_text, images=images),
             ],
             task_type="reasoning",
         )
@@ -390,6 +408,13 @@ class ComputerUseAgent:
 
         action_str = fields.get("ACTION", "TERMINAL_EXEC").upper()
         action_map = {
+            "GUI_CLICK": ComputerActionType.GUI_CLICK,
+            "GUI_DOUBLE_CLICK": ComputerActionType.GUI_DOUBLE_CLICK,
+            "GUI_TYPE": ComputerActionType.GUI_TYPE,
+            "GUI_KEYPRESS": ComputerActionType.GUI_KEYPRESS,
+            "GUI_MOVE": ComputerActionType.GUI_MOVE,
+            "GUI_SCROLL": ComputerActionType.GUI_SCROLL,
+            "GUI_SCREENSHOT": ComputerActionType.GUI_SCREENSHOT,
             "FILE_READ": ComputerActionType.FILE_READ,
             "FILE_WRITE": ComputerActionType.FILE_WRITE,
             "TERMINAL_EXEC": ComputerActionType.TERMINAL_EXEC,
@@ -424,6 +449,23 @@ class ComputerUseAgent:
             payload = json.loads(payload_str) if payload_str.startswith("{") else {"command": payload_str}
         except Exception:
             payload = {"command": payload_str} if action_type == ComputerActionType.TERMINAL_EXEC else {}
+
+        if action_type == ComputerActionType.TERMINAL_EXEC:
+            if not payload.get("command") or str(payload.get("command")).lower() == "none":
+                payload["command"] = target if target and target != default_file else "echo OK"
+
+        if action_type in (ComputerActionType.GUI_CLICK, ComputerActionType.GUI_DOUBLE_CLICK, ComputerActionType.GUI_MOVE):
+            if target and "," in target:
+                parts = target.split(",")
+                if len(parts) == 2 and parts[0].strip().isdigit() and parts[1].strip().isdigit():
+                    payload["x"] = int(parts[0].strip())
+                    payload["y"] = int(parts[1].strip())
+        if action_type == ComputerActionType.GUI_SCROLL:
+            if target and "," in target:
+                parts = target.split(",")
+                if len(parts) == 2 and parts[0].strip().isdigit() and parts[1].strip().isdigit():
+                    payload["x"] = int(parts[0].strip())
+                    payload["y"] = int(parts[1].strip())
 
         expected = fields.get("EXPECTED", f"Action {action_type} on {target}")
         return action_type, target, payload, expected
@@ -490,13 +532,73 @@ class ComputerUseAgent:
                 return trace
 
         try:
-            if action_type == ComputerActionType.APP_LAUNCH:
-                app_name = payload.get("app_name", "code-server")
+            if action_type == ComputerActionType.GUI_CLICK:
+                x = int(payload.get("x", 0))
+                y = int(payload.get("y", 0))
+                await self.computer.gui_action(
+                    workspace_id,
+                    GUIAction(action=GUIActionType.CLICK, x=x, y=y),
+                )
+                actual_obs_str = f"Clicked at ({x}, {y})"
+
+            elif action_type == ComputerActionType.GUI_DOUBLE_CLICK:
+                x = int(payload.get("x", 0))
+                y = int(payload.get("y", 0))
+                await self.computer.gui_action(
+                    workspace_id,
+                    GUIAction(action=GUIActionType.DOUBLE_CLICK, x=x, y=y),
+                )
+                actual_obs_str = f"Double-clicked at ({x}, {y})"
+
+            elif action_type == ComputerActionType.GUI_TYPE:
+                text = payload.get("text", "")
+                await self.computer.gui_action(
+                    workspace_id,
+                    GUIAction(action=GUIActionType.TYPE, text=text),
+                )
+                actual_obs_str = f"Typed {len(text)} chars: {text[:50]}"
+
+            elif action_type == ComputerActionType.GUI_KEYPRESS:
+                key = payload.get("key", "Return")
+                await self.computer.gui_action(
+                    workspace_id,
+                    GUIAction(action=GUIActionType.KEYPRESS, key=key),
+                )
+                actual_obs_str = f"Pressed key: {key}"
+
+            elif action_type == ComputerActionType.GUI_MOVE:
+                x = int(payload.get("x", 0))
+                y = int(payload.get("y", 0))
+                await self.computer.gui_action(
+                    workspace_id,
+                    GUIAction(action=GUIActionType.MOVE, x=x, y=y),
+                )
+                actual_obs_str = f"Moved mouse to ({x}, {y})"
+
+            elif action_type == ComputerActionType.GUI_SCROLL:
+                x = int(payload.get("x", 640))
+                y = int(payload.get("y", 400))
+                delta = int(payload.get("delta", -3))
+                await self.computer.gui_action(
+                    workspace_id,
+                    GUIAction(action=GUIActionType.SCROLL, x=x, y=y, scroll_delta=delta),
+                )
+                actual_obs_str = f"Scrolled at ({x}, {y}) delta={delta}"
+
+            elif action_type == ComputerActionType.GUI_SCREENSHOT:
+                screen = await self.computer.screenshot(workspace_id)
+                self._last_screenshot_b64 = getattr(screen, "screenshot_base64", "")
+                actual_obs_str = f"Screenshot captured ({screen.width}x{screen.height})"
+
+            elif action_type == ComputerActionType.APP_LAUNCH:
+                app_name = payload.get("app_name") or target_resource or "chromium"
+                if app_name.lower() in ("none", ""):
+                    app_name = "chromium"
                 await self.computer.gui_action(workspace_id, GUIAction(action=GUIActionType.OPEN_APP, app_name=app_name))
                 actual_obs_str = f"Launched and focused {app_name}"
 
             elif action_type == ComputerActionType.APP_CLOSE:
-                app_name = payload.get("app_name", "code-server")
+                app_name = payload.get("app_name") or target_resource or "chromium"
                 await self.computer.gui_action(workspace_id, GUIAction(action=GUIActionType.CLOSE_APP, app_name=app_name))
                 actual_obs_str = f"Closed {app_name}"
 
@@ -512,8 +614,10 @@ class ComputerUseAgent:
                 actual_obs_str = f"Wrote patch ({len(content)} bytes) to {path}"
 
             elif action_type == ComputerActionType.TERMINAL_EXEC:
-                cmd = payload.get("command", "echo OK")
-                res = await self.computer.terminal(workspace_id, cmd)
+                cmd = payload.get("command") or target_resource or "echo OK"
+                if str(cmd).lower() in ("none", ""):
+                    cmd = "echo OK"
+                res = await self.computer.terminal(workspace_id, str(cmd))
                 actual_obs_str = res.stdout.strip() or f"Exit {res.exit_code}"
                 if res.exit_code != 0 and "FAIL-CLOSED" not in res.stderr:
                     recovery_needed = True
@@ -531,31 +635,48 @@ class ComputerUseAgent:
 
             elif action_type == ComputerActionType.BROWSER_NAVIGATE:
                 url = payload.get("url") or target_resource
-                snap = await self.browser.navigate(url)
-                self._last_browser_snapshot = snap
-                actual_obs_str = f"Navigated to {getattr(snap, 'url', url)} (title: {getattr(snap, 'title', '')})"
+                if self.browser is not None:
+                    snap = await self.browser.navigate(url)
+                    self._last_browser_snapshot = snap
+                    actual_obs_str = f"Navigated to {getattr(snap, 'url', url)} (title: {getattr(snap, 'title', '')})"
+                else:
+                    cmd = f"DISPLAY=:0 nohup chromium --no-sandbox --disable-dev-shm-usage {shlex.quote(url)} >/dev/null 2>&1 &"
+                    import shlex
+                    await self.computer.terminal(workspace_id, cmd)
+                    actual_obs_str = f"Launched Chromium on desktop navigating to {url}"
 
             elif action_type == ComputerActionType.BROWSER_CLICK:
                 selector = payload.get("selector") or target_resource
-                ok = await self.browser.click(selector)
-                actual_obs_str = f"Clicked {selector}" if ok else f"Click failed: {selector}"
-                if not ok:
-                    recovery_needed = True
+                if self.browser is not None:
+                    ok = await self.browser.click(selector)
+                    actual_obs_str = f"Clicked {selector}" if ok else f"Click failed: {selector}"
+                    if not ok:
+                        recovery_needed = True
+                else:
+                    actual_obs_str = f"Browser DOM click '{selector}' not available without BrowserAgent; use GUI_CLICK"
 
             elif action_type == ComputerActionType.BROWSER_TYPE:
                 selector = payload.get("selector") or target_resource
                 text = payload.get("text", "")
-                ok = await self.browser.type_text(selector, text)
-                actual_obs_str = f"Typed {len(text)} chars into {selector}" if ok else f"Type failed: {selector}"
-                if not ok:
-                    recovery_needed = True
+                if self.browser is not None:
+                    ok = await self.browser.type_text(selector, text)
+                    actual_obs_str = f"Typed {len(text)} chars into {selector}" if ok else f"Type failed: {selector}"
+                    if not ok:
+                        recovery_needed = True
+                else:
+                    await self.computer.gui_action(workspace_id, GUIAction(action=GUIActionType.TYPE, text=text))
+                    actual_obs_str = f"Typed {len(text)} chars via GUI keyboard: {text[:40]}"
 
             elif action_type == ComputerActionType.BROWSER_SCREENSHOT:
-                snap = await self.browser.navigate(
-                    getattr(self._last_browser_snapshot, "url", "about:blank")
-                ) if self._last_browser_snapshot else await self.browser.navigate("about:blank")
-                self._last_browser_snapshot = snap
-                actual_obs_str = f"Screenshot captured: {getattr(snap, 'url', '')}"
+                if self.browser is not None:
+                    snap = await self.browser.navigate(
+                        getattr(self._last_browser_snapshot, "url", "about:blank")
+                    ) if self._last_browser_snapshot else await self.browser.navigate("about:blank")
+                    self._last_browser_snapshot = snap
+                    actual_obs_str = f"Screenshot captured: {getattr(snap, 'url', '')}"
+                else:
+                    screen = await self.computer.screenshot(workspace_id)
+                    actual_obs_str = f"Desktop screenshot captured ({screen.width}x{screen.height})"
 
             elif action_type == ComputerActionType.SECURITY_TOOL:
                 tool_name = payload.get("tool", target_resource)
@@ -726,7 +847,12 @@ class ComputerUseAgent:
         logger.warning("computer_recovery_triggered", action=failed_action_type, error=error_context)
 
         # Recovery strategy 1: Restart display service if GUI failed
-        if failed_action_type in [ComputerActionType.APP_LAUNCH, ComputerActionType.GUI_CLICK]:
+        if failed_action_type in [
+            ComputerActionType.APP_LAUNCH, ComputerActionType.GUI_CLICK,
+            ComputerActionType.GUI_DOUBLE_CLICK, ComputerActionType.GUI_TYPE,
+            ComputerActionType.GUI_KEYPRESS, ComputerActionType.GUI_MOVE,
+            ComputerActionType.GUI_SCROLL,
+        ]:
             await self.computer.service_action(workspace_id, "xvfb", "restart")
             await self.computer.gui_action(workspace_id, GUIAction(action=GUIActionType.OPEN_APP, app_name="code-server"))
             return "Restarted Xvfb and relaunched code-server"

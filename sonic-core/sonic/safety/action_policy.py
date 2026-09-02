@@ -69,6 +69,9 @@ class ActionPolicy:
     # Action types the agent is ever allowed to perform. Anything else is
     # denied by default (fail-closed).
     DEFAULT_ALLOWED_TYPES = frozenset({
+        # GUI desktop interaction (in-sandbox only, no host execution risk)
+        "GUI_CLICK", "GUI_DOUBLE_CLICK", "GUI_TYPE", "GUI_KEYPRESS",
+        "GUI_MOVE", "GUI_SCROLL", "GUI_SCREENSHOT",
         "FILE_READ", "FILE_WRITE", "TERMINAL_EXEC", "GIT_COMMIT",
         "APP_LAUNCH", "APP_CLOSE", "SERVICE_ACTION",
         "BROWSER_NAVIGATE", "BROWSER_CLICK", "BROWSER_TYPE", "BROWSER_SCREENSHOT",

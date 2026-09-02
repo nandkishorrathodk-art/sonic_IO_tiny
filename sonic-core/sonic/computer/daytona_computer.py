@@ -664,6 +664,7 @@ class DaytonaComputerProvider(ComputerProvider):
             GUIActionType.TYPE,
             GUIActionType.KEYPRESS,
             GUIActionType.MOVE,
+            GUIActionType.SCROLL,
             GUIActionType.OPEN_APP,
             GUIActionType.CLOSE_APP,
         }
@@ -684,6 +685,19 @@ class DaytonaComputerProvider(ComputerProvider):
 
                 elif action_type == GUIActionType.MOVE:
                     await cu.mouse.move(action.x, action.y)
+
+                elif action_type == GUIActionType.SCROLL:
+                    # Use xdotool for scroll wheel: button 4=up, 5=down
+                    delta = getattr(action, 'scroll_delta', -3)
+                    x = action.x or 640
+                    y = action.y or 400
+                    button = 4 if delta > 0 else 5
+                    clicks = abs(delta)
+                    cmd_parts = [f"DISPLAY=:0 xdotool mousemove {x} {y}"]
+                    for _ in range(clicks):
+                        cmd_parts.append(f"DISPLAY=:0 xdotool click {button}")
+                    scroll_cmd = " && ".join(cmd_parts)
+                    await sandbox.process.exec(scroll_cmd)
 
                 elif action_type == GUIActionType.TYPE and action.text:
                     await cu.keyboard.type(action.text)
@@ -929,9 +943,9 @@ class DaytonaComputerProvider(ComputerProvider):
         return apps
 
     async def launch_application(self, workspace_id: str, app_name: str, actor: str = "operator") -> bool:
-        """Launches a GUI application on display :99."""
+        """Launches a GUI application on display :0."""
         self._active_windows[workspace_id] = app_name
-        result = await self.terminal(workspace_id, f"DISPLAY=:99 {shlex.quote(app_name)} &")
+        result = await self.terminal(workspace_id, f"DISPLAY=:0 {app_name} &")
         return result.exit_code == 0
 
     async def close(self) -> None:
@@ -957,8 +971,20 @@ class DaytonaComputerProvider(ComputerProvider):
 
     async def install_application(self, workspace_id: str, package_name: str, actor: str = "operator") -> tuple[bool, str]:
         """Installs an application inside the sandbox."""
+        pkg = package_name.strip().lower()
+        if pkg in ("burpsuite", "burp"):
+            cmd = (
+                "sudo apt-get update -y && sudo apt-get install -y default-jre curl && "
+                "mkdir -p /home/daytona/burp && "
+                "curl -sL 'https://portswigger.net/burp/releases/download?product=community&type=Jar' -o /home/daytona/burp/burpsuite_community.jar && "
+                "echo '#!/bin/bash\nDISPLAY=:0 java -jar /home/daytona/burp/burpsuite_community.jar \"$@\" &' | sudo tee /usr/local/bin/burpsuite >/dev/null && "
+                "sudo chmod +x /usr/local/bin/burpsuite"
+            )
+            res = await self.terminal(workspace_id, cmd, actor=actor)
+            return (res.exit_code == 0, res.stdout or res.stderr)
+
         safe_package = shlex.quote(package_name.strip())
-        res = await self.terminal(workspace_id, f"apt-get update && apt-get install -y -- {safe_package}", actor=actor)
+        res = await self.terminal(workspace_id, f"sudo apt-get update && sudo apt-get install -y -- {safe_package}", actor=actor)
         return (res.exit_code == 0, res.stdout or res.stderr)
 
     async def uninstall_application(self, workspace_id: str, package_name: str, actor: str = "operator") -> bool:

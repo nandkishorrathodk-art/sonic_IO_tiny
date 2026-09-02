@@ -1595,7 +1595,7 @@ async def _run_autonomous_desktop_loop(
         target_url = target_url or "https://www.google.com"
 
         # Launch GUI browser in X11 graphical desktop
-        browser_launch_cmd = f"DISPLAY=:99 chromium --no-sandbox --disable-dev-shm-usage --disable-gpu {shlex.quote(target_url)} >/dev/null 2>&1 &"
+        browser_launch_cmd = f"DISPLAY=:0 chromium --no-sandbox --disable-dev-shm-usage --disable-gpu --disable-quic --no-first-run --no-default-browser-check {shlex.quote(target_url)} >/dev/null 2>&1 &"
         await computer.terminal(desktop_id, browser_launch_cmd, timeout=15, actor=tenant_id)
 
         try:
@@ -1781,6 +1781,69 @@ async def _run_prompt_reasoning(tenant_id: str, session_id: str, prompt: str) ->
 
             # Execute autonomous action loop if applicable
             if _is_action_prompt(prompt):
+                # --- Phase 8: Use ComputerUseAgent for visual computer use ---
+                if desktop_id:
+                    try:
+                        from sonic.computer_use.agent import ComputerUseAgent
+                        from sonic.computer_use.models import ComputerAutonomyLevel, EngineeringMissionMode
+                        from sonic.llm.providers.custom import CustomLLMProvider
+
+                        nvidia_key = os.environ.get("NVIDIA_API_KEY", "")
+                        nvidia_url = os.environ.get("NVIDIA_BASE_URL", "https://integrate.api.nvidia.com/v1")
+                        model_to_use = "meta/llama-3.2-11b-vision-instruct"
+                        llm = CustomLLMProvider(
+                            name="nvidia",
+                            base_url=nvidia_url,
+                            api_key=nvidia_key,
+                            default_model=model_to_use,
+                        )
+
+                        agent = ComputerUseAgent(
+                            computer_provider=computer,
+                            autonomy_level=ComputerAutonomyLevel.L3_AUTONOMOUS,
+                            mode=EngineeringMissionMode.GENERAL_ENGINEERING_MODE,
+                            max_actions=50,
+                            llm_router=llm,
+                            tenant_id=tenant_id,
+                        )
+
+                        _append_worklog(state, "action", "Agent Visual Computer Use",
+                            f"Starting autonomous visual computer use for: {prompt[:100]}")
+
+                        traces = await agent.run_mission(
+                            workspace_id=desktop_id,
+                            goal=prompt,
+                            steps=15,
+                        )
+
+                        # Stream each step into the worklog
+                        for trace in traces:
+                            step_type = "action" if trace.status in ("SUCCESS", "RECOVERED") else "error"
+                            _append_worklog(
+                                state, step_type,
+                                f"Step {trace.step_index}: {trace.action_type.value}",
+                                f"Target: {trace.target_resource}\n"
+                                f"Result: {trace.actual_observation}\n"
+                                f"Status: {trace.status}",
+                            )
+
+                        # Final summary
+                        succeeded = sum(1 for t in traces if t.status in ("SUCCESS", "RECOVERED"))
+                        failed = sum(1 for t in traces if t.status == "FAILED")
+                        blocked = sum(1 for t in traces if t.status == "BLOCKED")
+                        _append_worklog(
+                            state, "response",
+                            "Visual Computer Use Complete",
+                            f"Completed {len(traces)} steps: {succeeded} succeeded, "
+                            f"{failed} failed, {blocked} blocked",
+                        )
+                        return
+                    except Exception as agent_err:
+                        logger.warning("visual_computer_use_failed", error=str(agent_err))
+                        _append_worklog(state, "error", "Visual Computer Use Error",
+                            f"Agent-driven execution failed: {agent_err}. Falling back to chat.")
+                        # Fall through to regular LLM chat / fast path
+                
                 action_observations, action_message, action_blocked = await _run_autonomous_desktop_loop(
                     state, desktop_id, tenant_id, prompt
                 )

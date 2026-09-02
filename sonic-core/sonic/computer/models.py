@@ -124,6 +124,7 @@ class GUIAction(BaseModel):
     key: Optional[str] = None
     window_id: Optional[str] = None
     app_name: Optional[str] = None
+    scroll_delta: int = 0
 
 
 class ScreenObservation(BaseModel):

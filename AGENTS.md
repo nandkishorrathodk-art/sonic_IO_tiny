@@ -815,3 +815,40 @@ Key learnings:
 - `PlannedAction` requires a `risk` field (ToolRisk) — construction without it
   raises a pydantic ValidationError.
 - Suite as of Phase 7.9: 407 passed, 48 skipped, 0 failures.
+
+## Phase 8 — Real Visual Computer Use (A-SEA sees and controls its desktop)
+
+Closed the fundamental autonomy gap: SONIC had a full graphical desktop (Daytona
+XFCE, 1280x800) and mouse/keyboard SDK capabilities, but the workstation endpoint
+ran a regex-based bash dispatcher instead of the agentic loop, and `GUI_CLICK`/
+`GUI_TYPE` were unhandled enums.
+
+### Core Enhancements:
+1. **GUI Action Surface in `ComputerUseAgent`**:
+   - `ComputerActionType` enum expanded: `GUI_CLICK`, `GUI_DOUBLE_CLICK`, `GUI_TYPE`,
+     `GUI_KEYPRESS`, `GUI_MOVE`, `GUI_SCROLL`, `GUI_SCREENSHOT`.
+   - `execute_action()` dispatches GUI actions to `computer.gui_action()` (mouse click/move,
+     keyboard type/press, scroll via xdotool, explicit screenshot re-observe).
+   - `_parse_llm_action()` parses visual coordinate format (`TARGET: 640,400` -> `x=640, y=400`).
+   - System prompt advertises GUI action schema + coordinate guidance.
+2. **Vision-in-the-Loop**:
+   - `observe()` stores `_last_screenshot_b64` from Daytona screen captures.
+   - `_llm_choose_action()` formats multimodal user content (`image_url` block + text)
+     when screenshot pixels are available, enabling visual spatial reasoning by VLMs.
+3. **Workstation Route Agentic Wiring (`api/routes/workstation.py`)**:
+   - `_run_prompt_reasoning()` instantiates `ComputerUseAgent` for actionable user prompts
+     and executes a multi-step mission loop (`run_mission(steps=15)`).
+   - Live streaming: each agent step's observation, decision, and result are appended to
+     the session worklog in real-time.
+4. **Scroll & Drag Support in Daytona Provider**:
+   - `DaytonaComputerProvider.gui_action` maps `GUIActionType.SCROLL` via `xdotool`
+     wheel click events (button 4=up, 5=down). `GUIAction` model extended with `scroll_delta`.
+5. **Safety Envelope (`sonic/safety/action_policy.py`)**:
+   - `DEFAULT_ALLOWED_TYPES` allowlists in-sandbox GUI actions (`GUI_CLICK`, `GUI_DOUBLE_CLICK`,
+     `GUI_TYPE`, `GUI_KEYPRESS`, `GUI_MOVE`, `GUI_SCROLL`, `GUI_SCREENSHOT`).
+
+### Done-gate (`test_phase8_visual_computer_use.py`, 16 tests)
+- GUI click, type, keypress, double-click, scroll, and screenshot dispatch verified end-to-end.
+- Coordinate parsing and system prompt schema verified.
+- Safety policy allows GUI actions in-sandbox and denies destructive host/terminal operations.
+

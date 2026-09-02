@@ -1130,3 +1130,74 @@ exception→DISPROVED (fail-closed); escalation surfaces Unknown + does NOT
 run a sub-agent + keeps node PROPOSED.
 
 ### Test status: 481 passed, 37 skipped, 0 failures; ruff clean.
+
+---
+
+## Round 7 — Epistemic Awareness + Falsification Mindset + Long-horizon Planning
+Fills the three highest-value gaps from the "human-like AI" checklist
+(Section 1, the most important) **inside existing files** — no new files. Every
+change enhances an existing, already-tested module; nothing was duplicated.
+
+### 1. Epistemic Awareness — `cognitive_state.py::CognitiveState.get_top_epistemic_gap()`
+"Mujhe kya nahi pata" made explicit and actionable. Ranks unresolved `Unknown`s
+by `estimated_importance` and **excludes dead-ends** — an unknown whose every
+`possible_action` already appears in `get_failed_methods()` is dropped, so the
+agent never re-chases a question it cannot answer with the methods it has
+tried. Returns `[]` when there is genuinely nothing open (never invents a gap).
+
+### 2. Falsification Mindset — `experiment_designer.py::AdversarialChallenger.challenge_leading_hypothesis()`
+"Actively apni hypotheses todne ki koshish kare." The existing
+`generate_falsification_challenge` built the challenge but nothing chose *which*
+hypothesis to attack — the natural confirmation-bias failure mode. Now
+`CognitiveState.leading_hypothesis()` selects the strongest active hypothesis
+(lowest `priority`, recency tie-break; DISPROVED/ABANDONED excluded) and
+`challenge_leading_hypothesis()` auto-targets it for an explicit **disproof**
+attempt. High-quality findings come from theories that *survived* an active
+disproof, not ones merely confirmed. Reuses the existing challenge generator
+(no logic duplication); returns `None` when there's no active target (never
+fabricates a challenge).
+
+### 3. Long-horizon Planning — `planner.py::MissionPlanner.build_long_horizon_plan()`
+"10-20 steps aage soch sake." The baseline `build_plan` produced only 3-6
+shallow commands. `build_long_horizon_plan` decomposes an objective into a
+multi-stage ordered pipeline:
+
+```
+stage 0 orient → 1 surface map → 2 deep map → 3 hypothesize →
+4 active test (APPROVAL_REQUIRED, never auto-run) → 5 verify → 6 report
+```
+
+Each action carries `stage` + `depends_on` (the prior stage's anchor action_id)
+so the executor can order and gate the chain. All stages before the active test
+are `READ_ONLY` (safety envelope honoured); the active test is
+`APPROVAL_REQUIRED` and never silently executed. Deterministic, allowlist-only,
+no unconstrained model command generation — same discipline as `build_plan`.
+
+New fields: `PlannedAction.stage`, `PlannedAction.depends_on`;
+`MissionActionPlan.stage_count()`, `MissionActionPlan.chain_head()`.
+
+### Checklist coverage already present (not re-done — these existed)
+- **Competing Hypotheses / Unknown model** → `research/epistemic.py`
+- **Dual-Process Thinking** → `orchestration/dual_process.py` (Round 6)
+- **Mental Model of Target** → `research/world_model.py`
+- **Curiosity + Goal Mgmt** → `computer_use/curiosity.py`
+- **Information-Gain action selection** → `research/information_gain.py`
+- **Strategy switching on diminishing returns** → `world_model.StopConditionEvaluator`
+- **Tool/Method authoring w/ verification** → `being/toolsmith.py`, `being/method_lab.py`
+- **Failed-strategy + cross-engagement memory** → `being/lessons.py` (Round 5)
+- **Fail-closed isolation / tamper-evident / egress** → `safety/scope.py`, `safety/sealed.py`, `safety/action_policy.py`
+- **Audit trail + evidence custody** → `evidence/custody.py`
+- **Independent adversarial verification** → `evidence/independent_verifier.py`
+
+### Tests (+19, all in existing test files)
+`TestEpistemicAwareness` (6): rank by importance; exclude dead-ends; keep
+partially-live; exclude resolved; empty when none; top_k limit.
+`TestLeadingHypothesis` (3): picks lowest priority; None when none active;
+DISPROVED excluded.
+`TestFalsificationMindsetWiring` (2): targets the strongest hypothesis;
+None (not fabricated) when no target.
+`TestLongHorizonPlan` (8): ≥10 steps; ≥5 ordered stages; every action chains
+via depends_on; active test is APPROVAL_REQUIRED; read-only objective has no
+approval stage; orient runs first; empty raises; deeper than baseline.
+
+### Test status: 500 passed, 37 skipped, 0 failures; ruff clean.

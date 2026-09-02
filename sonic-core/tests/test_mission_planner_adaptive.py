@@ -94,3 +94,82 @@ def test_empty_objective_raises():
         _plan("")
     with pytest.raises(ValueError):
         MissionPlanner().build_plan("m1", "obj", "", "ws")
+
+
+# =====================================================================
+# Round 7 — Long-horizon planning (10-20 step ordered chains)
+# =====================================================================
+
+def _long_plan(objective):
+    return MissionPlanner().build_long_horizon_plan(
+        "m-lh", objective, "target.com", "ws-1",
+    )
+
+
+class TestLongHorizonPlan:
+    """The agent must 'think 10-20 steps ahead' via a multi-stage ordered chain,
+    not a flat 3-6 command batch."""
+
+    def test_plan_has_at_least_ten_steps(self):
+        plan = _long_plan("pentest the target web app")
+        assert len(plan.actions) >= 10, f"long-horizon plan must be 10-20 steps, got {len(plan.actions)}"
+
+    def test_plan_has_multiple_ordered_stages(self):
+        """A long-horizon plan is a pipeline of ordered stages, not a flat list."""
+        plan = _long_plan("audit the api")
+        stages = plan.stage_count()
+        assert stages >= 5, f"expected >=5 ordered stages, got {stages}"
+
+    def test_every_action_chains_via_depends_on(self):
+        """Each action depends on its predecessor so the executor can order and
+        gate the chain — this is the '10-20 steps ahead' dependency chain."""
+        plan = _long_plan("recon and test the target")
+        # Stage 0 head has no dependency; every later stage chains to the prior.
+        head = plan.chain_head()
+        assert head is not None and head.depends_on == ""
+        chained = [a for a in plan.actions if a.stage > 0]
+        assert len(chained) >= 1
+        assert all(a.depends_on for a in chained), "non-head actions must chain via depends_on"
+        # Every depends_on points at an action that actually exists.
+        ids = {a.action_id for a in plan.actions}
+        assert all(a.depends_on in ids for a in chained)
+
+    def test_active_test_stage_is_approval_required(self):
+        """The active-test stage (stage 4) is APPROVAL_REQUIRED and never auto-run
+        — honouring the safety envelope even in long-horizon mode."""
+        plan = _long_plan("scan and probe the target")
+        active = [a for a in plan.actions if a.requires_approval]
+        assert active, "an active-probe objective must gate the test stage"
+        assert all(a.risk == ToolRisk.APPROVAL_REQUIRED for a in active)
+        # Everything else stays read-only.
+        assert all(
+            a.risk == ToolRisk.READ_ONLY for a in plan.actions if not a.requires_approval
+        )
+
+    def test_readonly_objective_has_no_approval_stage(self):
+        plan = _long_plan("inspect the source code structure")
+        assert not any(a.requires_approval for a in plan.actions)
+        assert all(a.risk == ToolRisk.READ_ONLY for a in plan.actions)
+
+    def test_orient_stage_runs_first(self):
+        """Stage 0 (orient) is always present and first — the agent locates the
+        target before mapping it."""
+        plan = _long_plan("test the db")
+        stage0 = [a for a in plan.actions if a.stage == 0]
+        assert len(stage0) >= 1
+        assert plan.actions[0].stage == 0
+
+    def test_empty_objective_raises(self):
+        with pytest.raises(ValueError):
+            _long_plan("")
+        with pytest.raises(ValueError):
+            MissionPlanner().build_long_horizon_plan("m", "obj", "", "ws")
+
+    def test_long_horizon_plan_is_deeper_than_baseline(self):
+        """The long-horizon plan must produce materially more steps than the
+        shallow baseline build_plan (which yields ~3-6)."""
+        baseline = _plan("pentest the target web app")
+        long = _long_plan("pentest the target web app")
+        assert len(long.actions) > len(baseline.actions)
+        assert long.stage_count() > baseline.stage_count()
+

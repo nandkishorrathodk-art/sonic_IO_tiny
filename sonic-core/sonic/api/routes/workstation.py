@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import html
 import json
 import os
 import posixpath
@@ -1352,13 +1353,19 @@ def _detect_requested_app(prompt: str) -> tuple[str, str]:
     lower = prompt.strip().lower()
 
     # Browser / Web navigation
-    if any(k in lower for k in ("browser", "chrome", "chromium", "firefox", "web", "surf", "website", "url", "open link")):
+    _NEWS_KEYWORDS = ("news", "khabar", "kabar", "samachar", "taaza", "taja", "headlines", "breaking")
+    is_news_request = any(k in lower for k in _NEWS_KEYWORDS)
+    if is_news_request or any(
+        k in lower for k in ("browser", "chrome", "chromium", "firefox", "web", "surf", "website", "url", "open link")
+    ):
         url_match = re.search(r"https?://[^\s]+", prompt)
         if url_match:
             return "chromium", url_match.group(0)
         domain_match = re.search(r"\b([a-zA-Z0-9-]+\.(?:io|com|org|net|app|co|dev|xyz|ai|me))\b", prompt, re.IGNORECASE)
         if domain_match:
             return "chromium", f"https://{domain_match.group(1)}"
+        if is_news_request:
+            return "chromium", "https://news.google.com"
         return "chromium", "https://www.google.com"
 
     # Terminal
@@ -1374,6 +1381,32 @@ def _detect_requested_app(prompt: str) -> tuple[str, str]:
         return "thunar", ""
 
     return "", ""
+
+
+def _clean_rss_titles(rss_xml: str) -> list[str]:
+    """Parse an RSS XML feed and return clean, entity-decoded item titles.
+
+    Tolerant of CDATA wrappers and numeric/character entity references
+    (``&amp;`` -> ``&``, ``&#39;`` -> ``'``). Returns an empty list for
+    malformed/empty input rather than raising — feeds are best-effort.
+    """
+    if not rss_xml or not rss_xml.strip():
+        return []
+    titles: list[str] = []
+    for block in re.finditer(r"<item\b[^>]*>(.*?)</item>", rss_xml, re.IGNORECASE | re.DOTALL):
+        inner = block.group(1)
+        m = re.search(r"<title\b[^>]*>(.*?)</title>", inner, re.IGNORECASE | re.DOTALL)
+        if not m:
+            continue
+        raw = m.group(1).strip()
+        # Strip optional CDATA wrapper.
+        cdata = re.search(r"<!\[CDATA\[(.*?)\]\]>", raw, re.DOTALL)
+        if cdata:
+            raw = cdata.group(1)
+        cleaned = html.unescape(raw).strip()
+        if cleaned:
+            titles.append(cleaned)
+    return titles
 
 
 def _extract_target_url_or_domain(prompt: str, state: dict[str, Any] | None = None) -> str:
@@ -1417,6 +1450,10 @@ def _is_action_prompt(prompt: str) -> bool:
     if any(k in lower for k in ("close terminal", "kill terminal", "exit terminal", "close your terminal", "close window", "band karo", "close app", "close browser")):
         return True
 
+    # 1b. Information / news requests (Hindi + English) are actionable intents
+    if any(k in lower for k in ("news", "khabar", "kabar", "samachar", "taaza", "taja", "headlines", "breaking", "batao", "bata", "dikho", "dekho", "dikhao", "show me")):
+        return True
+
     # 2. Explicit terminal command syntax or direct shell command invocation
     if _extract_terminal_command(prompt):
         return True
@@ -1427,7 +1464,7 @@ def _is_action_prompt(prompt: str) -> bool:
 
     # 4. GUI app opening / launching on desktop
     app, _ = _detect_requested_app(prompt)
-    if app and any(k in lower for k in ("open", "launch", "start", "view", "browse", "run", "khol", "kholo", "chalao")):
+    if app and any(k in lower for k in ("open", "launch", "start", "view", "browse", "run", "khol", "kholo", "chalao", "dekh", "dekho", "dikhao")):
         return True
 
     # 5. Targeted recon, bug bounty, bug hunting or live security scanning

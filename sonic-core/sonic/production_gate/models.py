@@ -38,12 +38,14 @@ class ScenarioExecutionResult(BaseModel):
     scenario_id: str
     domain: ScenarioDomain
     problem_description: str
-    initial_failure_verified: bool
-    autonomous_fix_verified: bool
-    performance_delta_pct: float
-    git_commit_hash: str
+    initial_failure_verified: bool = False
+    autonomous_fix_verified: bool = False
+    # Measured only when a before/after benchmark was actually run; 0.0 when
+    # unmeasured (never a fabricated improvement delta).
+    performance_delta_pct: float = 0.0
+    git_commit_hash: str = ""
     reality_tier: RealityTier = RealityTier.CONTROLLED_PROOF
-    success: bool
+    success: bool = False
 
 
 class TemporalHoldoutEvaluation(BaseModel):

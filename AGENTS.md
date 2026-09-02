@@ -390,9 +390,79 @@ attack surface. Now:
 ### Test baseline (after Phase 7.8)
 - 397 passed, 48 honestly skipped, 0 failures.
 
+## Phase A — Toolsmith loop (AIOSR: being authors its own tools)
+Closed the single highest-leverage gap from the AIOSR audit: SONIC was an
+"Operator" (orchestrating known nmap/nuclei/ffuf primitives) but not a
+"Researcher + Toolsmith" (building its own tools). The being can now author a
+NEW small tool (scanner/fuzzer/parser/probe) for an observation gap, persist
+it, run it in-sandbox, and register it as a first-class callable tool — but
+ONLY after a real successful run. No "tool authored and working" claim by decree.
+
+### `sonic/being/toolsmith.py` — author + confirm + register
+- `ToolsmithLoop.author_tool_for_gap(observation, failed_attempts)` asks the LLM
+  to propose ONE small Python tool filling a gap NO existing registered tool
+  covers. The proposal is explicitly biased away from the existing tool set
+  (nmap/nuclei/ffuf/http_client + already-confirmed authored tools) and from the
+  reserved names — so the being does not re-author nmap. A `DECLINE` response
+  or a duplicate/reserved/invalid name → returns `None` (honest skip: never
+  fabricates a tool). A cheap pre-sandbox safety lint rejects host-wiping
+  patterns (`rm -rf /`, `mkfs`, `dd of=/dev/`, `shutdown`) before the sandbox.
+- The authored source is persisted to `BeingCraft` immediately (durable across
+  restart; kind=`tool`, human-readable markdown on disk).
+- `confirm_and_register(tool, provider, workspace_id)` writes the source to
+  `/home/sonic/workspace/toolsmith/<name>.py` and runs `python <path>` in-sandbox
+  via the provider's fail-closed `execute` (exit 126 => sandbox blocked it).
+  **Honesty guard:** `reproduced=True` and registration into the
+  `SecurityToolRegistry` happen ONLY on exit 0 + non-empty stdout. A blocked
+  (exit 126), failed, or empty run leaves `reproduced=False` and the tool is NOT
+  registered — the same anti-theatrical discipline as `production_gate`.
+- `AuthoredToolAdapter`: wraps a confirmed authored tool as a real `SecurityTool`
+  (name/version/build_command/parse_output/execute), bound to the provider that
+  confirmed it. It inherits the base `SecurityTool.execute` fail-closed,
+  in-sandbox handling (zero host execution, exit 126 => BLOCKED). `parse_output`
+  decodes JSON lines (falls back to `{"finding": <line>}`), so the being's own
+  tools emit structured findings through the same path as nmap.
+
+### Action surface + safety wiring
+- `TOOL_AUTHOR` + `TOOL_RUN` added to `ComputerActionType` + the LLM action
+  space/parser/prompt. `execute_action()` dispatches:
+  - `TOOL_AUTHOR` → `author_tool_for_gap()` (persists, does NOT register).
+  - `TOOL_RUN` → `confirm_and_register()`; on `reproduced=True` the adapter is
+    added to `self.security_tools` so the being can call its own tool via the
+    existing `SECURITY_TOOL` path. The `available_tools` observation line
+    already reflects the live `security_tools` keys, so authored tools surface
+    to the LLM automatically once confirmed.
+- `ActionPolicy.DEFAULT_ALLOWED_TYPES` extended with `TOOL_AUTHOR`, `TOOL_RUN`.
+  Path confinement: `TOOL_AUTHOR` writes under a hardcoded workspace-subdir
+  (structural confinement — no payload path to forge); `TOOL_RUN` runs a
+  hardcoded `python <workspace-toolsmith-path>` (structural — no user command to
+  gate). The sealed `SealedActionPolicy` inherits both (frozen in the seal).
+
+### Production wiring (`api/main.py` being life loop)
+- The being life loop now constructs a `ToolsmithLoop(craft=BeingCraft(being_id),
+  llm=router, registry=get_default_registry(provider))` and passes
+  `toolsmith=toolsmith` to `ComputerUseAgent`. So the always-on self-directed
+  being can author + run its own tools during idle curiosity — every action
+  still passes the sealed `SealedActionPolicy` gate.
+
+### Done-gate (`test_phase_a_toolsmith.py`, 10 tests)
+- authors a NOVEL tool name not in the registry (unconfirmed pre-run, not
+  registered); `DECLINE` / no-novel → `None`; duplicate (nmap) → rejected;
+  blocked run (exit 126) → NOT confirmed/registered; empty output → NOT
+  registered; successful run → `reproduced=True` + registered + callable by
+  name; authored source persists to BeingCraft (re-read off host disk); the
+  safety policy ALLOWS `TOOL_AUTHOR`/`TOOL_RUN` (not denied as unknown); a
+  destructive-source proposal (`os.system('rm -rf /')`) is rejected by the
+  safety lint BEFORE the sandbox; a confirmed tool runs end-to-end via a real
+  `ToolRequest` → `execute` and surfaces real parsed findings (not a decree).
+
+### Test baseline (after Phase A)
+- 423 passed, 48 honestly skipped, 0 failures.
+
 ## Current test baseline
-- 397 passed, 48 honestly skipped (Docker-daemon / Daytona-live gated via
-  `sonic-core/tests/conftest.py`), 0 failures.
+- 423 passed, 48 honestly skipped (Docker-daemon / Daytona-live gated via
+  `sonic-core/tests/conftest.py`), 0 failures. (Was 407 passed + 1 collection
+  error + 1 suite-order isolation failure before the audit + Phase A work.)
 - The previously-pre-existing 6 model-only/fail-closed contract failures were
   resolved by PR#3's simulated-provider + execution-evidence fixes (they asserted
   the OLD fake-success behavior; now correctly supplied).
@@ -400,6 +470,41 @@ attack surface. Now:
   `/workstation/command` route returns 503 fail-closed (not 409) when no sandbox
   is provisioned, and `/workstation/file` validates path confinement (403) BEFORE
   the workspace-state check.
+
+## Audit fixes (honesty + wiring + test-isolation)
+- `test_workstation_desktop_browser_and_news.py` was BROKEN at collection
+  (missing `_clean_rss_titles`, no news/khabar intent). Fixed in
+  `api/routes/workstation.py`: added the helper + news/info intent detection in
+  `_detect_requested_app` / `_is_action_prompt`. (6 tests now collected + pass.)
+- `CodeFixAgent` / `ExploitValidator` existed but were never wired into
+  production dispatch (`swarm.py` `agent_map`/`agent_configs` omitted them;
+  `queue/worker.py` `_run_agent_step` did not import them). Wired both so the
+  AGENT_STEP dispatch path can actually instantiate them.
+- Removed FAKE values from `production_gate/` + benchmark suites:
+  - `scenario_matrix.py`: `initial_failure_verified` was hardcoded `True`
+    (the broken version was never run). Now each scenario runs the BROKEN code
+    first via `_verify_initial_failure()` and sets the flag from the real
+    non-zero exit. `performance_delta_pct` (was 100/75/85 by decree) is now `0.0`
+    (unmeasured — no before/after benchmark was run). Fake commit-hash fallbacks
+    (`c01a9b`..`c08a9b`) replaced by `_commit_hash_from()` (empty when the
+    provider returns a `bool`, which is what `git_action("commit")` does today).
+  - `temporal_holdout_generator.py`: `v1_f1=0.667`, `v2_f1=1.000`, `tp=1/fp=0/
+    fn=0` were all hardcoded. Now computed by a REAL token classifier
+    (`_classify_v1`/`_classify_v2`/`_f1`) decoding JWT headers + signature length
+    against real fixtures; v1 misses a short-signature token v2 catches, so
+    the gain emerges from real behavior (still satisfies the test's
+    success/gain>0.30 invariants).
+  - `autonomy/blind_repair.py`: fake commit hash `7b8e1f0a2c` -> empty.
+  - `computer_use/benchmark.py` + `mission_engine/benchmark.py`:
+    `sonic_success_rate=1.00`/`autonomy_score=1.00`/`human_success_rate=0.92/0.88`
+    (by decree) now DERIVED from per-trial success-flag lists.
+  - `computer_use/models.py` + `computer/benchmark.py`: default scores 1.00 ->
+    0.0 (honest "unmeasured" before `run_mission()`/the benchmark fills them in).
+- `test_phase8/test_synthetic_self_evolution_mission.py` failed in the FULL
+  suite (passed in isolation) because `EvolutionMemoryStore()` used the shared
+  default SQLite DB polluted by earlier tests. Fixed to `persist=False`
+  (in-memory isolation). This was a pre-existing suite-order bug, not caused
+  by the honesty/wiring work.
 
 ## Security hardening applied (commit ab99ae2)
 P0 fixes (all covered by `test_p0_security_hardening.py`):

@@ -30,8 +30,8 @@ class ComputerBenchmarkMetrics(BaseModel):
     action_efficiency_pct: float
     human_error_rate_pct: float
     sonic_error_rate_pct: float
-    successful_completion: bool = True
-    verification_quality: float = 1.00  # 1.00 = 100% test pass
+    successful_completion: bool = False
+    verification_quality: float = 0.0  # 1.00 = 100% test pass; 0.0 = unmeasured
 
 
 class AutonomousEngineerBenchmark:

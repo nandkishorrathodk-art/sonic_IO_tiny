@@ -73,6 +73,7 @@ class ComputerUseAgent:
         security_tools: Optional[dict[str, Any]] = None,
         safety: Optional[Any] = None,
         self_host: bool = False,
+        toolsmith: Optional[Any] = None,
         tenant_id: str = "default",
         engagement_id: str = "default",
         agent_id: str = "computer-use-agent",
@@ -90,6 +91,10 @@ class ComputerUseAgent:
         # invoke as a first-class reasoning action. Tools execute in-sandbox and
         # fail closed; their structured findings feed back into the observation.
         self.security_tools = security_tools or {}
+        # Optional ToolsmithLoop (Phase A, AIOSR): the being authors NEW tools
+        # for observation gaps. The authored tool is registered into the
+        # security_tools map ONLY after a real in-sandbox run succeeds.
+        self.toolsmith = toolsmith
         # Optional fail-closed safety envelope (PLAN Phase 6). Required in
         # self-host mode: the agent may NOT act autonomously without a policy.
         self.safety = safety
@@ -306,7 +311,7 @@ class ComputerUseAgent:
             "Respond in EXACTLY this format (no markdown):\n"
             "ACTION: <FILE_READ|FILE_WRITE|TERMINAL_EXEC|GIT_COMMIT|APP_LAUNCH|"
             "BROWSER_NAVIGATE|BROWSER_CLICK|BROWSER_TYPE|BROWSER_SCREENSHOT|"
-            "SECURITY_TOOL|GOAL_COMPLETE>\n"
+            "SECURITY_TOOL|TOOL_AUTHOR|TOOL_RUN|GOAL_COMPLETE>\n"
             "TARGET: <resource path, name, url, css selector, or scan target>\n"
             'PAYLOAD: <json dict, e.g. {"path": "...", "content": "..."}, '
             '{"command": "..."}, {"url": "..."}, {"selector": "...", "text": "..."}, '
@@ -381,6 +386,8 @@ class ComputerUseAgent:
             "BROWSER_TYPE": ComputerActionType.BROWSER_TYPE,
             "BROWSER_SCREENSHOT": ComputerActionType.BROWSER_SCREENSHOT,
             "SECURITY_TOOL": ComputerActionType.SECURITY_TOOL,
+            "TOOL_AUTHOR": ComputerActionType.TOOL_AUTHOR,
+            "TOOL_RUN": ComputerActionType.TOOL_RUN,
             # GOAL_COMPLETE is handled by the caller as a no-op terminator.
             "GOAL_COMPLETE": ComputerActionType.TERMINAL_EXEC,
         }
@@ -566,6 +573,63 @@ class ComputerUseAgent:
                     status_val = str(getattr(result, "status", ""))
                     if status_val in ("blocked", "failed", "timed_out"):
                         recovery_needed = True
+
+            elif action_type == ComputerActionType.TOOL_AUTHOR:
+                # Toolsmith (Phase A, AIOSR): the being authors a NEW tool for an
+                # observation gap. The source is persisted to BeingCraft; the
+                # tool is NOT registered until TOOL_RUN confirms it in-sandbox.
+                # No "tool authored and working" claim by decree.
+                if self.toolsmith is None:
+                    actual_obs_str = "Toolsmith not configured (no tool authoring)"
+                    recovery_needed = True
+                else:
+                    observation = payload.get("observation", "") or target_resource
+                    failed = payload.get("failed_attempts", [])
+                    authored = await self.toolsmith.author_tool_for_gap(
+                        observation=observation, failed_attempts=list(failed),
+                    )
+                    if authored is None:
+                        actual_obs_str = "Toolsmith: no novel tool warranted (honest skip)"
+                    else:
+                        actual_obs_str = (
+                            f"Authored tool '{authored.name}' (unconfirmed; "
+                            f"run TOOL_RUN to verify): {authored.rationale}"
+                        )
+
+            elif action_type == ComputerActionType.TOOL_RUN:
+                # Run a previously-authored tool in-sandbox and register it into
+                # the security_tools map ONLY on a real successful run. Honesty
+                # guard lives in ToolsmithLoop.confirm_and_register.
+                if self.toolsmith is None:
+                    actual_obs_str = "Toolsmith not configured (no tool running)"
+                    recovery_needed = True
+                else:
+                    tool_name = payload.get("tool", target_resource)
+                    authored = next(
+                        (t for t in self.toolsmith.authored if t.name == tool_name), None
+                    )
+                    if authored is None:
+                        actual_obs_str = f"No authored tool named '{tool_name}' to run"
+                        recovery_needed = True
+                    else:
+                        confirmed = await self.toolsmith.confirm_and_register(
+                            authored, self.computer, workspace_id,
+                        )
+                        if confirmed.reproduced:
+                            # Make the confirmed tool callable via SECURITY_TOOL.
+                            adapter = self.toolsmith.registry.get(confirmed.name)
+                            if adapter is not None:
+                                self.security_tools[confirmed.name] = adapter
+                            actual_obs_str = (
+                                f"Tool '{confirmed.name}' CONFIRMED and registered "
+                                f"(exit={confirmed.run_exit_code})"
+                            )
+                        else:
+                            actual_obs_str = (
+                                f"Tool '{confirmed.name}' NOT confirmed "
+                                f"(exit={confirmed.run_exit_code}); not registered"
+                            )
+                            recovery_needed = True
 
         except Exception as e:
             actual_obs_str = f"Error: {str(e)}"

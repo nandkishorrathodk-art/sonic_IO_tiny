@@ -54,7 +54,9 @@ class _PassingComputeProvider(ComputeProvider):
 def test_synthetic_self_evolution_lifecycle():
     async def _run():
         policy = EvolutionPolicy()
-        memory_store = EvolutionMemoryStore()
+        # Isolated, non-persistent memory store so this test is not affected by
+        # evolution_items left in the shared default SQLite DB by other tests.
+        memory_store = EvolutionMemoryStore(persist=False)
         generator = CandidateGenerator(policy=policy)
         lab = EvolutionLab(compute_provider=_PassingComputeProvider(), policy=policy)
 

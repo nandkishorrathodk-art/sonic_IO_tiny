@@ -577,10 +577,46 @@ green (432 passed).
 ### Test baseline (after prompt update)
 - 432 passed, 48 honestly skipped, 0 failures.
 
+## Phase C — Dead-code removal (4,042 LOC deleted)
+A static reachability audit from all production entry points (api/main + all
+routers, queue worker, mission_engine, computer_use, being/*, swarm, cli)
+proved that **6 packages form a closed, mutually-referencing island** that NO
+production code path ever imports. They were vestigial scaffolding from the
+old scripted-"success" evolution layer (Phases 8-19) that the real
+observe→reason→act + Toolsmith + MethodLab loops replaced.
+
+Deleted packages (production code):
+- `sonic/autonomy/` (560 LOC) — blind_repair, hidden_root_cause, empirical_evolution, cryptographic_holdout, anti_scripting_verifier
+- `sonic/continuous_dev/` (556 LOC) — ContinuousAutonomousDevLoop, autonomous_tool_selector, open_system_improver (was NOT wired to any route despite the Phase 7.9 AGENTS.md claim — that claim was aspirational/inaccurate)
+- `sonic/open_world/` (399 LOC) — self_development_orchestrator, limitation_discovery, novelty_generator
+- `sonic/production_gate/` (533 LOC) — scenario_matrix, temporal_holdout_generator, independent_evaluator
+- `sonic/security_lab/` (709 LOC) — attack_surface, SecurityAcceptanceRunner
+- `sonic/evolution/` (1,285 LOC) — the shared dependency hub (FailureMiner, CandidateGenerator, EvolutionLab, PromotionEngine, EvolutionMemoryStore, etc.); imported ONLY by the 5 packages above
+
+Deleted test suites (31 files): test_phase8/, test_phase10/, test_phase11/,
+test_phase16/, test_phase17/, test_phase18/, test_phase19/,
+test_continuous_dev_curiosity_driven.py — all tested the deleted code.
+
+`test_phase1_persistent_memory.py` updated: removed the
+`test_evolution_memory_survives_restart` test (tested the deleted
+EvolutionMemoryStore) and the `evo_memory` clause from
+`test_no_host_execution_introduced` (now checks only sqlite_graph + vector).
+The 3 core memory-survival tests (graph, vector, tenant isolation) remain —
+they test the REAL persistent memory layer.
+
+Packages KEPT (verified live):
+- `sonic/meta/` (668 LOC) — used by `/experiments` route (CanaryPipeline, ExperimentManager, benchmark).
+- `sonic/research/` (995 LOC) — used by `agents/director.py` (live swarm path: epistemic, information_gain, decision_trace, world_model).
+- `sonic/agents/director.py` — the Phase-5 event-driven Director, reachable via `swarm.py` → `/live` route.
+- `sonic/mission_engine/` — planner/executor used by `/workstation` mission loop.
+
+### Test baseline (after Phase C)
+- 386 passed, 37 honestly skipped, 0 failures. (46 deleted tests were for
+  the removed code; 11 of those were Docker-gated skips.)
+
 ## Current test baseline
-- 432 passed, 48 honestly skipped (Docker-daemon / Daytona-live gated via
-  `sonic-core/tests/conftest.py`), 0 failures. (Was 407 passed + 1 collection
-  error + 1 suite-order isolation failure before the audit + Phase A/B work.)
+- 386 passed, 37 honestly skipped (Docker-daemon / Daytona-live gated via
+  `sonic-core/tests/conftest.py`), 0 failures.
 - The previously-pre-existing 6 model-only/fail-closed contract failures were
   resolved by PR#3's simulated-provider + execution-evidence fixes (they asserted
   the OLD fake-success behavior; now correctly supplied).

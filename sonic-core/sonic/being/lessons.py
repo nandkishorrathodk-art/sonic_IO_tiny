@@ -1,0 +1,264 @@
+"""
+SONIC-REDA — Cross-Mission Lessons Ledger
+=========================================
+The "learning" leg of self-improvement that was missing: the being already
+AUTHORS new tools (Toolsmith) and techniques (MethodLab), and it already
+COMPUTES lessons after each task (epistemic ``PredictionComparison``). But
+those lessons were never fed back into the next mission's reasoning — the
+being forgot what it learned across missions. This closes the learn→apply loop.
+
+Two halves:
+
+    extract_lessons()
+        At mission end, distill the trace into concrete lessons:
+          * AVOID — an approach that failed (don't repeat it)
+          * REUSE — an approach that succeeded (reuse it)
+        Grounded in real trace outcomes, never fabricated.
+
+    LessonsLedger
+        A durable (host-FS) cross-mission store. ``record()`` persists a
+        lesson; ``relevant()`` returns the top-K lessons whose keywords match
+        the current goal, so the agent injects only what is pertinent — not
+        a giant dump. ``inject_into_context()`` renders them as a compact
+        block the LLM sees in ``_build_reasoning_context``.
+
+HONESTY INVARIANT (mirrors toolsmith/method_lab):
+    A lesson is recorded ONLY from a real trace outcome (FAILED → AVOID,
+    SUCCESS/RECOVERED → REUSE). No lesson is invented by decree. An empty
+    trace yields no lessons.
+
+SECURITY INVARIANT:
+    Lessons are text observations about tool/approach outcomes — they carry
+    no secrets, credentials, or target PII (the trace summaries are already
+    sanitized in the agent). The ledger is host-side under ``sonic_data`` like
+    BeingCraft, keyed by tenant + agent for isolation.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import re
+import time
+from dataclasses import dataclass, field
+from datetime import UTC, datetime
+from enum import StrEnum
+from typing import Any
+
+from sonic.logger import get_logger
+
+logger = get_logger(__name__)
+
+
+def _now() -> str:
+    return datetime.now(UTC).isoformat()
+
+
+def _ledger_root() -> str:
+    base = os.environ.get("SONIC_DATA_DIR", "sonic_data")
+    return os.path.join(base, "lessons")
+
+
+class LessonKind(StrEnum):
+    """What the lesson tells the agent to do with the approach."""
+    AVOID = "avoid"   # this approach failed — don't repeat it
+    REUSE = "reuse"   # this approach worked — reuse it
+
+
+@dataclass
+class Lesson:
+    """A single cross-mission lesson distilled from a real trace outcome."""
+    lesson_id: str
+    kind: LessonKind
+    goal: str               # the mission goal it was learned under (for relevance match)
+    approach: str           # the concrete action/approach that failed or worked
+    evidence: str           # the observed outcome (trace result excerpt)
+    created_at: str = ""
+    # Lightweight keyword tags for relevance matching without embeddings.
+    tags: list[str] = field(default_factory=list)
+
+
+def _keywords(text: str) -> list[str]:
+    """Extract lowercase keyword tokens for relevance matching.
+
+    Strips short stopwords so the match is on meaningful terms (tool names,
+    action verbs, targets), not glue words.
+    """
+    stop = {"the", "a", "an", "to", "for", "and", "or", "of", "in", "on", "with",
+            "is", "it", "this", "that", "run", "use", "try", "goal", "mission"}
+    toks = re.findall(r"[a-z][a-z0-9_-]{2,}", text.lower())
+    return [t for t in toks if t not in stop]
+
+
+def _relevance(goal: str, lesson: Lesson) -> int:
+    """Cheap keyword-overlap relevance score between the current goal and a
+    lesson's goal+tags. No embeddings — keeps the dependency surface flat."""
+    gk = set(_keywords(goal))
+    lk = set(_keywords(lesson.goal)) | set(lesson.tags)
+    return len(gk & lk)
+
+
+def extract_lessons(
+    traces: list[Any],
+    goal: str,
+    agent_id: str = "computer-use-agent",
+) -> list[Lesson]:
+    """Distill a mission's traces into concrete lessons.
+
+    One AVOID lesson per FAILED trace (the approach that didn't work) and one
+    REUSE lesson per SUCCESS/RECOVERED trace (the approach that did). Grounded
+    in real ``trace.status`` — never fabricates a lesson from an empty trace.
+
+    Args:
+        traces: the ``ComputerDecisionTrace`` list from ``run_mission``.
+        goal:   the mission goal (carried so relevance matching works later).
+    """
+    if not traces:
+        return []
+    lessons: list[Lesson] = []
+    for i, t in enumerate(traces):
+        status = getattr(t, "status", "")
+        action = getattr(t, "action_type", "")
+        target = getattr(t, "target_resource", "") or ""
+        predicted = getattr(t, "predicted_outcome", "") or ""
+        actual = getattr(t, "actual_observation", "") or ""
+        approach = f"{getattr(action, 'value', action)} on {target}".strip()
+        evidence = (actual or predicted)[:200]
+
+        if status == "FAILED":
+            lessons.append(Lesson(
+                lesson_id=f"lesson-{int(time.time()*1000)}-{i}-avoid",
+                kind=LessonKind.AVOID,
+                goal=goal,
+                approach=approach,
+                evidence=evidence or "action failed",
+                created_at=_now(),
+                tags=_keywords(f"{approach} {goal}"),
+            ))
+        elif status in ("SUCCESS", "RECOVERED"):
+            lessons.append(Lesson(
+                lesson_id=f"lesson-{int(time.time()*1000)}-{i}-reuse",
+                kind=LessonKind.REUSE,
+                goal=goal,
+                approach=approach,
+                evidence=evidence or "action succeeded",
+                created_at=_now(),
+                tags=_keywords(f"{approach} {goal}"),
+            ))
+    logger.info("lessons_extracted", count=len(lessons), goal=goal[:80])
+    return lessons
+
+
+class LessonsLedger:
+    """Durable cross-mission lesson store (host FS, restart-proof).
+
+    Persists one JSON file per tenant+agent under ``sonic_data/lessons/``.
+    Mirrors the BeingCraft persistence convention so the being's lessons
+    survive restart — the learn→apply loop compounds across sessions, not
+    just within one.
+    """
+
+    def __init__(self, tenant_id: str = "default", agent_id: str = "computer-use-agent"):
+        self.tenant_id = tenant_id
+        self.agent_id = agent_id
+        self._lessons: list[Lesson] = []
+        self._load()
+
+    def _path(self) -> str:
+        return os.path.join(_ledger_root(), f"{self.tenant_id}_{self.agent_id}.json")
+
+    def _load(self) -> None:
+        path = self._path()
+        try:
+            with open(path, encoding="utf-8") as f:
+                data = json.load(f)
+            self._lessons = [
+                Lesson(
+                    lesson_id=d["lesson_id"],
+                    kind=LessonKind(d["kind"]),
+                    goal=d["goal"],
+                    approach=d["approach"],
+                    evidence=d.get("evidence", ""),
+                    created_at=d.get("created_at", ""),
+                    tags=d.get("tags", []),
+                )
+                for d in data
+            ]
+        except (FileNotFoundError, json.JSONDecodeError, KeyError):
+            self._lessons = []
+
+    def _save(self) -> None:
+        path = self._path()
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        data = [
+            {
+                "lesson_id": l.lesson_id, "kind": l.kind.value,
+                "goal": l.goal, "approach": l.approach, "evidence": l.evidence,
+                "created_at": l.created_at, "tags": l.tags,
+            }
+            for l in self._lessons
+        ]
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
+
+    def record(self, lessons: list[Lesson]) -> None:
+        """Persist new lessons. Deduplicates by (kind, approach) so repeating
+        the same failed approach in multiple missions counts once, not N×."""
+        existing = {(l.kind, l.approach) for l in self._lessons}
+        added = 0
+        for l in lessons:
+            key = (l.kind, l.approach)
+            if key in existing:
+                continue
+            self._lessons.append(l)
+            existing.add(key)
+            added += 1
+        if added:
+            self._save()
+            logger.info("lessons_recorded", added=added, total=len(self._lessons))
+
+    def relevant(self, goal: str, k: int = 5) -> list[Lesson]:
+        """Return the top-K lessons most relevant to the current goal by keyword
+        overlap. Caps the injection so the LLM sees pertinent lessons, not a
+        giant dump that drowns the live observation."""
+        if not self._lessons:
+            return []
+        scored = sorted(self._lessons, key=lambda l: _relevance(goal, l), reverse=True)
+        # Filter zero-relevance lessons out unless the ledger is small — a brand
+        # new goal with no overlap still benefits from the most-recent lessons.
+        hits = [l for l in scored if _relevance(goal, l) > 0]
+        if not hits and len(self._lessons) <= k:
+            return self._lessons[:k]
+        return hits[:k]
+
+    def all(self) -> list[Lesson]:
+        return list(self._lessons)
+
+    def clear(self) -> None:
+        """Test helper — wipe the ledger."""
+        self._lessons = []
+        path = self._path()
+        if os.path.exists(path):
+            os.remove(path)
+
+
+def inject_into_context(lessons: list[Lesson]) -> str:
+    """Render lessons as a compact block for the LLM reasoning context.
+
+    Returns an empty string when there are no lessons — so a fresh being with
+    no history adds zero noise to the prompt (no fabricated "lessons learned").
+    """
+    if not lessons:
+        return ""
+    avoids = [l for l in lessons if l.kind == LessonKind.AVOID]
+    reuses = [l for l in lessons if l.kind == LessonKind.REUSE]
+    lines: list[str] = []
+    if reuses:
+        lines.append("Past lessons — approaches that WORKED (reuse them):")
+        for l in reuses:
+            lines.append(f"  [REUSE] {l.approach} → {l.evidence}")
+    if avoids:
+        lines.append("Past lessons — approaches that FAILED (avoid repeating):")
+        for l in avoids:
+            lines.append(f"  [AVOID] {l.approach} → {l.evidence}")
+    return "\n".join(lines) + "\n"

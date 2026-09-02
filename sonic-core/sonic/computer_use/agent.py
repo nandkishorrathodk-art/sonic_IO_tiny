@@ -67,6 +67,7 @@ class ComputerUseAgent:
         self_host: bool = False,
         toolsmith: Any | None = None,
         method_lab: Any | None = None,
+        lessons_ledger: Any | None = None,
         tenant_id: str = "default",
         engagement_id: str = "default",
         agent_id: str = "computer-use-agent",
@@ -92,6 +93,11 @@ class ComputerUseAgent:
         # offensive techniques (new methods, not just tools) from observation +
         # failure + the known-technique ledger. Confirmed only on reproduction.
         self.method_lab = method_lab
+        # Optional LessonsLedger (self-improvement learn→apply loop): persists
+        # cross-mission lessons (failed approaches to avoid, successful ones to
+        # reuse) and injects them into reasoning so the being does not forget
+        # what it learned across missions. None = lessons not collected.
+        self.lessons_ledger = lessons_ledger
         # Optional fail-closed safety envelope (PLAN Phase 6). Required in
         # self-host mode: the agent may NOT act autonomously without a policy.
         self.safety = safety
@@ -292,6 +298,14 @@ class ComputerUseAgent:
                 f"Findings excerpt: {findings_excerpt}\n"
             )
         available_tools = ", ".join(sorted(self.security_tools.keys())) if self.security_tools else "(none)"
+        # Cross-mission lessons: the learn→apply loop. If a LessonsLedger is
+        # wired in, inject the top-K lessons relevant to THIS goal so the LLM
+        # sees what it learned before (failed approaches to avoid, successful
+        # ones to reuse) — instead of starting every mission with amnesia.
+        lessons_block = ""
+        if self.lessons_ledger is not None:
+            from sonic.being.lessons import inject_into_context
+            lessons_block = inject_into_context(self.lessons_ledger.relevant(goal))
         obs_summary = (
             f"Step {step_index}. Goal: {goal}\n"
             f"Active app: {observation.active_application}\n"
@@ -302,6 +316,7 @@ class ComputerUseAgent:
             f"Git branch: {observation.git_branch}, clean: {observation.git_clean}\n"
             f"Primary file: {primary_file}, Test file: {test_file}\n"
             f"Available security tools: {available_tools}\n"
+            f"{lessons_block}"
             f"Actions taken so far:\n{history_text or '(none — this is the first action)'}\n"
         )
         system_prompt = (
@@ -318,7 +333,10 @@ class ComputerUseAgent:
             "already done. "
             "Choose the ONE next action that makes the most progress toward the "
             "goal, reacting to the latest observation and your prior actions — do "
-            "NOT follow a fixed script. When no existing tool fits a gap, author "
+            "NOT follow a fixed script. When 'Past lessons' appear in the "
+            "observation, AVOID approaches marked [AVOID] (they failed before) and "
+            "prefer approaches marked [REUSE] (they worked before) — apply your "
+            "own cross-mission learning. When no existing tool fits a gap, author "
             "a new one (TOOL_AUTHOR) and verify it (TOOL_RUN); when a gap needs a "
             "new METHOD rather than a new tool, invent a technique (METHOD_INVENT). "
             "If the goal is already achieved, respond GOAL_COMPLETE.\n"
@@ -1136,6 +1154,16 @@ class ComputerUseAgent:
         self.metrics.verification_score = 1.00 if goal_reached else (
             0.90 if self.metrics.actions_failed == 0 else 0.80
         )
+
+        # Close the learn→apply loop: distill this mission's traces into lessons
+        # and persist them so the NEXT mission's reasoning sees them. Grounded
+        # in real trace outcomes (FAILED→AVOID, SUCCESS/RECOVERED→REUSE) — never
+        # fabricated. Skipped silently when no ledger is wired in.
+        if self.lessons_ledger is not None:
+            from sonic.being.lessons import extract_lessons
+            new_lessons = extract_lessons(self.traces, goal, self.agent_id)
+            if new_lessons:
+                self.lessons_ledger.record(new_lessons)
 
         return self.traces
 

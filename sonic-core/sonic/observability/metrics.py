@@ -8,8 +8,6 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
-from typing import Any, Optional
 
 from sonic.logger import get_logger
 
@@ -89,7 +87,7 @@ class SwarmMetrics:
 
 
 # Global singleton
-_metrics: Optional[SwarmMetrics] = None
+_metrics: SwarmMetrics | None = None
 
 
 def get_metrics() -> SwarmMetrics:

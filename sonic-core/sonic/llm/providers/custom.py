@@ -67,14 +67,13 @@ Usage:
 from __future__ import annotations
 
 import json
-import time
-import uuid
-from typing import Any, AsyncIterator, Optional
+from collections.abc import AsyncIterator
+from typing import Any
 
 import httpx
 
-from sonic.logger import get_logger
 from sonic.llm.base import LLMProvider
+from sonic.logger import get_logger
 
 logger = get_logger(__name__)
 from sonic.llm.schemas import (
@@ -131,11 +130,11 @@ def _is_model_not_found_error(error: Exception) -> bool:
 class CustomLLMProvider(LLMProvider):
     """
     Universal LLM Provider — works with ANY OpenAI-compatible API.
-    
+
     For Anthropic endpoints, automatically switches to Claude's API format.
     For everything else (OpenAI, Grok, DeepSeek, Ollama, custom), uses
     the standard OpenAI chat completions format.
-    
+
     Config needed:
         - name: Label for this provider (e.g., "grok", "my-model")
         - base_url: API endpoint URL
@@ -689,7 +688,7 @@ class CustomLLMProvider(LLMProvider):
     async def health_check(self) -> bool:
         """Verify this provider is reachable with a minimal request."""
         try:
-            test_request = LLMRequest(
+            LLMRequest(
                 messages=[{"role": "user", "content": "ping"}],
                 model=self.default_model,
                 max_tokens=5,

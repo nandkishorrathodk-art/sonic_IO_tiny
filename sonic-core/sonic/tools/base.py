@@ -14,9 +14,9 @@ from __future__ import annotations
 import uuid
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from enum import StrEnum
-from typing import Any, Optional
+from typing import Any
 
 from sonic.logger import get_logger
 from sonic.sandbox.provider import ComputeProvider, ExecResult
@@ -85,7 +85,7 @@ class ToolResult:
     parsed_data: list[dict[str, Any]] = field(default_factory=list)
     evidence: list[ToolEvidence] = field(default_factory=list)
     metrics: ToolMetrics = field(default_factory=ToolMetrics)
-    error_message: Optional[str] = None
+    error_message: str | None = None
 
 
 class SecurityTool(ABC):
@@ -123,7 +123,7 @@ class SecurityTool(ABC):
         Execute tool strictly inside the ComputeProvider workspace.
         Fails closed if the workspace is unavailable.
         """
-        start_dt = datetime.now(timezone.utc)
+        start_dt = datetime.now(UTC)
         cmd = self.build_command(request)
 
         logger.info(
@@ -140,7 +140,7 @@ class SecurityTool(ABC):
             timeout=request.timeout_seconds,
         )
 
-        end_dt = datetime.now(timezone.utc)
+        end_dt = datetime.now(UTC)
         duration = (end_dt - start_dt).total_seconds()
 
         # Handle timeout or execution errors

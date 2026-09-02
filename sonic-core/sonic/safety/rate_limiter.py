@@ -13,7 +13,6 @@ from __future__ import annotations
 import asyncio
 import time
 from dataclasses import dataclass, field
-from typing import Optional
 
 from sonic.logger import get_logger
 
@@ -45,6 +44,8 @@ class EgressRateLimiter:
         self._lock = asyncio.Lock()
 
     def _get_bucket(self, target_host: str) -> TargetBucket:
+        # Caller MUST hold self._lock — all mutations go through acquire/release,
+        # which take the lock, so this lookup is always race-free.
         if target_host not in self.buckets:
             self.buckets[target_host] = TargetBucket(
                 rate=self.default_rps,
@@ -80,7 +81,7 @@ class EgressRateLimiter:
 
             await asyncio.sleep(wait_seconds)
 
-    async def release(self, target_host: str, status_code: Optional[int] = None) -> None:
+    async def release(self, target_host: str, status_code: int | None = None) -> None:
         """
         Release an active connection and adjust adaptive backoff based on server response.
         """
@@ -103,7 +104,7 @@ class EgressRateLimiter:
 
 
 # Global singleton
-_rate_limiter: Optional[EgressRateLimiter] = None
+_rate_limiter: EgressRateLimiter | None = None
 
 
 def get_rate_limiter() -> EgressRateLimiter:

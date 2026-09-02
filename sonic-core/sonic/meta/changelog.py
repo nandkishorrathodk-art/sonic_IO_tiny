@@ -7,8 +7,7 @@ a self-development experiment is benchmarked and promoted.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
-from typing import Any
+from datetime import UTC, datetime
 
 from sonic.meta.evaluator import EvaluationReport
 from sonic.meta.experiment import ExperimentProposal
@@ -28,10 +27,10 @@ class EvolutionChangelog:
         """Generate a complete Markdown changelog report for a promoted experiment."""
         return f"""# 🚀 SONIC-REDA System Evolution Summary — `{new_version}`
 
-**Evolution ID:** `{proposal.id}`  
-**Author:** `{proposal.author}`  
-**Category:** `{proposal.experiment_type.value}`  
-**Timestamp:** `{datetime.now(timezone.utc).isoformat()}`  
+**Evolution ID:** `{proposal.id}`
+**Author:** `{proposal.author}`
+**Category:** `{proposal.experiment_type.value}`
+**Timestamp:** `{datetime.now(UTC).isoformat()}`
 **Decision:** **`{report.decision.value.upper()}`**
 
 ---

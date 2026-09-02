@@ -17,25 +17,25 @@ Lifecycle:
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
-from sonic.logger import get_logger
+from datetime import UTC, datetime
+from typing import Any
 
+from sonic.logger import get_logger
 from sonic.sandbox.egress import is_target_allowed
 
 logger = get_logger(__name__)
 
-from sonic.agents.orchestrator import MetaOrchestrator
-from sonic.agents.recon import ReconAgent
-from sonic.agents.static_reasoning import StaticReasoningAgent
 from sonic.agents.dynamic_execution import DynamicExecutionAgent
 from sonic.agents.hypothesis import HypothesisGenerator
+from sonic.agents.recon import ReconAgent
+from sonic.agents.static_reasoning import StaticReasoningAgent
 from sonic.agents.verifier import VerifierAgent
 from sonic.llm.router import ModelRouter
 from sonic.memory.graph import GraphMemory
 from sonic.memory.schemas import (
+    AgentNode,
     EngagementNode,
     EngagementStatus,
-    AgentNode,
     FindingStatus,
 )
 from sonic.safety.scope import ScopeChecker
@@ -117,7 +117,7 @@ class EngagementManager:
             "scope": scope_config or {},
             "results": {},
             "agents_used": [],
-            "created_at": datetime.now(timezone.utc).isoformat(),
+            "created_at": datetime.now(UTC).isoformat(),
         }
 
         logger.info("engagement_created", uid=uid, name=name, target=target, tenant_id=tenant_id)
@@ -132,7 +132,7 @@ class EngagementManager:
     ) -> dict[str, Any]:
         """
         Run a full engagement pipeline.
-        
+
         Default phases: recon → hypothesis → static → dynamic → verify → report
         """
         eng = self.active_engagements.get(engagement_id)
@@ -343,11 +343,11 @@ class EngagementManager:
         report["engagement"] = {
             "engagement_id": engagement_id,
             "target": target,
-            "phases_run": [k for k in results.keys() if k not in ("findings", "summary", "error")],
+            "phases_run": [k for k in results if k not in ("findings", "summary", "error")],
             "tests_executed": dynamic.get("tests_executed", 0),
             "failed_attempts": len(dynamic.get("failed_attempts", []) or []),
             "observations": len(dynamic.get("observations", []) or []),
-            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "generated_at": datetime.now(UTC).isoformat(),
         }
         return report
 
@@ -375,7 +375,7 @@ class EngagementManager:
         return unique
 
     def _build_summary(self, target: str, findings: list[dict], results: dict) -> dict:
-        by_sev = {sev: 0 for sev in ["critical", "high", "medium", "low", "info"]}
+        by_sev = dict.fromkeys(["critical", "high", "medium", "low", "info"], 0)
         for f in findings:
             sev = (f.get("severity") or "info").lower()
             if sev in by_sev:
@@ -438,7 +438,7 @@ class EngagementManager:
                 for sev in ["critical", "high", "medium", "low", "info"]
             },
             "findings": findings,
-            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "generated_at": datetime.now(UTC).isoformat(),
         }
 
     def list_agents(self) -> list[dict]:

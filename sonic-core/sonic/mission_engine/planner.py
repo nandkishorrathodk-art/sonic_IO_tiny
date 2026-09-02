@@ -10,7 +10,7 @@ remain approval-required (never silently executed).
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from pydantic import BaseModel, Field
@@ -19,7 +19,7 @@ from sonic.mission_engine.tool_registry import MissionToolRegistry, ToolRisk
 
 
 def _now() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 class PlannedAction(BaseModel):

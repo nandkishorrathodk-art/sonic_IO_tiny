@@ -9,7 +9,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Any, Optional
 
 from sonic.logger import get_logger
 from sonic.meta.benchmark import BenchmarkResult

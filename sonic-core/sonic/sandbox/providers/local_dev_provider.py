@@ -9,14 +9,39 @@ from __future__ import annotations
 
 import asyncio
 import os
-from datetime import datetime, timezone
+import signal
+from contextlib import suppress
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Optional
 
 from sonic.logger import get_logger
 from sonic.sandbox.provider import ComputeProvider, ExecResult, WorkspaceConfig, WorkspaceState
 
 logger = get_logger(__name__)
+
+
+def _kill_process_group(process: asyncio.subprocess.Process) -> None:
+    """Kill a subprocess and its entire process group on timeout.
+
+    ``process.kill()`` only kills the immediate child (e.g. the shell), leaving
+    grandchildren (e.g. ``sleep``) as orphans. Starting the subprocess with
+    ``start_new_session=True`` puts it in its own process group whose PGID
+    equals the child PID, so ``os.killpg`` can reap the whole tree.
+    """
+    try:
+        pgid = os.getpgid(process.pid)
+        os.killpg(pgid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    except Exception as e:
+        # Fall back to a direct kill if the group kill is not possible.
+        logger.debug("killpg_failed", error=str(e))
+        with suppress(ProcessLookupError):
+            process.kill()
+    # Reap the zombie. This is a blocking OS-level wait — safe because the
+    # process was just SIGKILLed, so it exits immediately.
+    with suppress(ChildProcessError):
+        os.waitpid(process.pid, 0)
 
 
 class LocalDevProvider(ComputeProvider):
@@ -40,12 +65,12 @@ class LocalDevProvider(ComputeProvider):
         self,
         workspace_id: str,
         command: str | list[str],
-        cwd: Optional[str] = None,
-        env: Optional[dict[str, str]] = None,
+        cwd: str | None = None,
+        env: dict[str, str] | None = None,
         timeout: int = 120,
     ) -> ExecResult:
         cmd_str = command if isinstance(command, str) else " ".join(command)
-        start_time = datetime.now(timezone.utc)
+        start_time = datetime.now(UTC)
 
         # Strict safety check
         if not self.allow_host_execution:
@@ -65,9 +90,27 @@ class LocalDevProvider(ComputeProvider):
                 stderr=asyncio.subprocess.PIPE,
                 cwd=cwd,
                 env={**os.environ, **(env or {})},
+                # Start in a new process group so a timeout can kill the whole
+                # tree (shell + children like `sleep`) instead of just the
+                # shell, which would orphan the child.
+                start_new_session=True,
             )
-            stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=timeout)
-            duration = (datetime.now(timezone.utc) - start_time).total_seconds()
+            try:
+                stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=timeout)
+            except TimeoutError:
+                # Kill the entire process group so child processes spawned by
+                # the shell (e.g. `sleep`) do not leak as orphans.
+                _kill_process_group(process)
+                return ExecResult(
+                    command=cmd_str,
+                    exit_code=-1,
+                    stdout="",
+                    stderr=f"TIMEOUT: Execution exceeded {timeout}s",
+                    duration_seconds=timeout,
+                    timed_out=True,
+                    sandbox_id=workspace_id,
+                )
+            duration = (datetime.now(UTC) - start_time).total_seconds()
             return ExecResult(
                 command=cmd_str,
                 exit_code=process.returncode or 0,

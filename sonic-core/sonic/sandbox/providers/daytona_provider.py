@@ -11,10 +11,9 @@ FAIL-CLOSED INVARIANT:
 
 from __future__ import annotations
 
-import asyncio
 import os
-from datetime import datetime, timezone
-from typing import Any, Optional
+from datetime import UTC, datetime
+from typing import Any
 
 from sonic.logger import get_logger
 from sonic.sandbox.provider import ComputeProvider, ExecResult, WorkspaceConfig, WorkspaceState
@@ -30,9 +29,9 @@ class DaytonaProvider(ComputeProvider):
 
     def __init__(
         self,
-        api_url: Optional[str] = None,
-        api_key: Optional[str] = None,
-        target: Optional[str] = None,
+        api_url: str | None = None,
+        api_key: str | None = None,
+        target: str | None = None,
     ):
         self.api_url = api_url or os.environ.get("DAYTONA_API_URL")
         self.api_key = api_key or os.environ.get("DAYTONA_API_KEY", "")
@@ -112,13 +111,13 @@ class DaytonaProvider(ComputeProvider):
         self,
         workspace_id: str,
         command: str | list[str],
-        cwd: Optional[str] = None,
-        env: Optional[dict[str, str]] = None,
+        cwd: str | None = None,
+        env: dict[str, str] | None = None,
         timeout: int = 120,
     ) -> ExecResult:
         """Execute a command strictly inside the Daytona remote sandbox."""
         cmd_str = command if isinstance(command, str) else " ".join(command)
-        start_time = datetime.now(timezone.utc)
+        start_time = datetime.now(UTC)
 
         client = self._get_client()
         if not client:
@@ -158,7 +157,7 @@ class DaytonaProvider(ComputeProvider):
                 timeout=timeout,
             )
 
-            duration = (datetime.now(timezone.utc) - start_time).total_seconds()
+            duration = (datetime.now(UTC) - start_time).total_seconds()
             stdout_res = getattr(exec_response, "result", "") or ""
             exit_code = getattr(exec_response, "exit_code", 0)
 
@@ -171,7 +170,7 @@ class DaytonaProvider(ComputeProvider):
                 sandbox_id=workspace_id,
             )
 
-        except asyncio.TimeoutError:
+        except TimeoutError:
             return ExecResult(
                 command=cmd_str,
                 exit_code=-1,

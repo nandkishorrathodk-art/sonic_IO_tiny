@@ -9,10 +9,8 @@ Integrates with HackerOne and Bugcrowd APIs for:
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
-from typing import Any, Optional
+from typing import Any
 
 import httpx
 
@@ -66,7 +64,7 @@ class BugBountyClient:
     # HackerOne
     # ============================================
 
-    async def h1_get_program(self, handle: str) -> Optional[BugBountyProgram]:
+    async def h1_get_program(self, handle: str) -> BugBountyProgram | None:
         """Fetch HackerOne program scope."""
         if not self.h1_key:
             logger.warning("hackerone_api_key_not_set")
@@ -107,7 +105,7 @@ class BugBountyClient:
     # Bugcrowd
     # ============================================
 
-    async def bc_get_program(self, handle: str) -> Optional[BugBountyProgram]:
+    async def bc_get_program(self, handle: str) -> BugBountyProgram | None:
         """Fetch Bugcrowd program scope."""
         if not self.bc_key:
             logger.warning("bugcrowd_api_key_not_set")

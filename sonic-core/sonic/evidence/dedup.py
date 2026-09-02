@@ -8,8 +8,6 @@ into unified canonical findings, and filters false positives before reporting.
 from __future__ import annotations
 
 import hashlib
-import json
-from typing import Any, Optional
 
 from sonic.evidence.models import (
     FindingLifecycleState,
@@ -78,7 +76,7 @@ class FalsePositiveFilter:
     @staticmethod
     def validate_finding_for_report(
         finding: ProvenancedFinding,
-        allowed_scope: Optional[list[str]] = None,
+        allowed_scope: list[str] | None = None,
     ) -> tuple[bool, list[str]]:
         """
         Run deterministic sanity checks before including finding in report.

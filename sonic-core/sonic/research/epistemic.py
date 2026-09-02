@@ -8,9 +8,9 @@ evidence weighting, contradiction tracking, and transparent confidence calculati
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from enum import StrEnum
-from typing import Any, Optional
+from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -20,7 +20,7 @@ def _new_id(prefix: str = "obj") -> str:
 
 
 def _now() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 # ============================================
@@ -54,7 +54,7 @@ class Unknown(BaseModel):
     engagement_id: str = ""
     tenant_id: str = ""
     created_at: str = Field(default_factory=_now)
-    resolved_at: Optional[str] = None
+    resolved_at: str | None = None
 
     def resolve(self, resolution: str, resolved_by: str) -> None:
         self.status = UnknownStatus.RESOLVED
@@ -121,7 +121,7 @@ class Prediction(BaseModel):
     task_id: str = ""
     experiment_name: str = ""
     expected_outcomes: dict[str, Any] = Field(default_factory=dict)
-    expected_status_code: Optional[int] = None
+    expected_status_code: int | None = None
     expected_signature: str = ""            # Keyword/pattern expected in response
     falsification_observation: str = ""     # What would contradict this prediction?
     confidence: float = 0.7
@@ -218,7 +218,7 @@ class Contradiction(BaseModel):
     engagement_id: str = ""
     tenant_id: str = ""
     created_at: str = Field(default_factory=_now)
-    resolved_at: Optional[str] = None
+    resolved_at: str | None = None
 
     def resolve(self, notes: str) -> None:
         self.resolved = True

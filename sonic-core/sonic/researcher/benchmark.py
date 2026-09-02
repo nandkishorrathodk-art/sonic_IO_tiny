@@ -7,8 +7,8 @@ Autonomous Researcher across challenging multi-hypothesis scenarios.
 
 from __future__ import annotations
 
-from typing import Any
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
+
 from sonic.researcher.manager import ResearchManager
 from sonic.researcher.models import ResearchMode, StopReason
 

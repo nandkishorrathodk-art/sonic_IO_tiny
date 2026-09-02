@@ -6,8 +6,6 @@ Test endpoints for the Custom LLM Provider + Model Router.
 
 from __future__ import annotations
 
-from typing import Optional
-
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
@@ -20,7 +18,7 @@ from sonic.llm.schemas import ImageContent, LLMRequest, Message, MessageRole
 router = APIRouter()
 
 # Lazy-loaded router singleton
-_model_router: Optional[ModelRouter] = None
+_model_router: ModelRouter | None = None
 
 
 def get_model_router() -> ModelRouter:

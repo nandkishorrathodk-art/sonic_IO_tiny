@@ -14,20 +14,17 @@ from __future__ import annotations
 
 import asyncio
 import json
-from typing import Any, Optional
+from typing import Any
 
 from sonic.agents.base import BaseAgent
-from sonic.agents.cognitive_state import EngagementBudget
+from sonic.agents.codefix import CodeFixAgent
 from sonic.agents.director import Director
 from sonic.agents.dynamic_execution import DynamicExecutionAgent
-from sonic.agents.engagement import EngagementManager
-from sonic.agents.hypothesis import HypothesisGenerator
-from sonic.agents.codefix import CodeFixAgent
 from sonic.agents.exploit_validator import ExploitValidator
+from sonic.agents.hypothesis import HypothesisGenerator
 from sonic.agents.orchestrator import MetaOrchestrator
 from sonic.agents.react_engine import (
     ReActEngine,
-    ToolRegistry,
     create_default_tool_registry,
 )
 from sonic.agents.recon import ReconAgent
@@ -37,15 +34,11 @@ from sonic.agents.verifier import VerifierAgent
 from sonic.llm.providers.custom import CustomLLMProvider
 from sonic.llm.router import ModelRouter
 from sonic.logger import get_logger
-from sonic.memory.inmemory import InMemoryGraph
 from sonic.memory.router import get_smart_memory
 from sonic.memory.schemas import (
     AssetNode,
     AssetType,
     EngagementNode,
-    FindingNode,
-    FindingSeverity,
-    FindingStatus,
 )
 from sonic.observability.metrics import get_metrics
 from sonic.safety.rate_limiter import get_rate_limiter
@@ -253,7 +246,7 @@ class SwarmRunner:
         all_findings = []
 
         # Collect findings from all phases
-        for phase_name, phase_data in results.get("phases", {}).items():
+        for _phase_name, phase_data in results.get("phases", {}).items():
             if isinstance(phase_data, dict):
                 for f in phase_data.get("findings", []):
                     all_findings.append(f)
@@ -477,7 +470,7 @@ class SwarmRunner:
 
 
 # Global singleton
-_swarm_runner: Optional[SwarmRunner] = None
+_swarm_runner: SwarmRunner | None = None
 
 
 def get_swarm_runner() -> SwarmRunner:

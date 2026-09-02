@@ -20,8 +20,7 @@ import os
 import re
 import zlib
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
-from typing import Any, Optional
+from typing import Any
 
 from sonic.logger import get_logger
 
@@ -74,7 +73,7 @@ class DenseVectorizer:
         """Compute cosine similarity between two normalized vectors."""
         if not v1 or not v2 or len(v1) != len(v2):
             return 0.0
-        return max(0.0, min(1.0, sum(a * b for a, b in zip(v1, v2))))
+        return max(0.0, min(1.0, sum(a * b for a, b in zip(v1, v2, strict=False))))
 
 
 class VectorMemory:
@@ -88,15 +87,16 @@ class VectorMemory:
     ``sqlite3`` driver so the existing synchronous API is preserved.
     """
 
-    def __init__(self, dim: int = 128, db_path: Optional[str] = None, persist: bool = True):
+    def __init__(self, dim: int = 128, db_path: str | None = None, persist: bool = True):
         import sqlite3
+
         from sonic.memory.sqlite_graph import _default_db_path
         self.dim = dim
         self.vectorizer = DenseVectorizer(dim=dim)
         self.documents: dict[str, VectorDocument] = {}
         self.persist = persist
         self._db_path = db_path or (os.environ.get("SONIC_MEMORY_DB_PATH") or _default_db_path()) if persist else None
-        self._db: Optional[sqlite3.Connection] = None
+        self._db: sqlite3.Connection | None = None
         if persist:
             self._open_db()
 
@@ -122,7 +122,7 @@ class VectorMemory:
                 vector=json.loads(vec_json),
             )
 
-    def index_document(self, doc_id: str, text: str, metadata: Optional[dict[str, Any]] = None) -> None:
+    def index_document(self, doc_id: str, text: str, metadata: dict[str, Any] | None = None) -> None:
         """Add or update a document in the vector index (write-through to SQLite)."""
         vector = self.vectorizer.vectorize(text)
         self.documents[doc_id] = VectorDocument(
@@ -163,7 +163,7 @@ class VectorMemory:
             })
         return results
 
-    def is_duplicate(self, text: str, threshold: float = 0.88) -> tuple[bool, Optional[str]]:
+    def is_duplicate(self, text: str, threshold: float = 0.88) -> tuple[bool, str | None]:
         """
         Check if a finding or text is a duplicate of an existing indexed document.
         """
@@ -181,7 +181,7 @@ class VectorMemory:
 
 
 # Global singleton
-_vector_memory: Optional[VectorMemory] = None
+_vector_memory: VectorMemory | None = None
 
 
 def get_vector_memory() -> VectorMemory:

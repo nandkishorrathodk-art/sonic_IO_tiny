@@ -8,7 +8,7 @@ Handles multi-agent consensus, adversarial falsification, and verifier conflicts
 
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Any
 
 from sonic.evidence.models import (
     EvidenceItem,
@@ -24,7 +24,7 @@ logger = get_logger(__name__)
 class IndependentVerifier:
     """
     Orchestrates independent verification of candidate findings.
-    
+
     Rules:
         1. Discovering agent cannot verify its own finding.
         2. Verifier receives unbiased raw observations & competing hypotheses.
@@ -64,8 +64,8 @@ class IndependentVerifier:
         verifier_agent_id: str,
         is_reproduced: bool,
         notes: str = "",
-        evidence_items: Optional[list[EvidenceItem]] = None,
-        contradictions_found: Optional[list[str]] = None,
+        evidence_items: list[EvidenceItem] | None = None,
+        contradictions_found: list[str] | None = None,
     ) -> VerificationResult:
         """
         Record verification output and update finding state.
@@ -119,7 +119,7 @@ class IndependentVerifier:
     ) -> str:
         """
         Evaluate consensus when multiple verifiers produce conflicting verdicts.
-        
+
         Returns:
             "consensus_verified", "consensus_rejected", or "conflict_needs_review"
         """

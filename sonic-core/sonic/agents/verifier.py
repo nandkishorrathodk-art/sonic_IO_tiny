@@ -16,17 +16,15 @@ This agent:
 from __future__ import annotations
 
 import json
-from typing import Any, Optional
+from typing import Any
 
-from sonic.logger import get_logger
 from sonic.agents.base import BaseAgent
 from sonic.evidence.independent_verifier import AdversarialReviewer, IndependentVerifier
 from sonic.evidence.models import (
-    EvidenceItem,
     ProvenancedFinding,
-    ReproductionPlan,
 )
 from sonic.evidence.reproduction_engine import ReproductionEngine
+from sonic.logger import get_logger
 from sonic.memory.schemas import FindingStatus
 from sonic.safety.rate_limiter import get_rate_limiter
 from sonic.tools.http_probe import HTTPProbe, ProbeResult, ProbeTest
@@ -52,10 +50,10 @@ class VerifierAgent(BaseAgent):
     def __init__(
         self,
         *,
-        reproduction_engine: Optional[ReproductionEngine] = None,
-        independent_verifier: Optional[IndependentVerifier] = None,
-        adversarial_reviewer: Optional[AdversarialReviewer] = None,
-        scope_config: Optional[dict] = None,
+        reproduction_engine: ReproductionEngine | None = None,
+        independent_verifier: IndependentVerifier | None = None,
+        adversarial_reviewer: AdversarialReviewer | None = None,
+        scope_config: dict | None = None,
         enable_http_reproduction: bool = True,
         **kwargs: Any,
     ):
@@ -166,7 +164,7 @@ You must return a JSON object with your analysis. BE STRICT."""
         # 3. LLM heuristic fallback
         return await self._llm_verify(finding)
 
-    async def _http_reproduce(self, finding: dict) -> Optional[dict]:
+    async def _http_reproduce(self, finding: dict) -> dict | None:
         """
         Re-fire the finding's original request against the target and check
         that the same vulnerability signal re-appears in the REAL response.
@@ -205,7 +203,6 @@ You must return a JSON object with your analysis. BE STRICT."""
                 "recommendations": "Re-run verification with network access.",
             }
 
-        notes = []
         if result.blocked:
             self.rejected_count += 1
             return self._repro_verdict(
@@ -248,7 +245,7 @@ You must return a JSON object with your analysis. BE STRICT."""
             recommendations="Re-confirm with the original payload/parameters.",
         )
 
-    def _test_from_finding(self, finding: dict) -> Optional[ProbeTest]:
+    def _test_from_finding(self, finding: dict) -> ProbeTest | None:
         """Reconstruct a ProbeTest from a finding's stored request/evidence."""
         # Prefer an explicit url on the finding.
         url = finding.get("url") or finding.get("target_asset") or ""
@@ -283,7 +280,7 @@ You must return a JSON object with your analysis. BE STRICT."""
         )
 
     @staticmethod
-    def _parse_raw_request(raw: str) -> Optional[tuple]:
+    def _parse_raw_request(raw: str) -> tuple | None:
         """Best-effort parse of a raw HTTP request into (method, url, headers, body)."""
         lines = raw.replace("\r\n", "\n").split("\n")
         if not lines or " " not in lines[0]:
@@ -335,7 +332,7 @@ You must return a JSON object with your analysis. BE STRICT."""
             },
         }
 
-    async def _engine_verify(self, finding: dict) -> Optional[dict]:
+    async def _engine_verify(self, finding: dict) -> dict | None:
         """
         Run ReproductionEngine and AdversarialReviewer against the finding when
         the engines and a parseable ProvenancedFinding are available. Returns a

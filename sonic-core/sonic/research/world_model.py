@@ -8,19 +8,13 @@ competing hypotheses, active contradictions, and evaluates explicit stopping pol
 from __future__ import annotations
 
 from enum import StrEnum
-from typing import Any, Optional
+from typing import Any
+
 from pydantic import BaseModel, Field
 
 from sonic.research.epistemic import (
-    CompetingHypothesis,
-    Contradiction,
-    Unknown,
-    UnknownStatus,
-    Prediction,
-    PredictionComparison,
     ConfidenceBreakdown,
 )
-from sonic.research.decision_trace import DecisionTrace
 
 
 class StopCondition(StrEnum):
@@ -53,14 +47,14 @@ class WorldModel(BaseModel):
     unknowns: list[Any] = Field(default_factory=list)
     hypotheses: list[Any] = Field(default_factory=list)
     contradictions: list[Any] = Field(default_factory=list)
-    
+
     # Execution & Telemetry
     predictions: list[Any] = Field(default_factory=list)
     prediction_comparisons: list[Any] = Field(default_factory=list)
     decision_traces: list[Any] = Field(default_factory=list)
-    
+
     # Overall Confidence & Stop State
-    confidence_breakdown: Optional[ConfidenceBreakdown] = None
+    confidence_breakdown: ConfidenceBreakdown | None = None
     overall_confidence: float = 0.0
     current_stop_status: StopCondition = StopCondition.NONE
 

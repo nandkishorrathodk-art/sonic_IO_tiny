@@ -17,11 +17,11 @@ Tool Wrappers:
 from __future__ import annotations
 
 import asyncio
-import json
-import shlex
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from enum import StrEnum
+from typing import Any
+
 from sonic.logger import get_logger
 
 logger = get_logger(__name__)
@@ -42,7 +42,7 @@ class ToolResult(BaseException):
 class SandboxManager:
     """
     Manages execution environments for security tools.
-    
+
     MVP: Runs tools as local subprocesses with timeout.
     Phase 2: Daytona containers with full isolation.
     """
@@ -58,7 +58,7 @@ class SandboxManager:
             "id": sandbox_id,
             "status": SandboxStatus.READY,
             "engagement_id": engagement_id,
-            "created_at": datetime.now(timezone.utc).isoformat(),
+            "created_at": datetime.now(UTC).isoformat(),
             "processes": [],
         }
         logger.info("sandbox_created", id=sandbox_id)
@@ -73,13 +73,13 @@ class SandboxManager:
     ) -> dict[str, Any]:
         """
         Run a security tool inside the sandbox.
-        
+
         Args:
             sandbox_id: Which sandbox to run in
             tool: Tool name (nuclei, nmap, ffuf, httpx, curl)
             args: Command arguments
             timeout: Max execution time in seconds
-            
+
         Returns:
             Dict with stdout, stderr, exit_code, duration
         """
@@ -98,7 +98,7 @@ class SandboxManager:
         logger.info("tool_executing", tool=tool, sandbox=sandbox_id, cmd=cmd_str[:100])
 
         sandbox["status"] = SandboxStatus.RUNNING
-        start_time = datetime.now(timezone.utc)
+        start_time = datetime.now(UTC)
 
         try:
             process = await asyncio.create_subprocess_exec(
@@ -111,7 +111,7 @@ class SandboxManager:
                 stdout, stderr = await asyncio.wait_for(
                     process.communicate(), timeout=timeout
                 )
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 process.kill()
                 await process.communicate()
                 result = {
@@ -126,7 +126,7 @@ class SandboxManager:
                 self.tool_results.append(result)
                 return result
 
-            duration = (datetime.now(timezone.utc) - start_time).total_seconds()
+            duration = (datetime.now(UTC) - start_time).total_seconds()
             result = {
                 "tool": tool,
                 "command": cmd_str,
@@ -213,7 +213,7 @@ class SandboxManager:
         """List all sandbox instances."""
         return list(self.sandboxes.values())
 
-    def get_sandbox(self, sandbox_id: str) -> Optional[dict]:
+    def get_sandbox(self, sandbox_id: str) -> dict | None:
         """Get sandbox details."""
         return self.sandboxes.get(sandbox_id)
 

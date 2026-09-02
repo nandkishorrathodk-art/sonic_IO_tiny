@@ -8,15 +8,15 @@ knowledge summaries, deliverables, events, domain packs, and telemetry.
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from enum import StrEnum
-from typing import Any, Optional
+from typing import Any
 
 from pydantic import BaseModel, Field
 
 
 def _now() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 def _new_id(prefix: str = "msn") -> str:
@@ -181,7 +181,7 @@ class MissionState(BaseModel):
     mission_id: str
     tenant_id: str
     objective: MissionObjective
-    current_plan: Optional[MissionPlan] = None
+    current_plan: MissionPlan | None = None
     current_phase: MissionPhase = MissionPhase.DISCOVERY
     active_tracks: list[str] = Field(default_factory=list)
     completed_tracks: list[str] = Field(default_factory=list)
@@ -198,7 +198,7 @@ class MissionState(BaseModel):
     remaining_unknowns: list[str] = Field(default_factory=list)
     current_next_action: str = "Initialize mission decomposition"
     status: MissionStatus = MissionStatus.PLANNING
-    outcome: Optional[MissionOutcome] = None
+    outcome: MissionOutcome | None = None
     created_at: str = Field(default_factory=_now)
     updated_at: str = Field(default_factory=_now)
 

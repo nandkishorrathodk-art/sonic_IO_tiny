@@ -7,11 +7,10 @@ JWT tokens, and security allowlists.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from enum import StrEnum
-from typing import Optional
 
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, Field
 
 
 class UserRole(StrEnum):
@@ -33,12 +32,12 @@ class User(BaseModel):
     email: str
     name: str
     tenant_id: str = "default"     # Multi-tenant partition ID
-    workspace_id: Optional[str] = None
-    picture: Optional[str] = None
+    workspace_id: str | None = None
+    picture: str | None = None
     google_id: str = ""
     role: UserRole = UserRole.OPERATOR
-    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
-    last_login: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    last_login: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
     @property
     def domain(self) -> str:
@@ -61,8 +60,8 @@ class TokenPayload(BaseModel):
     sub: str                       # user email
     name: str
     tenant_id: str = "default"     # multi-tenant partition key
-    workspace_id: Optional[str] = None
-    picture: Optional[str] = None
+    workspace_id: str | None = None
+    picture: str | None = None
     google_id: str = ""
     role: UserRole = UserRole.OPERATOR
     exp: int                       # expiry timestamp
@@ -76,7 +75,7 @@ class AllowlistEntry(BaseModel):
     entry_type: str = "email"  # "email" or "domain"
     tenant_id: str = "default"
     added_by: str = ""
-    added_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    added_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     note: str = ""
 
 
@@ -84,6 +83,6 @@ class AuthStatus(BaseModel):
     """Current authentication status response."""
 
     authenticated: bool
-    user: Optional[User] = None
-    tenant_id: Optional[str] = None
+    user: User | None = None
+    tenant_id: str | None = None
     message: str = ""

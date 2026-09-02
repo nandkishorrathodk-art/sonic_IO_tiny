@@ -9,9 +9,9 @@ from __future__ import annotations
 
 import hashlib
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from enum import StrEnum
-from typing import Any, Optional
+from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -21,7 +21,7 @@ def _new_id(prefix: str = "ev") -> str:
 
 
 def _now() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 # ============================================
@@ -99,7 +99,7 @@ class EvidenceItem(BaseModel):
     tenant_id: str                          # Mandatory multi-tenant isolation
     engagement_id: str                      # Mandatory engagement scope
     finding_id: str = ""
-    
+
     # Provenance
     source_type: str = "tool"               # "tool", "browser", "verifier_agent", "discovery_agent"
     source_agent: str = ""                  # Agent ID that produced this
@@ -107,22 +107,22 @@ class EvidenceItem(BaseModel):
     tool_version: str = "1.0.0"
     execution_id: str = ""                  # Task / Execution ID
     sandbox_id: str = ""                    # Sandbox container/VM ID
-    
+
     # Artifact Data & Immutability
     artifact_type: ArtifactType
     artifact_reference: str = ""            # S3 / file path storage key
     raw_content: str = ""                   # Inlined text or truncated payload
     content_hash: str = ""                  # SHA-256 of raw artifact
-    
+
     # Quality & Reliability Attributes
     reliability: float = 0.9                # 0.0-1.0: Reliability of source
     directness: float = 1.0                 # 1.0=direct measurement, 0.5=indirect
     independence: float = 1.0               # 1.0=independently generated
     confidence: float = 0.8                 # Individual item confidence
-    
+
     # Versioning & Audit
     version: int = 1
-    parent_evidence_id: Optional[str] = None
+    parent_evidence_id: str | None = None
     created_at: str = Field(default_factory=_now)
 
     def compute_and_set_hash(self) -> str:
@@ -226,14 +226,14 @@ class ProvenancedFinding(BaseModel):
     id: str = Field(default_factory=lambda: _new_id("find"))
     tenant_id: str                          # Multi-tenant boundary
     engagement_id: str                      # Engagement scope
-    
+
     # Finding Core Information
     title: str
     description: str
     vulnerability_class: str                # "Auth Bypass", "SQLi", "IDOR", "RCE", etc.
     target: str
     endpoint: str = ""
-    
+
     # Strict Separation: Severity vs Confidence
     severity: FindingSeverity               # Impact/Hazard level
     confidence_score: float = 0.0           # 0.0-1.0 calibrated confidence
@@ -245,22 +245,22 @@ class ProvenancedFinding(BaseModel):
     # Lifecycle & Lineage
     lifecycle_state: FindingLifecycleState = FindingLifecycleState.CANDIDATE
     fingerprint: str = ""                   # Deduplication hash
-    
+
     # Evidence & Verification Attachments
     poc: str = ""                           # Reproducible PoC
     evidence_items: list[EvidenceItem] = Field(default_factory=list)
-    reproduction_plan: Optional[ReproductionPlan] = None
+    reproduction_plan: ReproductionPlan | None = None
     verification_history: list[VerificationResult] = Field(default_factory=list)
-    quality_score: Optional[EvidenceQualityScore] = None
-    
+    quality_score: EvidenceQualityScore | None = None
+
     # Agents
     created_by_agent: str = ""              # Discovery Agent ID
     verified_by_agents: list[str] = Field(default_factory=list)
-    
+
     # Timestamps & Reportability
     created_at: str = Field(default_factory=_now)
     updated_at: str = Field(default_factory=_now)
-    verified_at: Optional[str] = None
+    verified_at: str | None = None
     is_reportable: bool = False
 
     def add_evidence(self, item: EvidenceItem) -> None:

@@ -7,8 +7,7 @@ Detects target mismatches, chronological anomalies, and conflicting responses.
 
 from __future__ import annotations
 
-from typing import Any
-from sonic.evidence.models import EvidenceItem, ProvenancedFinding
+from sonic.evidence.models import ProvenancedFinding
 
 
 class ConsistencyReport:

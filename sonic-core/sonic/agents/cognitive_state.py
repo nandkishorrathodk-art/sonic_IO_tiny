@@ -21,12 +21,11 @@ PostgreSQL owns identity/tenant/audit. This module produces events for all store
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from enum import StrEnum
-from typing import Any, Optional
+from typing import Any
 
 from pydantic import BaseModel, Field
-
 
 # ============================================
 # Epistemic Types (World Model)
@@ -72,7 +71,7 @@ def _new_id() -> str:
 
 
 def _now() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 # ============================================
@@ -348,7 +347,7 @@ class CognitiveState(BaseModel):
 
     # Reasoning & Decisions
     confidence: float = 0.0      # 0.0-1.0 overall engagement confidence
-    confidence_breakdown: Optional[dict[str, Any]] = None
+    confidence_breakdown: dict[str, Any] | None = None
     next_best_action: str = ""
     last_decision: NextBestActionDecision | None = None
     decision_traces: list[Any] = Field(default_factory=list)

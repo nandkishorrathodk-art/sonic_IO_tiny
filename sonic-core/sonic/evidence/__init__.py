@@ -2,6 +2,12 @@
 SONIC-REDA — Evidence, Independent Adversarial Verification & Trust Engine (Phase 7)
 """
 
+from sonic.evidence.benchmark import TrustBenchmarkMetrics, TrustBenchmarkRunner
+from sonic.evidence.confidence_engine import FindingConfidenceEngine, FindingConfidenceResult
+from sonic.evidence.consistency import EvidenceConsistencyEngine
+from sonic.evidence.custody import CustodyChain
+from sonic.evidence.dedup import FalsePositiveFilter, FindingFingerprinter
+from sonic.evidence.independent_verifier import AdversarialReviewer, IndependentVerifier
 from sonic.evidence.models import (
     ArtifactType,
     ConfidenceBand,
@@ -13,14 +19,8 @@ from sonic.evidence.models import (
     ReproductionPlan,
     VerificationResult,
 )
-from sonic.evidence.custody import CustodyChain
-from sonic.evidence.independent_verifier import IndependentVerifier, AdversarialReviewer
-from sonic.evidence.reproduction_engine import ReproductionEngine
-from sonic.evidence.consistency import EvidenceConsistencyEngine
-from sonic.evidence.confidence_engine import FindingConfidenceEngine, FindingConfidenceResult
-from sonic.evidence.dedup import FindingFingerprinter, FalsePositiveFilter
 from sonic.evidence.package import EvidencePackageManager
-from sonic.evidence.benchmark import TrustBenchmarkRunner, TrustBenchmarkMetrics
+from sonic.evidence.reproduction_engine import ReproductionEngine
 
 __all__ = [
     "ArtifactType",

@@ -8,10 +8,8 @@ Applications, Git, Services, and Process management on top of ComputeProviders.
 
 from __future__ import annotations
 
-import json
-import uuid
 from abc import ABC, abstractmethod
-from typing import Any, Optional
+from typing import Any
 
 from sonic.computer.models import (
     ApplicationPolicy,
@@ -19,7 +17,6 @@ from sonic.computer.models import (
     ComputerProfile,
     ComputerRiskLevel,
     ComputerSession,
-    ComputerSessionMode,
     ComputerState,
     ComputerWorkspace,
     ComputerWorkspaceStatus,
@@ -27,7 +24,6 @@ from sonic.computer.models import (
     FileEntry,
     GitStatusInfo,
     GUIAction,
-    GUIActionType,
     ProcessInfo,
     ScreenObservation,
     ServiceInfo,
@@ -39,7 +35,6 @@ from sonic.sandbox.provider import (
     ComputeProvider,
     ExecResult,
     WorkspaceConfig,
-    WorkspaceState,
     WorkspaceType,
 )
 
@@ -160,7 +155,7 @@ class UnifiedComputerProvider(ComputerProvider):
     def __init__(
         self,
         compute_provider: ComputeProvider,
-        app_policy: Optional[ApplicationPolicy] = None,
+        app_policy: ApplicationPolicy | None = None,
     ):
         self.compute = compute_provider
         self.app_policy = app_policy or ApplicationPolicy()
@@ -273,7 +268,7 @@ class UnifiedComputerProvider(ComputerProvider):
             active_window=active_app,
             working_directory=pwd.stdout.strip() if pwd.exit_code == 0 else "",
             running_processes=[],
-            installed_applications=sorted(list(self._installed_apps.get(workspace_id, set()))),
+            installed_applications=sorted(self._installed_apps.get(workspace_id, set())),
             current_project="sonic-repo",
             git_branch=branch.stdout.strip() if branch.exit_code == 0 else "",
             resource_usage={},
@@ -639,7 +634,7 @@ class UnifiedComputerProvider(ComputerProvider):
         action: str,
         resource: str,
         result: str,
-        application: Optional[str] = None,
+        application: str | None = None,
         risk_level: ComputerRiskLevel = ComputerRiskLevel.LOW,
     ) -> None:
         event = ComputerAuditEvent(

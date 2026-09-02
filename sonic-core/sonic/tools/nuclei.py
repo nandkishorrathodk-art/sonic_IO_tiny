@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from typing import Any
 
 from sonic.logger import get_logger
 
@@ -33,8 +33,8 @@ class NucleiResult:
     request_raw: str = ""
     response_raw: str = ""
     tags: list[str] = field(default_factory=list)
-    cve_id: Optional[str] = None
-    cvss_score: Optional[float] = None
+    cve_id: str | None = None
+    cvss_score: float | None = None
 
 
 class NucleiParser:
@@ -82,7 +82,7 @@ class NucleiParser:
         return results
 
     @staticmethod
-    def _parse_single_item(data: dict[str, Any]) -> Optional[NucleiResult]:
+    def _parse_single_item(data: dict[str, Any]) -> NucleiResult | None:
         template_id = data.get("template-id") or data.get("templateID", "unknown-template")
         info = data.get("info", {})
 

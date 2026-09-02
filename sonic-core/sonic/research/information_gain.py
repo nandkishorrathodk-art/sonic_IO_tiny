@@ -10,8 +10,7 @@ from __future__ import annotations
 
 import uuid
 from abc import ABC, abstractmethod
-from datetime import datetime, timezone
-from typing import Any, Optional
+from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -31,7 +30,7 @@ class ActionCandidate(BaseModel):
     task_payload: dict[str, Any] = Field(default_factory=dict)
     rationale: str = ""
     expected_outcomes: dict[str, Any] = Field(default_factory=dict)
-    
+
     # Utility & Cost Metrics
     expected_information_gain: float = 0.5  # 0.0-1.0: How much uncertainty this reduces
     expected_confidence_gain: float = 0.3   # 0.0-1.0: Projected boost to hypothesis confidence
@@ -84,10 +83,10 @@ class DefaultInformationGainScorer(BaseActionScorer):
     def score(self, candidate: ActionCandidate) -> float:
         # Discriminating experiments that resolve competing hypotheses get priority bonus
         discrim_factor = self.discrimination_multiplier if candidate.is_discriminating_test else 1.0
-        
+
         # Numerator: Benefit (information gain & confidence)
         numerator = (candidate.expected_information_gain * candidate.expected_confidence_gain * discrim_factor) + 0.05
-        
+
         # Denominator: Friction (cost + time + risk)
         normalized_time = min(1.0, candidate.estimated_time_seconds / 300.0)
         denominator = (
@@ -119,7 +118,7 @@ class ActionSelector:
 
     def __init__(
         self,
-        scorer: Optional[BaseActionScorer] = None,
+        scorer: BaseActionScorer | None = None,
         max_acceptable_risk: float = 0.8,
         max_acceptable_cost: float = 0.9,
     ):
@@ -130,7 +129,7 @@ class ActionSelector:
     def rank_actions(
         self,
         candidates: list[ActionCandidate],
-        completed_task_ids: Optional[set[str]] = None,
+        completed_task_ids: set[str] | None = None,
     ) -> list[ActionCandidate]:
         """
         Score, filter, and rank candidate actions in descending order of utility.
@@ -160,8 +159,8 @@ class ActionSelector:
     def select_best_action(
         self,
         candidates: list[ActionCandidate],
-        completed_task_ids: Optional[set[str]] = None,
-    ) -> Optional[ActionCandidate]:
+        completed_task_ids: set[str] | None = None,
+    ) -> ActionCandidate | None:
         """Return the single top-ranked candidate action, or None if no valid candidate."""
         ranked = self.rank_actions(candidates, completed_task_ids)
         return ranked[0] if ranked else None

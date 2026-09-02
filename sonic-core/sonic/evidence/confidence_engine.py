@@ -7,11 +7,9 @@ Evaluates explicit human review triggers for high-impact or ambiguous findings.
 
 from __future__ import annotations
 
-from typing import Any
 from sonic.evidence.models import (
     ConfidenceBand,
     EvidenceQualityScore,
-    FindingLifecycleState,
     FindingSeverity,
     ProvenancedFinding,
 )
@@ -37,7 +35,7 @@ class FindingConfidenceResult:
 class FindingConfidenceEngine:
     """
     Computes transparent, multi-factor confidence for findings.
-    
+
     Formula:
         Score = (EvidenceQuality * 0.40) + (IndependentSupport * 0.25) + (Reproducibility * 0.25) + (ValidPoC * 0.10) - (Contradictions * 0.30)
     """

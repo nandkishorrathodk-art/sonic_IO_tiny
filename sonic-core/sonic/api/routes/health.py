@@ -7,7 +7,7 @@ System health monitoring and runtime dependency audit endpoints.
 from __future__ import annotations
 
 from fastapi import APIRouter
-from sonic import __version__
+
 from sonic.health import HealthChecker, SystemHealthReport
 
 router = APIRouter()

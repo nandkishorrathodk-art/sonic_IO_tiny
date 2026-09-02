@@ -14,7 +14,7 @@ Features:
 
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Any
 
 from sonic.logger import get_logger
 
@@ -22,16 +22,14 @@ logger = get_logger(__name__)
 
 from sonic.config import get_settings
 from sonic.memory.schemas import (
+    SCHEMA_INIT_QUERIES,
     AgentNode,
     AssetNode,
     EngagementNode,
     EvidenceNode,
     FindingNode,
-    FindingSeverity,
-    FindingStatus,
     HypothesisNode,
     RelationshipType,
-    SCHEMA_INIT_QUERIES,
     TechniqueNode,
 )
 
@@ -120,7 +118,7 @@ class GraphMemory:
     # Generic CRUD
     # ============================================
 
-    async def _create_node(self, label: str, props: dict[str, Any]) -> Optional[str]:
+    async def _create_node(self, label: str, props: dict[str, Any]) -> str | None:
         """Create a node and return its uid."""
         if not self._driver:
             return None
@@ -131,7 +129,7 @@ class GraphMemory:
             record = await result.single()
             return record["uid"] if record else None
 
-    async def _get_node(self, label: str, uid: str, tenant_id: str | None = None) -> Optional[dict]:
+    async def _get_node(self, label: str, uid: str, tenant_id: str | None = None) -> dict | None:
         """Get a node by uid, optionally filtered by tenant_id."""
         if not self._driver:
             return None
@@ -156,7 +154,7 @@ class GraphMemory:
             return False
 
         async with self._driver.session() as session:
-            set_clauses = ", ".join(f"n.{k} = ${k}" for k in updates.keys())
+            set_clauses = ", ".join(f"n.{k} = ${k}" for k in updates)
             params: dict[str, Any] = {"uid": uid, **updates}
             if tenant_id:
                 query = (
@@ -222,10 +220,10 @@ class GraphMemory:
     # Typed CRUD — Engagements
     # ============================================
 
-    async def create_engagement(self, engagement: EngagementNode) -> Optional[str]:
+    async def create_engagement(self, engagement: EngagementNode) -> str | None:
         return await self._create_node("Engagement", engagement.model_dump())
 
-    async def get_engagement(self, uid: str, tenant_id: str | None = None) -> Optional[dict]:
+    async def get_engagement(self, uid: str, tenant_id: str | None = None) -> dict | None:
         return await self._get_node("Engagement", uid, tenant_id=tenant_id)
 
     async def update_engagement(self, uid: str, tenant_id: str | None = None, **updates: Any) -> bool:
@@ -252,7 +250,7 @@ class GraphMemory:
     # Typed CRUD — Assets
     # ============================================
 
-    async def create_asset(self, asset: AssetNode) -> Optional[str]:
+    async def create_asset(self, asset: AssetNode) -> str | None:
         uid = await self._create_node("Asset", asset.model_dump())
         # Auto-link to engagement
         if uid and asset.engagement_id:
@@ -262,7 +260,7 @@ class GraphMemory:
             )
         return uid
 
-    async def get_asset(self, uid: str, tenant_id: str | None = None) -> Optional[dict]:
+    async def get_asset(self, uid: str, tenant_id: str | None = None) -> dict | None:
         return await self._get_node("Asset", uid, tenant_id=tenant_id)
 
     async def find_assets(
@@ -295,7 +293,7 @@ class GraphMemory:
                 "ON MATCH SET a.metadata = $metadata "
                 "RETURN a.uid AS uid"
             )
-            result = await session.run(query, 
+            result = await session.run(query,
                 value=asset.value,
                 atype=asset.asset_type,
                 eid=asset.engagement_id,
@@ -309,7 +307,7 @@ class GraphMemory:
     # Typed CRUD — Findings
     # ============================================
 
-    async def create_finding(self, finding: FindingNode) -> Optional[str]:
+    async def create_finding(self, finding: FindingNode) -> str | None:
         uid = await self._create_node("Finding", finding.model_dump())
         if uid:
             # Link to engagement
@@ -326,7 +324,7 @@ class GraphMemory:
                 )
         return uid
 
-    async def get_finding(self, uid: str, tenant_id: str | None = None) -> Optional[dict]:
+    async def get_finding(self, uid: str, tenant_id: str | None = None) -> dict | None:
         return await self._get_node("Finding", uid, tenant_id=tenant_id)
 
     async def update_finding(self, uid: str, tenant_id: str | None = None, **updates: Any) -> bool:
@@ -371,7 +369,7 @@ class GraphMemory:
     # Typed CRUD — Hypotheses
     # ============================================
 
-    async def create_hypothesis(self, hypothesis: HypothesisNode) -> Optional[str]:
+    async def create_hypothesis(self, hypothesis: HypothesisNode) -> str | None:
         return await self._create_node("Hypothesis", hypothesis.model_dump())
 
     async def update_hypothesis(self, uid: str, tenant_id: str | None = None, **updates: Any) -> bool:
@@ -398,7 +396,7 @@ class GraphMemory:
     # Typed CRUD — Evidence, Technique, Agent
     # ============================================
 
-    async def create_evidence(self, evidence: EvidenceNode) -> Optional[str]:
+    async def create_evidence(self, evidence: EvidenceNode) -> str | None:
         uid = await self._create_node("Evidence", evidence.model_dump())
         if uid and evidence.finding_id:
             await self.create_relationship(
@@ -407,10 +405,10 @@ class GraphMemory:
             )
         return uid
 
-    async def create_technique(self, technique: TechniqueNode) -> Optional[str]:
+    async def create_technique(self, technique: TechniqueNode) -> str | None:
         return await self._create_node("Technique", technique.model_dump())
 
-    async def register_agent(self, agent: AgentNode) -> Optional[str]:
+    async def register_agent(self, agent: AgentNode) -> str | None:
         return await self._create_node("Agent", agent.model_dump())
 
     # ============================================
@@ -464,7 +462,7 @@ class GraphMemory:
             OPTIONAL MATCH (a:Asset {{engagement_id: $eid}})
             OPTIONAL MATCH (f:Finding {{engagement_id: $eid}})
             OPTIONAL MATCH (h:Hypothesis {{engagement_id: $eid}})
-            RETURN 
+            RETURN
                 properties(e) AS engagement,
                 count(DISTINCT a) AS asset_count,
                 count(DISTINCT f) AS finding_count,
@@ -496,7 +494,7 @@ class GraphMemory:
             OPTIONAL MATCH (f)-[:HAS_EVIDENCE]->(e:Evidence)
             OPTIONAL MATCH (f)-[:FOUND_BY]->(ag:Agent)
             OPTIONAL MATCH (f)-[:TESTED_WITH]->(t:Technique)
-            RETURN 
+            RETURN
                 properties(f) AS finding,
                 collect(DISTINCT properties(a)) AS assets,
                 collect(DISTINCT properties(e)) AS evidence,
@@ -551,7 +549,7 @@ class GraphMemory:
 
 
 # Global singleton
-_graph_memory: Optional[GraphMemory] = None
+_graph_memory: GraphMemory | None = None
 
 
 def get_graph_memory() -> GraphMemory:

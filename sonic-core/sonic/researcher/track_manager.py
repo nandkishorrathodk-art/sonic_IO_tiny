@@ -7,7 +7,8 @@ resource slot allocations, and lifecycle state transitions.
 
 from __future__ import annotations
 
-from typing import Callable, Optional
+from collections.abc import Callable
+
 from sonic.logger import get_logger
 from sonic.researcher.models import InvestigationTrack, TrackStatus
 
@@ -32,7 +33,7 @@ class TrackPrioritizer:
     Evaluates and ranks candidate investigation tracks.
     """
 
-    def __init__(self, scorer: Optional[TrackScorer] = None):
+    def __init__(self, scorer: TrackScorer | None = None):
         self.scorer = scorer or default_track_scorer
 
     def score_track(self, track: InvestigationTrack) -> float:
@@ -49,7 +50,7 @@ class InvestigationTrackManager:
     Manages portfolio of active, paused, and completed investigation tracks.
     """
 
-    def __init__(self, prioritizer: Optional[TrackPrioritizer] = None):
+    def __init__(self, prioritizer: TrackPrioritizer | None = None):
         self.tracks: dict[str, InvestigationTrack] = {}
         self.prioritizer = prioritizer or TrackPrioritizer()
 
@@ -58,8 +59,8 @@ class InvestigationTrackManager:
         mission_id: str,
         tenant_id: str,
         objective: str,
-        questions: Optional[list[str]] = None,
-        hypotheses: Optional[list[str]] = None,
+        questions: list[str] | None = None,
+        hypotheses: list[str] | None = None,
         expected_value: float = 0.7,
         cost: float = 0.2,
         risk: float = 0.1,
@@ -80,7 +81,7 @@ class InvestigationTrackManager:
         logger.info("investigation_track_created", track_id=track.id, objective=objective, priority=track.priority)
         return track
 
-    def get_track(self, track_id: str) -> Optional[InvestigationTrack]:
+    def get_track(self, track_id: str) -> InvestigationTrack | None:
         return self.tracks.get(track_id)
 
     def get_active_tracks(self) -> list[InvestigationTrack]:

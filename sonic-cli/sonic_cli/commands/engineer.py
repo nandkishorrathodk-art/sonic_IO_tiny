@@ -7,6 +7,7 @@ Typer command group for operating the Autonomous Computer-Using Engineer.
 from __future__ import annotations
 
 import asyncio
+
 import typer
 from rich.console import Console
 from rich.panel import Panel

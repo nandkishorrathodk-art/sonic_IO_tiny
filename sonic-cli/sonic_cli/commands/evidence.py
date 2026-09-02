@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Optional
 
 import httpx
 import typer
@@ -51,7 +50,7 @@ def evidence_command(
         else:
             # Generate Markdown report
             md_lines = [
-                f"# SONIC-REDA Security Assessment Report",
+                "# SONIC-REDA Security Assessment Report",
                 f"**Engagement ID:** `{engagement}`  ",
                 f"**Generated:** {report.get('generated_at', '')}  ",
                 f"**Total Findings:** {report.get('total_findings', 0)}  ",
@@ -72,13 +71,13 @@ def evidence_command(
                     f"- **Confidence Score:** {f.get('confidence_score', 0)}%",
                     f"- **Target Asset:** {f.get('target_asset', 'N/A')}",
                     "",
-                    f"#### Description",
+                    "#### Description",
                     f.get("description", "No description provided."),
                     "",
-                    f"#### Impact Assessment",
+                    "#### Impact Assessment",
                     f.get("impact", "No impact analysis provided."),
                     "",
-                    f"#### Mandatory Proof-of-Concept (PoC)",
+                    "#### Mandatory Proof-of-Concept (PoC)",
                     "```http",
                     f.get("poc", "No PoC available"),
                     "```",

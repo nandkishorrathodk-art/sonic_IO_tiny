@@ -7,7 +7,8 @@ cost thresholds, and execution time ceilings for autonomous missions.
 
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Any
+
 from sonic.logger import get_logger
 
 logger = get_logger(__name__)
@@ -30,7 +31,7 @@ class MissionResourceManager:
         self._spent_compute_seconds: dict[str, float] = {}
         self._active_sandboxes: dict[str, set[str]] = {}
 
-    def register_mission(self, mission_id: str, budget_dollars: Optional[float] = None) -> None:
+    def register_mission(self, mission_id: str, budget_dollars: float | None = None) -> None:
         """Initialize resource tracking for a mission."""
         budget = budget_dollars if budget_dollars is not None else self.default_budget
         self._budgets[mission_id] = budget

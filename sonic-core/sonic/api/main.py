@@ -11,19 +11,30 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 
+from dotenv import load_dotenv
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from dotenv import load_dotenv
 load_dotenv()
 
-from sonic import __version__, __codename__
+from sonic import __codename__, __version__
+from sonic.api.routes import (
+    agents,
+    auth,
+    engagements,
+    experiments,
+    graph,
+    health,
+    jobs,
+    live,
+    llm,
+    terminal,
+    workstation,
+)
 from sonic.config import get_settings
+from sonic.logger import get_logger
 from sonic.memory.graph import get_graph_memory
 from sonic.safety.scope import get_scope_checker
-
-from sonic.api.routes import auth, health, llm, engagements, agents, graph, experiments, terminal, live, jobs, workstation
-from sonic.logger import get_logger
 
 logger = get_logger(__name__)
 
@@ -66,9 +77,9 @@ async def _maybe_start_being_life_loop(settings):
         # self-evolving being cannot widen its own guards at runtime.
         safety = seal_default(workspace_root="/home/sonic/workspace")
         # Reuse a shared LLM router if available; curiosity needs an LLM.
+        from sonic.agents.browser_agent import BrowserAgent
         from sonic.llm.router import ModelRouter
         from sonic.tools.registry import get_default_registry
-        from sonic.agents.browser_agent import BrowserAgent
         router = ModelRouter.for_default() if hasattr(ModelRouter, "for_default") else ModelRouter()
         browser = BrowserAgent(headless=True)
         await browser.launch()
@@ -138,7 +149,7 @@ async def lifespan(app: FastAPI):
     logger.info("jwt_secret_validated", production=settings.is_production)
 
     # Load safety rules (immutable after this point)
-    scope_checker = get_scope_checker()
+    get_scope_checker()
     logger.info("safety_layer_loaded")
 
     # Connect to Graph Memory (Neo4j)
@@ -220,6 +231,7 @@ app.include_router(workstation.router, tags=["Workstation"])
 
 
 from fastapi.responses import PlainTextResponse
+
 from sonic.observability.metrics import get_metrics
 
 

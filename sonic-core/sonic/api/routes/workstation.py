@@ -23,9 +23,9 @@ import posixpath
 import re
 import shlex
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 from urllib.parse import urlparse
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -37,16 +37,16 @@ from sonic.auth.models import User, UserRole
 from sonic.computer.daytona_computer import DaytonaComputerProvider
 from sonic.computer.models import (
     ApplicationPolicy,
+    ComputerProfile,
+    ComputerWorkspaceType,
     GUIAction,
     GUIActionType,
-    ComputerWorkspaceType,
-    ComputerProfile,
 )
 from sonic.logger import get_logger
-from sonic.safety.scope import get_scope_checker, RiskLevel, SafetyVerdict
-from sonic.mission_engine.planner import MissionPlanner, PlannedAction
 from sonic.mission_engine.executor import MissionToolExecutor
+from sonic.mission_engine.planner import MissionPlanner, PlannedAction
 from sonic.mission_engine.tool_registry import ToolRisk
+from sonic.safety.scope import SafetyVerdict, get_scope_checker
 from sonic.tools.computer_as_compute_provider import ComputerAsComputeProvider
 from sonic.tools.registry import get_default_registry
 
@@ -54,7 +54,7 @@ logger = get_logger(__name__)
 
 router = APIRouter()
 
-_daytona_provider_instance: Optional[DaytonaComputerProvider] = None
+_daytona_provider_instance: DaytonaComputerProvider | None = None
 
 
 def get_daytona_computer() -> DaytonaComputerProvider:
@@ -70,24 +70,24 @@ def get_daytona_computer() -> DaytonaComputerProvider:
 
 class WorkstationPromptRequest(BaseModel):
     prompt: str
-    target_repo: Optional[str] = "nandkishorrathodk-art/sonic"
-    mode: Optional[str] = "autonomous_engineer"
-    session_id: Optional[str] = "default"
+    target_repo: str | None = "nandkishorrathodk-art/sonic"
+    mode: str | None = "autonomous_engineer"
+    session_id: str | None = "default"
 
 
 class ExecuteCommandRequest(BaseModel):
     command: str
-    session_id: Optional[str] = "default"
-    timeout: Optional[int] = 30
+    session_id: str | None = "default"
+    timeout: int | None = 30
 
 
 class DesktopActionRequest(BaseModel):
     action: str  # click, double_click, type, keypress, move, open_app, close_app
-    target: Optional[str] = None
-    coordinates: Optional[tuple[int, int]] = None
-    text: Optional[str] = None
-    key: Optional[str] = None
-    session_id: Optional[str] = "default"
+    target: str | None = None
+    coordinates: tuple[int, int] | None = None
+    text: str | None = None
+    key: str | None = None
+    session_id: str | None = "default"
 
 
 class FileWriteRequest(BaseModel):
@@ -368,7 +368,7 @@ def _workspace_file_path(path: str) -> str:
 
 
 def _timestamp() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 def _append_worklog(state: dict[str, Any], item_type: str, title: str, content: str, **extra: Any) -> dict[str, Any]:
@@ -1008,7 +1008,7 @@ async def execute_desktop_action(
                 "desktop_state": "NO_DISPLAY",
                 "screenshot_base64": "",
                 "active_window": "None",
-                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "timestamp": datetime.now(UTC).isoformat(),
             },
         }
 
@@ -1059,7 +1059,7 @@ async def get_desktop_screenshot(
             "desktop_state": "NO_DISPLAY",
             "screenshot_base64": "",
             "active_window": "",
-            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "timestamp": datetime.now(UTC).isoformat(),
         }
     obs = await comp.screenshot(workspace_id=workspace_id)
     return obs.model_dump()
@@ -1474,10 +1474,7 @@ def _is_action_prompt(prompt: str) -> bool:
         return True
 
     # 6. Active recon / bug hunting phrases without explicit target url
-    if any(p in lower for p in ("active recon", "target recon", "network scan", "port scan", "bug hunt", "bug bounty", "find bug", "look for bug", "find bugs", "security audit", "start pentest")):
-        return True
-
-    return False
+    return bool(any(p in lower for p in ("active recon", "target recon", "network scan", "port scan", "bug hunt", "bug bounty", "find bug", "look for bug", "find bugs", "security audit", "start pentest")))
 
 
 def _extract_install_package(prompt: str) -> str:
@@ -1733,7 +1730,6 @@ async def _run_autonomous_desktop_loop(
 async def _run_prompt_reasoning(tenant_id: str, session_id: str, prompt: str) -> None:
     """Resolve an objective asynchronously so a slow provider cannot block the UI request."""
     state = _get_or_create_session(tenant_id, session_id)
-    reasoning_available = False
     action_blocked = False
     action_observations: list[str] = []
     desktop_context = "No tenant-owned desktop observation is available for this session."
@@ -1785,7 +1781,10 @@ async def _run_prompt_reasoning(tenant_id: str, session_id: str, prompt: str) ->
                 if desktop_id:
                     try:
                         from sonic.computer_use.agent import ComputerUseAgent
-                        from sonic.computer_use.models import ComputerAutonomyLevel, EngineeringMissionMode
+                        from sonic.computer_use.models import (
+                            ComputerAutonomyLevel,
+                            EngineeringMissionMode,
+                        )
                         from sonic.llm.providers.custom import CustomLLMProvider
 
                         nvidia_key = os.environ.get("NVIDIA_API_KEY", "")
@@ -1843,7 +1842,7 @@ async def _run_prompt_reasoning(tenant_id: str, session_id: str, prompt: str) ->
                         _append_worklog(state, "error", "Visual Computer Use Error",
                             f"Agent-driven execution failed: {agent_err}. Falling back to chat.")
                         # Fall through to regular LLM chat / fast path
-                
+
                 action_observations, action_message, action_blocked = await _run_autonomous_desktop_loop(
                     state, desktop_id, tenant_id, prompt
                 )
@@ -1887,7 +1886,6 @@ async def _run_prompt_reasoning(tenant_id: str, session_id: str, prompt: str) ->
                     f"Workstation analysis completed for session `{session_id}`. "
                     f"To execute live shell commands, network scans, or launch applications on the Linux desktop, provision a Daytona workstation from the Computer tab."
                 )
-            reasoning_available = True
             state["thought_summary"] = fallback_response
             _append_worklog(state, "response", "SONIC Response", fallback_response)
         else:
@@ -1936,7 +1934,6 @@ async def _run_prompt_reasoning(tenant_id: str, session_id: str, prompt: str) ->
                     timeout=30,
                 )
                 if llm_res and llm_res.content:
-                    reasoning_available = True
                     state["thought_summary"] = llm_res.content
                     _append_worklog(state, "response", "SONIC Response", llm_res.content)
                 else:
@@ -1961,7 +1958,6 @@ async def _run_prompt_reasoning(tenant_id: str, session_id: str, prompt: str) ->
                         f"Objective received: '{prompt}'.\n\n"
                         f"Workstation analysis completed for session `{session_id}`."
                     )
-                reasoning_available = True
                 state["thought_summary"] = fallback_response
                 _append_worklog(state, "response", "SONIC Response", fallback_response)
     except Exception as general_err:

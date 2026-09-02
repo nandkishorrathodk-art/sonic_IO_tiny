@@ -7,11 +7,8 @@ and formulates adversarial falsification challenges to eliminate confirmation bi
 
 from __future__ import annotations
 
-import json
-from typing import Any, Optional
-
 from sonic.logger import get_logger
-from sonic.research.epistemic import CompetingHypothesis, Unknown, Prediction
+from sonic.research.epistemic import CompetingHypothesis, Prediction, Unknown
 from sonic.research.information_gain import ActionCandidate
 
 logger = get_logger(__name__)
@@ -33,7 +30,7 @@ class ExperimentDesigner:
         Generate an experiment specifically designed to separate two competing hypotheses.
         """
         exp_name = f"Discriminating Test: '{hypothesis_a.statement[:30]}' vs '{hypothesis_b.statement[:30]}'"
-        
+
         candidate = ActionCandidate(
             name=exp_name,
             description=f"Differentiate between Hypothesis A ({hypothesis_a.statement}) and Hypothesis B ({hypothesis_b.statement})",
@@ -115,7 +112,7 @@ class AdversarialChallenger:
         Formulate an explicit test designed to disprove the primary hypothesis.
         """
         challenge_name = f"Falsification Challenge: '{hypothesis.statement[:35]}'"
-        
+
         candidate = ActionCandidate(
             name=challenge_name,
             description=f"Falsify or challenge hypothesis: {hypothesis.statement}. Search for counter-evidence that this is expected application behavior.",

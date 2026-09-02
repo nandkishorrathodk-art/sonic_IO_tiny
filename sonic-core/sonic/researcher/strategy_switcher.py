@@ -8,7 +8,7 @@ adaptive strategy pivots when diminishing returns are detected.
 from __future__ import annotations
 
 from enum import StrEnum
-from typing import Optional
+
 from sonic.logger import get_logger
 from sonic.researcher.models import StrategySwitchRecord
 
@@ -61,7 +61,7 @@ class StrategySwitcher:
         track_id: str,
         current_strategy: InvestigationMethod,
         reason: str,
-    ) -> Optional[InvestigationMethod]:
+    ) -> InvestigationMethod | None:
         """
         Determine next unused investigation methodology for a track.
         """

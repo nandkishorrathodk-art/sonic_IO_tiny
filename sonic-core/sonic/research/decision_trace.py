@@ -8,8 +8,8 @@ for every action selected by the Critical Thinking Engine.
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
-from typing import Any, Optional
+from datetime import UTC, datetime
+from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -19,7 +19,7 @@ def _new_id(prefix: str = "dec") -> str:
 
 
 def _now() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 class DecisionTrace(BaseModel):
@@ -30,23 +30,23 @@ class DecisionTrace(BaseModel):
     decision_id: str = Field(default_factory=lambda: _new_id("dec"))
     engagement_id: str
     tenant_id: str
-    
+
     # Context
     current_state_summary: dict[str, Any] = Field(default_factory=dict)
     unknown_being_addressed: str = ""       # Question or uncertainty ID
     competing_hypotheses: list[str] = Field(default_factory=list)  # Statements of competing explanations
-    
+
     # Action Selection
     candidate_actions: list[dict[str, Any]] = Field(default_factory=list)  # All options considered
     selected_action: str = ""               # Name of selected candidate
     selected_action_id: str = ""
     selection_reason: str = ""              # Justification (highest info gain, cost/risk trade-off)
-    
+
     # Utility Metrics
     expected_information_gain: float = 0.0
     estimated_cost: float = 0.0
     risk: float = 0.0
-    
+
     # Outcome & Evolution
     predicted_outcome: str = ""
     actual_outcome: str = ""
@@ -54,7 +54,7 @@ class DecisionTrace(BaseModel):
     confidence_before: float = 0.0
     confidence_after: float = 0.0
     what_changed: str = ""                  # What was learned or state mutation
-    
+
     timestamp: str = Field(default_factory=_now)
 
     def record_outcome(

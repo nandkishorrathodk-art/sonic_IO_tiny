@@ -17,11 +17,11 @@ from __future__ import annotations
 import asyncio
 import os
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from enum import StrEnum
-from typing import Any, Optional
 
 from pydantic import BaseModel, Field
+
 from sonic.logger import get_logger
 
 logger = get_logger(__name__)
@@ -39,13 +39,13 @@ class ComponentHealth(BaseModel):
     latency_ms: float = 0.0
     message: str = "Operating normally"
     is_critical: bool = True
-    last_checked: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+    last_checked: str = Field(default_factory=lambda: datetime.now(UTC).isoformat())
 
 
 class SystemHealthReport(BaseModel):
     overall_status: HealthStatus
     version: str = "v1.3.0"
-    timestamp: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+    timestamp: str = Field(default_factory=lambda: datetime.now(UTC).isoformat())
     components: dict[str, ComponentHealth] = Field(default_factory=dict)
 
 
@@ -65,7 +65,7 @@ class HealthChecker:
         )
 
     @classmethod
-    async def check_redis(cls, redis_url: Optional[str] = None) -> ComponentHealth:
+    async def check_redis(cls, redis_url: str | None = None) -> ComponentHealth:
         url = redis_url or os.environ.get("REDIS_URL", "redis://localhost:6379")
         start = time.perf_counter()
         try:

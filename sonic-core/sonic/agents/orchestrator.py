@@ -12,14 +12,10 @@ The brain of the multi-agent system. Responsible for:
 from __future__ import annotations
 
 import json
-from sonic.logger import get_logger
+from typing import Any
+
 from sonic.agents.base import BaseAgent
-from sonic.llm.schemas import LLMResponse, Message, MessageRole
-from sonic.memory.schemas import (
-    AgentNode,
-    EngagementNode,
-    EngagementStatus,
-)
+from sonic.logger import get_logger
 
 logger = get_logger(__name__)
 
@@ -27,7 +23,7 @@ logger = get_logger(__name__)
 class MetaOrchestrator(BaseAgent):
     """
     Top-level orchestrator that plans and coordinates all other agents.
-    
+
     Workflow:
         1. Analyze target scope
         2. Create engagement plan (which agents, what order, priorities)
@@ -108,7 +104,7 @@ SCOPE: {scope_summary}
 
 Create a phased plan with:
 1. Recon phase tasks (what to discover)
-2. Analysis phase tasks (what to analyze)  
+2. Analysis phase tasks (what to analyze)
 3. Testing phase tasks (what to test actively)
 4. Verification priorities
 

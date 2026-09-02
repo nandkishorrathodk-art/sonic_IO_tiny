@@ -15,14 +15,24 @@ Capabilities:
 
 from __future__ import annotations
 
-from typing import Any
 import json
-from sonic.logger import get_logger
+from typing import Any
+
 from sonic.agents.base import BaseAgent
+from sonic.logger import get_logger
 from sonic.memory.schemas import AssetNode, AssetType
 from sonic.sandbox.egress import is_target_allowed
 
 logger = get_logger(__name__)
+
+
+def _is_subdomain_of(host: str, root_domain: str) -> bool:
+    """True iff ``host`` is a proper subdomain of ``root_domain``.
+
+    ``endswith`` alone is unsafe: ``"evil-example.com".endswith("example.com")``
+    is True. A correct check requires the root to be preceded by a literal dot.
+    """
+    return host == root_domain or host.endswith("." + root_domain)
 
 
 class ReconAgent(BaseAgent):
@@ -197,7 +207,10 @@ Always be thorough — missing attack surface means missing vulnerabilities."""
                 # crt.sh returns newline-separated SANs; take the bare host.
                 for n in name_value.split("\n"):
                     n = n.strip().lower().lstrip("*.")
-                    if n and n.endswith(bare) and n != bare:
+                    # Use a proper suffix check so an out-of-scope host
+                    # like "evil-example.com" / "notexample.com" cannot
+                    # sneak in via a bare endswith(bare) match.
+                    if n and _is_subdomain_of(n, bare) and n != bare:
                         names.add(n)
             return [
                 {"type": "subdomain", "value": n, "name": "Subdomain (CT log)",

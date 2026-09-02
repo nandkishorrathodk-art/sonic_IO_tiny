@@ -14,8 +14,6 @@ persistent SQLite backend.
 
 from __future__ import annotations
 
-from typing import Optional
-
 from sonic.logger import get_logger
 from sonic.memory.graph import GraphMemory
 from sonic.memory.inmemory import InMemoryGraph
@@ -26,7 +24,7 @@ logger = get_logger(__name__)
 # Type alias — all backends share the same method signatures
 MemoryBackend = GraphMemory | InMemoryGraph | SqliteGraph
 
-_active_memory: Optional[MemoryBackend] = None
+_active_memory: MemoryBackend | None = None
 
 
 async def get_smart_memory() -> MemoryBackend:

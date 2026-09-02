@@ -8,9 +8,9 @@ priority queues, and real-time lifecycle telemetry events.
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from enum import StrEnum
-from typing import Any, Optional
+from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -57,11 +57,11 @@ class Job(BaseModel):
     timeout_seconds: int = 180
     retry_count: int = 0
     max_retries: int = 2
-    result: Optional[dict[str, Any]] = None
-    error_message: Optional[str] = None
-    created_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
-    started_at: Optional[str] = None
-    completed_at: Optional[str] = None
+    result: dict[str, Any] | None = None
+    error_message: str | None = None
+    created_at: str = Field(default_factory=lambda: datetime.now(UTC).isoformat())
+    started_at: str | None = None
+    completed_at: str | None = None
 
 
 class JobEvent(BaseModel):
@@ -73,4 +73,4 @@ class JobEvent(BaseModel):
     event_type: str  # "JobCreated", "JobStarted", "ToolStarted", "ToolCompleted", "JobSucceeded", etc.
     actor: str = "worker"
     details: dict[str, Any] = Field(default_factory=dict)
-    timestamp: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+    timestamp: str = Field(default_factory=lambda: datetime.now(UTC).isoformat())

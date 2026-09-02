@@ -47,7 +47,7 @@ class CustodyChain:
     def verify_finding_chain(cls, finding: ProvenancedFinding) -> tuple[bool, list[str]]:
         """
         Validate cryptographic chain of custody for all evidence attached to a finding.
-        
+
         Returns:
             (is_valid, list of tamper/integrity error messages)
         """

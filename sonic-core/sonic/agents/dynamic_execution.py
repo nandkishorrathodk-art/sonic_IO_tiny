@@ -27,18 +27,19 @@ Capabilities:
 
 from __future__ import annotations
 
-import asyncio
 import json
-from typing import Any, Optional
+from typing import Any
 
-from sonic.logger import get_logger
 from sonic.agents.base import BaseAgent
+from sonic.logger import get_logger
 from sonic.memory.schemas import (
-    FindingNode, FindingSeverity, FindingStatus,
-    EvidenceNode, TechniqueNode,
+    EvidenceNode,
+    FindingNode,
+    FindingSeverity,
+    FindingStatus,
 )
-from sonic.safety.scope import RiskLevel, SafetyVerdict
 from sonic.safety.rate_limiter import get_rate_limiter
+from sonic.safety.scope import RiskLevel, SafetyVerdict
 from sonic.tools.http_probe import HTTPProbe, ProbeResult, ProbeTest
 
 logger = get_logger(__name__)
@@ -55,7 +56,7 @@ class DynamicExecutionAgent(BaseAgent):
         *,
         sandbox_provider: Any = None,
         workspace_id: str = "",
-        scope_config: Optional[dict] = None,
+        scope_config: dict | None = None,
         max_iterations: int = 8,
         max_requests: int = 40,
         **kwargs: Any,
@@ -180,7 +181,7 @@ The loop continues while follow_up_tests is non-empty and the budget allows."""
                 requests_made += len(batch_results)
 
                 # Triage every observation and decide follow-ups.
-                for test, result in zip(batch, batch_results):
+                for test, result in zip(batch, batch_results, strict=False):
                     obs = self._observation_to_dict(test, result, iteration)
                     observations.append(obs)
                     self.requests_sent += 1
@@ -396,7 +397,7 @@ The loop continues while follow_up_tests is non-empty and the budget allows."""
 
     async def _llm_triage(
         self, test: ProbeTest, result: ProbeResult, target: str, *, chain: bool
-    ) -> Optional[dict]:
+    ) -> dict | None:
         """LLM interpretation of an observation; returns None on any failure."""
         instruction = (
             "This observation CONFIRMED a vulnerability. Decide if a deeper "

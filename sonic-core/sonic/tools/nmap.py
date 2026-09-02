@@ -11,7 +11,6 @@ from __future__ import annotations
 import re
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
-from typing import Any, Optional
 
 from sonic.logger import get_logger
 
@@ -81,7 +80,7 @@ class NmapParser:
                     for p_elem in ports_elem.findall("port"):
                         port_id = int(p_elem.get("portid", 0))
                         proto = p_elem.get("protocol", "tcp")
-                        
+
                         st_elem = p_elem.find("state")
                         port_state = st_elem.get("state", "closed") if st_elem is not None else "closed"
                         if port_state != "open":

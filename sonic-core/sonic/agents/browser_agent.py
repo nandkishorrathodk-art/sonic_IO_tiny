@@ -10,13 +10,10 @@ Autonomous browser interaction agent using Playwright for:
 
 from __future__ import annotations
 
-import asyncio
 import base64
-import json
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
-from pathlib import Path
-from typing import Any, Optional
+from datetime import UTC, datetime
+from typing import Any
 
 from sonic.logger import get_logger
 
@@ -34,7 +31,7 @@ class PageSnapshot:
     cookies: list[dict[str, Any]] = field(default_factory=list)
     console_logs: list[str] = field(default_factory=list)
     network_requests: list[dict[str, Any]] = field(default_factory=list)
-    timestamp: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+    timestamp: str = field(default_factory=lambda: datetime.now(UTC).isoformat())
 
 
 @dataclass
@@ -72,6 +69,7 @@ class BrowserAgent:
                 viewport={"width": 1920, "height": 1080},
                 user_agent="Mozilla/5.0 (SONIC-REDA Browser Agent) Chrome/120",
                 ignore_https_errors=True,
+                accept_downloads=True,
             )
             self._page = await self._context.new_page()
             self._using_playwright = True
@@ -161,6 +159,43 @@ class BrowserAgent:
             return True
         except Exception as e:
             logger.debug("type_failed", selector=selector, error=str(e))
+            return False
+
+    async def wait_for_element(self, selector: str, timeout_ms: int = 15000) -> bool:
+        """Wait until an element matching the selector is visible.
+
+        A human waits for a "Download" or "Next" button to render before
+        clicking it; without this the agent clicks stale coordinates on a
+        page that is still loading. No-op (True) in httpx fallback mode.
+        """
+        if not self._using_playwright or not self._page:
+            return True
+        try:
+            await self._page.wait_for_selector(selector, state="visible", timeout=timeout_ms)
+            return True
+        except Exception as e:
+            logger.debug("wait_for_element_failed", selector=selector, error=str(e))
+            return False
+
+    async def download(self, selector: str, save_path: str, timeout_ms: int = 60000) -> bool:
+        """Click a download link/button and save the file to save_path.
+
+        Models the human step: click "Download" on the website, wait for the
+        file to arrive, then it is on disk ready to run. accept_downloads is
+        enabled at context creation so the download stream is captured rather
+        than triggering Chromium's download UI. Returns False if Playwright is
+        unavailable or the download does not complete.
+        """
+        if not self._using_playwright or not self._page:
+            return False
+        try:
+            async with self._page.expect_download(timeout=timeout_ms) as dl_info:
+                await self._page.click(selector, timeout=5000)
+            dl = await dl_info.value
+            dl.save_as(save_path)
+            return True
+        except Exception as e:
+            logger.debug("download_failed", selector=selector, save_path=save_path, error=str(e))
             return False
 
     async def find_interactive_elements(self) -> list[DOMElement]:
@@ -263,13 +298,44 @@ class BrowserAgent:
         }
 
     async def close(self) -> None:
-        """Close browser and cleanup."""
-        if self._browser:
-            await self._browser.close()
-        if self._playwright:
-            await self._playwright.stop()
+        """Close browser and cleanup. Safe to call even if launch failed."""
+        # Close the page/context before stopping playwright so the browser
+        # process can shut down cleanly. Each step is independent so a
+        # partially-launched agent (e.g. context created but page failed)
+        # still cleans up what it can.
+        if self._page is not None:
+            try:
+                await self._page.close()
+            except Exception as e:
+                logger.debug("browser_page_close_error", error=str(e))
+            self._page = None
+        if self._context is not None:
+            try:
+                await self._context.close()
+            except Exception as e:
+                logger.debug("browser_context_close_error", error=str(e))
+            self._context = None
+        if self._browser is not None:
+            try:
+                await self._browser.close()
+            except Exception as e:
+                logger.debug("browser_close_error", error=str(e))
+            self._browser = None
+        if self._playwright is not None:
+            try:
+                await self._playwright.stop()
+            except Exception as e:
+                logger.debug("playwright_stop_error", error=str(e))
+            self._playwright = None
         self._using_playwright = False
         logger.info("browser_agent_closed")
+
+    async def __aenter__(self) -> BrowserAgent:
+        await self.launch()
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb) -> None:
+        await self.close()
 
     async def current_page_state(self) -> tuple[str, str]:
         """Return the live (url, title) of the current page, or a blank default.

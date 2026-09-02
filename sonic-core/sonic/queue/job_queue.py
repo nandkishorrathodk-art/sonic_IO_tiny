@@ -8,9 +8,7 @@ and event streaming with automatic in-memory fallback for offline dev/test.
 from __future__ import annotations
 
 import asyncio
-import json
 import os
-from typing import Any, AsyncIterator, Optional
 
 from sonic.logger import get_logger
 from sonic.queue.models import Job, JobEvent, JobPriority, JobStatus
@@ -23,7 +21,7 @@ class RedisJobQueue:
     Asynchronous job queue supporting Redis backend and in-memory queue fallback.
     """
 
-    def __init__(self, redis_url: Optional[str] = None):
+    def __init__(self, redis_url: str | None = None):
         self.redis_url = redis_url or os.environ.get("REDIS_URL")
         self._redis_client = None
         # In-memory queues by priority
@@ -91,7 +89,7 @@ class RedisJobQueue:
         logger.info("job_enqueued", job_id=job.id, tenant_id=job.tenant_id, priority=job.priority.value)
         return job.id
 
-    async def dequeue_job(self, timeout_seconds: float = 1.0) -> Optional[Job]:
+    async def dequeue_job(self, timeout_seconds: float = 1.0) -> Job | None:
         """Fetch highest priority available job."""
         # 1. Try Redis queues in priority order (Critical -> High -> Medium -> Low)
         if self._redis_client:
@@ -116,7 +114,7 @@ class RedisJobQueue:
 
         return None
 
-    async def get_job(self, job_id: str, tenant_id: Optional[str] = None) -> Optional[Job]:
+    async def get_job(self, job_id: str, tenant_id: str | None = None) -> Job | None:
         """Retrieve job by ID with optional tenant isolation."""
         job = self._jobs_store.get(job_id)
         if not job and self._redis_client:
@@ -161,7 +159,7 @@ class RedisJobQueue:
 
 
 # Global singleton queue
-_global_queue: Optional[RedisJobQueue] = None
+_global_queue: RedisJobQueue | None = None
 
 
 def get_job_queue() -> RedisJobQueue:

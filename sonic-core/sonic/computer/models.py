@@ -9,15 +9,15 @@ services, and audit events.
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from enum import StrEnum
-from typing import Any, Optional
+from typing import Any
 
 from pydantic import BaseModel, Field
 
 
 def _now() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 def _new_id(prefix: str = "comp") -> str:
@@ -118,12 +118,17 @@ class ComputerSession(BaseModel):
 class GUIAction(BaseModel):
     """A structured graphical desktop action."""
     action: GUIActionType
-    x: Optional[int] = None
-    y: Optional[int] = None
-    text: Optional[str] = None
-    key: Optional[str] = None
-    window_id: Optional[str] = None
-    app_name: Optional[str] = None
+    x: int | None = None
+    y: int | None = None
+    # Destination coordinates for DRAG (source is x,y). Lets the agent move a
+    # file onto a folder, slide a wizard control, or rearrange windows — like a
+    # human press-move-release gesture.
+    x2: int | None = None
+    y2: int | None = None
+    text: str | None = None
+    key: str | None = None
+    window_id: str | None = None
+    app_name: str | None = None
     scroll_delta: int = 0
 
 
@@ -153,7 +158,7 @@ class ComputerState(BaseModel):
     current_project: str = "sonic-repo"
     git_branch: str = "main"
     resource_usage: dict[str, float] = Field(default_factory=lambda: {"cpu_pct": 12.5, "memory_mb": 1024.0})
-    last_observation: Optional[ScreenObservation] = None
+    last_observation: ScreenObservation | None = None
 
 
 class ApplicationPolicy(BaseModel):
@@ -186,7 +191,7 @@ class ComputerAuditEvent(BaseModel):
     tenant_id: str
     actor: str
     action: str  # "LAUNCH_APP", "WRITE_FILE", "EXECUTE_COMMAND", "GIT_COMMIT", etc.
-    application: Optional[str] = None
+    application: str | None = None
     resource: str
     result: str = "SUCCESS"
     risk_level: ComputerRiskLevel = ComputerRiskLevel.LOW
@@ -225,5 +230,5 @@ class ServiceInfo(BaseModel):
     """Managed service running inside the computer."""
     name: str
     status: str = "RUNNING"
-    port: Optional[int] = None
+    port: int | None = None
     logs: list[str] = Field(default_factory=list)

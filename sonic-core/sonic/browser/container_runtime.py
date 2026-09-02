@@ -11,12 +11,11 @@ SECURITY INVARIANT:
 
 from __future__ import annotations
 
-import base64
 import json
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
-from typing import Any, Optional
+from datetime import UTC, datetime
+from typing import Any
 
 from sonic.logger import get_logger
 from sonic.sandbox.provider import ComputeProvider, ExecResult
@@ -28,10 +27,10 @@ logger = get_logger(__name__)
 class BrowserAction:
     """A browser interaction command."""
     action: str  # "navigate", "click", "type", "screenshot", "get_dom", "evaluate"
-    url: Optional[str] = None
-    selector: Optional[str] = None
-    text: Optional[str] = None
-    script: Optional[str] = None
+    url: str | None = None
+    selector: str | None = None
+    text: str | None = None
+    script: str | None = None
     timeout_ms: int = 15000
 
 
@@ -48,7 +47,7 @@ class BrowserResult:
     console_logs: list[str] = field(default_factory=list)
     cookies: list[dict[str, Any]] = field(default_factory=list)
     success: bool = True
-    error_message: Optional[str] = None
+    error_message: str | None = None
     duration_seconds: float = 0.0
 
 
@@ -71,7 +70,7 @@ class ContainerizedBrowser:
         Generates and runs an embedded Python Playwright automation script.
         """
         session_id = f"browser-{uuid.uuid4().hex[:8]}"
-        start_time = datetime.now(timezone.utc)
+        start_time = datetime.now(UTC)
 
         # Build inline Playwright runner script to execute inside the sandbox
         actions_json = json.dumps([{
@@ -179,7 +178,7 @@ asyncio.run(run_actions())
             timeout=timeout_seconds,
         )
 
-        duration = (datetime.now(timezone.utc) - start_time).total_seconds()
+        duration = (datetime.now(UTC) - start_time).total_seconds()
 
         if exec_res.exit_code == 126:
             return BrowserResult(

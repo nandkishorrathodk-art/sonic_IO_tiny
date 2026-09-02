@@ -15,7 +15,7 @@ only translates the call signature; it adds no new execution path.
 
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Any
 
 from sonic.sandbox.provider import ComputeProvider, ExecResult, WorkspaceConfig, WorkspaceState
 
@@ -30,8 +30,8 @@ class ComputerAsComputeProvider(ComputeProvider):
         self,
         workspace_id: str,
         command: str | list[str],
-        cwd: Optional[str] = None,
-        env: Optional[dict[str, str]] = None,
+        cwd: str | None = None,
+        env: dict[str, str] | None = None,
         timeout: int = 120,
     ) -> ExecResult:
         cmd = " ".join(command) if isinstance(command, list) else command

@@ -12,8 +12,7 @@ Quantitative benchmark suite measuring critical thinking quality:
 
 from __future__ import annotations
 
-from typing import Any
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 
 class ReasoningBenchmarkMetrics(BaseModel):
@@ -55,7 +54,7 @@ class ResearchBenchmarkRunner:
     ) -> ReasoningBenchmarkMetrics:
         # 1. Hypothesis diversity
         hyp_div = min(1.0, (competing_hypotheses_count / max(1, hypotheses_count))) if hypotheses_count else 0.0
-        
+
         # 2. Prediction accuracy (1.0 - mean error)
         pred_acc = round(1.0 - (sum(prediction_errors) / len(prediction_errors)), 3) if prediction_errors else 0.5
         pred_acc = max(0.0, min(1.0, pred_acc))

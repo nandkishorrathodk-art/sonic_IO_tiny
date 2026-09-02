@@ -12,8 +12,6 @@ Commands for running adversarial security acceptance suites against SONIC-REDA:
 
 from __future__ import annotations
 
-import asyncio
-import httpx
 import typer
 from rich.console import Console
 from rich.panel import Panel

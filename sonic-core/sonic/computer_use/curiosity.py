@@ -26,10 +26,8 @@ territory. A dead-end (repeated zero novelty) triggers a pivot.
 
 from __future__ import annotations
 
-import asyncio
-import time
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from typing import Any
 
 from sonic.logger import get_logger
 from sonic.researcher.anomaly_engine import NoveltyEngine
@@ -43,7 +41,7 @@ class CuriosityCycleResult:
     proposed_goal: str
     rationale: str
     info_gain: float
-    learned_fact: Optional[str]
+    learned_fact: str | None
     was_novel: bool
     pivoted: bool
     cycle: int
@@ -75,7 +73,7 @@ class CuriosityLoop:
     def __init__(
         self,
         llm_router: Any,
-        vector_memory: Optional[Any] = None,
+        vector_memory: Any | None = None,
         max_cycles: int = 5,
         exploration_steps: int = 3,
     ):
@@ -181,7 +179,7 @@ class CuriosityLoop:
         info_gain = self.measure_novelty(outcome)
         was_novel = info_gain >= self.DEAD_END_NOVELTY
 
-        learned: Optional[str] = None
+        learned: str | None = None
         if was_novel:
             learned = f"{goal}: {outcome}"
             newly = self.persist_fact(learned)

@@ -6,7 +6,7 @@ Authenticated endpoints for job submission, tracking, and cancellation.
 
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel

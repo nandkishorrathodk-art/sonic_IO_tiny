@@ -7,29 +7,29 @@ license = {text = "Proprietary"}
 
 dependencies = [
     # Web framework
-    "fastapi>=0.115.0",
-    "uvicorn[standard]>=0.30.0",
-    "python-multipart>=0.0.9",
+    "fastapi>=0.115.6",
+    "uvicorn[standard]>=0.32.1",
+    "python-multipart>=0.0.20",
     
     # Auth
-    "authlib>=1.3.0",
-    "httpx>=0.27.0",
-    "python-jose[cryptography]>=3.3.0",
+    "authlib>=1.4.1",
+    "httpx>=0.28.1",
+    "python-jose[cryptography]>=3.4.0",
     "passlib[bcrypt]>=1.7.4",
     
     # LLM SDKs
-    "anthropic>=0.40.0",
-    "openai>=1.50.0",
+    "anthropic>=0.43.0",
+    "openai>=1.59.7",
     
     # Data & Validation
-    "pydantic>=2.9.0",
-    "pydantic-settings>=2.5.0",
-    "pyyaml>=6.0.1",
+    "pydantic>=2.10.4",
+    "pydantic-settings>=2.7.1",
+    "pyyaml>=6.0.2",
     
     # Database
-    "neo4j>=5.25.0",
-    "redis[hiredis]>=5.1.0",
-    "sqlalchemy>=2.0.0",
+    "neo4j>=5.27.0",
+    "redis[hiredis]>=5.2.1",
+    "sqlalchemy>=2.0.36",
     "aiosqlite>=0.20.0",
     
     # Utilities
@@ -43,14 +43,51 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
-    "pytest>=8.3.0",
-    "pytest-asyncio>=0.24.0",
-    "pytest-cov>=5.0.0",
-    "ruff>=0.6.0",
-    "mypy>=1.11.0",
-    "httpx>=0.27.0",  # for TestClient
+    "pytest>=8.3.4",
+    "pytest-asyncio>=0.25.2",
+    "pytest-cov>=6.0.0",
+    "ruff>=0.8.6",
+    "mypy>=1.14.1",
+    "httpx>=0.28.1",  # for TestClient
 ]
 
 [tool.setuptools.packages.find]
 include = ["sonic*"]
 exclude = ["sonic_data*"]
+
+# ============================================
+# Tooling configuration
+# ============================================
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+exclude = ["sonic_data", "build", "dist", ".eggs"]
+
+[tool.ruff.lint]
+# E/W = pycodestyle, F = pyflakes (bugs!), I = isort, UP = pyupgrade, N = naming, B = bugbear
+select = ["E", "W", "F", "I", "UP", "N", "B", "C4", "SIM"]
+ignore = [
+    "E501",   # line-too-long: handled by formatter, not a correctness issue
+    "B008",   # function-call-in-default-argument: FastAPI Depends() pattern
+    "N805",   # invalid-first-argument-name: pydantic validators
+    "N818",   # error-suffix-on-exception-name
+    "B904",   # raise-without-from: many existing patterns rely on bare raise
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["B011", "N802", "N803", "N806", "UP045", "UP046", "F841"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["sonic", "sonic_cli"]
+
+[tool.mypy]
+python_version = "3.12"
+warn_unused_ignores = true
+warn_redundant_casts = true
+warn_unused_configs = true
+ignore_missing_imports = true
+exclude = ["sonic_data", "build", "dist"]
+# Start lenient — tighten over time as coverage improves.
+[[tool.mypy.overrides]]
+module = ["tests.*"]
+ignore_errors = true

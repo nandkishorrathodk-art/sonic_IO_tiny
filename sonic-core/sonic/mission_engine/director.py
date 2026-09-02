@@ -8,9 +8,8 @@ Computer Operation -> Verification -> Replanning -> Deliverable Generation.
 
 from __future__ import annotations
 
-import asyncio
 import time
-from typing import Any, Optional
+from typing import Any
 
 from sonic.computer.models import ComputerWorkspaceType
 from sonic.computer.provider import UnifiedComputerProvider
@@ -47,9 +46,9 @@ class MissionDirector:
     def __init__(
         self,
         computer_provider: UnifiedComputerProvider,
-        resource_manager: Optional[MissionResourceManager] = None,
+        resource_manager: MissionResourceManager | None = None,
         autonomy_level: ComputerAutonomyLevel = ComputerAutonomyLevel.L3_AUTONOMOUS,
-        state_store: Optional[MissionStateStore] = None,
+        state_store: MissionStateStore | None = None,
     ):
         self.computer = computer_provider
         self.resource_mgr = resource_manager or MissionResourceManager()
@@ -77,7 +76,7 @@ class MissionDirector:
             if self.deliverables.get(mission_id):
                 await self.store.save_deliverables(mission_id, self.deliverables[mission_id])
 
-    async def restore_mission(self, mission_id: str) -> Optional[MissionState]:
+    async def restore_mission(self, mission_id: str) -> MissionState | None:
         """Load a mission from the persistent store into the in-memory cache."""
         state = await self.store.load_state(mission_id)
         if not state:
@@ -102,8 +101,8 @@ class MissionDirector:
         self,
         tenant_id: str,
         goal: str,
-        constraints: Optional[list[str]] = None,
-        scope: Optional[list[str]] = None,
+        constraints: list[str] | None = None,
+        scope: list[str] | None = None,
         budget_dollars: float = 25.0,
         deadline_seconds: int = 3600,
     ) -> MissionState:
@@ -249,11 +248,11 @@ class MissionDirector:
             # the agent can dispatch scans as a first-class reasoning action.
             # Bind to the underlying ComputeProvider (UnifiedComputerProvider
             # delegates terminal exec to it; SecurityTool.execute calls execute()).
-            from sonic.tools.registry import get_default_registry
             # Wire the browser into the unified action surface so the agent can
             # navigate/click/type/screenshot as a first-class reasoning action
             # (was orphaned — BrowserAgent existed but no caller passed browser=).
             from sonic.agents.browser_agent import BrowserAgent
+            from sonic.tools.registry import get_default_registry
             browser = BrowserAgent(headless=True)
             await browser.launch()
             agent = ComputerUseAgent(

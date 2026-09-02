@@ -7,8 +7,8 @@ while strictly enforcing multi-tenant data boundaries.
 
 from __future__ import annotations
 
-from typing import Any, Optional
 from pydantic import BaseModel, Field
+
 from sonic.logger import get_logger
 
 logger = get_logger(__name__)
@@ -67,7 +67,7 @@ class ResearchMemoryStore:
         # Private tenant memory: tenant_id -> list[PrivateTenantMemory]
         self._tenant_memories: dict[str, list[PrivateTenantMemory]] = {}
 
-    def get_playbook(self, question_pattern: str) -> Optional[PlaybookEntry]:
+    def get_playbook(self, question_pattern: str) -> PlaybookEntry | None:
         """Retrieve generalized methodology without tenant data."""
         clean_key = question_pattern.lower().replace(" ", "_")
         for key, entry in self._global_playbooks.items():

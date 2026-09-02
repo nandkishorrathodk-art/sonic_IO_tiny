@@ -28,7 +28,7 @@ roring `ComputerUseAgent(self_host=True)`'s hard requirement.
 from __future__ import annotations
 
 import asyncio
-from typing import Any, Optional
+from typing import Any
 
 from sonic.being.identity import (
     Being,
@@ -76,7 +76,7 @@ class BeingLifeLoop:
         self.curiosity = curiosity
         self.workspace_id = workspace_id
         self.tick_interval = tick_interval
-        self._task: Optional[asyncio.Task] = None
+        self._task: asyncio.Task | None = None
         self._stop = asyncio.Event()
         self.cycles_completed = 0
 
@@ -124,7 +124,7 @@ class BeingLifeLoop:
             interval = self.tick_interval if self.tick_interval > 0 else 0.01
             try:
                 await asyncio.wait_for(self._stop.wait(), timeout=interval)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 pass  # interval elapsed, tick again
 
     # ------------------------------------------------------------------
@@ -144,7 +144,7 @@ class BeingLifeLoop:
         if self._task is not None and not self._task.done():
             try:
                 await asyncio.wait_for(self._task, timeout=timeout)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 self._task.cancel()
                 try:
                     await self._task

@@ -12,8 +12,7 @@ from __future__ import annotations
 
 import base64
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
-from typing import Any, Optional
+from datetime import UTC, datetime
 
 import httpx
 
@@ -34,7 +33,7 @@ class BurpHttpItem:
     status_code: int
     request_raw: str
     response_raw: str
-    timestamp: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+    timestamp: str = field(default_factory=lambda: datetime.now(UTC).isoformat())
 
 
 @dataclass
@@ -78,7 +77,7 @@ class BurpClient:
         except Exception:
             return False
 
-    async def get_sitemap(self, host_filter: Optional[str] = None) -> list[str]:
+    async def get_sitemap(self, host_filter: str | None = None) -> list[str]:
         """
         Fetch all URLs discovered in Burp's target sitemap.
         """
@@ -94,7 +93,7 @@ class BurpClient:
             logger.warning("burp_sitemap_failed", error=str(e))
         return []
 
-    async def get_proxy_history(self, limit: int = 100, host_filter: Optional[str] = None) -> list[BurpHttpItem]:
+    async def get_proxy_history(self, limit: int = 100, host_filter: str | None = None) -> list[BurpHttpItem]:
         """
         Query HTTP proxy history intercepted by Burp.
         """
@@ -131,8 +130,8 @@ class BurpClient:
         self,
         method: str,
         url: str,
-        headers: Optional[dict[str, str]] = None,
-        data: Optional[str | bytes] = None,
+        headers: dict[str, str] | None = None,
+        data: str | bytes | None = None,
         use_burp_proxy: bool = True,
     ) -> BurpHttpItem:
         """
@@ -153,7 +152,7 @@ class BurpClient:
                 response_raw=f"HTTP/1.1 {res.status_code}\n\n{res.text[:2000]}",
             )
 
-    async def launch_scan(self, target_urls: list[str]) -> Optional[str]:
+    async def launch_scan(self, target_urls: list[str]) -> str | None:
         """
         Start an active/passive scan task in Burp Scanner.
         """
@@ -172,7 +171,7 @@ class BurpClient:
             logger.warning("burp_scan_launch_failed", error=str(e))
         return None
 
-    async def get_scan_issues(self, host_filter: Optional[str] = None) -> list[BurpIssue]:
+    async def get_scan_issues(self, host_filter: str | None = None) -> list[BurpIssue]:
         """
         Retrieve all scanner issues identified by Burp Scanner.
         """

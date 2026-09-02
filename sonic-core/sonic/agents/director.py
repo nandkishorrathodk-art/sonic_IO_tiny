@@ -27,64 +27,56 @@ from __future__ import annotations
 
 import json
 import uuid
-from datetime import datetime, timezone
-from typing import Any, Optional
+from datetime import UTC, datetime
+from typing import Any
 
 from sonic.agents.cognitive_state import (
     Assumption,
     Attempt,
-    CandidateAction,
     CognitiveHypothesis,
     CognitiveState,
     EngagementBudget,
     EvidenceRef,
     Fact,
-    HypothesisLifecycle,
-    Inference,
-    NextBestActionDecision,
     Observation,
     Provenance,
     Unknown,
 )
 from sonic.agents.replan import (
-    ReplanDecision,
     ReplanEngine,
-    ReplanTrigger,
 )
 from sonic.agents.state_store import StateStore, get_state_store
 from sonic.agents.task_graph import (
+    VALID_AGENT_TYPES,
     TaskGraph,
     TaskGraphError,
     TaskNode,
     TaskPriority,
     TaskStatus,
-    VALID_AGENT_TYPES,
 )
+from sonic.llm.router import ModelRouter
+from sonic.llm.schemas import LLMRequest, Message, MessageRole
+from sonic.logger import get_logger
+from sonic.memory.graph import GraphMemory
+from sonic.memory.schemas import EngagementNode, EngagementStatus
+from sonic.research.decision_trace import DecisionTrace
 from sonic.research.epistemic import (
-    CompetingHypothesis,
     ConfidenceCalculator,
     Contradiction,
     ContradictionSeverity,
-    EvidenceWeight,
     EvidenceSourceType,
+    EvidenceWeight,
     Prediction,
     PredictionComparison,
 )
 from sonic.research.information_gain import (
-    ActionCandidate,
     ActionSelector,
 )
-from sonic.research.decision_trace import DecisionTrace
 from sonic.research.world_model import (
     StopCondition,
     StopConditionEvaluator,
     WorldModel,
 )
-from sonic.logger import get_logger
-from sonic.llm.router import ModelRouter
-from sonic.llm.schemas import LLMRequest, Message, MessageRole
-from sonic.memory.graph import GraphMemory
-from sonic.memory.schemas import EngagementNode, EngagementStatus, AgentNode
 from sonic.safety.scope import ScopeChecker
 
 logger = get_logger(__name__)
@@ -201,7 +193,7 @@ class LifecycleEvent:
         self.task_id = task_id
         self.agent_id = agent_id
         self.payload = payload or {}
-        self.timestamp = datetime.now(timezone.utc).isoformat()
+        self.timestamp = datetime.now(UTC).isoformat()
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -937,7 +929,6 @@ Create 3-6 initial tasks. Start with recon."""
 
     def _evaluate_stop_condition(self, state: CognitiveState, graph: TaskGraph) -> Any:
         """Evaluate explicit stopping policies."""
-        from sonic.research.world_model import WorldModel, StopConditionEvaluator
         wm = WorldModel(
             goal=state.goal,
             target="",

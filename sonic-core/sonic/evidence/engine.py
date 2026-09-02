@@ -18,11 +18,11 @@ Full implementation in Phase 1.
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from enum import StrEnum
-from typing import Any, Optional
 
 from pydantic import BaseModel, Field
+
 from sonic.logger import get_logger
 
 logger = get_logger(__name__)
@@ -51,14 +51,14 @@ class Evidence(BaseModel):
     evidence_type: str  # "poc", "log", "screenshot", "har", "request", "response"
     content: str  # The actual evidence (code, log text, base64 image, etc.)
     description: str = ""
-    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     created_by: str = ""  # Agent ID
 
 
 class Finding(BaseModel):
     """
     A security finding with mandatory evidence.
-    
+
     A finding without complete evidence is automatically REJECTED.
     """
     id: str = Field(default_factory=lambda: uuid.uuid4().hex[:12])
@@ -66,33 +66,33 @@ class Finding(BaseModel):
     description: str
     severity: Severity
     vulnerability_class: str  # "XSS", "SQLi", "IDOR", etc.
-    
+
     # Evidence (MANDATORY)
     poc: str = ""  # Reproducible proof-of-concept
     evidence: list[Evidence] = Field(default_factory=list)
-    
+
     # Scoring
     confidence_score: int = 0  # 0-100, set by Verifier agent
     impact_assessment: str = ""
-    
+
     # Metadata
     target: str = ""  # Which target/endpoint
     agent_id: str = ""  # Which agent found this
     engagement_id: str = ""
     status: EvidenceStatus = EvidenceStatus.PENDING
-    
+
     # Graph links
     graph_node_ids: list[str] = Field(default_factory=list)
-    
-    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
-    validated_at: Optional[datetime] = None
+
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    validated_at: datetime | None = None
     validated_by: str = ""  # Verifier agent ID
 
 
 class EvidenceEngine:
     """
     Manages findings and enforces evidence requirements.
-    
+
     Rules:
         1. No finding accepted without PoC
         2. No finding accepted without at least one Evidence attachment
@@ -106,7 +106,7 @@ class EvidenceEngine:
     def submit_finding(self, finding: Finding) -> tuple[bool, str]:
         """
         Submit a finding for validation.
-        
+
         Returns:
             (accepted: bool, reason: str)
         """
@@ -144,7 +144,7 @@ class EvidenceEngine:
         for finding in self.findings:
             if finding.id == finding_id:
                 finding.confidence_score = confidence_score
-                finding.validated_at = datetime.now(timezone.utc)
+                finding.validated_at = datetime.now(UTC)
                 finding.validated_by = verifier_agent_id
                 finding.status = EvidenceStatus.VALIDATED
                 logger.info(

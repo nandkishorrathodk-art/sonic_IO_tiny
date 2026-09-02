@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import os
 import shutil
-from typing import Optional
 
 from sonic.config import get_settings
 from sonic.logger import get_logger
@@ -20,7 +19,7 @@ from sonic.sandbox.providers.local_dev_provider import LocalDevProvider
 
 logger = get_logger(__name__)
 
-_active_provider: Optional[ComputeProvider] = None
+_active_provider: ComputeProvider | None = None
 
 
 def get_compute_provider(force_provider: str | None = None) -> ComputeProvider:

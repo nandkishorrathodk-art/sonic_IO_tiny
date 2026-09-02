@@ -8,13 +8,19 @@ Enforces multi-tenant isolation across all node queries and relationships.
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
-from typing import Any, Optional
+from datetime import UTC, datetime
+from typing import Any
 
 from sonic.logger import get_logger
 from sonic.memory.schemas import (
-    AssetNode, EngagementNode, EvidenceNode, FindingNode,
-    HypothesisNode, TechniqueNode, AgentNode, RelationshipType,
+    AgentNode,
+    AssetNode,
+    EngagementNode,
+    EvidenceNode,
+    FindingNode,
+    HypothesisNode,
+    RelationshipType,
+    TechniqueNode,
 )
 
 logger = get_logger(__name__)
@@ -53,18 +59,18 @@ class InMemoryGraph:
     # Generic CRUD
     # ============================================
 
-    async def _create_node(self, label: str, props: dict[str, Any]) -> Optional[str]:
+    async def _create_node(self, label: str, props: dict[str, Any]) -> str | None:
         uid = props.get("uid") or f"{label.lower()}-{uuid.uuid4().hex[:8]}"
         props["uid"] = uid
         props["_label"] = label
         if "tenant_id" not in props or not props["tenant_id"]:
             props["tenant_id"] = "default"
         if "created_at" not in props:
-            props["created_at"] = datetime.now(timezone.utc).isoformat()
+            props["created_at"] = datetime.now(UTC).isoformat()
         self._nodes[uid] = props
         return uid
 
-    async def _get_node(self, label: str, uid: str, tenant_id: str | None = None) -> Optional[dict]:
+    async def _get_node(self, label: str, uid: str, tenant_id: str | None = None) -> dict | None:
         node = self._nodes.get(uid)
         if node and node.get("_label") == label:
             if tenant_id and node.get("tenant_id") != tenant_id:
@@ -110,10 +116,10 @@ class InMemoryGraph:
     # Typed Multi-Tenant CRUD
     # ============================================
 
-    async def create_engagement(self, engagement: EngagementNode) -> Optional[str]:
+    async def create_engagement(self, engagement: EngagementNode) -> str | None:
         return await self._create_node("Engagement", engagement.model_dump())
 
-    async def get_engagement(self, uid: str, tenant_id: str | None = None) -> Optional[dict]:
+    async def get_engagement(self, uid: str, tenant_id: str | None = None) -> dict | None:
         return await self._get_node("Engagement", uid, tenant_id=tenant_id)
 
     async def update_engagement(self, uid: str, tenant_id: str | None = None, **updates: Any) -> bool:
@@ -130,7 +136,7 @@ class InMemoryGraph:
                 results.append({k: v for k, v in n.items() if k != "_label"})
         return results
 
-    async def create_asset(self, asset: AssetNode) -> Optional[str]:
+    async def create_asset(self, asset: AssetNode) -> str | None:
         uid = await self._create_node("Asset", asset.model_dump())
         if uid and asset.engagement_id:
             await self.create_relationship(
@@ -139,7 +145,7 @@ class InMemoryGraph:
             )
         return uid
 
-    async def get_asset(self, uid: str, tenant_id: str | None = None) -> Optional[dict]:
+    async def get_asset(self, uid: str, tenant_id: str | None = None) -> dict | None:
         return await self._get_node("Asset", uid, tenant_id=tenant_id)
 
     async def find_assets(self, engagement_id: str, asset_type: str | None = None, tenant_id: str | None = None) -> list[dict]:
@@ -163,7 +169,7 @@ class InMemoryGraph:
                 return uid
         return await self._create_node("Asset", asset.model_dump()) or ""
 
-    async def create_finding(self, finding: FindingNode) -> Optional[str]:
+    async def create_finding(self, finding: FindingNode) -> str | None:
         uid = await self._create_node("Finding", finding.model_dump())
         if uid and finding.engagement_id:
             await self.create_relationship(
@@ -172,7 +178,7 @@ class InMemoryGraph:
             )
         return uid
 
-    async def get_finding(self, uid: str, tenant_id: str | None = None) -> Optional[dict]:
+    async def get_finding(self, uid: str, tenant_id: str | None = None) -> dict | None:
         return await self._get_node("Finding", uid, tenant_id=tenant_id)
 
     async def update_finding(self, uid: str, tenant_id: str | None = None, **updates: Any) -> bool:
@@ -201,7 +207,7 @@ class InMemoryGraph:
             results.append({k: v for k, v in n.items() if k != "_label"})
         return results
 
-    async def create_hypothesis(self, hypothesis: HypothesisNode) -> Optional[str]:
+    async def create_hypothesis(self, hypothesis: HypothesisNode) -> str | None:
         return await self._create_node("Hypothesis", hypothesis.model_dump())
 
     async def update_hypothesis(self, uid: str, tenant_id: str | None = None, **updates: Any) -> bool:
@@ -219,7 +225,7 @@ class InMemoryGraph:
             results.append({k: v for k, v in n.items() if k != "_label"})
         return results
 
-    async def create_evidence(self, evidence: EvidenceNode) -> Optional[str]:
+    async def create_evidence(self, evidence: EvidenceNode) -> str | None:
         uid = await self._create_node("Evidence", evidence.model_dump())
         if uid and evidence.finding_id:
             await self.create_relationship(
@@ -228,17 +234,17 @@ class InMemoryGraph:
             )
         return uid
 
-    async def create_technique(self, technique: TechniqueNode) -> Optional[str]:
+    async def create_technique(self, technique: TechniqueNode) -> str | None:
         return await self._create_node("Technique", technique.model_dump())
 
-    async def register_agent(self, agent: AgentNode) -> Optional[str]:
+    async def register_agent(self, agent: AgentNode) -> str | None:
         return await self._create_node("Agent", agent.model_dump())
 
     # ============================================
     # Multi-Tenant Query & Search
     # ============================================
 
-    async def add_node(self, label: str, data: dict[str, Any]) -> Optional[str]:
+    async def add_node(self, label: str, data: dict[str, Any]) -> str | None:
         return await self._create_node(label, data)
 
     async def query(self, query_str: str, params: dict[str, Any] | None = None, tenant_id: str | None = None) -> list[dict]:

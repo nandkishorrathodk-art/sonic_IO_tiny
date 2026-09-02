@@ -36,7 +36,7 @@ class ReconAgent(BaseAgent):
         self.discovered_assets: list[dict] = []
 
     def get_system_prompt(self) -> str:
-        return """You are the Recon Agent of SONIC-REDA, an autonomous AI red-team system.
+        return """You are the Recon Agent of SONIC — an Autonomous Self-Evolving Penetration Architect (A-SEA).
 
 Your job is to discover and map the target's attack surface. You are thorough, methodical, and miss nothing.
 

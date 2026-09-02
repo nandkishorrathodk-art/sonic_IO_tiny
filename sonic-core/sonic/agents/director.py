@@ -360,6 +360,10 @@ Create an initial plan with:
 2. Initial unknowns to investigate
 3. Phased tasks (recon first, then analysis, then testing)
 
+Where a gap exists that no registered scanner covers, prefer a toolsmith or
+method-invention task (agent_type "toolsmith" or "method") over forcing a
+known-scanner that does not apply.
+
 Respond with JSON:
 {{
     "assumptions": ["assumption 1", "assumption 2"],
@@ -1083,7 +1087,7 @@ Create 3-6 initial tasks. Start with recon."""
             messages=[
                 Message(
                     role=MessageRole.SYSTEM,
-                    content="You are the SONIC-REDA Director — an AI security assessment coordinator. Respond with valid JSON only.",
+                    content="You are the Director of SONIC — an Autonomous Self-Evolving Penetration Architect (A-SEA) — an AI security-assessment coordinator. Respond with valid JSON only.",
                 ),
                 Message(role=MessageRole.USER, content=prompt),
             ],

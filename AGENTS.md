@@ -1,9 +1,23 @@
 # AGENTS.md — SONIC-REDA repository memory
 
 ## Project overview
-SONIC-REDA is an autonomous AI bug-hunting / red-team system: FastAPI backend
-(`sonic-core/`), Next.js dashboard (`sonic-dashboard/`), Docker sandbox
-execution, Neo4j graph memory, multi-tenant RBAC.
+SONIC is an **Autonomous Self-Evolving Penetration Architect (A-SEA)**: an
+AI-driven self-developing offensive-security being that operates its own
+sandboxed computer environment, autonomously performs authorized security
+assessments, discovers and tests new attack hypotheses, analyzes results,
+learns from failures and successes, authors its OWN tools (Toolsmith) and
+synthesizes NOVEL attack methods (Method Lab), and improves its own testing
+strategies, tools, and workflows over time — all within a sealed, tamper-evident
+safety envelope, with every "confirmed" / "working" claim backed by real
+in-sandbox reproduction (no success-by-decree).
+
+Formerly "SONIC-REDA (autonomous AI red-team system)". The identity was
+renamed to A-SEA to match the actual capability surface (researcher +
+architect, not just operator). All LLM prompts now use the A-SEA identity.
+
+Architecture: FastAPI backend (`sonic-core/`), Next.js dashboard
+(`sonic-dashboard/`), Docker sandbox execution, Neo4j graph memory,
+multi-tenant RBAC.
 
 ## Layout
 - `sonic-core/` — Python backend (uv workspace, Python 3.12+). `pip install -e sonic-core[dev]`.
@@ -529,6 +543,38 @@ ONLY on real in-sandbox reproduction.
   confirmed technique's probe is registered as a callable tool.
 
 ### Test baseline (after Phase B)
+- 432 passed, 48 honestly skipped, 0 failures.
+
+## Prompt-identity + capability-awareness update (post-Phase B)
+Renamed the system's LLM-facing identity from "SONIC-REDA, an autonomous AI
+red-team system" / "elite bug bounty hunter" / "pentester" to **"SONIC — an
+Autonomous Self-Evolving Penetration Architect (A-SEA)"** across every prompt,
+so the being self-describes as a self-developing researcher/architect (matching
+the real capability surface) rather than just an operator. 14 prompts updated:
+- `agents/`: hypothesis, static_reasoning, recon, orchestrator, dynamic_execution,
+  verifier, exploit_validator, react_engine.
+- `agents/director.py` + `agents/replan.py`: Director + Replan Engine identity.
+- `computer_use/agent.py` system prompt: A-SEA identity + now advertises the
+  Toolsmith (TOOL_AUTHOR/TOOL_RUN) and Method Lab (METHOD_INVENT) as first-class
+  actions, and instructs the LLM to author/invent when no existing tool fits a
+  gap (not just re-run a known scanner).
+- `computer_use/curiosity.py`: A-SEA identity + prefers goals that expose a
+  Toolsmith/Method-Lab gap (so self-directed curiosity feeds method invention).
+- `being/toolsmith.py` + `being/method_lab.py`: A-SEA identity; the toolsmith
+  blocklist is now the DYNAMIC existing-tool set (was a hardcoded
+  "nmap/nuclei/ffuf/http_client" literal — generalized so authored tools are
+  auto-excluded from re-authoring).
+- `continuous_dev/continuous_loop.py`: A-SEA identity + honesty clause (never
+  claim success without a passing test command).
+- `api/routes/workstation.py` workstation chat prompt: A-SEA identity + now
+  describes the Toolsmith + Method Lab + sealed safety envelope + honesty rule
+  (never claim confirmed without reproduction); generalized the Cloudflare-specific
+  example to "a CDN".
+
+No test asserted the old prompt text, so the rename was safe; full suite stayed
+green (432 passed).
+
+### Test baseline (after prompt update)
 - 432 passed, 48 honestly skipped, 0 failures.
 
 ## Current test baseline

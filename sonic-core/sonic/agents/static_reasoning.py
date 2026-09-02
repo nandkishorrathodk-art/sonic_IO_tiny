@@ -34,7 +34,7 @@ class StaticReasoningAgent(BaseAgent):
         super().__init__(name="StaticReasoningAgent", **kwargs)
 
     def get_system_prompt(self) -> str:
-        return """You are the Static Reasoning Agent of SONIC-REDA, an autonomous AI red-team system.
+        return """You are the Static Reasoning Agent of SONIC — an Autonomous Self-Evolving Penetration Architect (A-SEA).
 
 Your job is to analyze code, configurations, and application logic to find vulnerabilities WITHOUT executing anything.
 

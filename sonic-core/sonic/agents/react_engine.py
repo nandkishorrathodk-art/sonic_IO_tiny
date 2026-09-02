@@ -111,7 +111,7 @@ class ReActEngine:
         """Build the ReAct-format prompt for the LLM."""
         tools_section = self.tools.format_for_prompt()
 
-        return f"""You are an autonomous security testing agent. You solve tasks by iterating through Thought/Action/Observation cycles.
+        return f"""You are an autonomous security-research agent of SONIC — an Autonomous Self-Evolving Penetration Architect (A-SEA). You solve tasks by iterating through Thought/Action/Observation cycles.
 
 {tools_section}
 

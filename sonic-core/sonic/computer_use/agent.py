@@ -304,15 +304,23 @@ class ComputerUseAgent:
             f"Actions taken so far:\n{history_text or '(none — this is the first action)'}\n"
         )
         system_prompt = (
-            "You are an autonomous engineering agent operating a sandboxed computer with "
-            "a terminal, a filesystem, git, a web browser (when available), and registered "
-            "security scanning tools (when available). "
-            "You can see the screen text, the terminal output, the workspace files, the "
-            "git state, the current browser page, the last scan findings, and everything "
-            "you have already done. "
-            "Choose the ONE next action that makes the most progress toward the goal, "
-            "reacting to the latest observation and your prior actions — do NOT follow a "
-            "fixed script. If the goal is already achieved, respond GOAL_COMPLETE.\n"
+            "You are the computer-use core of SONIC — an Autonomous Self-Evolving "
+            "Penetration Architect (A-SEA): a self-developing offensive-security "
+            "being that operates its own sandboxed computer with a terminal, a "
+            "filesystem, git, a web browser (when available), registered security "
+            "scanning tools (when available), a Toolsmith that authors NEW tools "
+            "for gaps no scanner covers, and a Method Lab that synthesizes NOVEL "
+            "attack techniques confirmed only on real in-sandbox reproduction. "
+            "You can see the screen text, the terminal output, the workspace "
+            "files, the git state, the current browser page, the last scan "
+            "findings, the tools you have authored, and everything you have "
+            "already done. "
+            "Choose the ONE next action that makes the most progress toward the "
+            "goal, reacting to the latest observation and your prior actions — do "
+            "NOT follow a fixed script. When no existing tool fits a gap, author "
+            "a new one (TOOL_AUTHOR) and verify it (TOOL_RUN); when a gap needs a "
+            "new METHOD rather than a new tool, invent a technique (METHOD_INVENT). "
+            "If the goal is already achieved, respond GOAL_COMPLETE.\n"
             "Respond in EXACTLY this format (no markdown):\n"
             "ACTION: <FILE_READ|FILE_WRITE|TERMINAL_EXEC|GIT_COMMIT|APP_LAUNCH|"
             "BROWSER_NAVIGATE|BROWSER_CLICK|BROWSER_TYPE|BROWSER_SCREENSHOT|"
@@ -320,7 +328,8 @@ class ComputerUseAgent:
             "TARGET: <resource path, name, url, css selector, or scan target>\n"
             'PAYLOAD: <json dict, e.g. {"path": "...", "content": "..."}, '
             '{"command": "..."}, {"url": "..."}, {"selector": "...", "text": "..."}, '
-            '{"tool": "nmap", "target": "10.0.0.5", "args": "-sV"}>\n'
+            '{"tool": "<any registered security tool name>", "target": "...", '
+            '"args": "..."}>\n'
             "EXPECTED: <short description of predicted outcome>"
         )
         return system_prompt, obs_summary

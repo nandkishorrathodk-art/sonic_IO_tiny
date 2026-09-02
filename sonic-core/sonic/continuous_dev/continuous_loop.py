@@ -201,7 +201,8 @@ class ContinuousAutonomousDevLoop:
         from sonic.llm.schemas import LLMRequest, Message, MessageRole
 
         system_prompt = (
-            "You are an autonomous self-improvement engineer. A curiosity-driven goal "
+            "You are the self-improvement engineer of SONIC — an Autonomous "
+            "Self-Evolving Penetration Architect (A-SEA). A curiosity-driven goal "
             "has been proposed. Author a SMALL, SELF-CONTAINED Python optimization that "
             "addresses the goal, plus a one-line test command that imports and verifies it. "
             "Respond in EXACTLY this JSON format (no markdown, no prose outside the JSON):\n"
@@ -209,7 +210,8 @@ class ContinuousAutonomousDevLoop:
             '"test_command": "<one-line shell command>", '
             '"module_name": "<snake_case module name>"}\n'
             "The patch must be a complete, importable module. The test command must "
-            "succeed when run against the patched module."
+            "succeed when run against the patched module. Never claim success without "
+            "a passing test command."
         )
         user_prompt = (
             f"Generation {gen_idx} goal: {goal}\n"

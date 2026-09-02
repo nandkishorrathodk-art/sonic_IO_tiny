@@ -459,10 +459,82 @@ ONLY after a real successful run. No "tool authored and working" claim by decree
 ### Test baseline (after Phase A)
 - 423 passed, 48 honestly skipped, 0 failures.
 
+## Phase B — Method-invention loop (AIOSR: being synthesizes novel techniques)
+Closed the ONE gap that kept SONIC an "Operator" rather than a "Researcher":
+`CuriosityLoop` proposes new GOALS but uses KNOWN techniques (nmap/nuclei
+signatures). Phase B adds the "new new methods" loop from the AIOSR definition
+— the being synthesizes a genuinely NOVEL offensive *technique* (a new method:
+auth-bypass logic, parser-confusion chain, fuzzer mutation strategy,
+header-injection primitive, race-condition probe, info-leak, logic-flow) from an
+observation + a prior failure + the known-technique ledger, and confirms it
+ONLY on real in-sandbox reproduction.
+
+### `sonic/being/method_lab.py` — synthesize + confirm + persist
+- `MethodLab.invent(observation, failure)` asks the LLM to synthesize ONE novel
+  technique explicitly biased AWAY from the known-technique ledger (semantic
+  search of `VectorMemory` scoped to `kind=technique` records). A `DECLINE`
+  response, or a hypothesis that duplicates a known technique, → returns `None`
+  (honest skip: never re-invents what it already knows).
+- Each technique carries a `family` (auth-bypass/parser-confusion/fuzz-mutation/
+  header-injection/race-condition/info-leak/logic-flaw/other), a `hypothesis`
+  (the novel idea + why it differs), and a `probe_source` (small Python that
+  takes a target as argv[1] and prints JSON findings when the technique works).
+- `novelty_vs_ledger` is computed via `NoveltyEngine` so "novel" means genuinely
+  outside the working-method ledger (0=identical, 1=fully novel). Empty ledger
+  => 1.0.
+- `confirm(technique, provider, workspace_id, target)` runs the probe in-sandbox
+  (fail-closed exit 126 = blocked). **Honesty guard:** `confirmed=True` + ledger
+  persistence happen ONLY on exit 0 + non-empty finding output. A blocked/empty
+  run leaves the technique UNCONFIRMED and it is NOT added to the ledger —
+  exactly the same anti-theatrical discipline as `production_gate`/`toolsmith`.
+- A confirmed technique is parsed into structured `findings` (JSON lines, falls
+  back to plain lines) and added to the VectorMemory ledger under doc_id prefix
+  `technique-` with `kind=technique, confirmed=True`. So the ledger is a record
+  of WORKING methods, and future `invent()` calls see these and steer away —
+  novelty compounds across cycles (the being does not re-invent known methods).
+
+### Phase A substrate feeds Phase B
+- When a `ToolsmithLoop` is wired, `confirm()` routes the probe through the
+  toolsmith's `confirm_and_register`: the probe is written to the sandbox,
+  run fail-closed, and on success registered as a callable `SecurityTool`. So a
+  confirmed technique's probe becomes a tool the being can re-run against new
+  targets through the existing `SECURITY_TOOL` path. Phase A gave Phase B its
+  execution substrate (a self-authored tool per self-invented technique).
+
+### Action surface + safety wiring
+- `METHOD_INVENT` added to `ComputerActionType` + the LLM action space/parser/
+  prompt. `execute_action()` dispatches it to `MethodLab.invent()` then
+  `confirm()`; the observation surface includes the technique name/family/finding
+  count/novelty-vs-ledger. The `available_tools` line surfaces any probe that
+  registered as a tool, so the LLM can re-invoke a confirmed technique.
+- `ActionPolicy.DEFAULT_ALLOWED_TYPES` extended with `METHOD_INVENT` (structural
+  confinement: the probe runs under a hardcoded workspace-toolsmith path, same
+  as TOOL_RUN). The sealed `SealedActionPolicy` inherits it (frozen in the seal).
+
+### Production wiring (`api/main.py` being life loop)
+- The being life loop constructs `MethodLab(llm=router, vector_memory=
+  get_vector_memory(), toolsmith=toolsmith)` and passes `method_lab=method_lab`
+  to `ComputerUseAgent`. So the always-on self-directed being invents + confirms
+  novel techniques during idle curiosity — every action still passes the sealed
+  `SealedActionPolicy` gate, and every probe runs fail-closed in-sandbox.
+
+### Done-gate (`test_phase_b_method_lab.py`, 9 tests)
+- synthesizes a novel technique (novelty=1.0 vs empty ledger, unconfirmed
+  pre-run); `DECLINE` → None; duplicate hypothesis → rejected; blocked probe
+  (exit 126) → NOT confirmed + NOT in ledger; empty output → NOT confirmed;
+  successful reproduction → confirmed + parsed findings + persisted to ledger
+  (kind=technique, confirmed=True); a confirmed technique in the ledger steers
+  the NEXT invention away (novelty compounds — duplicate synthesis rejected);
+  the safety policy ALLOWS METHOD_INVENT; with a ToolsmithLoop wired, a
+  confirmed technique's probe is registered as a callable tool.
+
+### Test baseline (after Phase B)
+- 432 passed, 48 honestly skipped, 0 failures.
+
 ## Current test baseline
-- 423 passed, 48 honestly skipped (Docker-daemon / Daytona-live gated via
+- 432 passed, 48 honestly skipped (Docker-daemon / Daytona-live gated via
   `sonic-core/tests/conftest.py`), 0 failures. (Was 407 passed + 1 collection
-  error + 1 suite-order isolation failure before the audit + Phase A work.)
+  error + 1 suite-order isolation failure before the audit + Phase A/B work.)
 - The previously-pre-existing 6 model-only/fail-closed contract failures were
   resolved by PR#3's simulated-provider + execution-evidence fixes (they asserted
   the OLD fake-success behavior; now correctly supplied).

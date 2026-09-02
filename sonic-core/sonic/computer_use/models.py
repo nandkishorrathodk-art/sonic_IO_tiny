@@ -65,6 +65,10 @@ class ComputerActionType(StrEnum):
     # previously-authored tool in-sandbox. Neither claims success by decree.
     TOOL_AUTHOR = "TOOL_AUTHOR"
     TOOL_RUN = "TOOL_RUN"
+    # Method-invention (Phase B, AIOSR): the being synthesizes a NOVEL offensive
+    # technique (a new method, not just a new tool) from observation + failure +
+    # the known-technique ledger. Confirmed only on real in-sandbox reproduction.
+    METHOD_INVENT = "METHOD_INVENT"
 
 
 # ============================================

@@ -77,6 +77,9 @@ class ActionPolicy:
         # workspace toolsmith dir (path-confined like FILE_WRITE); running
         # executes it in-sandbox (command-gated like TERMINAL_EXEC).
         "TOOL_AUTHOR", "TOOL_RUN",
+        # Method-invention (Phase B, AIOSR): synthesizes a novel technique and
+        # runs its probe in-sandbox (same structural confinement as TOOL_RUN).
+        "METHOD_INVENT",
     })
 
     def __init__(

@@ -82,6 +82,15 @@ async def _maybe_start_being_life_loop(settings):
             craft=BeingCraft(being_id=being.being_id),
             llm=router, registry=registry,
         )
+        # Method-invention loop (Phase B, AIOSR): the being synthesizes NOVEL
+        # offensive techniques (new methods, not just tools) from observation +
+        # failure + the known-technique ledger (VectorMemory). Confirmed only
+        # on real in-sandbox reproduction; confirmed techniques enter the ledger
+        # so novelty compounds across cycles.
+        from sonic.being.method_lab import MethodLab
+        method_lab = MethodLab(
+            llm=router, vector_memory=get_vector_memory(), toolsmith=toolsmith,
+        )
         agent = ComputerUseAgent(
             computer_provider=provider, llm_router=router,
             safety=safety, self_host=True, tenant_id=tenant_id, agent_id=being.being_id,
@@ -93,6 +102,8 @@ async def _maybe_start_being_life_loop(settings):
             browser=browser,
             # Wire the toolsmith so the being can author + run its own tools.
             toolsmith=toolsmith,
+            # Wire the method lab so the being can invent new techniques.
+            method_lab=method_lab,
         )
         curiosity = CuriosityLoop(llm_router=router, vector_memory=get_vector_memory(), max_cycles=1)
         tick_interval = float(os.environ.get("SONIC_BEING_TICK_INTERVAL", "60"))

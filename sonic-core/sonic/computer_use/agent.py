@@ -74,6 +74,7 @@ class ComputerUseAgent:
         safety: Optional[Any] = None,
         self_host: bool = False,
         toolsmith: Optional[Any] = None,
+        method_lab: Optional[Any] = None,
         tenant_id: str = "default",
         engagement_id: str = "default",
         agent_id: str = "computer-use-agent",
@@ -95,6 +96,10 @@ class ComputerUseAgent:
         # for observation gaps. The authored tool is registered into the
         # security_tools map ONLY after a real in-sandbox run succeeds.
         self.toolsmith = toolsmith
+        # Optional MethodLab (Phase B, AIOSR): the being synthesizes NOVEL
+        # offensive techniques (new methods, not just tools) from observation +
+        # failure + the known-technique ledger. Confirmed only on reproduction.
+        self.method_lab = method_lab
         # Optional fail-closed safety envelope (PLAN Phase 6). Required in
         # self-host mode: the agent may NOT act autonomously without a policy.
         self.safety = safety
@@ -311,7 +316,7 @@ class ComputerUseAgent:
             "Respond in EXACTLY this format (no markdown):\n"
             "ACTION: <FILE_READ|FILE_WRITE|TERMINAL_EXEC|GIT_COMMIT|APP_LAUNCH|"
             "BROWSER_NAVIGATE|BROWSER_CLICK|BROWSER_TYPE|BROWSER_SCREENSHOT|"
-            "SECURITY_TOOL|TOOL_AUTHOR|TOOL_RUN|GOAL_COMPLETE>\n"
+            "SECURITY_TOOL|TOOL_AUTHOR|TOOL_RUN|METHOD_INVENT|GOAL_COMPLETE>\n"
             "TARGET: <resource path, name, url, css selector, or scan target>\n"
             'PAYLOAD: <json dict, e.g. {"path": "...", "content": "..."}, '
             '{"command": "..."}, {"url": "..."}, {"selector": "...", "text": "..."}, '
@@ -388,6 +393,7 @@ class ComputerUseAgent:
             "SECURITY_TOOL": ComputerActionType.SECURITY_TOOL,
             "TOOL_AUTHOR": ComputerActionType.TOOL_AUTHOR,
             "TOOL_RUN": ComputerActionType.TOOL_RUN,
+            "METHOD_INVENT": ComputerActionType.METHOD_INVENT,
             # GOAL_COMPLETE is handled by the caller as a no-op terminator.
             "GOAL_COMPLETE": ComputerActionType.TERMINAL_EXEC,
         }
@@ -628,6 +634,41 @@ class ComputerUseAgent:
                             actual_obs_str = (
                                 f"Tool '{confirmed.name}' NOT confirmed "
                                 f"(exit={confirmed.run_exit_code}); not registered"
+                            )
+                            recovery_needed = True
+
+            elif action_type == ComputerActionType.METHOD_INVENT:
+                # Method-invention (Phase B, AIOSR): synthesize a NOVEL
+                # offensive technique (a new METHOD, not just a tool) from the
+                # observation + a prior failure + the known-technique ledger.
+                # Confirmed ONLY on real in-sandbox reproduction — never by decree.
+                if self.method_lab is None:
+                    actual_obs_str = "MethodLab not configured (no technique invention)"
+                    recovery_needed = True
+                else:
+                    observation = payload.get("observation", "") or target_resource
+                    failure = payload.get("failure", "")
+                    technique = await self.method_lab.invent(
+                        observation=observation, failure=failure,
+                    )
+                    if technique is None:
+                        actual_obs_str = "MethodLab: no novel technique warranted (honest skip)"
+                    else:
+                        # Run the probe in-sandbox; confirm only on a real finding.
+                        target = payload.get("target", "") or technique.target_hint
+                        confirmed = await self.method_lab.confirm(
+                            technique, self.computer, workspace_id, target=target,
+                        )
+                        if confirmed.confirmed:
+                            actual_obs_str = (
+                                f"Technique '{confirmed.name}' ({confirmed.family}) "
+                                f"CONFIRMED — {len(confirmed.findings)} finding(s); "
+                                f"novelty={confirmed.novelty_vs_ledger:.2f} vs ledger"
+                            )
+                        else:
+                            actual_obs_str = (
+                                f"Technique '{confirmed.name}' NOT confirmed "
+                                f"(exit={confirmed.run_exit_code}); not added to ledger"
                             )
                             recovery_needed = True
 

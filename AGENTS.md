@@ -1059,3 +1059,74 @@ grows its toolkit AND grows wiser from its own history.
 - end-to-end: mission 1 records a lesson, mission 2 sees it in reasoning context
 
 ### Test status: 463 passed, 37 skipped, 0 failures; ruff F-category clean.
+
+---
+
+## Round 6 — Dual-Process (Fast/Deep) Hierarchical Sub-agent Controller
+Makes the agent reason like a human researcher: **fast on familiar ground,
+deep on novel/uncertain ground, and silent until it genuinely needs a human.**
+
+### `sonic/orchestration/dual_process.py` (NEW, ~280 lines)
+Four pillars, all building on existing pieces — never duplicating them:
+
+1. **Dual-Process (Fast/Deep) Controller** — `DualProcessController.decide()`
+   picks FAST (heuristic, high-throughput, parallel children) or DEEP
+   (thorough, careful, limited parallelism) per hypothesis node. The decision
+   is a PURE FUNCTION of observable signals: `ConfidenceBand`, unresolved
+   `Unknown`s (importance), novelty (lessons-ledger hit), and branch failure
+   count. Deterministic + testable, not a hidden LLM whim.
+
+2. **Dual-Process switching** — HIGH/VERY_HIGH confidence + few low-importance
+   unknowns + a known pattern → FAST. LOW/MODERATE confidence OR a high-
+   importance unknown OR a novel pattern → DEEP. Stuck in DEEP + high
+   uncertainty → ESCALATE.
+
+3. **Hierarchical Hypothesis + Sub-agents** — `HierarchicalHypothesisTree`
+   over `CognitiveHypothesis.parent_id` / `children_ids` (added this round).
+   A VERIFIED parent **expands** into more-specific children; a DISPROVED
+   parent's whole subtree is **pruned** (no wasted sub-agents on dead branches).
+   Each node dispatches the EXISTING swarm agents as sub-agents scoped to that
+   node's test plan — no new agent classes.
+
+4. **Parallel sub-agent execution** — children run concurrently via
+   `asyncio.gather`, capped by `max_parallel` — exactly like `SwarmRunner`.
+
+5. **Smart Human-in-the-loop escalation (sirf high-uncertainty pe)** —
+   escalate ONLY when ALL hold: already in DEEP + high-importance unresolved
+   Unknown (importance ≥ 0.70) + subtree stuck (≥3 branch failures) + novel
+   (no lessons-ledger resolution). Does NOT escalate on high-confidence findings,
+   budget exhaustion, or diminishing returns. Escalation surfaces the actual
+   `Unknown` question for a human; the node stays PROPOSED (never auto-confirms
+   or auto-disproves — that would be fabrication).
+
+### Honesty invariants
+- FAST mode never VERIFIES — only DEEP confirms/disproves (like confirm-on-run).
+- Sub-agents invoke real agent code via the injected `agent_runner` — no mocks.
+- Pruning follows real DISPROVED lifecycle status, never heuristic guesses.
+- A sub-agent exception → node is DISPROVED (fail-closed), never left ambiguous.
+- Escalation never fabricates a question; it surfaces the real `Unknown`.
+
+### Security invariant
+Sub-agent dispatch carries a scoped hypothesis context (goal + test plan),
+never the full `CognitiveState`. Children inherit the parent's
+engagement/tenant id so each agent sees only what its branch needs.
+
+### `sonic/agents/cognitive_state.py` (modified)
+`CognitiveHypothesis` gained three fields for the hierarchy: `parent_id`,
+`children_ids`, `process_mode`. Backward-compatible (all default empty) — no
+existing test broke.
+
+### Tests (tests/test_module_robustness.py, +18 tests)
+`TestDualProcessController` (9): high-conf+known→FAST; low/moderate→DEEP;
+high-importance-unknown→DEEP even at high conf; novel→DEEP; escalation ONLY
+on stuck+high-uncertainty+novel; no escalation when pattern known; no
+escalation on low-importance unknown; no escalation when not yet stuck.
+
+`TestHierarchicalHypothesisTree` (9): expand attaches children w/ context
+inheritance; subtree BFS; prune removes disproved subtree; prune ignores
+non-disproved (no heuristic guessing); DEEP confirms→fans-out children;
+FAST runs node+children in parallel; max_parallel cap enforced; sub-agent
+exception→DISPROVED (fail-closed); escalation surfaces Unknown + does NOT
+run a sub-agent + keeps node PROPOSED.
+
+### Test status: 481 passed, 37 skipped, 0 failures; ruff clean.

@@ -149,6 +149,15 @@ class CognitiveHypothesis(BaseModel):
     priority: int = 5               # 1=critical, 10=low
     provenance: Provenance = Field(default_factory=Provenance)
     evidence_ids: list[str] = Field(default_factory=list)
+    # Hierarchical hypothesis tree (Round 6): a hypothesis can have a parent
+    # and children so the dual-process controller can expand a confirmed parent
+    # into more-specific child hypotheses and prune a disproved parent's whole
+    # subtree — instead of a flat list where dead branches waste sub-agents.
+    parent_id: str = ""
+    children_ids: list[str] = Field(default_factory=list)
+    # Which process mode is currently testing this node (fast/deep). Empty when
+    # not yet dispatched. Lets the controller resume the right mode on retry.
+    process_mode: str = ""
     engagement_id: str = ""
     tenant_id: str = ""
     created_at: str = Field(default_factory=_now)

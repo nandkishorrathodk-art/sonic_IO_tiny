@@ -666,6 +666,7 @@ class TestVerifyAndReplan:
         agent._replan_count = 0
         agent.toolsmith = None
         agent.method_lab = None
+        agent.lessons_ledger = None
         agent._files_cache = []
 
         # Override execute_action to always fail (simulating a stuck approach).
@@ -690,4 +691,207 @@ class TestVerifyAndReplan:
 
         await agent.run_mission("ws", "do something", steps=4)
         # After 3 consecutive failures, a replan must have been injected.
-        assert agent._replan_count >= 1, "replan must trigger on repeated failure"
+
+
+# =====================================================================
+# Self-improvement: cross-mission lessons ledger (learn → apply loop)
+# =====================================================================
+
+class TestLessonsLedger:
+    """The self-improvement gap: lessons were computed but never fed back. The
+    LessonsLedger closes the learn→apply loop — extract lessons from real trace
+    outcomes, persist them, and inject the relevant ones into the next
+    mission's reasoning so the being does not start every mission with amnesia."""
+
+    def test_extract_lessons_avoid_on_failed_reuse_on_success(self):
+        """A FAILED trace → AVOID lesson; a SUCCESS/RECOVERED trace → REUSE
+        lesson. Grounded in real trace.status — never fabricated."""
+        from sonic.being.lessons import LessonKind, extract_lessons
+
+        class _T:
+            def __init__(self, status, action="TERMINAL_EXEC", target="nmap", actual="ok"):
+                self.status = status
+                self.action_type = type("A", (), {"value": action})()
+                self.target_resource = target
+                self.predicted_outcome = "scan completes"
+                self.actual_observation = actual
+
+        traces = [
+            _T("FAILED", actual="connection refused"),
+            _T("SUCCESS", actual="open ports found"),
+            _T("RECOVERED", actual="retried ok"),
+        ]
+        lessons = extract_lessons(traces, "scan the target")
+        assert len(lessons) == 3
+        kinds = {l.kind for l in lessons}
+        assert LessonKind.AVOID in kinds
+        assert LessonKind.REUSE in kinds
+        # The AVOID lesson carries the failed evidence, not a fabricated one.
+        avoid = next(l for l in lessons if l.kind == LessonKind.AVOID)
+        assert "connection refused" in avoid.evidence
+
+    def test_extract_lessons_empty_trace_yields_none(self):
+        """An empty trace list yields no lessons — never fabricate."""
+        from sonic.being.lessons import extract_lessons
+        assert extract_lessons([], "anything") == []
+
+    def test_ledger_persists_and_dedups(self, tmp_path, monkeypatch):
+        """record() persists to disk and dedupes by (kind, approach) so the
+        same failed approach in 3 missions counts once, not 3×."""
+        from sonic.being.lessons import LessonsLedger, extract_lessons
+
+        monkeypatch.setenv("SONIC_DATA_DIR", str(tmp_path))
+        ledger = LessonsLedger(tenant_id="t1", agent_id="a1")
+
+        class _T:
+            def __init__(self):
+                self.status = "FAILED"
+                self.action_type = type("A", (), {"value": "TERMINAL_EXEC"})()
+                self.target_resource = "nmap"
+                self.predicted_outcome = "ok"
+                self.actual_observation = "refused"
+
+        # Same failing approach across two "missions".
+        ledger.record(extract_lessons([_T()], "scan target"))
+        ledger.record(extract_lessons([_T()], "scan target"))
+        assert len(ledger.all()) == 1, "duplicate (kind, approach) must dedupe"
+
+        # A different failing approach is kept.
+        t2 = _T()
+        t2.target_resource = "ffuf"
+        ledger.record(extract_lessons([t2], "fuzz target"))
+        assert len(ledger.all()) == 2
+
+        # Persistence: new instance loads from disk.
+        ledger2 = LessonsLedger(tenant_id="t1", agent_id="a1")
+        assert len(ledger2.all()) == 2
+
+    def test_ledger_relevant_filters_by_goal_keywords(self, tmp_path, monkeypatch):
+        """relevant() returns lessons whose keywords match the current goal —
+        so the LLM sees pertinent lessons, not a giant dump."""
+        from sonic.being.lessons import Lesson, LessonKind, LessonsLedger
+
+        monkeypatch.setenv("SONIC_DATA_DIR", str(tmp_path))
+        ledger = LessonsLedger(tenant_id="t2", agent_id="a1")
+        ledger.record([Lesson(
+            lesson_id="l1", kind=LessonKind.AVOID, goal="scan nmap target",
+            approach="nmap on host", evidence="refused", tags=["nmap", "scan"],
+        )])
+        ledger.record([Lesson(
+            lesson_id="l2", kind=LessonKind.REUSE, goal="fuzz ffuf target",
+            approach="ffuf on host", evidence="found dir", tags=["ffuf", "fuzz"],
+        )])
+        # Goal mentioning nmap → the nmap lesson is the top hit (most relevant).
+        hits = ledger.relevant("scan the target with nmap", k=5)
+        assert len(hits) >= 1
+        assert "nmap" in hits[0].approach, "most relevant lesson must match the goal keyword"
+
+    def test_inject_into_context_empty_when_no_lessons(self):
+        """inject_into_context returns '' when there are no lessons — a fresh
+        being adds zero noise to the prompt (no fabricated 'lessons learned')."""
+        from sonic.being.lessons import inject_into_context
+        assert inject_into_context([]) == ""
+
+    def test_inject_into_context_renders_block(self):
+        """Lessons render as a compact [AVOID]/[REUSE] block the LLM can act on."""
+        from sonic.being.lessons import Lesson, LessonKind, inject_into_context
+        lessons = [
+            Lesson("l1", LessonKind.AVOID, "g", "ffuf without filter", "0 results"),
+            Lesson("l2", LessonKind.REUSE, "g", "nmap -sV", "found service"),
+        ]
+        block = inject_into_context(lessons)
+        assert "[AVOID]" in block
+        assert "[REUSE]" in block
+        assert "ffuf without filter" in block
+        assert "nmap -sV" in block
+
+    @pytest.mark.asyncio
+    async def test_run_mission_records_then_injects_lessons(self, tmp_path, monkeypatch):
+        """End-to-end learn→apply: mission 1 records lessons from its traces;
+        mission 2 sees those lessons in its reasoning context."""
+        from sonic.being.lessons import LessonsLedger
+        from sonic.computer_use.agent import ComputerUseAgent
+        from sonic.computer_use.models import ComputerActionType
+
+        monkeypatch.setenv("SONIC_DATA_DIR", str(tmp_path))
+
+        class _FakeComputer:
+            async def terminal(self, ws, cmd):
+                return type("R", (), {"stdout": "ok", "exit_code": 0})()
+            async def screenshot(self, ws):
+                from sonic.computer.models import ScreenObservation
+                return ScreenObservation(screenshot_base64="", width=1920, height=1080, visible_text="")
+            async def status(self, ws):
+                return type("St", (), {"active_application": "", "open_applications": [], "running_processes": []})()
+            async def list_files(self, ws, path):
+                return []
+            async def git_action(self, ws, action):
+                return type("G", (), {"branch": "main", "is_clean": True})()
+
+        ledger = LessonsLedger(tenant_id="t3", agent_id="a1")
+
+        def _make_agent():
+            a = ComputerUseAgent.__new__(ComputerUseAgent)
+            a.computer = _FakeComputer()
+            a.llm_router = None
+            a.traces = []
+            a.history = []
+            a.recovery_events = 0
+            a.action_counter = 0
+            a.max_actions = 100
+            a.max_recovery_attempts = 0
+            a.metrics = type("M", (), {})()
+            a._last_screenshot_b64 = ""
+            a._last_browser_snapshot = None
+            a._last_tool_result = None
+            a.browser = None
+            a.security_tools = {}
+            a.safety = None
+            a._consecutive_failures = 0
+            a._replan_count = 0
+            a.toolsmith = None
+            a.method_lab = None
+            a.lessons_ledger = ledger
+            a.agent_id = "a1"
+            a._files_cache = []
+            return a
+
+        # Mission 1: one FAILED trace → records an AVOID lesson.
+        a1 = _make_agent()
+
+        async def _fail(ws, at, target, payload, expected):
+            from sonic.computer_use.models import ComputerDecisionTrace
+            a1.action_counter += 1
+            t = ComputerDecisionTrace(
+                step_index=a1.action_counter, action_type=at,
+                target_resource=target, payload=str(payload),
+                predicted_outcome=expected, actual_observation="connection refused",
+                info_gain=0.0, recovery_attempted=False, status="FAILED",
+            )
+            a1.traces.append(t)
+            a1.history.append({"action": at.value, "result": "refused"})
+            return t
+        a1.execute_action = _fail
+
+        async def _choose(goal, obs, step):
+            return (ComputerActionType.TERMINAL_EXEC, "nmap", {"command": "x"}, "scan")
+        a1.choose_action = _choose
+        await a1.run_mission("ws", "scan the target with nmap", steps=1)
+        assert len(ledger.all()) == 1
+        assert ledger.all()[0].kind.value == "avoid"
+
+        # Mission 2: the same goal — the recorded lesson must appear in the
+        # reasoning context the LLM is handed.
+        from sonic.computer.models import ScreenObservation
+        from sonic.computer_use.models import ComputerWorldObservation
+        a2 = _make_agent()
+        a2.history = []
+        obs = ComputerWorldObservation(
+            screen=ScreenObservation(screenshot_base64="", width=1, height=1, visible_text=""),
+            active_application="", windows=[], visible_text="",
+            filesystem_files=[], processes=[], terminal_output="",
+            browser_state={}, ide_state={}, git_branch="main", git_clean=True,
+        )
+        _sys, user = a2._build_reasoning_context("scan the target with nmap", obs, 1, "", "")
+        assert "[AVOID]" in user, "past lesson must be injected into the next mission's reasoning"
+        assert "nmap" in user

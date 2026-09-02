@@ -982,3 +982,80 @@ for step in 1..N:
 - run_mission replans after 3 consecutive failures (stuck detection wired)
 
 ### Test status: 456 passed, 37 skipped, 0 failures; ruff F-category clean.
+
+## Improvement Round 5 — Self-Improvement: Closing the Learn→Apply Loop (2026-09-02)
+
+### Goal
+Mapped SONIC's self-improvement stack to find what actually self-improves vs
+what just has the infrastructure. SONIC has 6 self-improvement building blocks:
+Toolsmith (author+confirm tools), MethodLab (invent+confirm techniques),
+CuriosityLoop (novelty-driven goals), Canary+SelfEval (A/B promote/rollback),
+BeingMind+Craft (durable facts/notes), and epistemic PredictionComparison
+(lessons from prediction-vs-actual). All EXIST and are honest (confirm-on-run).
+
+### The real gap: lessons were OPEN-LOOP
+The single biggest self-improvement gap: **lessons were computed but never fed
+back into the next mission's reasoning.**
+- `PredictionComparison.evaluate()` derived a lesson after each task, stored it
+  in `CognitiveState.prediction_comparisons` — but the agent's
+  `_build_reasoning_context()` never showed these to the LLM.
+- `ResearchMemoryStore` (cross-mission playbooks with success rates) existed
+  but was never queried by the agent.
+- Net: the being forgot what it learned across missions. It was
+  "self-authoring" (builds new tools) but NOT "self-learning" (reuses past
+  lessons). Same gap-class as Round 4's verify: infrastructure existed, the
+  loop wasn't closed.
+
+### Fix: LessonsLedger (learn → apply)
+New module `sonic/being/lessons.py`:
+
+1. **`extract_lessons(traces, goal)`** — at mission end, distill the trace into
+   concrete lessons grounded in REAL trace.status:
+   - `FAILED` → `AVOID` lesson ("nmap on this target → connection refused")
+   - `SUCCESS`/`RECOVERED` → `REUSE` lesson ("ffuf -mc 200,301 found admin panel")
+   - Empty trace → no lessons (fail-closed: never fabricate)
+
+2. **`LessonsLedger`** — durable host-FS store (mirrors BeingCraft convention,
+   restart-proof under `sonic_data/lessons/`). `record()` dedupes by
+   (kind, approach) so the same failed approach in 3 missions counts once.
+   `relevant(goal, k)` returns top-K lessons matching the current goal by
+   keyword overlap (no embeddings — flat dependency surface).
+
+3. **Injection into reasoning** — `_build_reasoning_context()` now embeds the
+   top-K relevant past lessons as a `Past lessons` block:
+   ```
+   Past lessons — approaches that WORKED (reuse them):
+     [REUSE] nmap -sV → found service
+   Past lessons — approaches that FAILED (avoid repeating):
+     [AVOID] ffuf without -mc filter → 0 results on noisy targets
+   ```
+   The system prompt instructs the LLM: "When 'Past lessons' appear, AVOID
+   [AVOID] approaches and prefer [REUSE] ones — apply your cross-mission
+   learning."
+
+4. **Wired into `run_mission`** — at mission end, `extract_lessons()` →
+   `ledger.record()`. The NEXT mission's reasoning sees them. The being now
+   compounds knowledge across missions instead of starting with amnesia.
+
+### Self-improvement map after Round 5
+```
+Toolsmith    : builds new TOOLS        → confirm-on-run → registered  ✅ honest
+MethodLab    : builds new TECHNIQUES   → confirm-on-run → ledger'd    ✅ honest
+LessonsLedger: learns from OUTCOMES    → extract→record→inject         ✅ NEW (closed loop)
+Canary/Eval  : A/B tests CHANGES       → zero-regression promote/rollback ✅
+CuriosityLoop: proposes new GOALS      → novelty-biased                ✅
+```
+Toolsmith/MethodLab = "build new capabilities". LessonsLedger = "reuse past
+experience". Together they cover both halves of self-improvement: the being
+grows its toolkit AND grows wiser from its own history.
+
+### Tests (tests/test_module_robustness.py::TestLessonsLedger, 7 tests)
+- extract_lessons: AVOID on FAILED, REUSE on SUCCESS/RECOVERED, evidence grounded
+- empty trace yields no lessons (never fabricate)
+- ledger persists to disk + dedupes (kind, approach)
+- relevant() keyword-overlap ranking (top hit matches goal keyword)
+- inject_into_context empty when no lessons (zero noise for fresh being)
+- inject_into_context renders [AVOID]/[REUSE] block
+- end-to-end: mission 1 records a lesson, mission 2 sees it in reasoning context
+
+### Test status: 463 passed, 37 skipped, 0 failures; ruff F-category clean.

@@ -189,6 +189,8 @@ class SonicWorker:
         from sonic.agents.dynamic_execution import DynamicExecutionAgent
         from sonic.agents.hypothesis import HypothesisGenerator
         from sonic.agents.verifier import VerifierAgent
+        from sonic.agents.codefix import CodeFixAgent
+        from sonic.agents.exploit_validator import ExploitValidator
 
         agent_classes = {
             "recon": ReconAgent,
@@ -196,10 +198,19 @@ class SonicWorker:
             "dynamic": DynamicExecutionAgent,
             "hypothesis": HypothesisGenerator,
             "verifier": VerifierAgent,
+            "codefix": CodeFixAgent,
+            "exploit_validator": ExploitValidator,
         }
 
         agent_cls = agent_classes.get(agent_type)
         if not agent_cls:
+            # "browser" agent_type is handled by a dedicated BrowserAgent job
+            # path, not the generic BaseAgent dispatcher.
+            if agent_type == "browser":
+                raise ValueError(
+                    "'browser' agent_type must be dispatched via a BROWSER job, "
+                    "not an AGENT_STEP job"
+                )
             raise ValueError(f"Unknown agent_type '{agent_type}' for AGENT_STEP")
 
         # Create agent with shared resources

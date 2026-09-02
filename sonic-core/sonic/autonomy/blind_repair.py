@@ -106,7 +106,7 @@ class BlindRepositorySolver:
             failing_test_found=True,
             remediation_applied=True,
             final_test_exit_code=test_exec.exit_code,
-            git_commit_hash=commit_res.commit_hash if hasattr(commit_res, "commit_hash") else "7b8e1f0a2c",
+            git_commit_hash=commit_res.commit_hash if (hasattr(commit_res, "commit_hash") and commit_res.commit_hash) else "",
             actions_taken=len(traces),
             success=test_exec.exit_code == 0,
         )

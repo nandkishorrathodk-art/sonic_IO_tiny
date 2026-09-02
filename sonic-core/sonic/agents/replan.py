@@ -352,7 +352,7 @@ class ReplanEngine:
             for u in state.get_unresolved_unknowns()[:10]
         ]
 
-        return f"""You are the Replan Engine of SONIC-REDA.
+        return f"""You are the Replan Engine of SONIC — an Autonomous Self-Evolving Penetration Architect (A-SEA).
 
 A {trigger.value} event has occurred. Evaluate whether the current plan should be modified.
 

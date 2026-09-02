@@ -60,6 +60,15 @@ class ComputerActionType(StrEnum):
     BROWSER_SCREENSHOT = "BROWSER_SCREENSHOT"
     # Security-tool execution: structured, in-sandbox, fail-closed scanning.
     SECURITY_TOOL = "SECURITY_TOOL"
+    # Toolsmith: the being authors a NEW tool for an observation gap (Phase A,
+    # AIOSR). TOOL_AUTHOR proposes+persists the source; TOOL_RUN executes a
+    # previously-authored tool in-sandbox. Neither claims success by decree.
+    TOOL_AUTHOR = "TOOL_AUTHOR"
+    TOOL_RUN = "TOOL_RUN"
+    # Method-invention (Phase B, AIOSR): the being synthesizes a NOVEL offensive
+    # technique (a new method, not just a new tool) from observation + failure +
+    # the known-technique ledger. Confirmed only on real in-sandbox reproduction.
+    METHOD_INVENT = "METHOD_INVENT"
 
 
 # ============================================
@@ -118,5 +127,5 @@ class ComputerUseMetrics(BaseModel):
     recovery_events: int = 0
     unnecessary_actions: int = 0
     time_to_completion_seconds: float = 0.0
-    verification_score: float = 1.00
-    human_comparison_score: float = 1.00
+    verification_score: float = 0.0
+    human_comparison_score: float = 0.0

@@ -1,9 +1,23 @@
 # AGENTS.md — SONIC-REDA repository memory
 
 ## Project overview
-SONIC-REDA is an autonomous AI bug-hunting / red-team system: FastAPI backend
-(`sonic-core/`), Next.js dashboard (`sonic-dashboard/`), Docker sandbox
-execution, Neo4j graph memory, multi-tenant RBAC.
+SONIC is an **Autonomous Self-Evolving Penetration Architect (A-SEA)**: an
+AI-driven self-developing offensive-security being that operates its own
+sandboxed computer environment, autonomously performs authorized security
+assessments, discovers and tests new attack hypotheses, analyzes results,
+learns from failures and successes, authors its OWN tools (Toolsmith) and
+synthesizes NOVEL attack methods (Method Lab), and improves its own testing
+strategies, tools, and workflows over time — all within a sealed, tamper-evident
+safety envelope, with every "confirmed" / "working" claim backed by real
+in-sandbox reproduction (no success-by-decree).
+
+Formerly "SONIC-REDA (autonomous AI red-team system)". The identity was
+renamed to A-SEA to match the actual capability surface (researcher +
+architect, not just operator). All LLM prompts now use the A-SEA identity.
+
+Architecture: FastAPI backend (`sonic-core/`), Next.js dashboard
+(`sonic-dashboard/`), Docker sandbox execution, Neo4j graph memory,
+multi-tenant RBAC.
 
 ## Layout
 - `sonic-core/` — Python backend (uv workspace, Python 3.12+). `pip install -e sonic-core[dev]`.
@@ -390,9 +404,183 @@ attack surface. Now:
 ### Test baseline (after Phase 7.8)
 - 397 passed, 48 honestly skipped, 0 failures.
 
+## Phase A — Toolsmith loop (AIOSR: being authors its own tools)
+Closed the single highest-leverage gap from the AIOSR audit: SONIC was an
+"Operator" (orchestrating known nmap/nuclei/ffuf primitives) but not a
+"Researcher + Toolsmith" (building its own tools). The being can now author a
+NEW small tool (scanner/fuzzer/parser/probe) for an observation gap, persist
+it, run it in-sandbox, and register it as a first-class callable tool — but
+ONLY after a real successful run. No "tool authored and working" claim by decree.
+
+### `sonic/being/toolsmith.py` — author + confirm + register
+- `ToolsmithLoop.author_tool_for_gap(observation, failed_attempts)` asks the LLM
+  to propose ONE small Python tool filling a gap NO existing registered tool
+  covers. The proposal is explicitly biased away from the existing tool set
+  (nmap/nuclei/ffuf/http_client + already-confirmed authored tools) and from the
+  reserved names — so the being does not re-author nmap. A `DECLINE` response
+  or a duplicate/reserved/invalid name → returns `None` (honest skip: never
+  fabricates a tool). A cheap pre-sandbox safety lint rejects host-wiping
+  patterns (`rm -rf /`, `mkfs`, `dd of=/dev/`, `shutdown`) before the sandbox.
+- The authored source is persisted to `BeingCraft` immediately (durable across
+  restart; kind=`tool`, human-readable markdown on disk).
+- `confirm_and_register(tool, provider, workspace_id)` writes the source to
+  `/home/sonic/workspace/toolsmith/<name>.py` and runs `python <path>` in-sandbox
+  via the provider's fail-closed `execute` (exit 126 => sandbox blocked it).
+  **Honesty guard:** `reproduced=True` and registration into the
+  `SecurityToolRegistry` happen ONLY on exit 0 + non-empty stdout. A blocked
+  (exit 126), failed, or empty run leaves `reproduced=False` and the tool is NOT
+  registered — the same anti-theatrical discipline as `production_gate`.
+- `AuthoredToolAdapter`: wraps a confirmed authored tool as a real `SecurityTool`
+  (name/version/build_command/parse_output/execute), bound to the provider that
+  confirmed it. It inherits the base `SecurityTool.execute` fail-closed,
+  in-sandbox handling (zero host execution, exit 126 => BLOCKED). `parse_output`
+  decodes JSON lines (falls back to `{"finding": <line>}`), so the being's own
+  tools emit structured findings through the same path as nmap.
+
+### Action surface + safety wiring
+- `TOOL_AUTHOR` + `TOOL_RUN` added to `ComputerActionType` + the LLM action
+  space/parser/prompt. `execute_action()` dispatches:
+  - `TOOL_AUTHOR` → `author_tool_for_gap()` (persists, does NOT register).
+  - `TOOL_RUN` → `confirm_and_register()`; on `reproduced=True` the adapter is
+    added to `self.security_tools` so the being can call its own tool via the
+    existing `SECURITY_TOOL` path. The `available_tools` observation line
+    already reflects the live `security_tools` keys, so authored tools surface
+    to the LLM automatically once confirmed.
+- `ActionPolicy.DEFAULT_ALLOWED_TYPES` extended with `TOOL_AUTHOR`, `TOOL_RUN`.
+  Path confinement: `TOOL_AUTHOR` writes under a hardcoded workspace-subdir
+  (structural confinement — no payload path to forge); `TOOL_RUN` runs a
+  hardcoded `python <workspace-toolsmith-path>` (structural — no user command to
+  gate). The sealed `SealedActionPolicy` inherits both (frozen in the seal).
+
+### Production wiring (`api/main.py` being life loop)
+- The being life loop now constructs a `ToolsmithLoop(craft=BeingCraft(being_id),
+  llm=router, registry=get_default_registry(provider))` and passes
+  `toolsmith=toolsmith` to `ComputerUseAgent`. So the always-on self-directed
+  being can author + run its own tools during idle curiosity — every action
+  still passes the sealed `SealedActionPolicy` gate.
+
+### Done-gate (`test_phase_a_toolsmith.py`, 10 tests)
+- authors a NOVEL tool name not in the registry (unconfirmed pre-run, not
+  registered); `DECLINE` / no-novel → `None`; duplicate (nmap) → rejected;
+  blocked run (exit 126) → NOT confirmed/registered; empty output → NOT
+  registered; successful run → `reproduced=True` + registered + callable by
+  name; authored source persists to BeingCraft (re-read off host disk); the
+  safety policy ALLOWS `TOOL_AUTHOR`/`TOOL_RUN` (not denied as unknown); a
+  destructive-source proposal (`os.system('rm -rf /')`) is rejected by the
+  safety lint BEFORE the sandbox; a confirmed tool runs end-to-end via a real
+  `ToolRequest` → `execute` and surfaces real parsed findings (not a decree).
+
+### Test baseline (after Phase A)
+- 423 passed, 48 honestly skipped, 0 failures.
+
+## Phase B — Method-invention loop (AIOSR: being synthesizes novel techniques)
+Closed the ONE gap that kept SONIC an "Operator" rather than a "Researcher":
+`CuriosityLoop` proposes new GOALS but uses KNOWN techniques (nmap/nuclei
+signatures). Phase B adds the "new new methods" loop from the AIOSR definition
+— the being synthesizes a genuinely NOVEL offensive *technique* (a new method:
+auth-bypass logic, parser-confusion chain, fuzzer mutation strategy,
+header-injection primitive, race-condition probe, info-leak, logic-flow) from an
+observation + a prior failure + the known-technique ledger, and confirms it
+ONLY on real in-sandbox reproduction.
+
+### `sonic/being/method_lab.py` — synthesize + confirm + persist
+- `MethodLab.invent(observation, failure)` asks the LLM to synthesize ONE novel
+  technique explicitly biased AWAY from the known-technique ledger (semantic
+  search of `VectorMemory` scoped to `kind=technique` records). A `DECLINE`
+  response, or a hypothesis that duplicates a known technique, → returns `None`
+  (honest skip: never re-invents what it already knows).
+- Each technique carries a `family` (auth-bypass/parser-confusion/fuzz-mutation/
+  header-injection/race-condition/info-leak/logic-flaw/other), a `hypothesis`
+  (the novel idea + why it differs), and a `probe_source` (small Python that
+  takes a target as argv[1] and prints JSON findings when the technique works).
+- `novelty_vs_ledger` is computed via `NoveltyEngine` so "novel" means genuinely
+  outside the working-method ledger (0=identical, 1=fully novel). Empty ledger
+  => 1.0.
+- `confirm(technique, provider, workspace_id, target)` runs the probe in-sandbox
+  (fail-closed exit 126 = blocked). **Honesty guard:** `confirmed=True` + ledger
+  persistence happen ONLY on exit 0 + non-empty finding output. A blocked/empty
+  run leaves the technique UNCONFIRMED and it is NOT added to the ledger —
+  exactly the same anti-theatrical discipline as `production_gate`/`toolsmith`.
+- A confirmed technique is parsed into structured `findings` (JSON lines, falls
+  back to plain lines) and added to the VectorMemory ledger under doc_id prefix
+  `technique-` with `kind=technique, confirmed=True`. So the ledger is a record
+  of WORKING methods, and future `invent()` calls see these and steer away —
+  novelty compounds across cycles (the being does not re-invent known methods).
+
+### Phase A substrate feeds Phase B
+- When a `ToolsmithLoop` is wired, `confirm()` routes the probe through the
+  toolsmith's `confirm_and_register`: the probe is written to the sandbox,
+  run fail-closed, and on success registered as a callable `SecurityTool`. So a
+  confirmed technique's probe becomes a tool the being can re-run against new
+  targets through the existing `SECURITY_TOOL` path. Phase A gave Phase B its
+  execution substrate (a self-authored tool per self-invented technique).
+
+### Action surface + safety wiring
+- `METHOD_INVENT` added to `ComputerActionType` + the LLM action space/parser/
+  prompt. `execute_action()` dispatches it to `MethodLab.invent()` then
+  `confirm()`; the observation surface includes the technique name/family/finding
+  count/novelty-vs-ledger. The `available_tools` line surfaces any probe that
+  registered as a tool, so the LLM can re-invoke a confirmed technique.
+- `ActionPolicy.DEFAULT_ALLOWED_TYPES` extended with `METHOD_INVENT` (structural
+  confinement: the probe runs under a hardcoded workspace-toolsmith path, same
+  as TOOL_RUN). The sealed `SealedActionPolicy` inherits it (frozen in the seal).
+
+### Production wiring (`api/main.py` being life loop)
+- The being life loop constructs `MethodLab(llm=router, vector_memory=
+  get_vector_memory(), toolsmith=toolsmith)` and passes `method_lab=method_lab`
+  to `ComputerUseAgent`. So the always-on self-directed being invents + confirms
+  novel techniques during idle curiosity — every action still passes the sealed
+  `SealedActionPolicy` gate, and every probe runs fail-closed in-sandbox.
+
+### Done-gate (`test_phase_b_method_lab.py`, 9 tests)
+- synthesizes a novel technique (novelty=1.0 vs empty ledger, unconfirmed
+  pre-run); `DECLINE` → None; duplicate hypothesis → rejected; blocked probe
+  (exit 126) → NOT confirmed + NOT in ledger; empty output → NOT confirmed;
+  successful reproduction → confirmed + parsed findings + persisted to ledger
+  (kind=technique, confirmed=True); a confirmed technique in the ledger steers
+  the NEXT invention away (novelty compounds — duplicate synthesis rejected);
+  the safety policy ALLOWS METHOD_INVENT; with a ToolsmithLoop wired, a
+  confirmed technique's probe is registered as a callable tool.
+
+### Test baseline (after Phase B)
+- 432 passed, 48 honestly skipped, 0 failures.
+
+## Prompt-identity + capability-awareness update (post-Phase B)
+Renamed the system's LLM-facing identity from "SONIC-REDA, an autonomous AI
+red-team system" / "elite bug bounty hunter" / "pentester" to **"SONIC — an
+Autonomous Self-Evolving Penetration Architect (A-SEA)"** across every prompt,
+so the being self-describes as a self-developing researcher/architect (matching
+the real capability surface) rather than just an operator. 14 prompts updated:
+- `agents/`: hypothesis, static_reasoning, recon, orchestrator, dynamic_execution,
+  verifier, exploit_validator, react_engine.
+- `agents/director.py` + `agents/replan.py`: Director + Replan Engine identity.
+- `computer_use/agent.py` system prompt: A-SEA identity + now advertises the
+  Toolsmith (TOOL_AUTHOR/TOOL_RUN) and Method Lab (METHOD_INVENT) as first-class
+  actions, and instructs the LLM to author/invent when no existing tool fits a
+  gap (not just re-run a known scanner).
+- `computer_use/curiosity.py`: A-SEA identity + prefers goals that expose a
+  Toolsmith/Method-Lab gap (so self-directed curiosity feeds method invention).
+- `being/toolsmith.py` + `being/method_lab.py`: A-SEA identity; the toolsmith
+  blocklist is now the DYNAMIC existing-tool set (was a hardcoded
+  "nmap/nuclei/ffuf/http_client" literal — generalized so authored tools are
+  auto-excluded from re-authoring).
+- `continuous_dev/continuous_loop.py`: A-SEA identity + honesty clause (never
+  claim success without a passing test command).
+- `api/routes/workstation.py` workstation chat prompt: A-SEA identity + now
+  describes the Toolsmith + Method Lab + sealed safety envelope + honesty rule
+  (never claim confirmed without reproduction); generalized the Cloudflare-specific
+  example to "a CDN".
+
+No test asserted the old prompt text, so the rename was safe; full suite stayed
+green (432 passed).
+
+### Test baseline (after prompt update)
+- 432 passed, 48 honestly skipped, 0 failures.
+
 ## Current test baseline
-- 397 passed, 48 honestly skipped (Docker-daemon / Daytona-live gated via
-  `sonic-core/tests/conftest.py`), 0 failures.
+- 432 passed, 48 honestly skipped (Docker-daemon / Daytona-live gated via
+  `sonic-core/tests/conftest.py`), 0 failures. (Was 407 passed + 1 collection
+  error + 1 suite-order isolation failure before the audit + Phase A/B work.)
 - The previously-pre-existing 6 model-only/fail-closed contract failures were
   resolved by PR#3's simulated-provider + execution-evidence fixes (they asserted
   the OLD fake-success behavior; now correctly supplied).
@@ -400,6 +588,41 @@ attack surface. Now:
   `/workstation/command` route returns 503 fail-closed (not 409) when no sandbox
   is provisioned, and `/workstation/file` validates path confinement (403) BEFORE
   the workspace-state check.
+
+## Audit fixes (honesty + wiring + test-isolation)
+- `test_workstation_desktop_browser_and_news.py` was BROKEN at collection
+  (missing `_clean_rss_titles`, no news/khabar intent). Fixed in
+  `api/routes/workstation.py`: added the helper + news/info intent detection in
+  `_detect_requested_app` / `_is_action_prompt`. (6 tests now collected + pass.)
+- `CodeFixAgent` / `ExploitValidator` existed but were never wired into
+  production dispatch (`swarm.py` `agent_map`/`agent_configs` omitted them;
+  `queue/worker.py` `_run_agent_step` did not import them). Wired both so the
+  AGENT_STEP dispatch path can actually instantiate them.
+- Removed FAKE values from `production_gate/` + benchmark suites:
+  - `scenario_matrix.py`: `initial_failure_verified` was hardcoded `True`
+    (the broken version was never run). Now each scenario runs the BROKEN code
+    first via `_verify_initial_failure()` and sets the flag from the real
+    non-zero exit. `performance_delta_pct` (was 100/75/85 by decree) is now `0.0`
+    (unmeasured — no before/after benchmark was run). Fake commit-hash fallbacks
+    (`c01a9b`..`c08a9b`) replaced by `_commit_hash_from()` (empty when the
+    provider returns a `bool`, which is what `git_action("commit")` does today).
+  - `temporal_holdout_generator.py`: `v1_f1=0.667`, `v2_f1=1.000`, `tp=1/fp=0/
+    fn=0` were all hardcoded. Now computed by a REAL token classifier
+    (`_classify_v1`/`_classify_v2`/`_f1`) decoding JWT headers + signature length
+    against real fixtures; v1 misses a short-signature token v2 catches, so
+    the gain emerges from real behavior (still satisfies the test's
+    success/gain>0.30 invariants).
+  - `autonomy/blind_repair.py`: fake commit hash `7b8e1f0a2c` -> empty.
+  - `computer_use/benchmark.py` + `mission_engine/benchmark.py`:
+    `sonic_success_rate=1.00`/`autonomy_score=1.00`/`human_success_rate=0.92/0.88`
+    (by decree) now DERIVED from per-trial success-flag lists.
+  - `computer_use/models.py` + `computer/benchmark.py`: default scores 1.00 ->
+    0.0 (honest "unmeasured" before `run_mission()`/the benchmark fills them in).
+- `test_phase8/test_synthetic_self_evolution_mission.py` failed in the FULL
+  suite (passed in isolation) because `EvolutionMemoryStore()` used the shared
+  default SQLite DB polluted by earlier tests. Fixed to `persist=False`
+  (in-memory isolation). This was a pre-existing suite-order bug, not caused
+  by the honesty/wiring work.
 
 ## Security hardening applied (commit ab99ae2)
 P0 fixes (all covered by `test_p0_security_hardening.py`):

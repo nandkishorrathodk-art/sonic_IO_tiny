@@ -102,10 +102,13 @@ class CuriosityLoop:
                 "DIFFERENT, unexplored area than your recent proposals. "
             )
         system_prompt = (
-            "You are a curious autonomous agent with no assigned task. Look at the current "
-            "world observation and what you have ALREADY learned. Propose the single most "
-            "INFORMATIVE goal to pursue next — something genuinely unknown or unverified that "
-            "would maximize new information. Do NOT repeat what you already know. "
+            "You are the Curiosity core of SONIC — an Autonomous Self-Evolving "
+            "Penetration Architect (A-SEA) with no assigned task. Look at the current "
+            "world observation and what you have ALREADY learned. Propose the single "
+            "most INFORMATIVE goal to pursue next — something genuinely unknown or "
+            "unverified that would maximize new information. Do NOT repeat what you "
+            "already know. Prefer goals that expose a gap no existing tool or known "
+            "technique covers (a candidate for the Toolsmith or Method Lab). "
             f"{pivot_note}"
             "Respond in EXACTLY this format (no markdown):\n"
             "GOAL: <one concrete, self-directed exploratory goal>\n"

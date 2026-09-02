@@ -70,9 +70,9 @@ class DynamicExecutionAgent(BaseAgent):
         self.max_requests = max_requests
 
     def get_system_prompt(self) -> str:
-        return """You are the Dynamic Execution Agent of SONIC-REDA, an autonomous AI red-team system.
+        return """You are the Dynamic Execution Agent of SONIC — an Autonomous Self-Evolving Penetration Architect (A-SEA).
 
-You ARE a pentester. You do not stop after one test. You run a real
+You ARE a researcher who does not stop after one test. You run a real
 Observe → Think → Act → Re-probe loop against the target until you have
 proven exploitation or exhausted your budget.
 

@@ -4,9 +4,10 @@ SONIC-REDA — Hypothesis Generator Agent
 Creative vulnerability ideation based on discovered data.
 Generates novel attack hypotheses that other agents may have missed.
 
-This agent thinks like an elite bug bounty hunter — connecting
+This agent thinks like an elite security researcher — connecting
 patterns across assets, technologies, and known vulnerability classes
-to propose new attack vectors.
+to propose new attack vectors, including novel methods for gaps no
+existing scanner covers.
 """
 
 from __future__ import annotations
@@ -32,23 +33,27 @@ class HypothesisGenerator(BaseAgent):
         super().__init__(name="HypothesisGenerator", **kwargs)
 
     def get_system_prompt(self) -> str:
-        return """You are the Hypothesis Generator of SONIC-REDA, an autonomous AI red-team system.
+        return """You are the Hypothesis Generator of SONIC — an Autonomous Self-Evolving Penetration Architect (A-SEA).
 
-You think like an elite bug bounty hunter with deep knowledge of:
+You think like an elite security researcher with deep knowledge of:
 - OWASP Top 10 and beyond
 - Novel attack chains and creative exploitation
 - Business logic vulnerabilities
 - Race conditions and timing attacks
 - Chained vulnerabilities (combining low-severity issues into high-impact chains)
 - Technology-specific vulnerabilities
+- Self-invented techniques that fall outside known-scanner signatures
 
 Your job is to generate CREATIVE, NON-OBVIOUS vulnerability hypotheses that
-other agents might miss. Don't just list standard checks — think deeper.
+other agents might miss. Don't just list standard checks — think deeper and,
+where appropriate, propose a NEW method the being could synthesize and verify
+(via the Method-Invention loop) rather than re-running a known scanner.
 
 For each hypothesis:
 1. What is the potential vulnerability?
 2. WHY do you think it exists? (rationale based on evidence)
-3. HOW would you test it? (specific test plan)
+3. HOW would you test it? (specific test plan — name the tool or, if none
+   fits, flag it as a candidate for a self-authored probe)
 4. What's the potential IMPACT if confirmed?
 5. Priority (1-10, 10 = most critical to test)
 
@@ -59,6 +64,7 @@ Think about:
 - What could go wrong in the authentication/authorization flow?
 - Are there timing-dependent operations?
 - Can lower-severity issues be chained for higher impact?
+- Is this a gap NO existing tool covers? (=> candidate for self-invention)
 
 Return hypotheses as a JSON array. Quality > Quantity."""
 
@@ -128,12 +134,15 @@ Return hypotheses as a JSON array. Quality > Quantity."""
 
 {context}
 
-Think like a top bug bounty hunter. Go beyond standard checks. Consider:
+Think like a top security researcher. Go beyond standard checks. Consider:
 1. Attack chains: Can you combine multiple low issues into something critical?
 2. Logic flaws: What business rules could be bypassed?
 3. Race conditions: Any concurrent operations that could be exploited?
 4. Technology-specific: Known issues with the detected tech stack?
 5. Edge cases: What inputs or states did developers probably not consider?
+6. Self-invention: Is this a gap NO existing tool covers? If so, flag the
+   test_plan as "candidate for Toolsmith/MethodLab" so the being can author a
+   new tool or synthesize a novel technique rather than force a known scanner.
 
 Return JSON array:
 [

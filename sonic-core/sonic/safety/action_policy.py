@@ -73,6 +73,13 @@ class ActionPolicy:
         "APP_LAUNCH", "APP_CLOSE", "SERVICE_ACTION",
         "BROWSER_NAVIGATE", "BROWSER_CLICK", "BROWSER_TYPE", "BROWSER_SCREENSHOT",
         "SECURITY_TOOL",
+        # Toolsmith (Phase A, AIOSR): authoring writes source under the
+        # workspace toolsmith dir (path-confined like FILE_WRITE); running
+        # executes it in-sandbox (command-gated like TERMINAL_EXEC).
+        "TOOL_AUTHOR", "TOOL_RUN",
+        # Method-invention (Phase B, AIOSR): synthesizes a novel technique and
+        # runs its probe in-sandbox (same structural confinement as TOOL_RUN).
+        "METHOD_INVENT",
     })
 
     def __init__(
@@ -111,14 +118,19 @@ class ActionPolicy:
         if action_type_name not in self.allowed_types:
             return PolicyVerdict(False, f"action type not allowed: {action_type_name}")
 
-        # 2. Path confinement for file operations.
+        # 2. Path confinement for file operations. TOOL_AUTHOR writes its
+        # source under a hardcoded workspace-subdir (toolsmith hardcodes
+        # /home/sonic/workspace/toolsmith/<name>.py), so confinement is
+        # structural — it does not need a payload path to validate.
         if action_type_name in ("FILE_READ", "FILE_WRITE"):
             path = payload.get("path") or target
             verdict = self._check_path(path, action_type_name)
             if not verdict.allowed:
                 return verdict
 
-        # 3. Destructive-command gating for terminal execution.
+        # 3. Destructive-command gating for terminal execution + tool runs.
+        #    TOOL_RUN executes a hardcoded `python <workspace-toolsmith-path>`,
+        #    so the command is structural; we only gate user-supplied commands.
         if action_type_name == "TERMINAL_EXEC":
             command = payload.get("command", "")
             verdict = self._check_command(command)

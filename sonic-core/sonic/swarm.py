@@ -22,6 +22,8 @@ from sonic.agents.director import Director
 from sonic.agents.dynamic_execution import DynamicExecutionAgent
 from sonic.agents.engagement import EngagementManager
 from sonic.agents.hypothesis import HypothesisGenerator
+from sonic.agents.codefix import CodeFixAgent
+from sonic.agents.exploit_validator import ExploitValidator
 from sonic.agents.orchestrator import MetaOrchestrator
 from sonic.agents.react_engine import (
     ReActEngine,
@@ -116,6 +118,8 @@ class SwarmRunner:
             ("dynamic", DynamicExecutionAgent),
             ("hypothesis", HypothesisGenerator),
             ("verifier", VerifierAgent),
+            ("codefix", CodeFixAgent),
+            ("exploit_validator", ExploitValidator),
         ]
 
         for name, agent_cls in agent_configs:
@@ -314,6 +318,8 @@ class SwarmRunner:
             "verifier": "verifier",
             "dynamic": "dynamic",     # autonomous pentest loop
             "orchestrator": "orchestrator",
+            "codefix": "codefix",
+            "exploit_validator": "exploit_validator",
         }
 
         all_outputs: list[dict[str, Any]] = []

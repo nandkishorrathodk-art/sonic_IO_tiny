@@ -7,15 +7,13 @@ benchmarks performance against baseline, and executes automatic promotion or rol
 
 from __future__ import annotations
 
-import asyncio
-from datetime import datetime, timezone
-from typing import Any, Callable, Coroutine, Optional
+from collections.abc import Callable, Coroutine
+from typing import Any
 
 from sonic.logger import get_logger
 from sonic.meta.benchmark import BenchmarkLab, BenchmarkResult, ChallengeFixture
 from sonic.meta.evaluator import Decision, EvaluationReport, SelfEvaluationEngine
-from sonic.meta.experiment import ExperimentManager, ExperimentProposal, ExperimentStatus
-from sonic.sandbox.virtual_computer import DaytonaSandbox
+from sonic.meta.experiment import ExperimentManager, ExperimentStatus
 
 logger = get_logger(__name__)
 
@@ -29,7 +27,7 @@ class CanaryPipeline:
         self.exp_mgr = experiment_manager
         self.benchmark_lab = BenchmarkLab()
         self.evaluator = SelfEvaluationEngine()
-        self.active_baseline_result: Optional[BenchmarkResult] = None
+        self.active_baseline_result: BenchmarkResult | None = None
 
     async def execute_canary_run(
         self,

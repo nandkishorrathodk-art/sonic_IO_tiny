@@ -51,7 +51,7 @@ def info(message: str):
 def make_table(title: str, columns: list[tuple[str, str]], rows: list[list[str]]) -> Table:
     """
     Create a Rich table.
-    
+
     Args:
         title: Table title
         columns: List of (name, style) tuples

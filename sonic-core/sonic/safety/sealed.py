@@ -42,14 +42,12 @@ from __future__ import annotations
 
 import hashlib
 import json
-import time
-from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 from sonic.logger import get_logger
-from sonic.sandbox import egress
 from sonic.safety.action_policy import ActionPolicy, PolicyVerdict
 from sonic.safety.scope import ScopeChecker
+from sonic.sandbox import egress
 
 logger = get_logger(__name__)
 
@@ -74,11 +72,11 @@ class SealedActionPolicy(ActionPolicy):
     def __init__(
         self,
         workspace_root: str = "/home/sonic/workspace",
-        allowed_action_types: Optional[set[str]] = None,
-        allow_security_tool_targets: Optional[set[str]] = None,
+        allowed_action_types: set[str] | None = None,
+        allow_security_tool_targets: set[str] | None = None,
         max_actions_per_minute: int = 60,
         require_approval_for_intrusive: bool = True,
-        scope_checker: Optional[ScopeChecker] = None,
+        scope_checker: ScopeChecker | None = None,
     ):
         super().__init__(
             workspace_root=workspace_root,
@@ -99,7 +97,7 @@ class SealedActionPolicy(ActionPolicy):
     # ------------------------------------------------------------------
     # Sealing
     # ------------------------------------------------------------------
-    def seal(self) -> "SealedActionPolicy":
+    def seal(self) -> SealedActionPolicy:
         """Freeze the safety config and record its seal hash. Call once."""
         if self._sealed:
             return self

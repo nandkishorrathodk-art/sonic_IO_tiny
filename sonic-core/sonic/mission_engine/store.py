@@ -8,8 +8,6 @@ when Redis is unavailable (development/tests).
 
 from __future__ import annotations
 
-from typing import Optional
-
 from sonic.logger import get_logger
 from sonic.mission_engine.models import (
     MissionDeliverable,
@@ -32,7 +30,7 @@ class MissionStateStore:
     All methods are async to keep the interface uniform regardless of backend.
     """
 
-    def __init__(self, redis_url: Optional[str] = None):
+    def __init__(self, redis_url: str | None = None):
         self._redis_url = redis_url
         self._redis = None
         self._memory_states: dict[str, str] = {}
@@ -67,7 +65,7 @@ class MissionStateStore:
             self._memory_states[mid] = data
             self._memory_index.add(mid)
 
-    async def load_state(self, mission_id: str) -> Optional[MissionState]:
+    async def load_state(self, mission_id: str) -> MissionState | None:
         if self._redis:
             data = await self._redis.get(_KEY_STATE.format(mission_id=mission_id))
         else:

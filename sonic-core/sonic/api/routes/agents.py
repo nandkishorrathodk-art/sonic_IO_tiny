@@ -8,9 +8,9 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, status
 
+from sonic.api.routes.engagements import get_engagement_manager
 from sonic.auth.middleware import require_auth
 from sonic.auth.models import User
-from sonic.api.routes.engagements import get_engagement_manager
 
 router = APIRouter()
 

@@ -34,13 +34,11 @@ never fabricated success.
 
 from __future__ import annotations
 
-from typing import Any
-
 from sonic.computer_use.models import ComputerDecisionTrace
 from sonic.mission_engine.models import (
     DeliverableType,
-    MissionDeliverable,
     MilestoneStatus,
+    MissionDeliverable,
     MissionKnowledgeSummary,
     MissionMilestone,
     MissionPlan,

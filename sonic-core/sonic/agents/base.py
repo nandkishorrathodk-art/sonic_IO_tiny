@@ -25,7 +25,9 @@ from __future__ import annotations
 
 import uuid
 from abc import ABC, abstractmethod
-from datetime import datetime, timezone
+from datetime import UTC, datetime
+from typing import Any
+
 from sonic.logger import get_logger
 
 logger = get_logger(__name__)
@@ -33,13 +35,13 @@ logger = get_logger(__name__)
 from sonic.llm.router import ModelRouter
 from sonic.llm.schemas import LLMRequest, LLMResponse, Message, MessageRole
 from sonic.memory.graph import GraphMemory
-from sonic.safety.scope import SafetyVerdict, ScopeChecker, RiskLevel
+from sonic.safety.scope import RiskLevel, SafetyVerdict, ScopeChecker
 
 
 class BaseAgent(ABC):
     """
     Abstract base class for all SONIC-REDA agents.
-    
+
     Every agent must implement:
         - run(): Main execution logic
         - get_system_prompt(): Agent's role/instructions
@@ -59,7 +61,7 @@ class BaseAgent(ABC):
         self.memory = graph_memory
         self.scope = scope_checker
 
-        self.created_at = datetime.now(timezone.utc)
+        self.created_at = datetime.now(UTC)
         self.status = "idle"  # idle, running, completed, failed
         self.action_log: list[dict] = []
 
@@ -69,10 +71,10 @@ class BaseAgent(ABC):
     async def run(self, task: dict[str, Any]) -> dict[str, Any]:
         """
         Execute the agent's main task.
-        
+
         Args:
             task: Task definition with target, scope, parameters
-            
+
         Returns:
             Results dict with findings, evidence, status
         """
@@ -95,7 +97,7 @@ class BaseAgent(ABC):
     ) -> LLMResponse:
         """
         Send a thinking request to the LLM via the Model Router.
-        
+
         Args:
             user_message: The prompt/question for the LLM
             task_type: Routing hint (reasoning, planning, coding, etc.)
@@ -143,12 +145,12 @@ class BaseAgent(ABC):
     # Memory
     # ============================================
 
-    async def remember(self, label: str, data: dict[str, Any]) -> Optional[str]:
+    async def remember(self, label: str, data: dict[str, Any]) -> str | None:
         """Store something in Graph Memory."""
         if not self.memory:
             return None
         data["created_by"] = self.agent_id
-        data["created_at"] = datetime.now(timezone.utc).isoformat()
+        data["created_at"] = datetime.now(UTC).isoformat()
         return await self.memory.add_node(label, data)
 
     async def recall(self, query: str) -> list[dict]:
@@ -166,7 +168,7 @@ class BaseAgent(ABC):
         entry = {
             "agent_id": self.agent_id,
             "action": action_type,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "timestamp": datetime.now(UTC).isoformat(),
             **details,
         }
         self.action_log.append(entry)

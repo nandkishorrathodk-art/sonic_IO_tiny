@@ -41,7 +41,8 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from datetime import UTC, datetime
+from typing import Any
 
 from sonic.logger import get_logger
 
@@ -65,9 +66,14 @@ class InventedTechnique:
     discovered_by: str = "self_invented"
     confirmed: bool = False
     reproduction_output: str = ""
-    run_exit_code: Optional[int] = None
+    run_exit_code: int | None = None
     novelty_vs_ledger: float = 0.0   # how far from the known techniques (0..1)
     findings: list[dict[str, Any]] = field(default_factory=list)
+    # Provenance timestamps for the audit trail — when the technique was
+    # synthesized and when it was empirically confirmed in-sandbox.
+    invented_at: str = ""
+    confirmed_at: str = ""
+    confirmed_workspace_id: str = ""
 
 
 def _is_valid_name(name: str) -> bool:
@@ -88,8 +94,8 @@ class MethodLab:
     def __init__(
         self,
         llm: Any,
-        vector_memory: Optional[Any],
-        toolsmith: Optional[Any] = None,
+        vector_memory: Any | None,
+        toolsmith: Any | None = None,
         ledger_namespace: str = _TECHNIQUE_DOC_PREFIX,
     ):
         self.llm = llm
@@ -129,7 +135,7 @@ class MethodLab:
         observation: str,
         failure: str,
         known_techniques: list[str],
-    ) -> Optional[dict[str, str]]:
+    ) -> dict[str, str] | None:
         """Ask the LLM to synthesize a NOVEL technique away from the ledger.
 
         Returns ``{name, family, hypothesis, probe_source, target_hint}`` or
@@ -183,7 +189,7 @@ class MethodLab:
         return self._parse_synthesis(text, known_techniques)
 
     @staticmethod
-    def _parse_synthesis(text: str, known: list[str]) -> Optional[dict[str, str]]:
+    def _parse_synthesis(text: str, known: list[str]) -> dict[str, str] | None:
         """Parse the LLM synthesis. None on any flaw (incl. a known duplicate)."""
         fields: dict[str, str] = {}
         probe_lines: list[str] = []
@@ -222,7 +228,7 @@ class MethodLab:
         self,
         observation: str,
         failure: str = "",
-    ) -> Optional[InventedTechnique]:
+    ) -> InventedTechnique | None:
         """Synthesize a novel technique for the observation+failure.
 
         The technique is recorded (in-memory + persisted to the ledger) but
@@ -244,6 +250,7 @@ class MethodLab:
             probe_source=spec["probe_source"],
             target_hint=spec["target_hint"],
             novelty_vs_ledger=novelty,
+            invented_at=datetime.now(UTC).isoformat(),
         )
         self.invented.append(technique)
         logger.info(
@@ -309,6 +316,8 @@ class MethodLab:
         if technique.confirmed:
             # Parse the reproduction output into structured findings.
             technique.findings = self._parse_findings(technique.reproduction_output)
+            technique.confirmed_at = datetime.now(UTC).isoformat()
+            technique.confirmed_workspace_id = workspace_id
             self._persist_to_ledger(technique)
             logger.info(
                 "method_lab_technique_confirmed", name=technique.name,

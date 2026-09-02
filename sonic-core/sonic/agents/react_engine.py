@@ -15,16 +15,16 @@ Features:
 
 from __future__ import annotations
 
-import asyncio
 import json
 import re
+from collections.abc import Callable, Coroutine
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from enum import StrEnum
-from typing import Any, Callable, Coroutine, Optional
+from typing import Any
 
 from sonic.logger import get_logger
-from sonic.sandbox.virtual_computer import DaytonaSandbox, ExecResult
+from sonic.sandbox.virtual_computer import DaytonaSandbox
 
 logger = get_logger(__name__)
 
@@ -55,7 +55,7 @@ class Observation:
     action_type: str  # "think", "tool_call", "final_answer"
     action_input: str
     result: str
-    timestamp: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+    timestamp: str = field(default_factory=lambda: datetime.now(UTC).isoformat())
     duration_seconds: float = 0.0
 
 
@@ -68,7 +68,7 @@ class ToolRegistry:
     def register(self, tool: ToolDefinition) -> None:
         self.tools[tool.name] = tool
 
-    def get(self, name: str) -> Optional[ToolDefinition]:
+    def get(self, name: str) -> ToolDefinition | None:
         return self.tools.get(name)
 
     def list_tools(self) -> list[dict[str, str]]:
@@ -100,7 +100,7 @@ class ReActEngine:
     def __init__(
         self,
         tool_registry: ToolRegistry,
-        sandbox: Optional[DaytonaSandbox] = None,
+        sandbox: DaytonaSandbox | None = None,
         max_iterations: int = 10,
     ):
         self.tools = tool_registry
@@ -168,7 +168,7 @@ Begin:
 
             # 1. THINK: Send accumulated context to LLM
             full_prompt = prompt + scratchpad
-            start = datetime.now(timezone.utc)
+            start = datetime.now(UTC)
 
             try:
                 llm_output = await think_fn(full_prompt)
@@ -177,7 +177,7 @@ Begin:
                 observations.append(Observation(step=step, action_type="error", action_input="think", result=str(e)))
                 break
 
-            duration = (datetime.now(timezone.utc) - start).total_seconds()
+            duration = (datetime.now(UTC) - start).total_seconds()
 
             # 2. PARSE: Extract thought, action, or final answer
             final_match = self.FINAL_ANSWER_PATTERN.search(llm_output)
@@ -238,8 +238,8 @@ Begin:
         *,
         context: str = "",
         max_rounds: int = 3,
-        on_round: Optional[Callable[[int, dict[str, Any]], Optional[str]]] = None,
-        stop_when: Optional[Callable[[int, dict[str, Any]], bool]] = None,
+        on_round: Callable[[int, dict[str, Any]], str | None] | None = None,
+        stop_when: Callable[[int, dict[str, Any]], bool] | None = None,
     ) -> dict[str, Any]:
         """
         Sustained, multi-round ReAct execution for autonomous pentesting.
@@ -319,7 +319,7 @@ Begin:
         return f"ERROR: Unknown tool '{tool_name}'. Available: {', '.join(self.tools.tools.keys())}, bash"
 
 
-def create_default_tool_registry(sandbox: Optional[DaytonaSandbox] = None) -> ToolRegistry:
+def create_default_tool_registry(sandbox: DaytonaSandbox | None = None) -> ToolRegistry:
     """Create a registry with standard security testing tools."""
     registry = ToolRegistry()
 

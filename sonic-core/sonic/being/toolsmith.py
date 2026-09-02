@@ -29,8 +29,9 @@ SECURITY INVARIANT:
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
-from typing import Any, Optional
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from typing import Any
 
 from sonic.logger import get_logger
 
@@ -63,8 +64,14 @@ class AuthoredTool:
     discovered_by: str = "self_authored"
     reproduced: bool = False
     run_output: str = ""
-    run_exit_code: Optional[int] = None
-    craft_note_id: Optional[str] = None
+    run_exit_code: int | None = None
+    craft_note_id: str | None = None
+    # Provenance timestamps for the audit trail — when the tool was authored
+    # and when it was empirically confirmed in-sandbox. Empty until the event
+    # occurs so the ledger cannot claim a confirmation that never happened.
+    authored_at: str = ""
+    confirmed_at: str = ""
+    confirmed_workspace_id: str = ""
 
 
 def _is_valid_tool_name(name: str) -> bool:
@@ -113,7 +120,7 @@ class ToolsmithLoop:
         observation: str,
         failed_attempts: list[str],
         existing: set[str],
-    ) -> Optional[dict[str, str]]:
+    ) -> dict[str, str] | None:
         """Ask the LLM to propose a NOVEL small Python tool for the gap.
 
         Returns ``{"name", "source", "rationale"}`` or ``None`` if the LLM
@@ -162,7 +169,7 @@ class ToolsmithLoop:
         return self._parse_proposal(text, existing)
 
     @staticmethod
-    def _parse_proposal(text: str, existing: set[str]) -> Optional[dict[str, str]]:
+    def _parse_proposal(text: str, existing: set[str]) -> dict[str, str] | None:
         """Parse the LLM proposal into name/rationale/source. None on any flaw."""
         # NAME
         name = None
@@ -199,8 +206,8 @@ class ToolsmithLoop:
     async def author_tool_for_gap(
         self,
         observation: str,
-        failed_attempts: Optional[list[str]] = None,
-    ) -> Optional[AuthoredTool]:
+        failed_attempts: list[str] | None = None,
+    ) -> AuthoredTool | None:
         """Propose + persist a novel tool for the observation gap.
 
         Persists the source to BeingCraft immediately (durable across restart)
@@ -217,6 +224,7 @@ class ToolsmithLoop:
 
         tool = AuthoredTool(
             name=spec["name"], source=spec["source"], rationale=spec["rationale"],
+            authored_at=datetime.now(UTC).isoformat(),
         )
         # Persist the authored source as a durable craft note (host-side).
         if self.craft is not None and hasattr(self.craft, "author"):
@@ -268,6 +276,8 @@ class ToolsmithLoop:
         # Honest guard: only exit 0 + non-empty output counts as confirmed.
         if tool.run_exit_code == 0 and tool.run_output.strip():
             tool.reproduced = True
+            tool.confirmed_at = datetime.now(UTC).isoformat()
+            tool.confirmed_workspace_id = workspace_id
             adapter = AuthoredToolAdapter(tool, provider)
             if self.registry is not None and hasattr(self.registry, "register"):
                 self.registry.register(tool.name, adapter)

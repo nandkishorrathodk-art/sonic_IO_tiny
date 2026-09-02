@@ -7,13 +7,13 @@ and checking enterprise role hierarchies.
 
 from __future__ import annotations
 
-from typing import Callable, Optional
+from collections.abc import Callable
 
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from sonic.auth.google_auth import decode_jwt_token
-from sonic.auth.models import TokenPayload, User, UserRole
+from sonic.auth.models import User, UserRole
 from sonic.logger import get_logger
 
 logger = get_logger(__name__)
@@ -23,8 +23,8 @@ bearer_scheme = HTTPBearer(auto_error=False)
 
 
 async def get_current_user(
-    credentials: Optional[HTTPAuthorizationCredentials] = Depends(bearer_scheme),
-) -> Optional[User]:
+    credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
+) -> User | None:
     """
     Extract and validate JWT token from Authorization header.
     Returns the User with tenant_id if valid, None if no token provided.
@@ -55,7 +55,7 @@ async def get_current_user(
 
 
 async def require_auth(
-    user: Optional[User] = Depends(get_current_user),
+    user: User | None = Depends(get_current_user),
 ) -> User:
     """
     Dependency that REQUIRES valid authentication.
@@ -102,7 +102,7 @@ require_operator = require_role([UserRole.SUPER_ADMIN, UserRole.TENANT_ADMIN, Us
 require_admin = require_tenant_admin  # Backward compatibility alias
 
 
-def verify_ws_token(token: Optional[str]) -> Optional[User]:
+def verify_ws_token(token: str | None) -> User | None:
     """
     Validate JWT token for WebSocket connections (passed as query param or header).
     Returns User with tenant_id if valid, None if invalid or missing.

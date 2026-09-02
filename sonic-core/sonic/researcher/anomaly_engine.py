@@ -8,7 +8,8 @@ detects novel serendipitous leads, and flags dead-end investigations.
 from __future__ import annotations
 
 import difflib
-from typing import Any, Optional
+from typing import Any
+
 from sonic.logger import get_logger
 from sonic.researcher.models import (
     AnomalyRecord,
@@ -32,7 +33,7 @@ class AnomalyDetector:
         observed: str,
         tenant_id: str,
         engagement_id: str,
-    ) -> Optional[AnomalyRecord]:
+    ) -> AnomalyRecord | None:
         """
         Compare expected prediction with actual observation.
         Returns AnomalyRecord and creates a ResearchLead if significant.
@@ -49,10 +50,7 @@ class AnomalyDetector:
         if "error" in obs_clean or "connection refused" in obs_clean or "timeout" in obs_clean:
             anomaly_type = AnomalyType.TECHNICAL_FAILURE
             is_novel = False
-        elif "429" in obs_clean or "too many requests" in obs_clean or "rate limit" in obs_clean:
-            anomaly_type = AnomalyType.KNOWN_VARIATION
-            is_novel = False
-        elif "404" in obs_clean or "not found" in obs_clean:
+        elif "429" in obs_clean or "too many requests" in obs_clean or "rate limit" in obs_clean or "404" in obs_clean or "not found" in obs_clean:
             anomaly_type = AnomalyType.KNOWN_VARIATION
             is_novel = False
         elif "forbidden" in obs_clean and "200" in exp_clean:

@@ -24,9 +24,8 @@ from __future__ import annotations
 import json
 import os
 import time
-from dataclasses import dataclass, field
-from datetime import datetime, timezone
-from typing import Optional
+from dataclasses import dataclass
+from datetime import UTC, datetime
 
 from sonic.logger import get_logger
 
@@ -39,7 +38,7 @@ def _craft_root() -> str:
 
 
 def _now() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 @dataclass
@@ -61,7 +60,7 @@ class BeingCraft:
     metadata so the being can recall what it has authored without re-scanning.
     """
 
-    def __init__(self, being_id: str, root: Optional[str] = None):
+    def __init__(self, being_id: str, root: str | None = None):
         self.being_id = being_id
         self._root = root or os.path.join(_craft_root(), being_id)
         self._index: dict[str, CraftNote] = {}
@@ -113,7 +112,7 @@ class BeingCraft:
     def list_notes(self) -> list[CraftNote]:
         return list(self._index.values())
 
-    def get_note(self, note_id: str) -> Optional[CraftNote]:
+    def get_note(self, note_id: str) -> CraftNote | None:
         n = self._index.get(note_id)
         if n is None:
             return None
@@ -125,8 +124,8 @@ class BeingCraft:
             pass
         return n
 
-    def update_note(self, note_id: str, body: Optional[str] = None,
-                    title: Optional[str] = None) -> Optional[CraftNote]:
+    def update_note(self, note_id: str, body: str | None = None,
+                    title: str | None = None) -> CraftNote | None:
         n = self._index.get(note_id)
         if n is None:
             return None

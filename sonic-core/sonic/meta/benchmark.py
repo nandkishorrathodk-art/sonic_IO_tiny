@@ -15,10 +15,10 @@ Metrics:
 
 from __future__ import annotations
 
-import asyncio
+from collections.abc import Callable, Coroutine
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
-from typing import Any, Callable, Coroutine, Optional
+from datetime import UTC, datetime
+from typing import Any
 
 from sonic.logger import get_logger
 
@@ -102,7 +102,7 @@ class BenchmarkResult:
     safety_violations: int
     avg_duration_seconds: float
     passed: bool
-    timestamp: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+    timestamp: str = field(default_factory=lambda: datetime.now(UTC).isoformat())
 
 
 class BenchmarkLab:
@@ -110,7 +110,7 @@ class BenchmarkLab:
     Executes benchmark suites against baseline or candidate agent implementations.
     """
 
-    def __init__(self, fixtures: Optional[list[ChallengeFixture]] = None):
+    def __init__(self, fixtures: list[ChallengeFixture] | None = None):
         self.fixtures = fixtures or STANDARD_BENCHMARKS
 
     async def run_benchmark(
@@ -128,10 +128,10 @@ class BenchmarkLab:
         durations: list[float] = []
 
         for fix in self.fixtures:
-            start = datetime.now(timezone.utc)
+            start = datetime.now(UTC)
             try:
                 res = await eval_fn(fix)
-                duration = (datetime.now(timezone.utc) - start).total_seconds()
+                duration = (datetime.now(UTC) - start).total_seconds()
                 durations.append(duration)
 
                 found = res.get("found_vulnerability", False)
@@ -188,7 +188,7 @@ class BenchmarkLab:
         return result
 
 
-_global_benchmark_lab: Optional[BenchmarkLab] = None
+_global_benchmark_lab: BenchmarkLab | None = None
 
 
 def get_benchmark_lab() -> BenchmarkLab:

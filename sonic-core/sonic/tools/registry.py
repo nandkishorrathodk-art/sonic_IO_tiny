@@ -32,8 +32,6 @@ Design notes:
 
 from __future__ import annotations
 
-from typing import Any, Optional
-
 from sonic.logger import get_logger
 from sonic.sandbox.provider import ComputeProvider
 from sonic.tools.adapters.ffuf_adapter import FFUFAdapter
@@ -80,7 +78,7 @@ class SecurityToolRegistry:
         self._tools[name] = tool
         logger.info("security_tool_registered", tool=name, type=type(tool).__name__)
 
-    def get(self, name: str) -> Optional[SecurityTool]:
+    def get(self, name: str) -> SecurityTool | None:
         return self._tools.get(name)
 
     def names(self) -> list[str]:

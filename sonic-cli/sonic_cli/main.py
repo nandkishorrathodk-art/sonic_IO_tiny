@@ -20,7 +20,28 @@ import typer
 from rich.console import Console
 from rich.panel import Panel
 
-from sonic_cli.commands import agents, auth, computer, engineer, engage, evidence, evolution, experiment, finding, graph, init, mission, research, security, status
+try:
+    from sonic import __version__
+except ImportError:  # pragma: no cover - core not installed in CLI-only envs
+    __version__ = "0.0.0"
+
+from sonic_cli.commands import (
+    agents,
+    auth,
+    computer,
+    engage,
+    engineer,
+    evidence,
+    evolution,
+    experiment,
+    finding,
+    graph,
+    init,
+    mission,
+    research,
+    security,
+    status,
+)
 
 app = typer.Typer(
     name="sonic",

@@ -8,27 +8,25 @@ and intelligent stopping judgment.
 
 from __future__ import annotations
 
-import asyncio
-from typing import Any, Optional
+from typing import Any
+
 from sonic.logger import get_logger
 from sonic.researcher.anomaly_engine import AnomalyDetector, DeadEndDetector, NoveltyEngine
-from sonic.researcher.memory import PrivateTenantMemory, ResearchMemoryStore
+from sonic.researcher.memory import ResearchMemoryStore
 from sonic.researcher.models import (
     AnomalyRecord,
     HypothesisPortfolio,
-    InvestigationTrack,
+    ResearcherHypothesis,
+    ResearcherHypothesisStatus,
     ResearchLead,
     ResearchMode,
     ResearchQuestion,
     ResearchQuestionStatus,
     ResearchReport,
-    ResearcherHypothesis,
-    ResearcherHypothesisStatus,
     StopReason,
-    TrackStatus,
 )
 from sonic.researcher.strategy_switcher import InvestigationMethod, StrategySwitcher
-from sonic.researcher.track_manager import InvestigationTrackManager, TrackPrioritizer
+from sonic.researcher.track_manager import InvestigationTrackManager
 
 logger = get_logger(__name__)
 
@@ -66,7 +64,7 @@ class ResearchManager:
         self.evidence_collected: list[str] = []
         self.dead_ends: list[str] = []
         self.is_paused: bool = False
-        self.stop_reason: Optional[StopReason] = None
+        self.stop_reason: StopReason | None = None
         self.stopping_justification: str = ""
 
     def add_initial_facts(self, facts: list[str]) -> None:
@@ -93,7 +91,7 @@ class ResearchManager:
         logger.info("research_question_added", qid=rq.id, question=question)
         return rq
 
-    def resolve_question(self, question_id: str, answer: str, evidence_ids: Optional[list[str]] = None) -> bool:
+    def resolve_question(self, question_id: str, answer: str, evidence_ids: list[str] | None = None) -> bool:
         rq = self.questions.get(question_id)
         if rq:
             rq.status = ResearchQuestionStatus.RESOLVED
@@ -111,8 +109,8 @@ class ResearchManager:
         self,
         statement: str,
         confidence: float = 0.5,
-        assumptions: Optional[list[str]] = None,
-        predicted_observations: Optional[list[str]] = None,
+        assumptions: list[str] | None = None,
+        predicted_observations: list[str] | None = None,
     ) -> ResearcherHypothesis:
         hyp = ResearcherHypothesis(
             tenant_id=self.tenant_id,

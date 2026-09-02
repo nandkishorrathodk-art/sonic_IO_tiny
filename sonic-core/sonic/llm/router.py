@@ -11,13 +11,13 @@ Team configures providers in models.yaml or via API.
 
 Usage:
     router = ModelRouter.from_config("configs/models.yaml")
-    
+
     # Route by task type
     response = await router.complete(request, task_type="reasoning")
-    
+
     # Use specific provider
     response = await router.complete(request, provider_name="grok")
-    
+
     # Stream
     async for chunk in router.stream(request, task_type="coding"):
         print(chunk.content, end="")
@@ -25,9 +25,9 @@ Usage:
 
 from __future__ import annotations
 
-import time
+from collections.abc import AsyncIterator
 from pathlib import Path
-from typing import Any, AsyncIterator, Optional
+from typing import Any
 
 import yaml
 
@@ -48,10 +48,10 @@ from sonic.llm.schemas import (
 class ModelRouter:
     """
     Central router that manages multiple LLM providers and routes requests.
-    
+
     Providers are CustomLLMProvider instances configured with:
         - name, base_url, api_key, default_model
-        
+
     Routing rules map task types to preferred providers with fallback chains.
     """
 
@@ -100,10 +100,10 @@ class ModelRouter:
         return provider
 
     @classmethod
-    def from_config(cls, config_path: str | Path, env_vars: dict[str, str] | None = None) -> "ModelRouter":
+    def from_config(cls, config_path: str | Path, env_vars: dict[str, str] | None = None) -> ModelRouter:
         """
         Create a fully configured ModelRouter from a YAML config file.
-        
+
         Args:
             config_path: Path to models.yaml
             env_vars: Dict of environment variables (for API keys).
@@ -193,7 +193,7 @@ class ModelRouter:
     ) -> tuple[CustomLLMProvider, str | None]:
         """
         Resolve which provider to use based on task_type or explicit provider name.
-        
+
         Returns:
             (provider, model_override) tuple
         """
@@ -247,12 +247,12 @@ class ModelRouter:
     ) -> LLMResponse:
         """
         Route and complete an LLM request.
-        
+
         Args:
             request: The LLM request to send
             task_type: Optional task type for routing (e.g., "reasoning", "coding")
             provider_name: Optional explicit provider name
-            
+
         Returns:
             LLMResponse from the selected provider
         """

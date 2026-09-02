@@ -14,9 +14,9 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from enum import StrEnum
-from typing import Any, Optional
+from typing import Any
 
 from sonic.logger import get_logger
 
@@ -55,8 +55,8 @@ class ExperimentProposal:
     baseline_score: float = 0.0
     candidate_score: float = 0.0
     evaluation_notes: str = ""
-    created_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
-    updated_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+    created_at: str = field(default_factory=lambda: datetime.now(UTC).isoformat())
+    updated_at: str = field(default_factory=lambda: datetime.now(UTC).isoformat())
 
 
 class ExperimentManager:
@@ -121,15 +121,12 @@ class ExperimentManager:
                 return True
 
         content_lower = content.lower()
-        if "disable_safety" in content_lower or "bypass_scope" in content_lower or "l2_forbidden = l0" in content_lower:
-            return True
+        return bool("disable_safety" in content_lower or "bypass_scope" in content_lower or "l2_forbidden = l0" in content_lower)
 
-        return False
-
-    def get_experiment(self, exp_id: str) -> Optional[ExperimentProposal]:
+    def get_experiment(self, exp_id: str) -> ExperimentProposal | None:
         return self.experiments.get(exp_id)
 
-    def list_experiments(self, status: Optional[ExperimentStatus] = None) -> list[ExperimentProposal]:
+    def list_experiments(self, status: ExperimentStatus | None = None) -> list[ExperimentProposal]:
         if status:
             return [e for e in self.experiments.values() if e.status == status]
         return list(self.experiments.values())
@@ -140,14 +137,14 @@ class ExperimentManager:
         if not exp:
             return False
         exp.status = status
-        exp.updated_at = datetime.now(timezone.utc).isoformat()
+        exp.updated_at = datetime.now(UTC).isoformat()
         if notes:
             exp.evaluation_notes = notes
         logger.info("experiment_status_changed", exp_id=exp_id, status=status)
         return True
 
 
-_global_experiment_manager: Optional[ExperimentManager] = None
+_global_experiment_manager: ExperimentManager | None = None
 
 
 def get_experiment_manager() -> ExperimentManager:

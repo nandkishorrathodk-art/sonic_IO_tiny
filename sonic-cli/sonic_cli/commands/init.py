@@ -21,7 +21,7 @@ def init_command(
 ):
     """🚀 Initialize a new engagement project."""
     project_dir = Path(directory) / project_name
-    
+
     if project_dir.exists():
         console.print(f"[red]Error: Directory '{project_dir}' already exists.[/red]")
         raise typer.Exit(1)
@@ -33,7 +33,7 @@ def init_command(
         project_dir / "reports",
         project_dir / "logs",
     ]
-    
+
     for d in dirs:
         d.mkdir(parents=True, exist_ok=True)
 

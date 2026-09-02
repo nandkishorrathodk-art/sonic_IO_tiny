@@ -6,9 +6,7 @@ Start and monitor security engagements via backend API.
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
-from typing import Optional
 
 import httpx
 import typer
@@ -89,7 +87,7 @@ def engage_command(
                     headers=headers,
                 )
                 run_res.raise_for_status()
-                results = run_res.json()
+                run_res.json()  # trigger error if run failed
 
             # Step 3: Fetch verified findings
             progress.add_task(description="Fetching final verified findings...", total=None)

@@ -13,10 +13,7 @@ across controlled synthetic software engineering and security tasks:
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Any
-
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 
 class ComputerBenchmarkMetrics(BaseModel):

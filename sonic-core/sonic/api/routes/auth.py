@@ -24,7 +24,7 @@ from sonic.auth.google_auth import (
     get_google_login_url,
 )
 from sonic.auth.middleware import require_auth
-from sonic.auth.models import AuthToken, User, UserRole
+from sonic.auth.models import User, UserRole
 from sonic.config import get_settings
 
 router = APIRouter()
@@ -124,7 +124,7 @@ async def get_dev_token(email: str = Query("engineer@company.com")):
 async def google_login(redirect_url: str = Query(default="")):
     """
     Redirect to Google OAuth2 consent screen.
-    
+
     After login, Google redirects back to /auth/google/callback
     """
     login_url = get_google_login_url(state=redirect_url)

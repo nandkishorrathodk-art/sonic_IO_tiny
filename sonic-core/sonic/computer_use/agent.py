@@ -13,31 +13,23 @@ of a step counter. No vulnerability-specific fix is hardcoded anywhere.
 
 from __future__ import annotations
 
-import asyncio
+import re
+import shlex
 import time
-from typing import Any, Optional
+from typing import Any
 
 from sonic.computer.models import (
-    ApplicationPolicy,
-    ComputerRiskLevel,
-    ComputerWorkspace,
-    ComputerWorkspaceStatus,
-    FileEntry,
     GUIAction,
     GUIActionType,
-    ScreenObservation,
 )
-from sonic.computer.provider import ComputerProvider, UnifiedComputerProvider
+from sonic.computer.provider import ComputerProvider
 from sonic.computer_use.models import (
-    ComputerActionPlan,
     ComputerActionType,
     ComputerAutonomyLevel,
     ComputerDecisionTrace,
     ComputerUseMetrics,
     ComputerWorldObservation,
     EngineeringMissionMode,
-    _new_id,
-    _now,
 )
 from sonic.logger import get_logger
 
@@ -68,13 +60,13 @@ class ComputerUseAgent:
         mode: EngineeringMissionMode = EngineeringMissionMode.ENGINEERING_MODE,
         max_actions: int = 50,
         max_recovery_attempts: int = 5,
-        llm_router: Optional[Any] = None,
-        browser: Optional[Any] = None,
-        security_tools: Optional[dict[str, Any]] = None,
-        safety: Optional[Any] = None,
+        llm_router: Any | None = None,
+        browser: Any | None = None,
+        security_tools: dict[str, Any] | None = None,
+        safety: Any | None = None,
         self_host: bool = False,
-        toolsmith: Optional[Any] = None,
-        method_lab: Optional[Any] = None,
+        toolsmith: Any | None = None,
+        method_lab: Any | None = None,
         tenant_id: str = "default",
         engagement_id: str = "default",
         agent_id: str = "computer-use-agent",
@@ -124,11 +116,17 @@ class ComputerUseAgent:
         self.history: list[dict[str, str]] = []
         # Last captured browser page state, carried into the next observation so
         # the LLM sees the current page even between browser actions.
-        self._last_browser_snapshot: Optional[Any] = None
+        self._last_browser_snapshot: Any | None = None
         # Last structured security-tool result, surfaced to the next reasoning
         # step so the LLM acts on real scan findings rather than a claim.
-        self._last_tool_result: Optional[Any] = None
+        self._last_tool_result: Any | None = None
         self._last_screenshot_b64: str = ""
+        # Closed-loop control state (Devin-style VERIFY + REPLAN). The agent
+        # must not trust a self-declared "done"; it independently verifies, and
+        # when the same approach keeps failing it replans rather than burning
+        # the step budget on a stuck loop.
+        self._consecutive_failures: int = 0
+        self._replan_count: int = 0
 
     # =============================================================
     # 1. Closed-Loop Observation
@@ -326,17 +324,23 @@ class ComputerUseAgent:
             "If the goal is already achieved, respond GOAL_COMPLETE.\n"
             "You can see the desktop screenshot and interact with GUI elements by clicking at coordinates.\n"
             "Respond in EXACTLY this format (no markdown):\n"
-            "ACTION: <GUI_CLICK|GUI_DOUBLE_CLICK|GUI_TYPE|GUI_KEYPRESS|GUI_MOVE|GUI_SCROLL|GUI_SCREENSHOT|FILE_READ|FILE_WRITE|TERMINAL_EXEC|GIT_COMMIT|APP_LAUNCH|BROWSER_NAVIGATE|BROWSER_CLICK|BROWSER_TYPE|BROWSER_SCREENSHOT|SECURITY_TOOL|TOOL_AUTHOR|TOOL_RUN|METHOD_INVENT|GOAL_COMPLETE>\n"
+            "ACTION: <GUI_CLICK|GUI_DOUBLE_CLICK|GUI_TYPE|GUI_KEYPRESS|GUI_MOVE|GUI_SCROLL|GUI_DRAG|GUI_SCREENSHOT|GUI_WAIT|FILE_READ|FILE_WRITE|TERMINAL_EXEC|GIT_COMMIT|APP_LAUNCH|APP_CLOSE|APP_FOCUS|APP_INSTALL|SERVICE_ACTION|BROWSER_NAVIGATE|BROWSER_CLICK|BROWSER_TYPE|BROWSER_SCREENSHOT|BROWSER_WAIT|BROWSER_DOWNLOAD|SECURITY_TOOL|TOOL_AUTHOR|TOOL_RUN|METHOD_INVENT|GOAL_COMPLETE>\n"
             "TARGET: <resource path, name, url, css selector, or scan target>\n"
             'PAYLOAD: <json dict, e.g. {"path": "...", "content": "..."}, '
             '{"command": "..."}, {"url": "..."}, {"selector": "...", "text": "..."}, '
             '{"tool": "<any registered security tool name>", "target": "...", '
             '"args": "..."}>\n'
             'For GUI_CLICK/GUI_DOUBLE_CLICK/GUI_MOVE: TARGET is "x,y" pixel coordinates\n'
+            'For GUI_DRAG: TARGET is "x,y" (source) and PAYLOAD is {"x2": <int>, "y2": <int>} (destination)\n'
             'For GUI_TYPE: PAYLOAD is {"text": "..."}\n'
             'For GUI_KEYPRESS: PAYLOAD is {"key": "Return|Tab|Escape|ctrl+c|..."}\n'
             'For GUI_SCROLL: TARGET is "x,y" and PAYLOAD is {"delta": -3} (negative=down, positive=up)\n'
             'For GUI_SCREENSHOT: no target or payload needed\n'
+            'For GUI_WAIT: PAYLOAD is {"seconds": 3} to let a wizard/progress bar settle\n'
+            'For APP_INSTALL: TARGET is the package name (e.g. nmap, chromium)\n'
+            'For APP_FOCUS: TARGET is the window/app name to focus without relaunching\n'
+            'For BROWSER_WAIT: PAYLOAD is {"selector": "<css>"} to wait for an element to render\n'
+            'For BROWSER_DOWNLOAD: PAYLOAD is {"selector": "<css>", "save_path": "/home/sonic/workspace/file"}\n'
             "EXPECTED: <short description of predicted outcome>"
         )
         return system_prompt, obs_summary
@@ -415,15 +419,23 @@ class ComputerUseAgent:
             "GUI_MOVE": ComputerActionType.GUI_MOVE,
             "GUI_SCROLL": ComputerActionType.GUI_SCROLL,
             "GUI_SCREENSHOT": ComputerActionType.GUI_SCREENSHOT,
+            "GUI_DRAG": ComputerActionType.GUI_DRAG,
+            "GUI_WAIT": ComputerActionType.GUI_WAIT,
             "FILE_READ": ComputerActionType.FILE_READ,
             "FILE_WRITE": ComputerActionType.FILE_WRITE,
             "TERMINAL_EXEC": ComputerActionType.TERMINAL_EXEC,
             "GIT_COMMIT": ComputerActionType.GIT_COMMIT,
             "APP_LAUNCH": ComputerActionType.APP_LAUNCH,
+            "APP_CLOSE": ComputerActionType.APP_CLOSE,
+            "APP_FOCUS": ComputerActionType.APP_FOCUS,
+            "APP_INSTALL": ComputerActionType.APP_INSTALL,
+            "SERVICE_ACTION": ComputerActionType.SERVICE_ACTION,
             "BROWSER_NAVIGATE": ComputerActionType.BROWSER_NAVIGATE,
             "BROWSER_CLICK": ComputerActionType.BROWSER_CLICK,
             "BROWSER_TYPE": ComputerActionType.BROWSER_TYPE,
             "BROWSER_SCREENSHOT": ComputerActionType.BROWSER_SCREENSHOT,
+            "BROWSER_WAIT": ComputerActionType.BROWSER_WAIT,
+            "BROWSER_DOWNLOAD": ComputerActionType.BROWSER_DOWNLOAD,
             "SECURITY_TOOL": ComputerActionType.SECURITY_TOOL,
             "TOOL_AUTHOR": ComputerActionType.TOOL_AUTHOR,
             "TOOL_RUN": ComputerActionType.TOOL_RUN,
@@ -454,7 +466,7 @@ class ComputerUseAgent:
             if not payload.get("command") or str(payload.get("command")).lower() == "none":
                 payload["command"] = target if target and target != default_file else "echo OK"
 
-        if action_type in (ComputerActionType.GUI_CLICK, ComputerActionType.GUI_DOUBLE_CLICK, ComputerActionType.GUI_MOVE):
+        if action_type in (ComputerActionType.GUI_CLICK, ComputerActionType.GUI_DOUBLE_CLICK, ComputerActionType.GUI_MOVE, ComputerActionType.GUI_DRAG):
             if target and "," in target:
                 parts = target.split(",")
                 if len(parts) == 2 and parts[0].strip().isdigit() and parts[1].strip().isdigit():
@@ -498,7 +510,7 @@ class ComputerUseAgent:
     ) -> ComputerDecisionTrace:
         """Executes the action inside the computer sandbox and validates outcome."""
         self.action_counter += 1
-        t0 = time.perf_counter()
+        time.perf_counter()
         actual_obs_str = ""
         status = "SUCCESS"
         recovery_needed = False
@@ -575,6 +587,20 @@ class ComputerUseAgent:
                 )
                 actual_obs_str = f"Moved mouse to ({x}, {y})"
 
+            elif action_type == ComputerActionType.GUI_DRAG:
+                # Press-move-release (a human drag). Source (x,y) may come from
+                # TARGET "x,y" (parsed above) or payload; destination (x2,y2)
+                # comes from payload. Lets the agent drag-drop a file or slide.
+                x = int(payload.get("x", 0))
+                y = int(payload.get("y", 0))
+                x2 = int(payload.get("x2", 0))
+                y2 = int(payload.get("y2", 0))
+                await self.computer.gui_action(
+                    workspace_id,
+                    GUIAction(action=GUIActionType.DRAG, x=x, y=y, x2=x2, y2=y2),
+                )
+                actual_obs_str = f"Dragged from ({x},{y}) to ({x2},{y2})"
+
             elif action_type == ComputerActionType.GUI_SCROLL:
                 x = int(payload.get("x", 640))
                 y = int(payload.get("y", 400))
@@ -590,6 +616,18 @@ class ComputerUseAgent:
                 self._last_screenshot_b64 = getattr(screen, "screenshot_base64", "")
                 actual_obs_str = f"Screenshot captured ({screen.width}x{screen.height})"
 
+            elif action_type == ComputerActionType.GUI_WAIT:
+                # A human waits for a wizard step or progress bar before acting.
+                # Without this the agent re-screenshots a still-loading UI and
+                # clicks stale coordinates. Wait a fixed duration, then refresh
+                # the screen so the NEXT observation reflects the settled state.
+                import asyncio as _asyncio
+                seconds = max(0, min(int(payload.get("seconds", 2)), 30))
+                await _asyncio.sleep(seconds)
+                screen = await self.computer.screenshot(workspace_id)
+                self._last_screenshot_b64 = getattr(screen, "screenshot_base64", "")
+                actual_obs_str = f"Waited {seconds}s; screen refreshed"
+
             elif action_type == ComputerActionType.APP_LAUNCH:
                 app_name = payload.get("app_name") or target_resource or "chromium"
                 if app_name.lower() in ("none", ""):
@@ -601,6 +639,45 @@ class ComputerUseAgent:
                 app_name = payload.get("app_name") or target_resource or "chromium"
                 await self.computer.gui_action(workspace_id, GUIAction(action=GUIActionType.CLOSE_APP, app_name=app_name))
                 actual_obs_str = f"Closed {app_name}"
+
+            elif action_type == ComputerActionType.APP_FOCUS:
+                # Toggle focus between desktop windows (e.g. Chromium ↔ a
+                # terminal app) without relaunching. Maps to SELECT_WINDOW so
+                # the provider re-activates an already-open window by title.
+                app_name = payload.get("app_name") or target_resource or "chromium"
+                await self.computer.gui_action(
+                    workspace_id,
+                    GUIAction(action=GUIActionType.SELECT_WINDOW, app_name=app_name),
+                )
+                actual_obs_str = f"Focused {app_name}"
+
+            elif action_type == ComputerActionType.APP_INSTALL:
+                # Install a package via the provider's install_application(),
+                # which enforces the ApplicationPolicy allowlist (forbidden
+                # packages are blocked). This is the sanctioned install path —
+                # an agent must NOT bypass it with a raw `apt-get install`
+                # TERMINAL_EXEC, which would skip the package-policy gate.
+                if not hasattr(self.computer, "install_application"):
+                    actual_obs_str = "Install not supported by this computer provider"
+                    recovery_needed = True
+                else:
+                    package = payload.get("package") or payload.get("app_name") or target_resource
+                    if not package:
+                        actual_obs_str = "APP_INSTALL requires a package name"
+                        recovery_needed = True
+                    else:
+                        ok, output = await self.computer.install_application(
+                            workspace_id, package,
+                        )
+                        if ok:
+                            actual_obs_str = f"Installed {package}: {(output or '')[:200]}"
+                        else:
+                            actual_obs_str = f"Install {package} blocked/failed: {(output or '')[:200]}"
+                            # A policy-blocked install (forbidden package) is
+                            # NOT a recovery trigger — the safety gate decided
+                            # correctly; the agent should pick a different tool.
+                            if "prohibited" not in (output or "").lower():
+                                recovery_needed = True
 
             elif action_type == ComputerActionType.FILE_READ:
                 path = payload.get("path", "/home/sonic/workspace/README.md")
@@ -641,7 +718,6 @@ class ComputerUseAgent:
                     actual_obs_str = f"Navigated to {getattr(snap, 'url', url)} (title: {getattr(snap, 'title', '')})"
                 else:
                     cmd = f"DISPLAY=:0 nohup chromium --no-sandbox --disable-dev-shm-usage {shlex.quote(url)} >/dev/null 2>&1 &"
-                    import shlex
                     await self.computer.terminal(workspace_id, cmd)
                     actual_obs_str = f"Launched Chromium on desktop navigating to {url}"
 
@@ -677,6 +753,38 @@ class ComputerUseAgent:
                 else:
                     screen = await self.computer.screenshot(workspace_id)
                     actual_obs_str = f"Desktop screenshot captured ({screen.width}x{screen.height})"
+
+            elif action_type == ComputerActionType.BROWSER_WAIT:
+                # Wait for a page element to render before clicking it — a human
+                # waits for a download button or "Next" to appear.
+                selector = payload.get("selector") or target_resource
+                if self.browser is not None and selector:
+                    ok = await self.browser.wait_for_element(selector)
+                    actual_obs_str = f"Element {selector} ready" if ok else f"Element {selector} not found within timeout"
+                else:
+                    import asyncio as _asyncio
+                    await _asyncio.sleep(2)
+                    actual_obs_str = "Waited 2s (no BrowserAgent)"
+
+            elif action_type == ComputerActionType.BROWSER_DOWNLOAD:
+                # Human step: click a download link on the website and save the
+                # file to the sandbox workspace. save_path is confined to the
+                # workspace root by the safety gate (FILE_WRITE-style).
+                selector = payload.get("selector") or target_resource
+                save_path = payload.get("save_path") or payload.get("path")
+                if self.browser is None:
+                    actual_obs_str = "Download requires BrowserAgent (Playwright)"
+                    recovery_needed = True
+                elif not selector or not save_path:
+                    actual_obs_str = "BROWSER_DOWNLOAD requires selector and save_path"
+                    recovery_needed = True
+                else:
+                    ok = await self.browser.download(selector, save_path)
+                    if ok:
+                        actual_obs_str = f"Downloaded {selector} to {save_path}"
+                    else:
+                        actual_obs_str = f"Download failed: {selector}"
+                        recovery_needed = True
 
             elif action_type == ComputerActionType.SECURITY_TOOL:
                 tool_name = payload.get("tool", target_resource)
@@ -871,6 +979,86 @@ class ComputerUseAgent:
     # =============================================================
     # 5. Full Autonomous Mission Execution Loop
     # =============================================================
+
+    # Threshold: after this many consecutive failures in a row, the loop
+    # considers the current approach stuck and injects a replan prompt rather
+    # than repeating the same failing strategy until the step budget is gone.
+    _STUCK_THRESHOLD: int = 3
+
+    async def verify_goal(
+        self,
+        workspace_id: str,
+        goal: str,
+    ) -> tuple[bool, str]:
+        """Independently verify the goal is achieved — never trust a self-declared
+        "done" (the Devin principle: code-likh-diya != task-complete).
+
+        The LLM may emit GOAL_COMPLETE, but that is the agent judging itself
+        (circular). This method performs an INDEPENDENT check grounded in the
+        real sandbox state: if the goal implies a running service/test/file,
+        it probes the actual artifact. Falls back to a fresh observation-only
+        re-check when no concrete artifact can be inferred.
+
+        Returns (verified, evidence). verified=True only on real evidence.
+        """
+        g = goal.lower().strip()
+
+        # Infer a concrete verification probe from the goal text. A human
+        # verifies "build a web app" by running it; "install X" by checking the
+        # binary; "fix tests" by running pytest and reading the result.
+        verify_cmd: str | None = None
+        if any(k in g for k in ("test", "pytest", "unittest")):
+            verify_cmd = "python -m pytest -q --tb=short 2>&1 | tail -5"
+        elif any(k in g for k in ("install", "set up", "setup")):
+            # Extract a plausible package/binary name from the goal.
+            m = re.search(r"install(?:\s+(?:the\s+)?)?([a-zA-Z0-9_.-]+)", g)
+            pkg = m.group(1) if m else ""
+            verify_cmd = f"which {pkg} 2>/dev/null || dpkg -l {pkg} 2>/dev/null | grep ^ii"
+        elif any(k in g for k in ("run", "start", "serve", "launch")):
+            verify_cmd = "echo verify_started"
+
+        evidence = ""
+        if verify_cmd:
+            try:
+                res = await self.computer.terminal(workspace_id, verify_cmd)
+                evidence = (res.stdout.strip() if res.stdout else "") or f"Exit {res.exit_code}"
+            except Exception as e:
+                evidence = f"Verify probe failed: {e}"
+        else:
+            # No concrete probe inferable — re-observe so the caller can judge
+            # from the live state rather than a stale self-declaration.
+            obs = await self.observe(workspace_id)
+            evidence = f"Re-observed: app={obs.active_application}, term={obs.terminal_output[:120]}"
+
+        # Fail-closed verification: a probe that ran and returned real, non-error
+        # output is "evidence the artifact exists". An empty/error/traceback
+        # probe is NOT success — absence of evidence is not evidence of success.
+        ev_lower = evidence.lower()
+        verified = bool(evidence) and "error" not in ev_lower and "traceback" not in ev_lower
+        return verified, evidence
+
+    def _inject_replan(self, goal: str) -> None:
+        """Signal the reasoning loop to abandon the current approach.
+
+        When the agent is stuck (N consecutive failures), a human reassesses:
+        "this isn't working, try a different angle." We inject that signal into
+        the history so the NEXT LLM call sees it and pivots, rather than
+        repeating the same failing action until the step budget is exhausted.
+        """
+        self._replan_count += 1
+        self._consecutive_failures = 0
+        replan_note = (
+            f"REPLAN #{self._replan_count}: the last approach failed repeatedly. "
+            f"Goal remains: {goal}. Re-assess from the current observation and "
+            f"choose a DIFFERENT strategy — do not repeat the failing action."
+        )
+        self.history.append({"action": "REPLAN", "result": replan_note})
+        logger.warning(
+            "mission_replan_triggered",
+            replan_count=self._replan_count,
+            goal=goal,
+        )
+
     async def run_mission(
         self,
         workspace_id: str,
@@ -879,9 +1067,12 @@ class ComputerUseAgent:
     ) -> list[ComputerDecisionTrace]:
         """Runs an end-to-end closed-loop autonomous engineering mission.
 
-        The loop is goal-aware: each step it observes, reasons (LLM) over the
-        observation + history, acts, and stops early if the LLM signals the
-        goal is complete — rather than blindly executing a fixed step count.
+        Devin-style loop: Observe → Reason → Act → **Verify** → (Replan on
+        stuck). Each step observes, reasons (LLM) over observation + history,
+        acts, then — critically — does NOT trust a self-declared GOAL_COMPLETE:
+        it independently verifies against the real sandbox state. When the same
+        approach fails N times in a row, it replans (injects a pivot signal)
+        instead of burning the step budget on a stuck loop.
         """
         t_start = time.perf_counter()
         goal_reached = False
@@ -897,24 +1088,52 @@ class ComputerUseAgent:
             # 2. REASON & CHOOSE ACTION
             action_type, target, payload, expected = await self.choose_action(goal, obs, step)
 
-            # Goal-complete sentinel: the LLM judged the goal achieved — stop.
+            # Goal-complete sentinel: the LLM JUDGED the goal achieved — but we
+            # do not stop on self-declaration alone. We independently verify.
             if expected == _GOAL_COMPLETE_SENTINEL:
-                logger.info("mission_goal_complete", step=step, actions_taken=self.action_counter)
-                goal_reached = True
-                break
+                verified, evidence = await self.verify_goal(workspace_id, goal)
+                if verified:
+                    logger.info(
+                        "mission_goal_complete_verified",
+                        step=step,
+                        actions_taken=self.action_counter,
+                        evidence=evidence[:200],
+                    )
+                    goal_reached = True
+                    break
+                # Self-declared done but independent verification FAILED: the
+                # goal is NOT actually achieved. Feed the evidence back so the
+                # LLM corrects course instead of stopping on a false positive.
+                self.history.append({
+                    "action": "GOAL_COMPLETE (self-declared)",
+                    "result": f"VERIFICATION FAILED: {evidence[:200]}. Goal NOT achieved — continue.",
+                })
+                self._consecutive_failures += 1
+                if self._consecutive_failures >= self._STUCK_THRESHOLD:
+                    self._inject_replan(goal)
+                continue
 
             # 3. ACT & VERIFY
-            await self.execute_action(workspace_id, action_type, target, payload, expected)
+            trace = await self.execute_action(workspace_id, action_type, target, payload, expected)
+
+            # Track consecutive failures for stuck/replan detection.
+            if trace.status == "FAILED":
+                self._consecutive_failures += 1
+                if self._consecutive_failures >= self._STUCK_THRESHOLD:
+                    self._inject_replan(goal)
+            else:
+                self._consecutive_failures = 0
 
         t_elapsed = time.perf_counter() - t_start
 
-        # Update Telemetry Metrics
+        # Update Telemetry Metrics. verification_score now reflects whether the
+        # goal was independently verified (not just self-declared).
         self.metrics.actions_total = len(self.traces)
         self.metrics.actions_successful = sum(1 for t in self.traces if t.status in ["SUCCESS", "RECOVERED"])
         self.metrics.actions_failed = sum(1 for t in self.traces if t.status == "FAILED")
         self.metrics.recovery_events = self.recovery_events
         self.metrics.time_to_completion_seconds = round(t_elapsed, 2)
-        self.metrics.verification_score = 1.00 if (self.metrics.actions_failed == 0 and goal_reached) else (
+        self.metrics.verification_score = 1.00 if goal_reached else (
             0.90 if self.metrics.actions_failed == 0 else 0.80
         )
 

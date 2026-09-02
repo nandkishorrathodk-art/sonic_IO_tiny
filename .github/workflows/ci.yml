@@ -1,0 +1,78 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+# Cancel superseded runs on the same ref.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: Lint (ruff)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install ruff
+        run: pip install "ruff>=0.8.6"
+
+      - name: Run ruff (core)
+        run: ruff check sonic-core/sonic --output-format=github
+
+      - name: Run ruff (cli)
+        run: ruff check sonic-cli/sonic_cli --output-format=github
+
+  test:
+    name: Tests
+    runs-on: ubuntu-latest
+    env:
+      APP_ENV: development
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install backend + dev deps
+        run: |
+          pip install --upgrade pip
+          pip install -e "sonic-core[dev]"
+          pip install -e "sonic-cli[dev]"
+
+      - name: Run pytest
+        run: python -m pytest sonic-core/tests/ -ra --tb=short
+
+  typecheck:
+    name: Type check (mypy)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install backend + dev deps
+        run: |
+          pip install --upgrade pip
+          pip install -e "sonic-core[dev]"
+
+      - name: Run mypy
+        run: python -m mypy sonic-core/sonic || true
+        continue-on-error: true

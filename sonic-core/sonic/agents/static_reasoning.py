@@ -15,10 +15,11 @@ Capabilities:
 
 from __future__ import annotations
 
-from typing import Any
 import json
-from sonic.logger import get_logger
+from typing import Any
+
 from sonic.agents.base import BaseAgent
+from sonic.logger import get_logger
 from sonic.memory.schemas import FindingNode, FindingSeverity, FindingStatus, HypothesisNode
 
 logger = get_logger(__name__)

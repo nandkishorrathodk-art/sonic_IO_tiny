@@ -35,7 +35,7 @@ from __future__ import annotations
 
 import json
 from enum import StrEnum
-from typing import Any, Optional
+from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -45,16 +45,11 @@ from sonic.agents.cognitive_state import (
 )
 from sonic.agents.task_graph import (
     VALID_AGENT_TYPES,
-    CycleDetectedError,
-    InvalidAgentTypeError,
-    InvalidDependencyError,
-    MaxTasksExceededError,
     TaskGraph,
     TaskGraphError,
     TaskNode,
     TaskPriority,
     TaskStatus,
-    TenantMismatchError,
 )
 from sonic.logger import get_logger
 

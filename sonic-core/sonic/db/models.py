@@ -8,23 +8,19 @@ Findings, and Immutable Audit Trails using SQLAlchemy.
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
-from typing import Any, Optional
+from datetime import UTC, datetime
 
 from sqlalchemy import (
     JSON,
     Boolean,
     Column,
     DateTime,
-    Enum,
-    Float,
     ForeignKey,
     Index,
     Integer,
     String,
     Text,
 )
-from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import declarative_base, relationship
 
 Base = declarative_base()
@@ -35,7 +31,7 @@ def generate_uuid() -> str:
 
 
 def utc_now() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 class TenantModel(Base):

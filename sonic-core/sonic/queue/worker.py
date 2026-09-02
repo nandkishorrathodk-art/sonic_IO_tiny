@@ -7,9 +7,7 @@ executes security tools/browser tasks, and produces structured evidence.
 
 from __future__ import annotations
 
-import asyncio
-from datetime import datetime, timezone
-from typing import Optional
+from datetime import UTC, datetime
 
 from sonic.browser.container_runtime import BrowserAction, ContainerizedBrowser
 from sonic.logger import get_logger
@@ -30,8 +28,8 @@ class SonicWorker:
 
     def __init__(
         self,
-        queue: Optional[RedisJobQueue] = None,
-        provider: Optional[ComputeProvider] = None,
+        queue: RedisJobQueue | None = None,
+        provider: ComputeProvider | None = None,
         worker_id: str = "worker-01",
     ):
         self.queue = queue or get_job_queue()
@@ -46,7 +44,7 @@ class SonicWorker:
     async def execute_job(self, job: Job) -> Job:
         """Execute a single job and update its lifecycle state."""
         job.status = JobStatus.RUNNING
-        job.started_at = datetime.now(timezone.utc).isoformat()
+        job.started_at = datetime.now(UTC).isoformat()
         await self.queue.update_job(job)
 
         await self.queue.emit_event(JobEvent(
@@ -70,7 +68,7 @@ class SonicWorker:
 
             job.status = JobStatus.SUCCEEDED
             job.result = result_data
-            job.completed_at = datetime.now(timezone.utc).isoformat()
+            job.completed_at = datetime.now(UTC).isoformat()
 
             await self.queue.emit_event(JobEvent(
                 tenant_id=job.tenant_id,
@@ -89,7 +87,7 @@ class SonicWorker:
                 logger.info("job_retrying", job_id=job.id, retry=job.retry_count)
             else:
                 job.status = JobStatus.FAILED
-                job.completed_at = datetime.now(timezone.utc).isoformat()
+                job.completed_at = datetime.now(UTC).isoformat()
 
             await self.queue.emit_event(JobEvent(
                 tenant_id=job.tenant_id,
@@ -184,13 +182,13 @@ class SonicWorker:
             raise ValueError("AGENT_STEP job missing 'agent_type' in payload")
 
         # Import agents lazily to avoid circular imports
+        from sonic.agents.codefix import CodeFixAgent
+        from sonic.agents.dynamic_execution import DynamicExecutionAgent
+        from sonic.agents.exploit_validator import ExploitValidator
+        from sonic.agents.hypothesis import HypothesisGenerator
         from sonic.agents.recon import ReconAgent
         from sonic.agents.static_reasoning import StaticReasoningAgent
-        from sonic.agents.dynamic_execution import DynamicExecutionAgent
-        from sonic.agents.hypothesis import HypothesisGenerator
         from sonic.agents.verifier import VerifierAgent
-        from sonic.agents.codefix import CodeFixAgent
-        from sonic.agents.exploit_validator import ExploitValidator
 
         agent_classes = {
             "recon": ReconAgent,
@@ -271,7 +269,7 @@ class SonicWorker:
             "raw_result": result,
         }
 
-    async def run_once(self) -> Optional[Job]:
+    async def run_once(self) -> Job | None:
         """Poll and execute one job from queue."""
         job = await self.queue.dequeue_job(timeout_seconds=0.5)
         if job:

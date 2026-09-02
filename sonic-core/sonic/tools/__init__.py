@@ -8,10 +8,10 @@ Module providing structured parsers and execution pipelines for:
     - httpx (HTTP toolkit)
 """
 
-from sonic.tools.nuclei import NucleiParser, NucleiResult
-from sonic.tools.nmap import NmapParser, NmapHost, NmapPort
-from sonic.tools.ffuf import FfufParser, FfufMatch
+from sonic.tools.ffuf import FfufMatch, FfufParser
 from sonic.tools.ingest import ToolIngestPipeline
+from sonic.tools.nmap import NmapHost, NmapParser, NmapPort
+from sonic.tools.nuclei import NucleiParser, NucleiResult
 
 __all__ = [
     "NucleiParser",

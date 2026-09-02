@@ -7,8 +7,6 @@ self-evolution experiments.
 
 from __future__ import annotations
 
-from typing import Optional
-
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
@@ -53,7 +51,7 @@ async def propose_experiment(
 
 @router.get("/")
 async def list_experiments(
-    status: Optional[ExperimentStatus] = None,
+    status: ExperimentStatus | None = None,
     user: User = Depends(require_auth),
 ):
     """List all proposed, active, and past self-dev experiments."""

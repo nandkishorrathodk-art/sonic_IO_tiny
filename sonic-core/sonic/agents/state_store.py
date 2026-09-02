@@ -22,7 +22,7 @@ Recovery protocol:
 from __future__ import annotations
 
 import json
-from typing import Any, Optional
+from typing import Any
 
 from sonic.logger import get_logger
 
@@ -284,7 +284,7 @@ class StateStore:
 # Factory
 # ============================================
 
-_state_store: Optional[StateStore] = None
+_state_store: StateStore | None = None
 
 
 def get_state_store() -> StateStore:

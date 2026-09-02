@@ -13,15 +13,14 @@ Flow:
 
 from __future__ import annotations
 
-import time
-from datetime import datetime, timedelta, timezone
-from typing import Any, Optional
+import base64
+import hashlib
+import hmac
+import json
+from datetime import UTC, datetime, timedelta
+from typing import Any
 
 import httpx
-import json
-import base64
-import hmac
-import hashlib
 
 try:
     from jose import JWTError, jwt
@@ -161,7 +160,7 @@ def create_jwt_token(user: User) -> AuthToken:
     Create a JWT token for an authenticated multi-tenant user.
     """
     settings = get_settings()
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     expiry = now + timedelta(hours=settings.jwt_expiry_hours)
 
     payload = {
@@ -185,7 +184,7 @@ def create_jwt_token(user: User) -> AuthToken:
     )
 
 
-def decode_jwt_token(token: str) -> Optional[TokenPayload]:
+def decode_jwt_token(token: str) -> TokenPayload | None:
     """
     Decode and validate a JWT token. Returns None if invalid/expired.
     """
@@ -263,7 +262,7 @@ async def authenticate_with_google(code: str) -> AuthToken:
         google_id=str(google_user.get("id", "")),
         role=role,
         tenant_id=tenant_id,
-        last_login=datetime.now(timezone.utc),
+        last_login=datetime.now(UTC),
     )
 
     auth_token = create_jwt_token(user)

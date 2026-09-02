@@ -13,12 +13,10 @@ SECURITY ENFORCEMENT:
 from __future__ import annotations
 
 import asyncio
-import os
 import shutil
 import uuid
-from typing import Any, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, WebSocket, WebSocketDisconnect, status
+from fastapi import APIRouter, Depends, Query, WebSocket, WebSocketDisconnect, status
 
 from sonic.auth.middleware import require_auth, verify_ws_token
 from sonic.auth.models import User
@@ -44,7 +42,7 @@ class ContainerTerminalSession:
         self.container_name = container_name
         self.cols = cols
         self.rows = rows
-        self.process: Optional[asyncio.subprocess.Process] = None
+        self.process: asyncio.subprocess.Process | None = None
         self.active = False
 
     async def start(self) -> tuple[bool, str]:
@@ -96,7 +94,7 @@ class ContainerTerminalSession:
             try:
                 data = await asyncio.wait_for(self.process.stdout.read(4096), timeout=0.1)
                 return data.decode("utf-8", errors="replace")
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 return ""
         return ""
 
@@ -118,7 +116,7 @@ _sessions: dict[str, ContainerTerminalSession] = {}
 @router.websocket("/ws/terminal")
 async def terminal_websocket(
     websocket: WebSocket,
-    token: Optional[str] = Query(None),
+    token: str | None = Query(None),
     container: str = Query(_DEFAULT_TERMINAL_CONTAINER),
 ):
     """

@@ -39,8 +39,9 @@ import json
 import re
 import shlex
 import time
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from typing import Any, Awaitable, Callable, Optional
+from typing import Any
 from urllib.parse import urlparse
 
 import httpx
@@ -73,7 +74,7 @@ class ProbeTest:
     rationale: str = ""
 
     @classmethod
-    def from_dict(cls, d: dict[str, Any]) -> "ProbeTest":
+    def from_dict(cls, d: dict[str, Any]) -> ProbeTest:
         return cls(
             test_name=str(d.get("test_name", d.get("name", ""))),
             vulnerability_class=str(d.get("vulnerability_class", "unknown")),
@@ -267,12 +268,12 @@ class HTTPProbe:
     def __init__(
         self,
         *,
-        scope_checker: Optional[ScopeChecker] = None,
-        rate_limiter: Optional[EgressRateLimiter] = None,
+        scope_checker: ScopeChecker | None = None,
+        rate_limiter: EgressRateLimiter | None = None,
         sandbox_provider: Any = None,
         workspace_id: str = "",
-        responder: Optional[ResponderFn] = None,
-        scope_config: Optional[dict] = None,
+        responder: ResponderFn | None = None,
+        scope_config: dict | None = None,
         timeout: float = 15.0,
         max_body_capture: int = 16384,
     ):
@@ -284,9 +285,9 @@ class HTTPProbe:
         self.scope_config = scope_config or {}
         self.timeout = timeout
         self.max_body_capture = max_body_capture
-        self._client: Optional[httpx.AsyncClient] = None
+        self._client: httpx.AsyncClient | None = None
 
-    async def __aenter__(self) -> "HTTPProbe":
+    async def __aenter__(self) -> HTTPProbe:
         if self.responder is None and self.sandbox is None:
             self._client = httpx.AsyncClient(
                 timeout=self.timeout,
@@ -319,7 +320,7 @@ class HTTPProbe:
     # Guards
     # --------------------------------------------
 
-    def _guard(self, test: ProbeTest) -> Optional[str]:
+    def _guard(self, test: ProbeTest) -> str | None:
         """Return a block reason, or None if allowed."""
         url = (test.url or "").strip()
         if not url:
@@ -423,7 +424,7 @@ class HTTPProbe:
             req_lines.append(test.body)
         request_str = "\n".join(req_lines)
 
-        headers = {k: v for k, v in resp.headers.items()}
+        headers = dict(resp.headers.items())
         return ProbeResult(
             test_name=test.test_name or test.url,
             url=str(resp.request.url),

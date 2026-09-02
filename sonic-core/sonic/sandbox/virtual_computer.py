@@ -16,11 +16,10 @@ import asyncio
 import os
 import shutil
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from dataclasses import dataclass
+from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
-from typing import Any, Optional
 
 import httpx
 
@@ -70,8 +69,8 @@ class VirtualComputer(ABC):
     async def execute(
         self,
         command: str | list[str],
-        cwd: Optional[str] = None,
-        env: Optional[dict[str, str]] = None,
+        cwd: str | None = None,
+        env: dict[str, str] | None = None,
         timeout: int = 120,
     ) -> ExecResult:
         """Execute a command inside the virtual computer."""
@@ -173,13 +172,13 @@ class DockerSandbox(VirtualComputer):
     async def execute(
         self,
         command: str | list[str],
-        cwd: Optional[str] = None,
-        env: Optional[dict[str, str]] = None,
+        cwd: str | None = None,
+        env: dict[str, str] | None = None,
         timeout: int = 120,
     ) -> ExecResult:
         """Execute a command strictly inside the Docker container via /bin/bash."""
         cmd_str = command if isinstance(command, str) else " ".join(command)
-        start_time = datetime.now(timezone.utc)
+        start_time = datetime.now(UTC)
 
         if self.state != WorkspaceState.RUNNING:
             ok = await self.initialize()
@@ -205,7 +204,7 @@ class DockerSandbox(VirtualComputer):
                 stderr=asyncio.subprocess.PIPE,
             )
             stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=timeout)
-            duration = (datetime.now(timezone.utc) - start_time).total_seconds()
+            duration = (datetime.now(UTC) - start_time).total_seconds()
             return ExecResult(
                 command=cmd_str,
                 exit_code=process.returncode or 0,
@@ -214,7 +213,7 @@ class DockerSandbox(VirtualComputer):
                 duration_seconds=round(duration, 2),
                 timed_out=False,
             )
-        except asyncio.TimeoutError:
+        except TimeoutError:
             return ExecResult(
                 command=cmd_str, exit_code=-1, stdout="",
                 stderr=f"TIMEOUT: Container execution exceeded {timeout}s", duration_seconds=timeout, timed_out=True
@@ -303,12 +302,12 @@ class DaytonaSandbox(VirtualComputer):
     async def execute(
         self,
         command: str | list[str],
-        cwd: Optional[str] = None,
-        env: Optional[dict[str, str]] = None,
+        cwd: str | None = None,
+        env: dict[str, str] | None = None,
         timeout: int = 120,
     ) -> ExecResult:
         cmd_str = command if isinstance(command, str) else " ".join(command)
-        start_time = datetime.now(timezone.utc)
+        start_time = datetime.now(UTC)
 
         try:
             async with httpx.AsyncClient(base_url=self.api_url, headers=self._headers, timeout=timeout + 5) as client:
@@ -317,7 +316,7 @@ class DaytonaSandbox(VirtualComputer):
                     json={"command": cmd_str, "cwd": cwd, "env": env or {}},
                     timeout=timeout,
                 )
-                duration = (datetime.now(timezone.utc) - start_time).total_seconds()
+                duration = (datetime.now(UTC) - start_time).total_seconds()
                 if res.status_code == 200:
                     data = res.json()
                     return ExecResult(
@@ -387,8 +386,8 @@ class LocalSandbox(VirtualComputer):
     async def execute(
         self,
         command: str | list[str],
-        cwd: Optional[str] = None,
-        env: Optional[dict[str, str]] = None,
+        cwd: str | None = None,
+        env: dict[str, str] | None = None,
         timeout: int = 120,
     ) -> ExecResult:
         cmd_str = command if isinstance(command, str) else " ".join(command)
@@ -404,7 +403,7 @@ class LocalSandbox(VirtualComputer):
                 duration_seconds=0.0,
             )
 
-        start_time = datetime.now(timezone.utc)
+        start_time = datetime.now(UTC)
         try:
             process = await asyncio.create_subprocess_shell(
                 cmd_str,
@@ -414,7 +413,7 @@ class LocalSandbox(VirtualComputer):
                 env={**os.environ, **(env or {})},
             )
             stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=timeout)
-            duration = (datetime.now(timezone.utc) - start_time).total_seconds()
+            duration = (datetime.now(UTC) - start_time).total_seconds()
             return ExecResult(
                 command=cmd_str,
                 exit_code=process.returncode or 0,

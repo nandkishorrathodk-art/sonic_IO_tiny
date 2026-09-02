@@ -16,10 +16,9 @@ from __future__ import annotations
 import json
 import os
 import shlex
-import asyncio
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from sonic.computer.models import (
@@ -28,7 +27,6 @@ from sonic.computer.models import (
     ComputerProfile,
     ComputerRiskLevel,
     ComputerSession,
-    ComputerSessionMode,
     ComputerState,
     ComputerWorkspace,
     ComputerWorkspaceStatus,
@@ -45,7 +43,7 @@ from sonic.computer.models import (
 )
 from sonic.computer.provider import ComputerProvider
 from sonic.logger import get_logger
-from sonic.sandbox.provider import ExecResult, WorkspaceConfig, WorkspaceState, WorkspaceType
+from sonic.sandbox.provider import ExecResult
 
 logger = get_logger(__name__)
 
@@ -58,10 +56,10 @@ class DaytonaComputerProvider(ComputerProvider):
 
     def __init__(
         self,
-        api_key: Optional[str] = None,
-        api_url: Optional[str] = None,
-        target: Optional[str] = None,
-        app_policy: Optional[ApplicationPolicy] = None,
+        api_key: str | None = None,
+        api_url: str | None = None,
+        target: str | None = None,
+        app_policy: ApplicationPolicy | None = None,
     ):
         # Distinguish "not provided" (None -> read from env) from "explicitly
         # empty" ("" -> run offline with no cloud sandbox). Tests pass api_key=""
@@ -212,7 +210,7 @@ class DaytonaComputerProvider(ComputerProvider):
         token = name or value or str(state)
         return str(token).upper()
 
-    async def _resolve_sandbox(self, workspace_id: str) -> Optional[Any]:
+    async def _resolve_sandbox(self, workspace_id: str) -> Any | None:
         """Resolves the live AsyncDaytona sandbox instance for workspace or environment sandbox."""
         if workspace_id and workspace_id in self._sandboxes:
             return self._sandboxes[workspace_id]
@@ -432,7 +430,7 @@ class DaytonaComputerProvider(ComputerProvider):
             return True
         return False
 
-    async def get_stream_url(self, workspace_id: str) -> Optional[str]:
+    async def get_stream_url(self, workspace_id: str) -> str | None:
         """Obtains the Daytona preview/public URL for the noVNC port (6080).
 
         Uses the Daytona SDK get_preview_link API. Returns None if unavailable.
@@ -464,7 +462,7 @@ class DaytonaComputerProvider(ComputerProvider):
                 logger.warning("daytona_vnc_preview_url_failed", error=str(e))
         return None
 
-    async def get_vnc_url(self, workspace_id: str) -> Optional[str]:
+    async def get_vnc_url(self, workspace_id: str) -> str | None:
         """Alias for get_stream_url."""
         return await self.get_stream_url(workspace_id)
 
@@ -665,6 +663,8 @@ class DaytonaComputerProvider(ComputerProvider):
             GUIActionType.KEYPRESS,
             GUIActionType.MOVE,
             GUIActionType.SCROLL,
+            GUIActionType.DRAG,
+            GUIActionType.SELECT_WINDOW,
             GUIActionType.OPEN_APP,
             GUIActionType.CLOSE_APP,
         }
@@ -685,6 +685,20 @@ class DaytonaComputerProvider(ComputerProvider):
 
                 elif action_type == GUIActionType.MOVE:
                     await cu.mouse.move(action.x, action.y)
+
+                elif action_type == GUIActionType.DRAG:
+                    # Press-move-release gesture (a human drag): move to source,
+                    # hold, move to destination, release. Lets the agent
+                    # drag-drop a file onto a folder or slide a wizard control.
+                    sx, sy = action.x, action.y
+                    dx, dy = action.x2, action.y2
+                    if sx is None or sy is None or dx is None or dy is None:
+                        logger.warning("daytona_gui_drag_missing_coords", x=sx, y=sy, x2=dx, y2=dy)
+                        return await self.screenshot(workspace_id)
+                    await cu.mouse.move(sx, sy)
+                    await cu.mouse.down()
+                    await cu.mouse.move(dx, dy)
+                    await cu.mouse.up()
 
                 elif action_type == GUIActionType.SCROLL:
                     # Use xdotool for scroll wheel: button 4=up, 5=down
@@ -719,6 +733,23 @@ class DaytonaComputerProvider(ComputerProvider):
                     await sandbox.process.exec(f"pkill -f -- {shlex.quote(action.app_name)}")
                     if self._active_windows.get(workspace_id) == action.app_name:
                         self._active_windows[workspace_id] = "XFCE Desktop"
+
+                elif action_type == GUIActionType.SELECT_WINDOW:
+                    # Toggle focus between desktop windows (e.g. Chromium ↔ a
+                    # terminal app) without relaunching. wmctrl finds the
+                    # window by (sub)title and activates it; if the window is
+                    # already focused this is a no-op. Falls back to xdotool
+                    # search+activate when wmctrl is unavailable.
+                    title = action.app_name or action.window_id or ""
+                    if title:
+                        # The sandbox gate already constrains this to the Xvfb
+                        # display :0; we only pass the (quoted) title.
+                        safe = shlex.quote(title)
+                        await sandbox.process.exec(
+                            f"DISPLAY=:0 (wmctrl -a {safe} 2>/dev/null || "
+                            f"xdotool search --name {safe} windowactivate 2>/dev/null) || true"
+                        )
+                        self._active_windows[workspace_id] = title
 
             except Exception as e:
                 logger.error("daytona_gui_action_dispatch_error", error=str(e))
@@ -756,7 +787,7 @@ class DaytonaComputerProvider(ComputerProvider):
         FAIL-CLOSED: Host execution is strictly forbidden.
         """
         sandbox = await self._resolve_sandbox(workspace_id)
-        start_time = datetime.now(timezone.utc)
+        start_time = datetime.now(UTC)
 
         # 1. Try Daytona SDK execution
         if sandbox and hasattr(sandbox, "process"):
@@ -767,7 +798,7 @@ class DaytonaComputerProvider(ComputerProvider):
                 marker = f"/tmp/.sonic_stderr_{int(start_time.timestamp() * 1000)}"
                 wrapped = f"{{ {command} ; }} 2> {marker}; __sonic_ec=$?; cat {marker} 2>/dev/null; rm -f {marker}; exit $__sonic_ec"
                 res = await sandbox.process.exec(wrapped, timeout=timeout)
-                duration = (datetime.now(timezone.utc) - start_time).total_seconds()
+                duration = (datetime.now(UTC) - start_time).total_seconds()
                 raw_result = res.result or ""
                 exit_code = getattr(res, "exit_code", 0)
 
@@ -1041,7 +1072,7 @@ class DaytonaComputerProvider(ComputerProvider):
         action: str,
         resource: str,
         result: str,
-        details: Optional[dict[str, Any]] = None,
+        details: dict[str, Any] | None = None,
         risk_level: ComputerRiskLevel = ComputerRiskLevel.LOW,
     ) -> None:
         event = ComputerAuditEvent(

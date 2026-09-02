@@ -17,12 +17,9 @@ FAIL-CLOSED INVARIANT:
 
 from __future__ import annotations
 
-import asyncio
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
 from enum import StrEnum
-from typing import Any, AsyncIterator, Optional
 
 from sonic.logger import get_logger
 
@@ -85,8 +82,8 @@ class ComputeProvider(ABC):
         self,
         workspace_id: str,
         command: str | list[str],
-        cwd: Optional[str] = None,
-        env: Optional[dict[str, str]] = None,
+        cwd: str | None = None,
+        env: dict[str, str] | None = None,
         timeout: int = 120,
     ) -> ExecResult:
         """Execute a command strictly inside the isolated workspace."""

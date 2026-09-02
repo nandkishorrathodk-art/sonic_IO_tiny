@@ -12,8 +12,7 @@ Exports complete, self-contained, cryptographically-hashed audit packages:
 
 from __future__ import annotations
 
-import json
-from typing import Any, Optional
+from typing import Any
 
 from sonic.evidence.custody import CustodyChain
 from sonic.evidence.models import ProvenancedFinding
@@ -64,10 +63,10 @@ class EvidencePackageManager:
         # 3. reproduction.md
         reproduction_md = f"""# Reproduction Guide: {finding.title}
 
-**Finding ID**: `{finding.id}`  
-**Target**: `{finding.target}`  
-**Severity**: `{finding.severity.value.upper()}`  
-**Confidence**: `{finding.confidence_score*100:.1f}% ({finding.confidence_band.value.upper()})`  
+**Finding ID**: `{finding.id}`
+**Target**: `{finding.target}`
+**Severity**: `{finding.severity.value.upper()}`
+**Confidence**: `{finding.confidence_score*100:.1f}% ({finding.confidence_band.value.upper()})`
 
 ## Proof-of-Concept (PoC)
 ```bash
@@ -85,8 +84,8 @@ class EvidencePackageManager:
         # 4. verification.md
         verification_md = f"""# Verification Lineage & Chain of Trust
 
-**Discovered By**: `{finding.created_by_agent or 'discovery-agent'}`  
-**Verified By**: `{', '.join(finding.verified_by_agents) or 'independent-verifier'}`  
+**Discovered By**: `{finding.created_by_agent or 'discovery-agent'}`
+**Verified By**: `{', '.join(finding.verified_by_agents) or 'independent-verifier'}`
 
 ## Verification History
 """

@@ -39,8 +39,7 @@ import os
 import sqlite3
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
-from typing import Optional
+from datetime import UTC, datetime
 
 from sonic.logger import get_logger
 
@@ -55,7 +54,7 @@ def _default_db_path() -> str:
 
 
 def _now() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 # ---------------------------------------------------------------------------
@@ -113,10 +112,10 @@ class BeingStore:
     is required across restarts.
     """
 
-    def __init__(self, db_path: Optional[str] = None, persist: bool = True):
+    def __init__(self, db_path: str | None = None, persist: bool = True):
         self.persist = persist
         self._db_path = db_path or (_default_db_path() if persist else None)
-        self._db: Optional[sqlite3.Connection] = None
+        self._db: sqlite3.Connection | None = None
         self._being_cache: dict[str, Being] = {}
         self._mind_cache: dict[str, BeingMind] = {}
         if persist:
@@ -163,10 +162,10 @@ class BeingStore:
             )
 
     # -- Being CRUD -------------------------------------------------------
-    def get_being(self, being_id: str) -> Optional[Being]:
+    def get_being(self, being_id: str) -> Being | None:
         return self._being_cache.get(being_id)
 
-    def get_being_for_tenant(self, tenant_id: str) -> Optional[Being]:
+    def get_being_for_tenant(self, tenant_id: str) -> Being | None:
         for b in self._being_cache.values():
             if b.tenant_id == tenant_id:
                 return b
@@ -235,7 +234,7 @@ class BeingStore:
 # Singleton (mirrors get_vector_memory / reset_vector_memory_singleton)
 # ---------------------------------------------------------------------------
 
-_being_store: Optional[BeingStore] = None
+_being_store: BeingStore | None = None
 
 
 def get_being_store() -> BeingStore:
@@ -284,7 +283,7 @@ def get_or_create_being(tenant_id: str, name: str = "SONIC") -> Being:
 # Mind evolution primitives (used by the idle tick)
 # ---------------------------------------------------------------------------
 
-def record_idle_cycle(being_id: str, learned: Optional[str] = None) -> BeingMind:
+def record_idle_cycle(being_id: str, learned: str | None = None) -> BeingMind:
     """Record that the being completed one self-directed idle/curiosity cycle.
 
     Evolves mood deterministically from the outcome: a genuinely new fact raises

@@ -852,3 +852,133 @@ ran a regex-based bash dispatcher instead of the agentic loop, and `GUI_CLICK`/
 - Coordinate parsing and system prompt schema verified.
 - Safety policy allows GUI actions in-sandbox and denies destructive host/terminal operations.
 
+
+## Improvement Round 2 — Module Robustness + Advanced Definition (2026-09-02)
+
+### Bugs fixed (fail-closed + resource-safety hardening)
+- CRITICAL SSRF bypass (sandbox/egress.py): IPv4-mapped IPv6 (::ffff:169.254.169.254) bypassed all blocked networks. Added ::ffff:0.0.0.0/96, NAT64 64:ff9b::/96, and _ip_blocked() helper that normalizes mapped v6->v4. DNS-resolved IPs now checked too.
+- Scope injection (agents/recon.py): CT-log subdomain enum used endswith("example.com") -> accepted evil-example.com. Replaced with _is_subdomain_of() (dot-boundary check).
+- Process leak on timeout (docker_provider.py, local_dev_provider.py): orphaned child processes (e.g. sleep) survived timeout. Now uses start_new_session=True + os.killpg(SIGKILL) + os.waitpid to kill+reap the whole process group.
+- Browser leak (agents/browser_agent.py): close() skipped page/context and crashed on partial launch. Now closes page->context->browser->playwright independently with suppress(), and supports async with BrowserAgent() as agent.
+- Rate limiter (safety/rate_limiter.py): documented lock-contract for _get_bucket.
+
+### Honest self-improvement provenance (ASIPTA Pillar 5 hardening)
+- AuthoredTool + InventedTechnique now carry authored_at/invented_at, confirmed_at, confirmed_workspace_id timestamps. Confirmed fields are set ONLY on empirical in-sandbox reproduction (exit 0 + non-empty), never on failure.
+
+### Tests added (tests/test_module_robustness.py - 27 tests)
+- 8 egress SSRF bypass tests, 7 recon subdomain-injection, 1 provider timeout-kills-process-group, 4 browser-agent safe-close, 3 rate-limiter underflow, 4 provenance.
+
+### Architecture document (docs/ARCHITECTURE.md)
+- Formal ASIPTA definition grounded in real codebase, 6-layer architecture, 5 pillars, 4 end-to-end call chains.
+
+### Test status: 429 passed, 37 skipped, 0 failures; ruff F-category clean.
+
+## Improvement Round 3 — Human-Like Multi-Modal Interaction (2026-09-02)
+
+### Goal
+The agent must work like a human: not only `apt-get install` from a terminal, but
+also open a browser, click a download button, save a file, then run a GUI install
+wizard with mouse + keyboard + wait. This round added the primitives a human uses.
+
+### Window/app management
+- **APP_FOCUS** (ComputerActionType): toggle focus between desktop windows (e.g.
+  Chromium <-> terminal) without relaunching. Maps to GUIActionType.SELECT_WINDOW,
+  dispatched via `wmctrl -a` / `xdotool search --name ... windowactivate` on the
+  sandbox X11 display. Previously SELECT_WINDOW was defined but unhandled (gap).
+- **APP_INSTALL** (ComputerActionType): sanctioned install path that routes
+  through `install_application()` -> ApplicationPolicy (forbidden packages like
+  cryptominer/tor-relay/ddos-bot blocked). Closes a real bypass: a raw
+  `apt-get install` via TERMINAL_EXEC was L0_SAFE and skipped the package gate.
+
+### Human-like desktop primitives
+- **GUI_DRAG** (ComputerActionType -> GUIActionType.DRAG): press-move-release
+  gesture. GUIAction extended with x2/y2 destination coords. Lets the agent
+  drag-drop a file onto a folder or slide a wizard control. DRAG was defined in
+  the enum but unhandled (gap, same class as SELECT_WINDOW).
+- **GUI_WAIT** (ComputerActionType): sleep N seconds then refresh the screen. A
+  human waits for a progress bar / "Next" button before acting; without this the
+  agent re-screenshots a still-loading UI and clicks stale coordinates.
+
+### Human-like browser primitives (agents/browser_agent.py)
+- **wait_for_element(selector)**: wait for a CSS element to render before
+  clicking it (human waits for "Download"/"Next" to appear). No-op in httpx fallback.
+- **download(selector, save_path)**: click a download link and save the file to
+  the sandbox workspace (accept_downloads=True at context creation). Models the
+  human "download then run" step. Fail-closed (False) without Playwright.
+- **BROWSER_WAIT / BROWSER_DOWNLOAD** action types exposed to the agent loop.
+
+### LLM system prompt + action map
+- All new actions added to the ACTION list, action_map, and per-action payload
+  format docs so the LLM can actually choose them.
+
+### Fail-closed guarantees
+- Headless UnifiedComputerProvider.gui_action raises RuntimeError for SELECT_WINDOW
+  (no silent no-op). APP_INSTALL forbidden-package block is NOT a recovery trigger
+  (the safety gate decided correctly). BrowserAgent.download returns False without
+  Playwright (no fabricated file).
+
+### Tests (tests/test_module_robustness.py - 22 new tests)
+- TestWindowToggle (5): APP_FOCUS enum, policy, mapping, allowed, headless refusal.
+- TestAppInstallGate (7): enum, policy, forbidden-blocked, allowed-pass,
+  provider-gate, documented TERMINAL_EXEC bypass gap.
+- TestHumanLikeInteraction (10): GUI_DRAG coords, GUI_WAIT/BROWSER_WAIT/BROWSER_DOWNLOAD
+  in allowlist, policy evaluate, BrowserAgent wait/download methods, httpx fallback
+  no-op, fail-closed without Playwright.
+
+### Test status: 451 passed, 37 skipped, 0 failures; ruff F-category clean.
+
+## Improvement Round 4 — Devin-Style Closed Loop: VERIFY + REPLAN (2026-09-02)
+
+### Goal
+Mapped SONIC's `run_mission` loop against the Devin-style 8-stage closed-loop
+model (Observe → Reason → Act → **Verify** → **Replan on stuck**). Stages 1-6
+were already strong; stages 7 (Verify) and 8 (Replan) had real gaps.
+
+### Gap found: Stage 7 — Verification was circular
+- The old loop stopped when the LLM emitted `GOAL_COMPLETE` — i.e. the agent
+  judged itself done (circular: "code likh diya = task complete"). There was NO
+  independent check grounded in the real sandbox state. A false-positive
+  self-declaration would stop the mission prematurely.
+- **Fix**: `verify_goal()` performs an INDEPENDENT probe inferred from the goal:
+  - "fix tests" → runs `pytest` and reads the actual result
+  - "install X" → runs `which X` / `dpkg -l X`
+  - "run/serve" → probes the started artifact
+  - no inferable probe → re-observes the live state
+- Fail-closed: empty/error/traceback output is NOT success — "absence of
+  evidence is not evidence of success." Only on real non-error evidence does
+  verification pass. `GOAL_COMPLETE` that fails verification is fed back to the
+  LLM as "VERIFICATION FAILED — continue", not accepted.
+
+### Gap found: Stage 8 — No stuck detection / replan
+- The old loop ran N steps; on failure it called `recover()` which restarts Xvfb
+  (infrastructure recovery, NOT strategy revision). There was no detection of
+  "I'm stuck repeating the same failing approach", and no replan — it just
+  burned the step budget.
+- **Fix**: `_consecutive_failures` counter + `_STUCK_THRESHOLD` (3). After N
+  consecutive failures (or N failed self-verifications), `_inject_replan()`
+  appends a `REPLAN` entry to the reasoning history so the NEXT LLM call sees
+  "your approach isn't working, try a DIFFERENT strategy" — and pivots rather
+  than repeating the failing action. This is the "plan static nahi hoti"
+  principle: replan on failure, not a fixed script.
+
+### Loop now (Devin-aligned)
+```
+for step in 1..N:
+    OBSERVE          (multi-modal: screen+AT-SPI+terminal+files+git+browser)
+    REASON & CHOOSE  (LLM: goal + observation + history)
+    if GOAL_COMPLETE:
+        VERIFY       (independent sandbox probe — NOT self-declaration)
+        if verified: DONE
+        else:        feed "VERIFICATION FAILED" back, count failure, maybe REPLAN
+    ACT              (safety gate → provider → sandbox)
+    if FAILED:       count consecutive failure; if stuck → REPLAN
+```
+
+### Tests (tests/test_module_robustness.py::TestVerifyAndReplan, 5 tests)
+- verify_goal fail-closed on error/traceback output
+- verify_goal passes on real non-error evidence (artifact exists)
+- verify_goal re-observes when no concrete probe inferable
+- _inject_replan adds REPLAN to history + resets failure counter
+- run_mission replans after 3 consecutive failures (stuck detection wired)
+
+### Test status: 456 passed, 37 skipped, 0 failures; ruff F-category clean.

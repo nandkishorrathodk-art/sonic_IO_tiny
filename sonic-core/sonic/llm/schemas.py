@@ -7,11 +7,16 @@ These schemas are provider-agnostic — every provider maps to/from these.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime
 from enum import StrEnum
-from typing import Any, Optional
+from typing import Any
 
 from pydantic import BaseModel, Field
+
+
+def _utcnow() -> datetime:
+    """Timezone-aware UTC timestamp factory (replaces deprecated datetime.utcnow)."""
+    return datetime.now(UTC)
 
 
 # ============================================
@@ -48,8 +53,8 @@ class ProviderName(StrEnum):
 
 class ImageContent(BaseModel):
     """An image attached to a message (base64 or URL)."""
-    base64: Optional[str] = None  # Raw base64 data (no data: prefix)
-    url: Optional[str] = None     # Image URL
+    base64: str | None = None  # Raw base64 data (no data: prefix)
+    url: str | None = None     # Image URL
     media_type: str = "image/png"  # MIME type when base64 is used
 
 
@@ -63,8 +68,8 @@ class Message(BaseModel):
     role: MessageRole
     content: str
     images: list[ImageContent] = Field(default_factory=list)
-    name: Optional[str] = None  # For tool messages
-    tool_call_id: Optional[str] = None  # For tool responses
+    name: str | None = None  # For tool messages
+    tool_call_id: str | None = None  # For tool responses
 
     @property
     def has_images(self) -> bool:
@@ -84,18 +89,18 @@ class LLMRequest(BaseModel):
     Every provider converts this into their specific format.
     """
     messages: list[Message]
-    model: Optional[str] = None  # If None, use routing default
+    model: str | None = None  # If None, use routing default
     temperature: float = 0.7
     max_tokens: int = 4096
     top_p: float = 1.0
-    tools: Optional[list[ToolDefinition]] = None
-    stop_sequences: Optional[list[str]] = None
+    tools: list[ToolDefinition] | None = None
+    stop_sequences: list[str] | None = None
     stream: bool = False
 
     # SONIC-REDA metadata
-    task_type: Optional[str] = None  # e.g., "planning", "reasoning", "fast_recon"
-    agent_id: Optional[str] = None  # Which agent is making this request
-    engagement_id: Optional[str] = None  # Which engagement this belongs to
+    task_type: str | None = None  # e.g., "planning", "reasoning", "fast_recon"
+    agent_id: str | None = None  # Which agent is making this request
+    engagement_id: str | None = None  # Which engagement this belongs to
 
 
 # ============================================
@@ -132,12 +137,12 @@ class LLMResponse(BaseModel):
     role: MessageRole = MessageRole.ASSISTANT
     tool_calls: list[ToolCall] = Field(default_factory=list)
     usage: TokenUsage = Field(default_factory=TokenUsage)
-    finish_reason: Optional[str] = None  # "stop", "tool_calls", "max_tokens"
+    finish_reason: str | None = None  # "stop", "tool_calls", "max_tokens"
     latency_ms: float = 0.0
 
     # SONIC-REDA metadata
     request_id: str = ""
-    timestamp: datetime = Field(default_factory=datetime.utcnow)
+    timestamp: datetime = Field(default_factory=_utcnow)
     cost_usd: float = 0.0
 
 
@@ -147,13 +152,13 @@ class LLMChunk(BaseModel):
     Used with async generators for real-time output.
     """
     content: str = ""
-    role: Optional[MessageRole] = None
+    role: MessageRole | None = None
     tool_calls: list[ToolCall] = Field(default_factory=list)
-    finish_reason: Optional[str] = None
+    finish_reason: str | None = None
     is_final: bool = False
 
     # Accumulated usage (only in final chunk)
-    usage: Optional[TokenUsage] = None
+    usage: TokenUsage | None = None
 
 
 # ============================================
@@ -164,7 +169,7 @@ class ModelInfo(BaseModel):
     """Information about an available model."""
     id: str  # e.g., "claude-sonnet-4-20250514"
     provider: ProviderName
-    name: Optional[str] = None  # Human-readable name
+    name: str | None = None  # Human-readable name
     speed_tier: SpeedTier = SpeedTier.MEDIUM
     cost_per_1k_input: float = 0.0
     cost_per_1k_output: float = 0.0
@@ -194,6 +199,6 @@ class CostRecord(BaseModel):
     input_tokens: int
     output_tokens: int
     cost_usd: float
-    agent_id: Optional[str] = None
-    engagement_id: Optional[str] = None
-    timestamp: datetime = Field(default_factory=datetime.utcnow)
+    agent_id: str | None = None
+    engagement_id: str | None = None
+    timestamp: datetime = Field(default_factory=_utcnow)

@@ -12,22 +12,21 @@ SECURITY ENFORCEMENT:
 
 from __future__ import annotations
 
-import asyncio
 import os
-from datetime import datetime, timezone
-from typing import Any, Optional
+from datetime import UTC, datetime
+from typing import Any
 from urllib.parse import urlparse
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from sonic.auth.middleware import require_admin, require_auth
 from sonic.auth.models import User
+from sonic.computer.daytona_computer import DaytonaComputerProvider
+from sonic.computer.models import ComputerProfile, ComputerWorkspaceType
 from sonic.logger import get_logger
 from sonic.memory.router import get_memory_sync
 from sonic.meta.benchmark import get_benchmark_lab
-from sonic.computer.daytona_computer import DaytonaComputerProvider
-from sonic.computer.models import ComputerWorkspaceType, ComputerProfile
 from sonic.meta.experiment import get_experiment_manager
 from sonic.observability.metrics import get_metrics
 from sonic.safety.scope import get_scope_checker
@@ -67,7 +66,7 @@ def register_agent(
                 "status": status,
                 "task": task,
                 "model": model,
-                "updated_at": datetime.now(timezone.utc).isoformat(),
+                "updated_at": datetime.now(UTC).isoformat(),
             })
             return
     _system_state["agents"].append({
@@ -77,13 +76,13 @@ def register_agent(
         "task": task,
         "model": model,
         "tenant_id": tenant_id,
-        "updated_at": datetime.now(timezone.utc).isoformat(),
+        "updated_at": datetime.now(UTC).isoformat(),
     })
 
 
 def record_finding(finding: dict[str, Any], tenant_id: str = "default") -> None:
     """Record a verified finding into the system state."""
-    finding["discovered_at"] = datetime.now(timezone.utc).isoformat()
+    finding["discovered_at"] = datetime.now(UTC).isoformat()
     finding["tenant_id"] = tenant_id
     _system_state["findings"].insert(0, finding)
     _system_state["findings"] = _system_state["findings"][:100]
@@ -94,7 +93,7 @@ def record_asset(asset: dict[str, Any], tenant_id: str = "default") -> None:
     for existing in _system_state["assets"]:
         if existing.get("value") == asset.get("value") and existing.get("tenant_id") == tenant_id:
             return
-    asset["discovered_at"] = datetime.now(timezone.utc).isoformat()
+    asset["discovered_at"] = datetime.now(UTC).isoformat()
     asset["tenant_id"] = tenant_id
     _system_state["assets"].append(asset)
 
@@ -198,7 +197,7 @@ async def launch_scan(request: ScanRequest, user: User = Depends(require_auth)):
 
     scan = {
         "target": request.target,
-        "started_at": datetime.now(timezone.utc).isoformat(),
+        "started_at": datetime.now(UTC).isoformat(),
         "launched_by": user.email,
         "status": "running",
     }
@@ -220,7 +219,7 @@ async def launch_scan(request: ScanRequest, user: User = Depends(require_auth)):
             register_agent(name, atype, "Configured LLM", "idle", "Scan completed", tenant_id=user.email)
 
         scan["status"] = "completed"
-        scan["completed_at"] = datetime.now(timezone.utc).isoformat()
+        scan["completed_at"] = datetime.now(UTC).isoformat()
 
         return {
             "status": "completed",
@@ -391,8 +390,8 @@ async def update_runtime_settings(
     Update runtime settings (ADMIN ONLY).
     Re-configures SwarmRunner with new LLM/Daytona/Burp credentials.
     """
-    from sonic.swarm import get_swarm_runner
     from sonic.llm.providers.custom import CustomLLMProvider
+    from sonic.swarm import get_swarm_runner
 
     runner = get_swarm_runner()
 

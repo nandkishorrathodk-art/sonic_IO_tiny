@@ -8,15 +8,14 @@ competing hypothesis portfolios, investigation tracks, leads, and anomalies.
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from enum import StrEnum
-from typing import Any, Optional
 
 from pydantic import BaseModel, Field
 
 
 def _now() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 def _new_id(prefix: str = "rq") -> str:
@@ -101,7 +100,7 @@ class ResearchQuestion(BaseModel):
     candidate_experiments: list[str] = Field(default_factory=list)
     status: ResearchQuestionStatus = ResearchQuestionStatus.OPEN
     evidence_ids: list[str] = Field(default_factory=list)
-    resolved_answer: Optional[str] = None
+    resolved_answer: str | None = None
     created_at: str = Field(default_factory=_now)
     updated_at: str = Field(default_factory=_now)
 
@@ -190,7 +189,7 @@ class AnomalyRecord(BaseModel):
     observed: str
     anomaly_type: AnomalyType
     is_novel: bool = True
-    created_lead_id: Optional[str] = None
+    created_lead_id: str | None = None
     confidence_deviation: float = 0.0
     timestamp: str = Field(default_factory=_now)
 

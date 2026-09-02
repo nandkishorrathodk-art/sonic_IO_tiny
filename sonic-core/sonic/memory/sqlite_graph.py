@@ -23,15 +23,21 @@ from __future__ import annotations
 import json
 import os
 import uuid
-from datetime import datetime, timezone
-from typing import Any, Optional
+from datetime import UTC, datetime
+from typing import Any
 
 import aiosqlite
 
 from sonic.logger import get_logger
 from sonic.memory.schemas import (
-    AssetNode, EngagementNode, EvidenceNode, FindingNode,
-    HypothesisNode, TechniqueNode, AgentNode, RelationshipType,
+    AgentNode,
+    AssetNode,
+    EngagementNode,
+    EvidenceNode,
+    FindingNode,
+    HypothesisNode,
+    RelationshipType,
+    TechniqueNode,
 )
 
 logger = get_logger(__name__)
@@ -59,9 +65,9 @@ class SqliteGraph:
     :class:`GraphMemory` so it is a drop-in for the smart-memory router.
     """
 
-    def __init__(self, db_path: Optional[str] = None):
+    def __init__(self, db_path: str | None = None):
         self.db_path = db_path or _default_db_path()
-        self._db: Optional[aiosqlite.Connection] = None
+        self._db: aiosqlite.Connection | None = None
         self._connected = False
 
     # ============================================
@@ -136,7 +142,7 @@ class SqliteGraph:
     # Internal helpers (write-through)
     # ============================================
 
-    async def _create_node(self, label: str, props: dict[str, Any]) -> Optional[str]:
+    async def _create_node(self, label: str, props: dict[str, Any]) -> str | None:
         assert self._db is not None
         uid = props.get("uid") or f"{label.lower()}-{uuid.uuid4().hex[:8]}"
         props["uid"] = uid
@@ -144,7 +150,7 @@ class SqliteGraph:
         if not props.get("tenant_id"):
             props["tenant_id"] = "default"
         if "created_at" not in props:
-            props["created_at"] = datetime.now(timezone.utc).isoformat()
+            props["created_at"] = datetime.now(UTC).isoformat()
         created_at = props["created_at"]
         tenant_id = props["tenant_id"]
         # Store props WITHOUT the internal _label key in props_json (label has
@@ -159,7 +165,7 @@ class SqliteGraph:
         await self._db.commit()
         return uid
 
-    async def _get_node(self, label: str, uid: str, tenant_id: str | None = None) -> Optional[dict]:
+    async def _get_node(self, label: str, uid: str, tenant_id: str | None = None) -> dict | None:
         assert self._db is not None
         if tenant_id:
             sql = (
@@ -228,10 +234,10 @@ class SqliteGraph:
     # Typed Multi-Tenant CRUD (mirrors InMemoryGraph)
     # ============================================
 
-    async def create_engagement(self, engagement: EngagementNode) -> Optional[str]:
+    async def create_engagement(self, engagement: EngagementNode) -> str | None:
         return await self._create_node("Engagement", engagement.model_dump())
 
-    async def get_engagement(self, uid: str, tenant_id: str | None = None) -> Optional[dict]:
+    async def get_engagement(self, uid: str, tenant_id: str | None = None) -> dict | None:
         return await self._get_node("Engagement", uid, tenant_id=tenant_id)
 
     async def update_engagement(self, uid: str, tenant_id: str | None = None, **updates: Any) -> bool:
@@ -240,7 +246,7 @@ class SqliteGraph:
     async def list_engagements(self, status: str | None = None, tenant_id: str | None = None) -> list[dict]:
         return await self._list_nodes("Engagement", filters={"status": status}, tenant_id=tenant_id)
 
-    async def create_asset(self, asset: AssetNode) -> Optional[str]:
+    async def create_asset(self, asset: AssetNode) -> str | None:
         uid = await self._create_node("Asset", asset.model_dump())
         if uid and asset.engagement_id:
             await self.create_relationship(
@@ -249,7 +255,7 @@ class SqliteGraph:
             )
         return uid
 
-    async def get_asset(self, uid: str, tenant_id: str | None = None) -> Optional[dict]:
+    async def get_asset(self, uid: str, tenant_id: str | None = None) -> dict | None:
         return await self._get_node("Asset", uid, tenant_id=tenant_id)
 
     async def find_assets(self, engagement_id: str, asset_type: str | None = None, tenant_id: str | None = None) -> list[dict]:
@@ -267,7 +273,7 @@ class SqliteGraph:
                 return n["uid"]
         return await self._create_node("Asset", asset.model_dump()) or ""
 
-    async def create_finding(self, finding: FindingNode) -> Optional[str]:
+    async def create_finding(self, finding: FindingNode) -> str | None:
         uid = await self._create_node("Finding", finding.model_dump())
         if uid and finding.engagement_id:
             await self.create_relationship(
@@ -276,7 +282,7 @@ class SqliteGraph:
             )
         return uid
 
-    async def get_finding(self, uid: str, tenant_id: str | None = None) -> Optional[dict]:
+    async def get_finding(self, uid: str, tenant_id: str | None = None) -> dict | None:
         return await self._get_node("Finding", uid, tenant_id=tenant_id)
 
     async def update_finding(self, uid: str, tenant_id: str | None = None, **updates: Any) -> bool:
@@ -302,7 +308,7 @@ class SqliteGraph:
             out.append(n)
         return out
 
-    async def create_hypothesis(self, hypothesis: HypothesisNode) -> Optional[str]:
+    async def create_hypothesis(self, hypothesis: HypothesisNode) -> str | None:
         return await self._create_node("Hypothesis", hypothesis.model_dump())
 
     async def update_hypothesis(self, uid: str, tenant_id: str | None = None, **updates: Any) -> bool:
@@ -314,7 +320,7 @@ class SqliteGraph:
             filters["status"] = status
         return await self._list_nodes("Hypothesis", filters=filters, tenant_id=tenant_id)
 
-    async def create_evidence(self, evidence: EvidenceNode) -> Optional[str]:
+    async def create_evidence(self, evidence: EvidenceNode) -> str | None:
         uid = await self._create_node("Evidence", evidence.model_dump())
         if uid and evidence.finding_id:
             await self.create_relationship(
@@ -323,23 +329,23 @@ class SqliteGraph:
             )
         return uid
 
-    async def create_technique(self, technique: TechniqueNode) -> Optional[str]:
+    async def create_technique(self, technique: TechniqueNode) -> str | None:
         return await self._create_node("Technique", technique.model_dump())
 
-    async def register_agent(self, agent: AgentNode) -> Optional[str]:
+    async def register_agent(self, agent: AgentNode) -> str | None:
         return await self._create_node("Agent", agent.model_dump())
 
     # ============================================
     # Generic query / search
     # ============================================
 
-    async def add_node(self, label: str, data: dict[str, Any]) -> Optional[str]:
+    async def add_node(self, label: str, data: dict[str, Any]) -> str | None:
         return await self._create_node(label, data)
 
     async def _list_nodes(
         self,
         label: str,
-        filters: Optional[dict[str, Any]] = None,
+        filters: dict[str, Any] | None = None,
         tenant_id: str | None = None,
     ) -> list[dict]:
         assert self._db is not None

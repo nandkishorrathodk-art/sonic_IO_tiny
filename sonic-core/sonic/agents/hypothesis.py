@@ -15,9 +15,9 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from sonic.logger import get_logger
 from sonic.agents.base import BaseAgent
-from sonic.memory.schemas import HypothesisNode, HypothesisStatus
+from sonic.logger import get_logger
+from sonic.memory.schemas import HypothesisNode
 
 logger = get_logger(__name__)
 

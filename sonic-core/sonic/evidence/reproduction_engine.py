@@ -7,13 +7,9 @@ Enforces FAIL-CLOSED security: host OS fallback is prohibited.
 
 from __future__ import annotations
 
-import asyncio
-from typing import Any, Optional
-
 from sonic.evidence.models import (
     ArtifactType,
     EvidenceItem,
-    FindingLifecycleState,
     ProvenancedFinding,
     ReproductionPlan,
 )
@@ -28,7 +24,7 @@ class ReproductionEngine:
     Executes controlled, sandbox-bound vulnerability reproductions.
     """
 
-    def __init__(self, compute_provider: Optional[ComputeProvider] = None):
+    def __init__(self, compute_provider: ComputeProvider | None = None):
         self.provider = compute_provider
 
     async def execute_reproduction(
@@ -37,7 +33,7 @@ class ReproductionEngine:
         plan: ReproductionPlan,
         workspace_id: str = "reproduction-sandbox",
         timeout_seconds: int = 120,
-    ) -> tuple[bool, str, Optional[EvidenceItem]]:
+    ) -> tuple[bool, str, EvidenceItem | None]:
         """
         Execute reproduction plan in isolated compute sandbox.
 
@@ -71,9 +67,7 @@ class ReproductionEngine:
 
             # Check expected results
             is_success = False
-            if plan.expected_result and plan.expected_result in combined_output:
-                is_success = True
-            elif exec_res.exit_code == 0 and stdout:
+            if plan.expected_result and plan.expected_result in combined_output or exec_res.exit_code == 0 and stdout:
                 is_success = True
 
             ev_item = EvidenceItem(

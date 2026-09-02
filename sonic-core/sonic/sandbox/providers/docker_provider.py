@@ -9,13 +9,29 @@ from __future__ import annotations
 import asyncio
 import os
 import shutil
-from datetime import datetime, timezone
-from typing import Optional
+import signal
+from contextlib import suppress
+from datetime import UTC, datetime
 
 from sonic.logger import get_logger
 from sonic.sandbox.provider import ComputeProvider, ExecResult, WorkspaceConfig, WorkspaceState
 
 logger = get_logger(__name__)
+
+
+def _kill_process_group(process: asyncio.subprocess.Process) -> None:
+    """Kill a subprocess and its entire process group on timeout."""
+    try:
+        pgid = os.getpgid(process.pid)
+        os.killpg(pgid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    except Exception as e:
+        logger.debug("killpg_failed", error=str(e))
+        with suppress(ProcessLookupError):
+            process.kill()
+    with suppress(ChildProcessError):
+        os.waitpid(process.pid, 0)
 
 
 class DockerProvider(ComputeProvider):
@@ -80,13 +96,13 @@ class DockerProvider(ComputeProvider):
         self,
         workspace_id: str,
         command: str | list[str],
-        cwd: Optional[str] = None,
-        env: Optional[dict[str, str]] = None,
+        cwd: str | None = None,
+        env: dict[str, str] | None = None,
         timeout: int = 120,
     ) -> ExecResult:
         """Execute a command strictly inside the Docker container."""
         cmd_str = command if isinstance(command, str) else " ".join(command)
-        start_time = datetime.now(timezone.utc)
+        start_time = datetime.now(UTC)
 
         if self._states.get(workspace_id) != WorkspaceState.RUNNING:
             # Try to verify if container is already running
@@ -113,9 +129,25 @@ class DockerProvider(ComputeProvider):
                 *exec_args,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                # New process group so a timeout can kill the whole tree.
+                start_new_session=True,
             )
-            stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=timeout)
-            duration = (datetime.now(timezone.utc) - start_time).total_seconds()
+            try:
+                stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=timeout)
+            except TimeoutError:
+                # Kill the orphaned process group so it cannot keep running
+                # inside the container after we report a timeout (resource leak).
+                _kill_process_group(process)
+                return ExecResult(
+                    command=cmd_str,
+                    exit_code=-1,
+                    stdout="",
+                    stderr=f"TIMEOUT: Container execution exceeded {timeout}s",
+                    duration_seconds=timeout,
+                    timed_out=True,
+                    sandbox_id=workspace_id,
+                )
+            duration = (datetime.now(UTC) - start_time).total_seconds()
             return ExecResult(
                 command=cmd_str,
                 exit_code=process.returncode or 0,
@@ -123,16 +155,6 @@ class DockerProvider(ComputeProvider):
                 stderr=stderr.decode("utf-8", errors="replace"),
                 duration_seconds=round(duration, 2),
                 timed_out=False,
-                sandbox_id=workspace_id,
-            )
-        except asyncio.TimeoutError:
-            return ExecResult(
-                command=cmd_str,
-                exit_code=-1,
-                stdout="",
-                stderr=f"TIMEOUT: Container execution exceeded {timeout}s",
-                duration_seconds=timeout,
-                timed_out=True,
                 sandbox_id=workspace_id,
             )
         except Exception as e:

@@ -113,7 +113,7 @@ def mission_hypotheses(
         try:
             res = client.get(f"/engagements/{engagement_id}/hypotheses")
             if res.status_code != 200:
-                console.print(f"[yellow]Fetching hypotheses from engagement summary...[/yellow]")
+                console.print("[yellow]Fetching hypotheses from engagement summary...[/yellow]")
                 res = client.get(f"/engagements/{engagement_id}")
 
             data = res.json()
@@ -222,7 +222,7 @@ def mission_tasks(
 
             tasks = res.json().get("tasks", {})
             tree = Tree(f"[bold cyan]Task DAG: {engagement_id}[/bold cyan]")
-            for tid, t in tasks.items():
+            for _tid, t in tasks.items():
                 status_color = "green" if t.get("status") == "succeeded" else "yellow" if t.get("status") == "running" else "red" if t.get("status") == "failed" else "dim"
                 deps = ", ".join(t.get("depends_on", [])) or "None"
                 tree.add(f"[{status_color}][{t.get('status', 'pending').upper()}][/{status_color}] [bold]{t.get('name')}[/bold] ({t.get('agent_type')}) | Depends: [dim]{deps}[/dim]")

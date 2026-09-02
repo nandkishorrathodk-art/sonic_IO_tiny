@@ -28,6 +28,13 @@ BLOCKED_NETWORKS = [
     ipaddress.ip_network("0.0.0.0/8"),            # Current network
     ipaddress.ip_network("::1/128"),              # IPv6 loopback
     ipaddress.ip_network("fc00::/7"),             # IPv6 private
+    # IPv4-mapped IPv6 (e.g. ::ffff:169.254.169.254) — without these an
+    # attacker trivially bypasses every IPv4 block above by embedding the
+    # forbidden v4 address in a v6-mapped form. Also covers ::ffff:0:0/96
+    # generally so any mapped private/metadata address is blocked.
+    ipaddress.ip_network("::ffff:0:0/96"),        # All IPv4-mapped IPv6
+    ipaddress.ip_network("::ffff:169.254.169.254/128"),  # v6-mapped metadata
+    ipaddress.ip_network("64:ff9b::/96"),        # NAT64 well-known prefix
 ]
 
 
@@ -63,40 +70,55 @@ def is_target_allowed(
     # without port-stripping mangling IPv6 addresses.
     try:
         ip_obj = ipaddress.ip_address(raw_host)
-        for blocked_net in nets:
-            if ip_obj in blocked_net:
-                logger.warning("egress_blocked_ip", target=target, ip=str(ip_obj), blocked_by=str(blocked_net))
-                return False, f"Target IP {ip_obj} is in blocked network {blocked_net}"
-        return True, "Allowed"
     except ValueError:
-        pass  # Not a bare IP — may be host:port or domain
+        ip_obj = None
 
     # Strip port for host:port format (IPv6 already handled above)
-    if ":" in raw_host:
-        raw_host = raw_host.split(":")[0]
+    if ip_obj is None and ":" in raw_host:
+        try:
+            ip_obj = ipaddress.ip_address(raw_host.split(":")[0])
+        except ValueError:
+            ip_obj = None  # Host is a domain name
 
-    # Try again as IP after port strip (e.g. "127.0.0.1:8080")
-    try:
-        ip_obj = ipaddress.ip_address(raw_host)
-        for blocked_net in nets:
-            if ip_obj in blocked_net:
-                logger.warning("egress_blocked_ip", target=target, ip=str(ip_obj), blocked_by=str(blocked_net))
-                return False, f"Target IP {ip_obj} is in blocked network {blocked_net}"
+    if ip_obj is not None:
+        blocked = _ip_blocked(ip_obj, nets)
+        if blocked is not None:
+            logger.warning("egress_blocked_ip", target=target, ip=str(ip_obj), blocked_by=str(blocked))
+            return False, f"Target IP {ip_obj} is in blocked network {blocked}"
         return True, "Allowed"
-    except ValueError:
-        pass  # Host is a domain name
 
     # Check DNS resolution
     try:
         resolved_ips = socket.gethostbyname_ex(raw_host)[2]
         for ip_str in resolved_ips:
             ip_obj = ipaddress.ip_address(ip_str)
-            for blocked_net in nets:
-                if ip_obj in blocked_net:
-                    logger.warning("egress_blocked_dns", target=target, ip=str(ip_obj), blocked_by=str(blocked_net))
-                    return False, f"Domain {raw_host} resolves to blocked IP {ip_obj} in {blocked_net}"
+            blocked = _ip_blocked(ip_obj, nets)
+            if blocked is not None:
+                logger.warning("egress_blocked_dns", target=target, ip=str(ip_obj), blocked_by=str(blocked))
+                return False, f"Domain {raw_host} resolves to blocked IP {ip_obj} in {blocked}"
     except Exception:
         # If DNS fails, let tool handle target failure
         pass
 
     return True, "Allowed"
+
+
+def _ip_blocked(
+    ip_obj: ipaddress.IPv4Address | ipaddress.IPv6Address,
+    nets: list | tuple,
+) -> ipaddress.IPv4Network | ipaddress.IPv6Network | None:
+    """Return the blocked network containing ``ip_obj``, or None if allowed.
+
+    Also defends against IPv4-mapped IPv6 bypass: a v6 address like
+    ``::ffff:169.254.169.254`` embeds a forbidden v4 address that must be
+    checked against the v4 blocks even when the v6 form itself is not listed.
+    """
+    for blocked_net in nets:
+        if ip_obj in blocked_net:
+            return blocked_net
+    if isinstance(ip_obj, ipaddress.IPv6Address) and ip_obj.ipv4_mapped is not None:
+        mapped_v4 = ip_obj.ipv4_mapped
+        for blocked_net in nets:
+            if mapped_v4 in blocked_net:
+                return blocked_net
+    return None

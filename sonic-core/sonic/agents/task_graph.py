@@ -20,12 +20,11 @@ from __future__ import annotations
 
 import uuid
 from collections import defaultdict, deque
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from enum import StrEnum
-from typing import Any, Optional
+from typing import Any
 
 from pydantic import BaseModel, Field
-
 
 # ============================================
 # Constants
@@ -42,7 +41,7 @@ def _new_id() -> str:
 
 
 def _now() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 # ============================================
@@ -241,7 +240,7 @@ class TaskGraph:
         Uses Kahn's algorithm.
         Returns True if graph is valid (no cycles).
         """
-        in_degree: dict[str, int] = {tid: 0 for tid in self._tasks}
+        in_degree: dict[str, int] = dict.fromkeys(self._tasks, 0)
         for tid, task in self._tasks.items():
             for dep in task.depends_on:
                 if dep in in_degree:
@@ -562,7 +561,7 @@ class TaskGraph:
             max_total_tasks=data.get("max_total_tasks", 50),
         )
         # Reconstruct tasks — skip validation since they were valid when saved
-        for tid, task_data in data.get("tasks", {}).items():
+        for _tid, task_data in data.get("tasks", {}).items():
             task = TaskNode(**task_data)
             graph._tasks[task.id] = task
             for dep_id in task.depends_on:
@@ -571,7 +570,7 @@ class TaskGraph:
 
     def topological_order(self) -> list[str]:
         """Return task IDs in topological order (for debugging/display)."""
-        in_degree: dict[str, int] = {tid: 0 for tid in self._tasks}
+        in_degree: dict[str, int] = dict.fromkeys(self._tasks, 0)
         for tid, task in self._tasks.items():
             for dep in task.depends_on:
                 if dep in in_degree:

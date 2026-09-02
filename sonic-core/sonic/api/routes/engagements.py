@@ -6,8 +6,6 @@ Full engagement management endpoints strictly partitioned by tenant_id.
 
 from __future__ import annotations
 
-from typing import Optional
-
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 

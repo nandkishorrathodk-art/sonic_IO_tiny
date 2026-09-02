@@ -20,7 +20,6 @@ from __future__ import annotations
 import re
 from enum import StrEnum
 from pathlib import Path
-from typing import Optional
 
 import yaml
 
@@ -47,7 +46,7 @@ class SafetyVerdict(StrEnum):
 class ScopeChecker:
     """
     Validates actions against the Immutable Safety Layer.
-    
+
     Loaded once at startup from safety_rules.yaml.
     Cannot be modified by any agent or process at runtime.
     """
@@ -97,11 +96,11 @@ class ScopeChecker:
     def check_action(self, action_description: str, risk_level: RiskLevel = RiskLevel.L0_SAFE) -> SafetyVerdict:
         """
         Check if an action is allowed.
-        
+
         Args:
             action_description: Human-readable description of what the agent wants to do
             risk_level: The risk level of the action
-            
+
         Returns:
             SafetyVerdict: ALLOWED, NEEDS_APPROVAL, or BLOCKED
         """
@@ -179,7 +178,7 @@ class ScopeChecker:
     def is_target_in_scope(self, target: str, scope_config: dict) -> bool:
         """
         Check if a target (domain/IP/URL) is within the engagement scope.
-        
+
         Args:
             target: The target to check
             scope_config: Loaded scope.yaml for the current engagement
@@ -201,10 +200,7 @@ class ScopeChecker:
                 return True
 
         # Check allowed IPs
-        if target in targets.get("ips", []):
-            return True
-
-        return False
+        return target in targets.get("ips", [])
 
     def is_egress_allowed(self, destination: str) -> bool:
         """Check if outbound traffic to this destination is allowed."""
@@ -229,7 +225,7 @@ class ScopeChecker:
 
 
 # Global singleton — loaded once, used everywhere
-_scope_checker: Optional[ScopeChecker] = None
+_scope_checker: ScopeChecker | None = None
 
 
 def get_scope_checker() -> ScopeChecker:

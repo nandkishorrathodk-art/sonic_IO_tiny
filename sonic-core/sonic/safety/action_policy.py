@@ -27,11 +27,11 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 from sonic.logger import get_logger
+from sonic.safety.scope import RiskLevel, ScopeChecker
 from sonic.sandbox import egress
-from sonic.safety.scope import RiskLevel, ScopeChecker, SafetyVerdict
 
 logger = get_logger(__name__)
 
@@ -71,10 +71,11 @@ class ActionPolicy:
     DEFAULT_ALLOWED_TYPES = frozenset({
         # GUI desktop interaction (in-sandbox only, no host execution risk)
         "GUI_CLICK", "GUI_DOUBLE_CLICK", "GUI_TYPE", "GUI_KEYPRESS",
-        "GUI_MOVE", "GUI_SCROLL", "GUI_SCREENSHOT",
+        "GUI_MOVE", "GUI_SCROLL", "GUI_SCREENSHOT", "GUI_DRAG", "GUI_WAIT",
         "FILE_READ", "FILE_WRITE", "TERMINAL_EXEC", "GIT_COMMIT",
-        "APP_LAUNCH", "APP_CLOSE", "SERVICE_ACTION",
+        "APP_LAUNCH", "APP_CLOSE", "APP_FOCUS", "APP_INSTALL", "SERVICE_ACTION",
         "BROWSER_NAVIGATE", "BROWSER_CLICK", "BROWSER_TYPE", "BROWSER_SCREENSHOT",
+        "BROWSER_WAIT", "BROWSER_DOWNLOAD",
         "SECURITY_TOOL",
         # Toolsmith (Phase A, AIOSR): authoring writes source under the
         # workspace toolsmith dir (path-confined like FILE_WRITE); running
@@ -88,11 +89,11 @@ class ActionPolicy:
     def __init__(
         self,
         workspace_root: str = "/home/sonic/workspace",
-        allowed_action_types: Optional[set[str]] = None,
-        allow_security_tool_targets: Optional[set[str]] = None,
+        allowed_action_types: set[str] | None = None,
+        allow_security_tool_targets: set[str] | None = None,
         max_actions_per_minute: int = 60,
         require_approval_for_intrusive: bool = True,
-        scope_checker: Optional[ScopeChecker] = None,
+        scope_checker: ScopeChecker | None = None,
     ):
         self.workspace_root = Path(workspace_root).resolve()
         self.allowed_types = frozenset(allowed_action_types or self.DEFAULT_ALLOWED_TYPES)

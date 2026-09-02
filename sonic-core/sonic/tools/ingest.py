@@ -8,7 +8,6 @@ into the Agent-to-Agent Graph Memory as Asset, Finding, and Evidence nodes.
 from __future__ import annotations
 
 import json
-from typing import Any, Optional
 
 from sonic.logger import get_logger
 from sonic.memory.graph import GraphMemory
@@ -20,9 +19,9 @@ from sonic.memory.schemas import (
     FindingSeverity,
     FindingStatus,
 )
-from sonic.tools.ffuf import FfufMatch, FfufParser
-from sonic.tools.nmap import NmapHost, NmapParser
-from sonic.tools.nuclei import NucleiParser, NucleiResult
+from sonic.tools.ffuf import FfufParser
+from sonic.tools.nmap import NmapParser
+from sonic.tools.nuclei import NucleiParser
 
 logger = get_logger(__name__)
 

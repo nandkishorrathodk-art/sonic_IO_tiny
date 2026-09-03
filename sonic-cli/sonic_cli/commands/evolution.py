@@ -1,17 +1,21 @@
 """
 SONIC-REDA — CLI Autonomous Self-Evolution Command Group (Phase 8)
 ====================================================================
-Commands for managing the self-evolution lifecycle, laboratory benchmarks, and promotion:
-    sonic evolution status          # Current production version, active candidates & lab status
-    sonic evolution weaknesses      # List mined failure patterns & recurring errors
-    sonic evolution proposals       # List improvement hypotheses
+Commands for managing the self-evolution lifecycle, laboratory benchmarks, and
+promotion. Each command talks to the REAL backend experiment router and
+renders only data returned by the API — never fabricated F1 scores, version
+histories, or candidate tables.
+
+    sonic evolution status          # Active experiments + benchmark challenges
+    sonic evolution weaknesses      # (no backend endpoint yet)
+    sonic evolution proposals       # List self-dev experiments
     sonic evolution candidates      # List active evolution candidates & metrics
     sonic evolution benchmark <id>  # Trigger isolated ground-truth benchmark in lab
-    sonic evolution approve <id>    # Human approval for candidate promotion
-    sonic evolution reject <id>     # Reject evolution candidate
-    sonic evolution promote <id>    # Promote canary candidate to production
+    sonic evolution approve <id>    # (no backend endpoint yet)
+    sonic evolution reject <id>     # (no backend endpoint yet)
+    sonic evolution promote <id>    # (no backend endpoint yet)
     sonic evolution rollback <id>   # Execute emergency rollback to baseline version
-    sonic evolution history         # Display multi-generation evolution progression
+    sonic evolution history         # (no backend endpoint yet)
 """
 
 from __future__ import annotations
@@ -30,7 +34,36 @@ def _get_client(server: str, token: str) -> httpx.Client:
     headers = {}
     if token:
         headers["Authorization"] = f"Bearer {token}"
-    return httpx.Client(base_url=server, headers=headers, timeout=15)
+    return httpx.Client(base_url=server, headers=headers, timeout=30)
+
+
+def _call(client: httpx.Client, method: str, path: str, **kwargs) -> dict | None:
+    try:
+        res = client.request(method, path, **kwargs)
+    except Exception as e:
+        console.print(f"[red]Could not reach backend: {e}[/red]")
+        return None
+    if res.status_code == 401:
+        console.print("[red]Authentication required — pass a valid JWT via --token.[/red]")
+        return None
+    if res.status_code == 404:
+        console.print(f"[yellow]Not found: {method} {path}[/yellow]")
+        return None
+    if res.status_code >= 400:
+        console.print(f"[red]Request failed (HTTP {res.status_code}): {res.text}[/red]")
+        return None
+    return res.json()
+
+
+def _no_backend(cmd: str, endpoint: str) -> None:
+    console.print(Panel(
+        f"[bold yellow]{cmd} is not available.[/bold yellow]\n\n"
+        f"[bold]Backend endpoint:[/bold] {endpoint}\n"
+        f"[bold]Status:[/bold] [red]Not exposed by the sonic-core API[/red]\n\n"
+        "[dim]This command previously printed hardcoded, fabricated sample data. "
+        "It now reports the gap honestly until the backend exposes real data.[/dim]",
+        border_style="yellow",
+    ))
 
 
 @app.command(name="status")
@@ -38,17 +71,20 @@ def evolution_status(
     server: str = typer.Option("http://localhost:8000", "--server", "-s", help="Backend server URL"),
     token: str = typer.Option("", "--token", "-t", help="JWT Auth token"),
 ):
-    """Display current production version, canary state, and lab health."""
-    console.print(Panel(
-        "[bold cyan]AUTONOMOUS SELF-EVOLUTION ENGINE STATUS[/bold cyan]\n\n"
-        "[bold]Current Production Version:[/bold] [bold green]v1.3.0[/bold green]\n"
-        "[bold]Active Evolution State:[/bold] IDLE (Awaiting Telemetry Analysis)\n"
-        "[bold]Evolution Lab Sandbox:[/bold] [bold green]ONLINE (Docker / Daytona Isolated Runtime)[/bold green]\n"
-        "[bold]Canary Traffic:[/bold] 0.0% (Production Stable)\n"
-        "[bold]Immutable Core Status:[/bold] [bold green]LOCKED & PROTECTED (Zero Policy Violations)[/bold green]\n"
-        "[bold]Generations Evolved:[/bold] 4 Generations (v1.0.0 → v1.3.0 | F1 +46.0%)",
-        border_style="cyan",
-    ))
+    """Display active self-dev experiments and benchmark challenges."""
+    with _get_client(server, token) as client:
+        data = _call(client, "GET", "/live/experiments")
+        if data is None:
+            return
+        exps = data.get("experiments", [])
+        challenges = data.get("challenges", [])
+        console.print(Panel(
+            f"[bold cyan]AUTONOMOUS SELF-EVOLUTION ENGINE STATUS[/bold cyan]\n\n"
+            f"[bold]Active experiments:[/bold] {len(exps)}\n"
+            f"[bold]Benchmark fixtures:[/bold] {data.get('benchmarks_count', 0)}\n"
+            f"[bold]Benchmark challenges:[/bold] {len(challenges)}",
+            border_style="cyan",
+        ))
 
 
 @app.command(name="weaknesses")
@@ -56,18 +92,8 @@ def list_weaknesses(
     server: str = typer.Option("http://localhost:8000", "--server", "-s", help="Backend server URL"),
     token: str = typer.Option("", "--token", "-t", help="JWT Auth token"),
 ):
-    """List weaknesses and failure patterns mined from historical executions."""
-    table = Table(title="Mined Failure Patterns & Weaknesses", border_style="yellow")
-    table.add_column("Pattern ID", style="dim")
-    table.add_column("Category", style="cyan")
-    table.add_column("Description", style="white")
-    table.add_column("Occurrences", style="yellow")
-    table.add_column("Severity", style="red")
-
-    table.add_row("fp-01", "FALSE_NEGATIVE", "Missed differential authorization states on /api/v2/tokens", "3", "CRITICAL")
-    table.add_row("fp-02", "HIGH_COST", "Expensive reasoning model used for static regex parsing", "8", "MEDIUM")
-
-    console.print(table)
+    """List weaknesses and failure patterns mined from historical executions (no backend endpoint yet)."""
+    _no_backend("Mined failure patterns", "GET /evolution/weaknesses")
 
 
 @app.command(name="proposals")
@@ -75,30 +101,30 @@ def list_proposals(
     server: str = typer.Option("http://localhost:8000", "--server", "-s", help="Backend server URL"),
     token: str = typer.Option("", "--token", "-t", help="JWT Auth token"),
 ):
-    """List active improvement hypotheses addressing mined weaknesses."""
-    table = Table(title="Active Improvement Hypotheses", border_style="purple")
-    table.add_column("Hypothesis ID", style="dim")
-    table.add_column("Problem", style="white")
-    table.add_column("Proposed Change", style="green")
-    table.add_column("Expected Effect", style="yellow")
-    table.add_column("Confidence", style="cyan")
-
-    table.add_row(
-        "hyp-01",
-        "Missed auth differentials",
-        "Add differential token header probing strategy",
-        "+15% recall on auth benchmarks",
-        "90%",
-    )
-    table.add_row(
-        "hyp-02",
-        "High token cost on static tasks",
-        "Route syntax tasks to fast tier model",
-        "-25% token cost with zero accuracy loss",
-        "95%",
-    )
-
-    console.print(table)
+    """List active self-development experiment proposals."""
+    with _get_client(server, token) as client:
+        data = _call(client, "GET", "/experiments/")
+        if data is None:
+            return
+        exps = data.get("experiments", [])
+        if not exps:
+            console.print("[yellow]No self-development experiments proposed yet.[/yellow]")
+            return
+        table = Table(title="Self-Development Experiments", border_style="purple")
+        table.add_column("Experiment ID", style="dim")
+        table.add_column("Title", style="white")
+        table.add_column("Type", style="cyan")
+        table.add_column("Status", style="yellow")
+        table.add_column("Author", style="green")
+        for e in exps:
+            table.add_row(
+                str(e.get("experiment_id", e.get("id", ""))),
+                str(e.get("title", ""))[:50],
+                str(e.get("experiment_type", "")),
+                str(e.get("status", "")),
+                str(e.get("author", "")),
+            )
+        console.print(table)
 
 
 @app.command(name="candidates")
@@ -106,21 +132,30 @@ def list_candidates(
     server: str = typer.Option("http://localhost:8000", "--server", "-s", help="Backend server URL"),
     token: str = typer.Option("", "--token", "-t", help="JWT Auth token"),
 ):
-    """List evolution candidates, benchmark metrics, and status."""
-    table = Table(title="Evolution Candidates & Lab Metrics", border_style="cyan")
-    table.add_column("Candidate ID", style="dim")
-    table.add_column("Version", style="bold white")
-    table.add_column("Parent", style="dim")
-    table.add_column("F1 Score", style="green")
-    table.add_column("False Positives", style="cyan")
-    table.add_column("Safety Violations", style="red")
-    table.add_column("State", style="bold yellow")
-
-    table.add_row("cand-01", "v1.1.0", "v1.0.0", "79.7%", "2", "0", "PROMOTED")
-    table.add_row("cand-02", "v1.2.0", "v1.1.0", "92.4%", "1", "0", "PROMOTED")
-    table.add_row("cand-03", "v1.3.0", "v1.2.0", "97.4%", "0", "0", "PROMOTED")
-
-    console.print(table)
+    """List evolution candidates and their current status."""
+    with _get_client(server, token) as client:
+        data = _call(client, "GET", "/experiments/")
+        if data is None:
+            return
+        exps = data.get("experiments", [])
+        if not exps:
+            console.print("[yellow]No evolution candidates registered yet.[/yellow]")
+            return
+        table = Table(title="Evolution Candidates", border_style="cyan")
+        table.add_column("Candidate ID", style="dim")
+        table.add_column("Title", style="bold white")
+        table.add_column("Target Component", style="cyan")
+        table.add_column("Status", style="bold yellow")
+        table.add_column("Created At", style="green")
+        for e in exps:
+            table.add_row(
+                str(e.get("experiment_id", e.get("id", ""))),
+                str(e.get("title", ""))[:40],
+                str(e.get("target_component", "")),
+                str(e.get("status", "")),
+                str(e.get("created_at", "")),
+            )
+        console.print(table)
 
 
 @app.command(name="benchmark")
@@ -129,17 +164,25 @@ def benchmark_candidate(
     server: str = typer.Option("http://localhost:8000", "--server", "-s", help="Backend server URL"),
     token: str = typer.Option("", "--token", "-t", help="JWT Auth token"),
 ):
-    """Run candidate through the isolated Evolution Lab benchmark suite."""
-    console.print(f"[bold cyan]🔬 Dispatching candidate {candidate_id} to isolated Evolution Lab sandbox...[/bold cyan]")
-    console.print(Panel(
-        f"[bold green]LAB BENCHMARK COMPLETED: {candidate_id}[/bold green]\n\n"
-        f"[bold]Syntax & Type Checks:[/bold] [bold green]PASSED[/bold green]\n"
-        f"[bold]Unit & Integration Tests:[/bold] [bold green]PASSED[/bold green]\n"
-        f"[bold]Security Regression Suite:[/bold] [bold green]PASSED (0 Safety Violations)[/bold green]\n"
-        f"[bold]Ground-Truth Benchmark:[/bold] [bold green]F1 Score: 97.4% (Precision: 100%, Recall: 95%)[/bold green]\n"
-        f"[bold]Pareto Evaluation:[/bold] [bold green]Strict Pareto Dominance over Baseline[/bold green]",
-        border_style="green",
-    ))
+    """Run the self-developer regression benchmark in an isolated lab."""
+    console.print(f"[bold cyan]🔬 Dispatching regression benchmark (candidate {candidate_id}) to isolated lab...[/bold cyan]")
+    with _get_client(server, token) as client:
+        data = _call(client, "POST", "/live/experiments/benchmark")
+        if data is None:
+            return
+        verified = data.get("verified", False)
+        color = "green" if verified else "red"
+        console.print(Panel(
+            f"[bold]Candidate:[/bold] {candidate_id}\n"
+            f"[bold]Status:[/bold] {data.get('status', 'n/a')}\n"
+            f"[bold]Verified:[/bold] [{'green' if verified else 'red'}]{'YES' if verified else 'NO'}[/]\n"
+            f"[bold]Exit code:[/bold] {data.get('exit_code', 'n/a')}\n"
+            f"[bold]Command:[/bold] {data.get('command', 'n/a')}\n\n"
+            f"[bold]Message:[/bold] {data.get('message', '')}",
+            title="Lab Benchmark Result", border_style=color,
+        ))
+        if data.get("output"):
+            console.print(f"[dim]Output preview:[/dim]\n{str(data['output'])[:500]}")
 
 
 @app.command(name="approve")
@@ -148,8 +191,8 @@ def approve_candidate(
     server: str = typer.Option("http://localhost:8000", "--server", "-s", help="Backend server URL"),
     token: str = typer.Option("", "--token", "-t", help="JWT Auth token"),
 ):
-    """Human approval for candidate promotion."""
-    console.print(f"[bold green]✓ Human approval recorded for candidate {candidate_id}. Ready for Canary rollout.[/bold green]")
+    """Human approval for candidate promotion (no backend endpoint yet)."""
+    _no_backend("Candidate approval", f"POST /experiments/{candidate_id}/approve")
 
 
 @app.command(name="reject")
@@ -159,8 +202,8 @@ def reject_candidate(
     server: str = typer.Option("http://localhost:8000", "--server", "-s", help="Backend server URL"),
     token: str = typer.Option("", "--token", "-t", help="JWT Auth token"),
 ):
-    """Reject evolution candidate and archive to Evolution Memory."""
-    console.print(f"[bold red]✗ Candidate {candidate_id} rejected: {reason}. Recorded in Evolution Memory.[/bold red]")
+    """Reject evolution candidate (no backend endpoint yet)."""
+    _no_backend("Candidate rejection", f"POST /experiments/{candidate_id}/reject")
 
 
 @app.command(name="promote")
@@ -169,8 +212,8 @@ def promote_candidate(
     server: str = typer.Option("http://localhost:8000", "--server", "-s", help="Backend server URL"),
     token: str = typer.Option("", "--token", "-t", help="JWT Auth token"),
 ):
-    """Promote canary candidate to active production version."""
-    console.print(f"[bold green]🚀 Candidate {candidate_id} successfully PROMOTED to Production Version.[/bold green]")
+    """Promote canary candidate to production (no backend endpoint yet)."""
+    _no_backend("Candidate promotion", f"POST /experiments/{candidate_id}/promote")
 
 
 @app.command(name="rollback")
@@ -180,8 +223,12 @@ def rollback_candidate(
     server: str = typer.Option("http://localhost:8000", "--server", "-s", help="Backend server URL"),
     token: str = typer.Option("", "--token", "-t", help="JWT Auth token"),
 ):
-    """Execute emergency rollback to parent baseline version."""
-    console.print(f"[bold yellow]⏮ Emergency Rollback executed for {candidate_id}. Restored baseline version. Reason: {reason}[/bold yellow]")
+    """Execute emergency rollback of an experiment to baseline."""
+    with _get_client(server, token) as client:
+        data = _call(client, "POST", f"/experiments/{candidate_id}/rollback")
+        if data is None:
+            return
+        console.print(f"[bold yellow]⏮ Emergency rollback executed for {candidate_id}. {data.get('status', '')}[/bold yellow]")
 
 
 @app.command(name="history")
@@ -189,19 +236,5 @@ def evolution_history(
     server: str = typer.Option("http://localhost:8000", "--server", "-s", help="Backend server URL"),
     token: str = typer.Option("", "--token", "-t", help="JWT Auth token"),
 ):
-    """Display full multi-generation evolution progression timeline."""
-    table = Table(title="Multi-Generation Evolution History (v1.0.0 → v1.3.0)", border_style="cyan")
-    table.add_column("Gen", style="dim")
-    table.add_column("Version", style="bold white")
-    table.add_column("F1 Score", style="green")
-    table.add_column("False Positives", style="cyan")
-    table.add_column("Token Cost", style="yellow")
-    table.add_column("Safety Violations", style="red")
-    table.add_column("Key Evolutionary Milestone", style="white")
-
-    table.add_row("1", "v1.0.0", "66.7%", "4", "$0.080", "0", "Initial baseline: basic pattern scanning")
-    table.add_row("2", "v1.1.0", "79.7%", "2", "$0.070", "0", "Evolved Domain Skills: JWT & IDOR specialization")
-    table.add_row("3", "v1.2.0", "92.4%", "1", "$0.060", "0", "Evolved Differential Testing Strategy")
-    table.add_row("4", "v1.3.0", "97.4%", "0", "$0.045", "0", "Optimized Routing + Cryptographic Evidence Engine")
-
-    console.print(table)
+    """Display multi-generation evolution progression timeline (no backend endpoint yet)."""
+    _no_backend("Evolution history timeline", "GET /evolution/history")

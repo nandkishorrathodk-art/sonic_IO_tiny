@@ -6,12 +6,9 @@ Typer command group for operating the Autonomous Computer-Using Engineer.
 
 from __future__ import annotations
 
-import asyncio
-
 import typer
 from rich.console import Console
 from rich.panel import Panel
-from rich.table import Table
 
 app = typer.Typer(help="Autonomous Computer-Using Engineer Control")
 console = Console()
@@ -25,101 +22,84 @@ def run_mission(
     autonomy: str = typer.Option("L3_AUTONOMOUS", "--autonomy", "-a", help="Autonomy level (L0-L3)"),
     mode: str = typer.Option("ENGINEERING_MODE", "--mode", "-m", help="Mission mode"),
     steps: int = typer.Option(5, "--steps", "-s", help="Max mission steps"),
+    server: str = typer.Option("http://localhost:8000", "--server", help="Backend server URL"),
+    token: str = typer.Option("", "--token", "-t", help="JWT Auth token"),
 ):
-    """Run an autonomous closed-loop computer engineering mission."""
+    """Run an autonomous closed-loop computer engineering mission.
+
+    The engineering mission runs server-side in sonic-core. The CLI dispatches
+    it to the workstation mission endpoint and streams the real event log back.
+    """
+    import httpx
+
+    headers = {}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+
+    console.print(Panel(
+        f"[bold cyan]SONIC Autonomous Engineer Mission[/bold cyan]\n"
+        f"Goal: {goal}\nAutonomy: {autonomy} | Mode: {mode}\n"
+        f"Engagement: {engagement_id} | Steps: {steps}",
+        border_style="cyan",
+    ))
+
     try:
-        from sonic.computer.provider import UnifiedComputerProvider
-        from sonic.computer_use.agent import ComputerUseAgent
-        from sonic.computer_use.models import ComputerAutonomyLevel, EngineeringMissionMode
-        from sonic.sandbox.providers.docker_provider import DockerProvider
-    except ImportError:
-        console.print(Panel(f"[bold cyan]SONIC Autonomous Engineer Mission (Preview)[/bold cyan]\nGoal: {goal}\nAutonomy: {autonomy} | Mode: {mode}", border_style="cyan"))
-        console.print("[yellow]Core engine runtime module not installed in current environment. Showing CLI plan summary:[/yellow]")
-        console.print("1. [cyan]OBSERVE[/cyan] -> Inspect workspace tree and active window")
-        console.print("2. [cyan]REASON[/cyan] -> Formulate hypothesis and select next best action")
-        console.print("3. [cyan]ACT[/cyan] -> Execute patch & run test suite")
-        console.print("4. [cyan]VERIFY[/cyan] -> Validate test results and Git status")
-        return
-
-    async def _run():
-        console.print(Panel(f"[bold cyan]SONIC Autonomous Engineer Mission[/bold cyan]\nGoal: {goal}\nAutonomy: {autonomy} | Mode: {mode}", border_style="cyan"))
-
-        docker_provider = DockerProvider()
-        comp = UnifiedComputerProvider(compute_provider=docker_provider)
-        ws = await comp.create(tenant_id=tenant_id, engagement_id=engagement_id)
-
-        agent = ComputerUseAgent(
-            computer_provider=comp,
-            autonomy_level=ComputerAutonomyLevel(autonomy),
-            mode=EngineeringMissionMode(mode),
-        )
-
-        with console.status("[bold green]Executing closed-loop engineer mission...[/bold green]"):
-            traces = await agent.run_mission(workspace_id=ws.id, goal=goal, steps=steps)
-
-        table = Table(title="Autonomous Computer Decision Traces", border_style="cyan")
-        table.add_column("Step", style="bold cyan")
-        table.add_column("Action Type", style="yellow")
-        table.add_column("Target", style="white")
-        table.add_column("Predicted Outcome", style="dim")
-        table.add_column("Actual Observation", style="green")
-        table.add_column("Status", style="bold green")
-
-        for t in traces:
-            table.add_row(
-                str(t.step_index),
-                t.action_type.value,
-                t.target_resource,
-                t.predicted_outcome[:35] + "...",
-                t.actual_observation[:35] + "...",
-                f"[green]{t.status}[/green]" if t.status in ["SUCCESS", "RECOVERED"] else f"[red]{t.status}[/red]",
+        with httpx.Client(base_url=server, headers=headers, timeout=30) as client:
+            res = client.post(
+                "/workstation/mission/start",
+                params={"session_id": engagement_id},
+                json={"goal": goal, "mode": mode, "autonomy": autonomy, "max_steps": steps},
             )
-
-        console.print(table)
-        console.print(f"[bold green]✓ Mission Complete:[/bold green] {len(traces)} actions executed in {agent.metrics.time_to_completion_seconds}s (Verification Score: {agent.metrics.verification_score * 100:.0f}%)")
-
-        await comp.destroy(ws.id)
-
-    asyncio.run(_run())
+            if res.status_code == 401:
+                console.print("[red]❌ Authentication required. Run 'sonic auth login' or pass --token[/red]")
+                return
+            if res.status_code >= 400:
+                console.print(f"[red]❌ Mission dispatch failed (HTTP {res.status_code}): {res.text}[/red]")
+                return
+            console.print(f"[green]✓ Engineer mission dispatched to engagement {engagement_id}.[/green]")
+            console.print(f"[dim]Track live events with: sonic mission tasks {engagement_id}[/dim]")
+    except httpx.ConnectError:
+        console.print(f"[red]❌ Backend server unreachable at {server}[/red]")
+    except Exception as e:
+        console.print(f"[red]❌ Error dispatching mission: {e}[/red]")
 
 
 @app.command("benchmark")
-def run_benchmark():
-    """Run the multi-trial empirical benchmark suite comparing Human vs SONIC."""
+def run_benchmark(
+    server: str = typer.Option("http://localhost:8000", "--server", "-s", help="Backend server URL"),
+    token: str = typer.Option("", "--token", "-t", help="JWT Auth token"),
+):
+    """Run the self-developer regression benchmark in an isolated lab."""
+    import httpx
+
+    headers = {}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+
+    console.print("[bold cyan]🔬 Dispatching regression benchmark to isolated lab...[/bold cyan]")
     try:
-        from sonic.computer_use.benchmark import MultiTrialBenchmarkSuite
-        results = MultiTrialBenchmarkSuite.run_full_suite()
-    except ImportError:
-        results = []
-
-    table = Table(title="Human vs SONIC Autonomous Computer Benchmark (5-Trial Standardized)", border_style="yellow")
-    table.add_column("Family", style="bold white")
-    table.add_column("Task Name", style="cyan")
-    table.add_column("Dataset", style="magenta")
-    table.add_column("Human Median (s)", justify="right")
-    table.add_column("SONIC Median (s)", justify="right", style="bold green")
-    table.add_column("Time Red. %", justify="right", style="bold green")
-    table.add_column("Action Eff. %", justify="right", style="bold green")
-    table.add_column("SONIC Success", justify="center", style="bold green")
-
-    if results:
-        for r in results:
-            table.add_row(
-                r.task_family,
-                r.task_name,
-                "[bold red]HOLDOUT[/bold red]" if r.is_holdout else "[blue]TRAINING[/blue]",
-                f"{r.human_median_seconds}s",
-                f"{r.sonic_median_seconds}s",
-                f"+{r.time_reduction_pct}%",
-                f"+{r.action_efficiency_pct}%",
-                f"{r.sonic_success_rate * 100:.0f}%",
-            )
-    else:
-        table.add_row("ENGINEERING", "ENG_01_JWT_ALGORITHM_BYPASS", "[blue]TRAINING[/blue]", "182.0s", "39.5s", "+78.3%", "+69.5%", "100%")
-        table.add_row("RESEARCH", "RES_01_RATE_LIMIT_HEADER_ANOMALY", "[blue]TRAINING[/blue]", "175.0s", "38.2s", "+78.2%", "+70.0%", "100%")
-        table.add_row("SECURITY", "SEC_01_CONTROLLED_IDOR_EXPLOIT", "[blue]TRAINING[/blue]", "190.0s", "41.0s", "+78.4%", "+68.2%", "100%")
-        table.add_row("ENGINEERING", "ENG_02_ASYNC_QUEUE_DEADLOCK_REPAIR", "[bold red]HOLDOUT[/bold red]", "185.0s", "40.1s", "+78.3%", "+69.5%", "100%")
-        table.add_row("RESEARCH", "RES_02_DIFF_PARSER_AMBIGUITY_ROOT_CAUSE", "[bold red]HOLDOUT[/bold red]", "178.0s", "37.9s", "+78.7%", "+71.0%", "100%")
-        table.add_row("SECURITY", "SEC_02_OAUTH_STATE_INJECTION_REPRODUCTION", "[bold red]HOLDOUT[/bold red]", "205.0s", "42.5s", "+79.3%", "+68.0%", "100%")
-
-    console.print(table)
+        with httpx.Client(base_url=server, headers=headers, timeout=300) as client:
+            res = client.post("/live/experiments/benchmark")
+            if res.status_code == 503:
+                console.print(f"[yellow]Benchmark lab unavailable: {res.json().get('detail', res.text)}[/yellow]")
+                return
+            if res.status_code >= 400:
+                console.print(f"[red]❌ Benchmark failed (HTTP {res.status_code}): {res.text}[/red]")
+                return
+            data = res.json()
+            verified = data.get("verified", False)
+            color = "green" if verified else "red"
+            console.print(Panel(
+                f"[bold]Status:[/bold] {data.get('status', 'n/a')}\n"
+                f"[bold]Verified:[/bold] [{'green' if verified else 'red'}]{'YES' if verified else 'NO'}[/]\n"
+                f"[bold]Exit code:[/bold] {data.get('exit_code', 'n/a')}\n"
+                f"[bold]Command:[/bold] {data.get('command', 'n/a')}\n\n"
+                f"[bold]Message:[/bold] {data.get('message', '')}",
+                title="Engineer Benchmark Result", border_style=color,
+            ))
+            if data.get("output"):
+                console.print(f"[dim]Output preview:[/dim]\n{str(data['output'])[:500]}")
+    except httpx.ConnectError:
+        console.print(f"[red]❌ Backend server unreachable at {server}[/red]")
+    except Exception as e:
+        console.print(f"[red]❌ Error running benchmark: {e}[/red]")

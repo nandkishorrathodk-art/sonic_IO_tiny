@@ -334,116 +334,180 @@ def mission_resume(
 @app.command(name="create")
 def create_mission(
     goal: str = typer.Option(..., "--goal", "-g", help="High-level mission objective"),
-    tenant_id: str = typer.Option("tenant-alpha", "--tenant", "-t", help="Tenant ID"),
-    budget: float = typer.Option(25.0, "--budget", "-b", help="Budget in dollars"),
+    target: str = typer.Option(..., "--target", help="Authorized target URL/asset"),
+    name: str = typer.Option("autonomous-mission", "--name", "-n", help="Engagement name"),
+    server: str = typer.Option("http://localhost:8000", "--server", "-s", help="Backend server URL"),
+    token: str = typer.Option("", "--token", "-t", help="JWT Auth token"),
 ):
-    """Create a new autonomous long-horizon mission."""
-    console.print(Panel(
-        f"[bold cyan]AUTONOMOUS MISSION CREATED[/bold cyan]\n"
-        f"[bold]Mission ID:[/bold] msn-84f9a120\n"
-        f"[bold]Tenant:[/bold] {tenant_id}\n"
-        f"[bold]Goal:[/bold] {goal}\n"
-        f"[bold]Budget:[/bold] ${budget:.2f}\n"
-        f"[bold]Phase:[/bold] DISCOVERY\n"
-        f"[bold]Plan Status:[/bold] [green]Active (Decomposed into 3 tracks, 3 milestones)[/green]",
-        border_style="cyan",
-    ))
+    """Create a new security engagement (autonomous mission)."""
+    console.print(f"[bold cyan]Creating engagement for {target}...[/bold cyan]")
+    with _get_client(server, token) as client:
+        try:
+            res = client.post(
+                "/engagements/",
+                json={"name": name, "target": target, "description": goal},
+            )
+            if res.status_code == 200:
+                data = res.json()
+                console.print(Panel(
+                    f"[bold green]ENGAGEMENT CREATED[/bold green]\n\n"
+                    f"[bold]Mission ID:[/bold] {data.get('engagement_id')}\n"
+                    f"[bold]Tenant:[/bold] {data.get('tenant_id', 'n/a')}\n"
+                    f"[bold]Goal:[/bold] {goal}\n"
+                    f"[bold]Status:[/bold] {data.get('status', 'created')}\n\n"
+                    f"[dim]Run it with: sonic mission run {data.get('engagement_id')}[/dim]",
+                    border_style="green",
+                ))
+            elif res.status_code == 400:
+                console.print(f"[red]Target rejected: {res.json().get('detail', res.text)}[/red]")
+            else:
+                console.print(f"[red]Failed to create (HTTP {res.status_code}): {res.text}[/red]")
+        except Exception as e:
+            console.print(f"[red]Could not reach backend: {e}[/red]")
 
 
 @app.command(name="list")
-def list_missions():
-    """List active long-horizon missions."""
-    table = Table(title="Autonomous Long-Horizon Missions", border_style="cyan")
-    table.add_column("Mission ID", style="dim")
-    table.add_column("Tenant ID", style="cyan")
-    table.add_column("Goal", style="white")
-    table.add_column("Phase", style="yellow")
-    table.add_column("Progress", style="bold green")
-    table.add_column("Status", style="bold green")
-
-    table.add_row("msn-84f9a120", "tenant-alpha", "Remediate JWT algorithm none bypass", "COMPLETED", "100%", "COMPLETED")
-    table.add_row("msn-31d0bc88", "tenant-alpha", "Investigate Cloud Rate Limiter Anomaly", "RESEARCH", "45%", "ACTIVE")
-    table.add_row("msn-92a1fe71", "tenant-beta", "Cross-Domain Outage Root Cause", "ENGINEERING", "70%", "ACTIVE")
-
-    console.print(table)
+def list_missions(
+    server: str = typer.Option("http://localhost:8000", "--server", "-s", help="Backend server URL"),
+    token: str = typer.Option("", "--token", "-t", help="JWT Auth token"),
+):
+    """List all engagements for the caller's tenant."""
+    with _get_client(server, token) as client:
+        try:
+            res = client.get("/engagements/")
+            if res.status_code != 200:
+                console.print(f"[red]Failed to fetch engagements: {res.text}[/red]")
+                return
+            engs = res.json().get("engagements", [])
+            if not engs:
+                console.print("[yellow]No engagements found for this tenant.[/yellow]")
+                return
+            table = Table(title="Engagements", border_style="cyan")
+            table.add_column("Mission ID", style="dim")
+            table.add_column("Name", style="cyan")
+            table.add_column("Target", style="white")
+            table.add_column("Status", style="green")
+            table.add_column("Created", style="yellow")
+            for e in engs:
+                table.add_row(
+                    str(e.get("engagement_id", e.get("id", ""))),
+                    str(e.get("name", "")),
+                    str(e.get("target_summary", e.get("target", "")))[:40],
+                    str(e.get("status", "n/a")),
+                    str(e.get("created_at", "")),
+                )
+            console.print(table)
+        except Exception as e:
+            console.print(f"[red]Could not reach backend: {e}[/red]")
 
 
 @app.command(name="summary")
 def mission_summary(
-    mission_id: str = typer.Argument("msn-84f9a120", help="Mission ID"),
+    mission_id: str = typer.Argument(..., help="Mission / Engagement ID"),
+    server: str = typer.Option("http://localhost:8000", "--server", "-s", help="Backend server URL"),
+    token: str = typer.Option("", "--token", "-t", help="JWT Auth token"),
 ):
-    """View structured knowledge summary snapshot for a mission."""
-    console.print(Panel(
-        f"[bold cyan]MISSION KNOWLEDGE SUMMARY — {mission_id}[/bold cyan]\n\n"
-        f"[bold yellow]1. GOAL:[/bold yellow] Remediate JWT algorithm none bypass in auth service\n\n"
-        f"[bold green]2. WHAT WE KNOW:[/bold green]\n"
-        f"  • Auth service previously allowed unverified alg=none parameter\n"
-        f"  • Test suite with 14 unit tests passing confirming remediation\n\n"
-        f"[bold cyan]3. CURRENT HYPOTHESES:[/bold cyan]\n"
-        f"  • Hypothesis 1: Algorithm 'none' parameter bypasses HS256 signature check\n\n"
-        f"[bold magenta]4. ACTIVE DECISIONS:[/bold magenta]\n"
-        f"  • Decision 1: Use code-server IDE and container terminal for live verification\n"
-        f"  • Decision 2: Create dedicated Git branch and commit fix candidate\n\n"
-        f"[bold white]5. RESOURCE STATE:[/bold white] Allocated: $25.00 | Spent: $0.45 | Sandboxes: 1/4\n"
-        f"[bold green]6. NEXT BEST ACTION:[/bold green] Deliver validated security patch and Git commit",
-        border_style="cyan",
-    ))
+    """View a structured knowledge summary for a mission (engagement + decisions + next-action)."""
+    with _get_client(server, token) as client:
+        try:
+            eng = client.get(f"/engagements/{mission_id}")
+            decisions = client.get(f"/engagements/{mission_id}/decisions")
+            nxt = client.get(f"/engagements/{mission_id}/next-action")
+        except Exception as e:
+            console.print(f"[red]Could not reach backend: {e}[/red]")
+            return
+        if eng.status_code != 200:
+            console.print(f"[red]Mission {mission_id} not found: {eng.text}[/red]")
+            return
+        e = eng.json()
+        d = decisions.json() if decisions.status_code == 200 else {}
+        n = nxt.json() if nxt.status_code == 200 else {}
+        summary = n.get("summary", {})
+        console.print(Panel(
+            f"[bold cyan]MISSION KNOWLEDGE SUMMARY — {mission_id}[/bold cyan]\n\n"
+            f"[bold]Target:[/bold] {e.get('target_summary', e.get('target', 'n/a'))}\n"
+            f"[bold]Status:[/bold] {e.get('status', 'n/a')}\n"
+            f"[bold]Next-best action:[/bold] {n.get('next_best_action', 'n/a')}\n"
+            f"[bold]Confidence:[/bold] {summary.get('confidence', 'n/a')}\n"
+            f"[bold]Unresolved unknowns:[/bold] {summary.get('unresolved_unknowns_count', 'n/a')}\n"
+            f"[bold]Replans used:[/bold] {summary.get('replan_count', 0)}\n"
+            f"[bold]Stop condition:[/bold] {summary.get('stop_condition', 'n/a')}",
+            border_style="cyan",
+        ))
+        dec_list = d.get("decisions", [])
+        if dec_list:
+            console.print(f"[bold]Decision events ({len(dec_list)}):[/bold]")
+            for ev in dec_list[:10]:
+                console.print(f"  • [{ev.get('event_type', '')}] {str(ev.get('description', ''))[:70]}")
+        elif d.get("note"):
+            console.print(f"[yellow]{d.get('note')}[/yellow]")
 
 
 @app.command(name="deliverables")
 def mission_deliverables(
-    mission_id: str = typer.Argument("msn-84f9a120", help="Mission ID"),
+    mission_id: str = typer.Argument(..., help="Mission / Engagement ID"),
+    server: str = typer.Option("http://localhost:8000", "--server", "-s", help="Backend server URL"),
+    token: str = typer.Option("", "--token", "-t", help="JWT Auth token"),
 ):
-    """View final validated deliverables generated for a mission."""
-    table = Table(title=f"Validated Mission Deliverables ({mission_id})", border_style="green")
-    table.add_column("Deliverable ID", style="dim")
-    table.add_column("Type", style="yellow")
-    table.add_column("Title", style="white")
-    table.add_column("Evidence Count", justify="right")
-    table.add_column("Status", style="bold green")
-
-    table.add_row("deliv-01", "ENGINEERING_PATCH", "Remediation Patch & Unit Test Suite", "2 artifacts", "VALIDATED")
-    table.add_row("deliv-02", "GIT_COMMIT", "Git Commit 'fix(auth): forbid jwt none bypass'", "1 commit hash", "VERIFIED")
-
-    console.print(table)
+    """View validated deliverables (verified findings) for a mission."""
+    with _get_client(server, token) as client:
+        try:
+            res = client.get(f"/engagements/{mission_id}/findings")
+            if res.status_code != 200:
+                console.print(f"[red]Failed to fetch deliverables: {res.text}[/red]")
+                return
+            report = res.json()
+            findings = report.get("findings", [])
+            if not findings:
+                console.print(f"[yellow]No validated findings (deliverables) for {mission_id} yet.[/yellow]")
+                return
+            table = Table(title=f"Validated Findings ({mission_id})", border_style="green")
+            table.add_column("Finding ID", style="dim")
+            table.add_column("Title", style="white")
+            table.add_column("Severity", style="red")
+            table.add_column("Class", style="cyan")
+            table.add_column("Confidence", style="green")
+            for f in findings:
+                table.add_row(
+                    str(f.get("finding_id", f.get("id", ""))),
+                    str(f.get("title", ""))[:50],
+                    str(f.get("severity", "")),
+                    str(f.get("vulnerability_class", "")),
+                    str(f.get("confidence_score", "")),
+                )
+            console.print(table)
+        except Exception as e:
+            console.print(f"[red]Could not reach backend: {e}[/red]")
 
 
 @app.command(name="benchmark")
-def mission_benchmark():
-    """Run the 5-trial long-horizon mission benchmark suite."""
-    try:
-        from sonic.mission_engine.benchmark import LongHorizonMissionBenchmark
-        results = LongHorizonMissionBenchmark.run_full_suite()
-    except ImportError:
-        results = []
-
-    table = Table(title="Autonomous Mission Owner Benchmark (5-Trial Standardized)", border_style="yellow")
-    table.add_column("Family", style="bold white")
-    table.add_column("Mission Name", style="cyan")
-    table.add_column("Dataset", style="magenta")
-    table.add_column("Human Median (s)", justify="right")
-    table.add_column("SONIC Median (s)", justify="right", style="bold green")
-    table.add_column("Time Red. %", justify="right", style="bold green")
-    table.add_column("Action Eff. %", justify="right", style="bold green")
-    table.add_column("Autonomy", justify="center", style="bold green")
-
-    if results:
-        for r in results:
-            table.add_row(
-                r.mission_family,
-                r.mission_name,
-                f"[bold red]{r.dataset_split}[/bold red]" if r.dataset_split == "HOLDOUT" else f"[blue]{r.dataset_split}[/blue]",
-                f"{r.human_median_seconds}s",
-                f"{r.sonic_median_seconds}s",
-                f"+{r.time_reduction_pct}%",
-                f"+{r.action_efficiency_pct}%",
-                f"{r.autonomy_score * 100:.0f}%",
-            )
-    else:
-        table.add_row("ENGINEERING", "MSN_ENG_01_MULTI_STAGE_REPO_REPAIR", "[blue]TRAINING[/blue]", "395.0s", "79.0s", "+80.0%", "+72.0%", "100%")
-        table.add_row("SECURITY", "MSN_SEC_01_AUTH_CHAIN_EXPLOITATION", "[blue]TRAINING[/blue]", "420.0s", "82.0s", "+80.5%", "+71.5%", "100%")
-        table.add_row("ENGINEERING", "MSN_ENG_02_DEADLOCK_CASCADE_REMEDY", "[blue]VALIDATION[/blue]", "380.0s", "78.5s", "+79.3%", "+73.0%", "100%")
-        table.add_row("CROSS_DOMAIN", "MSN_HOLDOUT_01_CROSS_DOMAIN_CLOUD_OUTAGE", "[bold red]HOLDOUT[/bold red]", "445.0s", "84.5s", "+81.0%", "+74.0%", "100%")
-
-    console.print(table)
+def mission_benchmark(
+    server: str = typer.Option("http://localhost:8000", "--server", "-s", help="Backend server URL"),
+    token: str = typer.Option("", "--token", "-t", help="JWT Auth token"),
+):
+    """Run the self-developer regression benchmark in an isolated lab."""
+    console.print("[bold cyan]🔬 Dispatching regression benchmark to isolated lab...[/bold cyan]")
+    with _get_client(server, token) as client:
+        try:
+            res = client.post("/live/experiments/benchmark")
+            if res.status_code == 200:
+                data = res.json()
+                verified = data.get("verified", False)
+                color = "green" if verified else "red"
+                console.print(Panel(
+                    f"[bold]Status:[/bold] {data.get('status', 'n/a')}\n"
+                    f"[bold]Verified:[/bold] [{'green' if verified else 'red'}]{'YES' if verified else 'NO'}[/]\n"
+                    f"[bold]Exit code:[/bold] {data.get('exit_code', 'n/a')}\n"
+                    f"[bold]Command:[/bold] {data.get('command', 'n/a')}\n\n"
+                    f"[bold]Message:[/bold] {data.get('message', '')}",
+                    title="Mission Benchmark Result", border_style=color,
+                ))
+                if data.get("output"):
+                    console.print(f"[dim]Output preview:[/dim]\n{str(data['output'])[:500]}")
+            elif res.status_code == 503:
+                console.print(f"[yellow]Benchmark lab unavailable: {res.json().get('detail', res.text)}[/yellow]")
+            else:
+                console.print(f"[red]Benchmark failed (HTTP {res.status_code}): {res.text}[/red]")
+        except Exception as e:
+            console.print(f"[red]Could not reach backend: {e}[/red]")
 

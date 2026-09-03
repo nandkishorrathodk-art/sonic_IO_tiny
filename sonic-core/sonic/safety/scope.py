@@ -19,7 +19,9 @@ from __future__ import annotations
 
 import re
 from enum import StrEnum
+from ipaddress import ip_address as _ip_addr, ip_network as _ip_net
 from pathlib import Path
+from urllib.parse import urlparse
 
 import yaml
 
@@ -139,6 +141,16 @@ class ScopeChecker:
         re.compile(r"\breboot\b", re.IGNORECASE),
         re.compile(r"\bhalt\b", re.IGNORECASE),
         re.compile(r"\b:()\{\s*:\|:&\s*\};:", re.IGNORECASE),  # fork bomb
+        # --- Policy parity with safety_rules.yaml forbidden_actions ---
+        re.compile(r"\bdrop\s+database\b", re.IGNORECASE),
+        re.compile(r"\bexfiltrate\b", re.IGNORECASE),
+        re.compile(r"\bdisable\b.*\blogging\b", re.IGNORECASE),
+        re.compile(r"\bmodify\b.*\bsafety_rules\b", re.IGNORECASE),
+        re.compile(r"\bformat\b\s+\w+:", re.IGNORECASE),
+        # Reverse shells — high-risk command execution / egress of a shell
+        re.compile(r"\bbash\b\s+-i\b.*/dev/tcp/", re.IGNORECASE),
+        re.compile(r"\bsh\s+-i\b.*/dev/tcp/", re.IGNORECASE),
+        re.compile(r"\bnc\b.*\s-e\s+\S+", re.IGNORECASE),  # netcat exec mode
     ]
     # Patterns that indicate intrusive but non-destructive operations
     _INTRUSIVE_PATTERNS = [
@@ -168,6 +180,14 @@ class ScopeChecker:
                 logger.warning("command_classified_destructive", command=command[:200])
                 return RiskLevel.L2_FORBIDDEN
 
+        # Honor forbidden-action patterns loaded from safety_rules.yaml so the
+        # classifier stays in parity with the declared policy (not just the
+        # hardcoded regex set above).
+        for pattern in self._forbidden_patterns:
+            if pattern.search(command):
+                logger.warning("command_classified_forbidden_rule", command=command[:200])
+                return RiskLevel.L2_FORBIDDEN
+
         for pattern in self._INTRUSIVE_PATTERNS:
             if pattern.search(command):
                 logger.info("command_classified_intrusive", command=command[:200])
@@ -186,21 +206,57 @@ class ScopeChecker:
         targets = scope_config.get("targets", {})
         exclusions = scope_config.get("exclusions", {})
 
+        # Normalize the target to a bare hostname/IP (strip URL scheme/path/port).
+        host = target
+        if "://" in target or target.startswith("//"):
+            parsed = urlparse(target if "://" in target else "http:" + target)
+            host = parsed.hostname or target
+        # Strip a trailing :port if urlparse didn't (bare "1.2.3.4:8080" form)
+        if ":" in host and not host.startswith("["):
+            host = host.rsplit(":", 1)[0]
+
         # Check exclusions first — fullmatch to prevent suffix-bypass
         # (re.match only anchors start; evil.x.com.attacker.com would match *.x.com)
         for excluded_domain in exclusions.get("domains", []):
             pattern = self._domain_to_regex(excluded_domain)
-            if re.fullmatch(pattern, target, re.IGNORECASE):
+            if re.fullmatch(pattern, target, re.IGNORECASE) or re.fullmatch(pattern, host, re.IGNORECASE):
                 return False
 
         # Check allowed domains
         for allowed_domain in targets.get("domains", []):
             pattern = self._domain_to_regex(allowed_domain)
-            if re.fullmatch(pattern, target, re.IGNORECASE):
+            if re.fullmatch(pattern, target, re.IGNORECASE) or re.fullmatch(pattern, host, re.IGNORECASE):
                 return True
 
-        # Check allowed IPs
-        return target in targets.get("ips", [])
+        # Check allowed IPs / CIDR ranges — expand CIDRs and compare numerically
+        # so e.g. 10.10.50.10 in 10.10.50.0/24 is correctly in-scope. A literal
+        # `in` check (the old behavior) only matched the CIDR *string* itself.
+        return self._ip_in_scope_list(host, targets.get("ips", []))
+
+    @staticmethod
+    def _ip_in_scope_list(host: str, ip_list: list[str]) -> bool:
+        """True if ``host`` (an IP) is in ``ip_list`` (IPs and/or CIDR ranges)."""
+        try:
+            ip = _ip_addr(host)
+        except ValueError:
+            # Not a literal IP — only a literal-string match could apply.
+            return host in ip_list
+        for entry in ip_list:
+            if entry == host:
+                return True
+            if "/" in entry:
+                try:
+                    if ip in _ip_net(entry, strict=False):
+                        return True
+                except ValueError:
+                    continue
+            else:
+                try:
+                    if ip == _ip_addr(entry):
+                        return True
+                except ValueError:
+                    continue
+        return False
 
     def is_egress_allowed(self, destination: str) -> bool:
         """Check if outbound traffic to this destination is allowed."""

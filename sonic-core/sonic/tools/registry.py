@@ -34,6 +34,7 @@ from __future__ import annotations
 
 from sonic.logger import get_logger
 from sonic.sandbox.provider import ComputeProvider
+from sonic.tools.adapters.burpsuite_adapter import BurpSuiteAdapter
 from sonic.tools.adapters.ffuf_adapter import FFUFAdapter
 from sonic.tools.adapters.http_adapter import HTTPClientAdapter
 from sonic.tools.adapters.nmap_adapter import NmapAdapter
@@ -56,6 +57,7 @@ def build_security_tools(provider: ComputeProvider) -> dict[str, SecurityTool]:
         "nuclei": NucleiAdapter(provider),
         "ffuf": FFUFAdapter(provider),
         "http_client": HTTPClientAdapter(provider),
+        "burpsuite": BurpSuiteAdapter(provider),
     }
 
 

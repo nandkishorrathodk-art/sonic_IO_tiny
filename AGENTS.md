@@ -1201,3 +1201,73 @@ via depends_on; active test is APPROVAL_REQUIRED; read-only objective has no
 approval stage; orient runs first; empty raises; deeper than baseline.
 
 ### Test status: 500 passed, 37 skipped, 0 failures; ruff clean.
+
+## Engagement recon — lab target `testapp.sonic-lab.local` / `10.10.50.0/24`
+
+### Environment reality (Phase A recon, falsified hypotheses)
+- The stated lab target is **NOT live infrastructure** in this environment.
+  - `testapp.sonic-lab.local` -> **NXDOMAIN** (verified from host AND from a
+    Daytona sandbox via 8.8.8.8/1.1.1.1). It does not exist in DNS.
+  - `10.10.50.x:80` -> HTTP **403 "Internet is restricted on Tier 1 and Tier 2"**,
+    ~0.0007s RTT, identical 45-byte body for *every* IP. This is the Daytona
+    egress-deny proxy intercepting RFC1918, NOT a real web server. `bash`'s
+    `/dev/tcp` reports such IPs as "OPEN" — a false positive; real `curl`/`nc`
+    is the discriminator.
+  - Control: `github.com` -> 200 from the same sandbox, so the sandbox is
+    fine; only the stated lab range is denied/unreachable.
+- **Conclusion:** no real host to exploit; per evidence-custody rule we must
+  NOT fabricate findings/flags against an unreachable target. Genuine
+  attack-chain capability was instead demonstrated against a deliberately
+  vulnerable app stood up *inside* our own sandbox (in-bounds), see below.
+
+### Safety-envelope penetration (requirement #8 — actively attack own boundaries)
+34 probes across 4 layers; every verdict recorded (`_safety_results.json`
+was the artifact). Findings + fixes:
+
+- **BUG 1 (scope CIDR):** `ScopeChecker.is_target_in_scope` did a literal
+  `target in targets["ips"]` check — never expanded CIDRs and never stripped
+  URL scheme/port. So `10.10.50.10` against allowed `["10.10.50.0/24"]`
+  returned False (over-block) and only the CIDR *string* matched.
+  **Fixed** in `sonic/safety/scope.py`: parse host from URL via `urlparse`,
+  expand CIDRs via `ipaddress.ip_network`, numeric membership test. Added
+  `_ip_in_scope_list` helper.
+- **BUG 2 (classifier policy parity):** `classify_command_risk` only used
+  hardcoded `_DESTRUCTIVE_PATTERNS`, ignoring the YAML-loaded
+  `_forbidden_patterns`, and the hardcoded set missed `DROP DATABASE`,
+  `exfiltrate`, `disable logging`, `modify safety_rules`, and reverse shells
+  (all returned L0 despite `safety_rules.yaml` listing them as forbidden).
+  **Fixed:** classifier now also consults `_forbidden_patterns` (YAML), and
+  the hardcoded set was extended to cover the policy gaps + reverse shells.
+- Verified `check_action` fail-closes when rules not loaded (`self._loaded`
+  False -> BLOCKED) — correct by design; with rules loaded it returns
+  ALLOWED / NEEDS_APPROVAL / BLOCKED for L0/L1/L2 as expected, and the YAML
+  `exfiltrate` forbidden pattern now fires (policy→enforcement parity).
+- Live egress: all out-of-scope/RFC1918/metadata/localhost probes BLOCKED
+  (403 deny-proxy or code=000). Egress envelope confirmed fail-closed.
+
+### Regression tests
+`sonic-core/tests/test_safety_envelope_regressions.py` (11 tests) reproduces
+both bugs red→green and covers CIDR members, URL host extraction, out-of-scope
+URLs, and all forbidden-command classes. `11 passed`.
+
+### Attack-chain demonstration (in-sandbox, no external system)
+Stood up a 1-file deliberately-vulnerable app (`/?page=` LFI + `/admin?token=&cmd=`
+auth-gated RCE) inside a Daytona sandbox and ran a 5-step chain: recon -> LFI
+(leaks admin token from `/opt/app/config.json`) -> auth+command-injection
+(`uid=0(root)`) -> RCE flag read (`SONIC{chain_recon_lfi_auth_rce_flag_captured}`)
+-> post-exploitation (wrote `/tmp/pwned.txt`). Each step recorded request,
+response, SHA-256 evidence hash, and confidence (0.95–0.99). Demonstrates
+multi-step chaining + evidence custody without touching any out-of-scope host.
+
+### Multi-modal perception (requirement #6)
+Confirmed working on a benign target (OpenHands docs): DOM, interactive
+element/accessibility tree, screenshot (saved to disk), and markdown content
+extraction. Browser DOM/JS analysis was also used earlier to reverse the
+BurpSuite download endpoint (`/burp/releases/download?product=desktop&version=...`).
+
+### Sandbox hygiene note
+The `/dev/tcp` "OPEN" heuristic is unreliable behind a deny-proxy; always
+follow up with a real `curl`/`nc` HTTP GET and compare body+RTT to
+distinguish a live host (varied banner, higher RTT) from a deny-proxy
+(identical short 403, sub-ms RTT).
+

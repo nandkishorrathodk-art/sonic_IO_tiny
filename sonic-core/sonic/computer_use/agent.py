@@ -127,6 +127,11 @@ class ComputerUseAgent:
         # step so the LLM acts on real scan findings rather than a claim.
         self._last_tool_result: Any | None = None
         self._last_screenshot_b64: str = ""
+        # Last observed screen dimensions, used to validate GUI coordinate
+        # actions before they touch the provider. Updated on every observe() /
+        # screenshot; sane defaults until the first real observation lands.
+        self._screen_width: int = 1920
+        self._screen_height: int = 1080
         # Closed-loop control state (Devin-style VERIFY + REPLAN). The agent
         # must not trust a self-declared "done"; it independently verifies, and
         # when the same approach keeps failing it replans rather than burning
@@ -149,6 +154,16 @@ class ComputerUseAgent:
         screen_obs = await self.computer.screenshot(workspace_id)
         # Store screenshot for vision-in-the-loop (VLM image input)
         self._last_screenshot_b64 = getattr(screen_obs, "screenshot_base64", "")
+        # Track real screen dimensions so coordinate actions can be validated
+        # against the actual desktop size rather than a default guess. Some
+        # callers construct the agent via __new__ (bypassing __init__), so
+        # initialize the defaults defensively here if they are missing.
+        if not hasattr(self, "_screen_width"):
+            self._screen_width = 1920
+        if not hasattr(self, "_screen_height"):
+            self._screen_height = 1080
+        self._screen_width = int(getattr(screen_obs, "width", self._screen_width) or self._screen_width)
+        self._screen_height = int(getattr(screen_obs, "height", self._screen_height) or self._screen_height)
         status = await self.computer.status(workspace_id)
         files = await self.computer.list_files(workspace_id, "/home/sonic/workspace")
         git_st = await self.computer.git_action(workspace_id, "status")
@@ -518,6 +533,60 @@ class ComputerUseAgent:
     # =============================================================
     # 3. Action Execution & Closed-Loop Verification
     # =============================================================
+    # Actions that target pixel coordinates and must stay on-screen.
+    _COORDINATE_ACTIONS: frozenset[str] = frozenset({
+        "GUI_CLICK", "GUI_DOUBLE_CLICK", "GUI_MOVE", "GUI_SCROLL", "GUI_DRAG",
+    })
+
+    def _validate_coordinates(
+        self, action_type: ComputerActionType, payload: dict[str, Any],
+    ) -> str | None:
+        """Return an error string if a coordinate action is off-screen, else None.
+
+        Validates (x, y) — and (x2, y2) for drags — against the last observed
+        screen dimensions. Coordinates must be non-negative integers strictly
+        inside the screen (0 <= x < width, 0 <= y < height). Non-coordinate
+        actions are always allowed (return None).
+        """
+        if action_type.value not in self._COORDINATE_ACTIONS:
+            return None
+
+        width = getattr(self, "_screen_width", 1920)
+        height = getattr(self, "_screen_height", 1080)
+
+        def _check(x: Any, y: Any, label: str) -> str | None:
+            try:
+                ix, iy = int(x), int(y)
+            except (TypeError, ValueError):
+                return f"{label} ({x},{y}) is not a valid integer coordinate"
+            if ix < 0 or iy < 0:
+                return f"{label} ({ix},{iy}) is negative"
+            if ix >= width or iy >= height:
+                return (
+                    f"{label} ({ix},{iy}) is outside screen "
+                    f"{width}x{height}"
+                )
+            return None
+
+        err = _check(payload.get("x", 0), payload.get("y", 0), "point")
+        if err is not None:
+            return err
+        if action_type == ComputerActionType.GUI_DRAG:
+            err = _check(payload.get("x2", payload.get("x", 0)),
+                         payload.get("y2", payload.get("y", 0)), "drag target")
+            if err is not None:
+                return err
+        return None
+
+    def _update_screen_dims(self, screen: Any) -> None:
+        """Refresh tracked screen dimensions from a screenshot observation."""
+        w = int(getattr(screen, "width", 0) or 0)
+        h = int(getattr(screen, "height", 0) or 0)
+        if w > 0:
+            self._screen_width = w
+        if h > 0:
+            self._screen_height = h
+
     async def execute_action(
         self,
         workspace_id: str,
@@ -560,6 +629,36 @@ class ComputerUseAgent:
                 self.traces.append(trace)
                 self.history.append({"action": action_type.value, "result": actual_obs_str})
                 return trace
+
+        # ----- Coordinate bounds validation -----
+        # GUI coordinate actions are validated against the last observed screen
+        # size BEFORE execution. A model can hallucinate off-screen or negative
+        # coordinates (e.g. from a stale screenshot after a resize); clicking
+        # those does nothing useful and can mis-click. We BLOCK such actions —
+        # without triggering recovery (the provider state is fine; the agent
+        # simply needs to re-observe and pick valid coordinates).
+        coord_err = self._validate_coordinates(action_type, payload)
+        if coord_err is not None:
+            actual_obs_str = f"Coordinate out of bounds: {coord_err}"
+            status = "BLOCKED"
+            logger.warning("action_blocked_out_of_bounds",
+                           action=action_type.value, reason=coord_err,
+                           screen=f"{self._screen_width}x{self._screen_height}")
+            trace = ComputerDecisionTrace(
+                step_index=self.action_counter,
+                action_type=action_type,
+                target_resource=target_resource,
+                payload=str(payload),
+                predicted_outcome=predicted_outcome,
+                actual_observation=actual_obs_str,
+                expected_observation=predicted_outcome,
+                info_gain=0.0,
+                recovery_attempted=False,
+                status=status,
+            )
+            self.traces.append(trace)
+            self.history.append({"action": action_type.value, "result": actual_obs_str})
+            return trace
 
         try:
             if action_type == ComputerActionType.GUI_CLICK:
@@ -632,6 +731,7 @@ class ComputerUseAgent:
             elif action_type == ComputerActionType.GUI_SCREENSHOT:
                 screen = await self.computer.screenshot(workspace_id)
                 self._last_screenshot_b64 = getattr(screen, "screenshot_base64", "")
+                self._update_screen_dims(screen)
                 actual_obs_str = f"Screenshot captured ({screen.width}x{screen.height})"
 
             elif action_type == ComputerActionType.GUI_WAIT:
@@ -644,6 +744,7 @@ class ComputerUseAgent:
                 await _asyncio.sleep(seconds)
                 screen = await self.computer.screenshot(workspace_id)
                 self._last_screenshot_b64 = getattr(screen, "screenshot_base64", "")
+                self._update_screen_dims(screen)
                 actual_obs_str = f"Waited {seconds}s; screen refreshed"
 
             elif action_type == ComputerActionType.APP_LAUNCH:
@@ -770,6 +871,7 @@ class ComputerUseAgent:
                     actual_obs_str = f"Screenshot captured: {getattr(snap, 'url', '')}"
                 else:
                     screen = await self.computer.screenshot(workspace_id)
+                    self._update_screen_dims(screen)
                     actual_obs_str = f"Desktop screenshot captured ({screen.width}x{screen.height})"
 
             elif action_type == ComputerActionType.BROWSER_WAIT:

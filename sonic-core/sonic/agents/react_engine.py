@@ -24,6 +24,15 @@ from enum import StrEnum
 from typing import Any
 
 from sonic.logger import get_logger
+from sonic.llm.providers.custom import parse_tool_arguments
+from sonic.llm.schemas import (
+    LLMRequest,
+    LLMResponse,
+    Message,
+    MessageRole,
+    ToolCall as LLMToolCall,
+    ToolDefinition as LLMToolDefinition,
+)
 from sonic.sandbox.virtual_computer import DaytonaSandbox
 
 logger = get_logger(__name__)
@@ -84,6 +93,36 @@ class ToolRegistry:
             params_str = ", ".join(f"{k}: {v}" for k, v in t.parameters.items())
             lines.append(f"  - {t.name}({params_str}): {t.description}")
         return "\n".join(lines)
+
+    def to_llm_tool_definitions(self) -> list[LLMToolDefinition]:
+        """Convert the registry into provider-agnostic tool schemas for native function-calling.
+
+        Each registered tool becomes a JSON-schema function the LLM can call
+        directly (instead of emitting ``Action: name[arg]`` text). The single
+        positional argument the handler expects is exposed as a property named
+        ``args`` plus each declared parameter, so models can pass either a
+        free-form string or a structured object.
+        """
+        definitions: list[LLMToolDefinition] = []
+        for t in self.tools.values():
+            properties: dict[str, Any] = {
+                "args": {
+                    "type": "string",
+                    "description": "Primary argument (free-form string) for the tool.",
+                }
+            }
+            for param, desc in t.parameters.items():
+                properties[param] = {"type": "string", "description": desc}
+            definitions.append(LLMToolDefinition(
+                name=t.name,
+                description=t.description,
+                parameters={
+                    "type": "object",
+                    "properties": properties,
+                    "required": ["args"],
+                },
+            ))
+        return definitions
 
 
 class ReActEngine:
@@ -298,25 +337,164 @@ Begin:
             "observations": [obs for r in rounds for obs in r.get("observations", [])],
         }
 
-    async def _execute_tool(self, tool_name: str, argument: str) -> str:
-        """Execute a registered tool or sandbox command."""
+    # =============================================================
+    # Native function-calling execution (parallel tool support)
+    # =============================================================
+    async def execute_with_tools(
+        self,
+        task: str,
+        think_fn: Callable[[LLMRequest], Coroutine[Any, Any, LLMResponse]],
+        *,
+        system_prompt: str = "",
+        context: str = "",
+    ) -> dict[str, Any]:
+        """Run the ReAct loop using NATIVE function-calling with parallel tool execution.
+
+        Unlike the text-parsed ``execute`` (one ``Action: tool[arg]`` per step),
+        this path:
+          - Sends real tool schemas to the model (``LLMRequest.tools``).
+          - Executes ALL tool_calls returned in a single step concurrently
+            (``asyncio.gather``), so the agent can fan out independent probes.
+          - Feeds each tool result back as a ``tool`` message keyed by call id,
+            so multi-turn tool conversations stay correctly threaded.
+
+        ``think_fn`` returns a provider-agnostic ``LLMResponse``; an empty
+        ``tool_calls`` list with non-empty ``content`` is treated as the final
+        answer, terminating the loop.
+
+        Returns the same result shape as ``execute`` for drop-in use.
+        """
+        import asyncio as _asyncio
+
+        observations: list[Observation] = []
+        tool_defs = self.tools.to_llm_tool_definitions()
+        messages: list[Message] = []
+        if system_prompt:
+            messages.append(Message(role=MessageRole.SYSTEM, content=system_prompt))
+        task_with_context = task
+        if context:
+            task_with_context = f"{task}\n\nAdditional Context:\n{context}"
+        messages.append(Message(role=MessageRole.USER, content=task_with_context))
+
+        for step in range(1, self.max_iterations + 1):
+            logger.info("react_tools_step", step=step, max=self.max_iterations)
+            start = datetime.now(UTC)
+
+            try:
+                request = LLMRequest(
+                    messages=messages,
+                    tools=tool_defs,
+                    task_type="reasoning",
+                )
+                response = await think_fn(request)
+            except Exception as e:
+                logger.error("react_tools_think_failed", step=step, error=str(e))
+                observations.append(Observation(
+                    step=step, action_type="error", action_input="think", result=str(e),
+                ))
+                break
+
+            duration = (datetime.now(UTC) - start).total_seconds()
+
+            # No tool calls → the model is answering.
+            if not response.tool_calls:
+                answer = (response.content or "").strip()
+                observations.append(Observation(
+                    step=step, action_type="final_answer",
+                    action_input="", result=answer, duration_seconds=duration,
+                ))
+                logger.info("react_tools_final_answer", step=step)
+                return {
+                    "answer": answer,
+                    "observations": [obs.__dict__ for obs in observations],
+                    "steps": step,
+                    "success": bool(answer),
+                }
+
+            # Append the assistant turn (with its tool calls) for correct history.
+            messages.append(Message(
+                role=MessageRole.ASSISTANT,
+                content=response.content or "",
+            ))
+            # NOTE: tool_calls are carried on the request-level response; the
+            # message history here only needs content + the tool results below.
+
+            # Execute every requested tool in parallel — independent probes no
+            # longer serialize one per step.
+            tool_calls = response.tool_calls
+            coros = [
+                self._execute_tool(tc.name, tc.arguments) for tc in tool_calls
+            ]
+            results = await _asyncio.gather(*coros, return_exceptions=False)
+
+            for tc, result in zip(tool_calls, results, strict=True):
+                arg_repr = tc.arguments if isinstance(tc.arguments, str) else json.dumps(tc.arguments)
+                observations.append(Observation(
+                    step=step, action_type="tool_call",
+                    action_input=f"{tc.name}[{arg_repr}]",
+                    result=result[:3000], duration_seconds=duration,
+                ))
+                # Feed the result back as a tool-role message keyed by call id.
+                messages.append(Message(
+                    role=MessageRole.TOOL,
+                    content=result[:2000],
+                    tool_call_id=tc.id,
+                    name=tc.name,
+                ))
+
+            logger.info("react_tools_step_executed",
+                        step=step, n_tools=len(tool_calls))
+
+        logger.warning("react_tools_max_iterations", steps=self.max_iterations)
+        return {
+            "answer": "Max iterations reached without final answer.",
+            "observations": [obs.__dict__ for obs in observations],
+            "steps": self.max_iterations,
+            "success": False,
+        }
+
+    async def _execute_tool(self, tool_name: str, argument: str | dict[str, Any]) -> str:
+        """Execute a registered tool or sandbox command.
+
+        ``argument`` may be a free-form string (legacy text-parsed ReAct) or a
+        dict of structured arguments (native function-calling path). For dict
+        arguments, the tool receives the ``args`` field (or the first declared
+        parameter) as its positional string, matching the handler signature.
+        """
         tool = self.tools.get(tool_name)
+        arg_str = self._coerce_tool_argument(argument, tool)
 
         if tool_name == "bash" or tool_name == "shell":
             # Direct sandbox execution
             if self.sandbox:
-                result = await self.sandbox.execute(argument, timeout=60)
+                result = await self.sandbox.execute(arg_str, timeout=60)
                 return f"Exit Code: {result.exit_code}\nSTDOUT:\n{result.stdout[:2000]}\nSTDERR:\n{result.stderr[:500]}"
             else:
                 return "ERROR: No sandbox available for shell execution."
 
         if tool:
             try:
-                return await tool.handler(argument)
+                return await tool.handler(arg_str)
             except Exception as e:
                 return f"ERROR: Tool {tool_name} failed: {str(e)}"
 
         return f"ERROR: Unknown tool '{tool_name}'. Available: {', '.join(self.tools.tools.keys())}, bash"
+
+    @staticmethod
+    def _coerce_tool_argument(
+        argument: str | dict[str, Any], tool: ToolDefinition | None,
+    ) -> str:
+        """Reduce a string-or-dict tool argument to the positional string handlers expect."""
+        if isinstance(argument, dict):
+            if "args" in argument and isinstance(argument["args"], str):
+                return argument["args"]
+            if tool and tool.parameters:
+                first_param = next(iter(tool.parameters))
+                if first_param in argument and isinstance(argument[first_param], str):
+                    return argument[first_param]
+            # Fall back to a compact representation so the handler still gets text.
+            return json.dumps(argument, sort_keys=True)
+        return str(argument)
 
 
 def create_default_tool_registry(sandbox: DaytonaSandbox | None = None) -> ToolRegistry:

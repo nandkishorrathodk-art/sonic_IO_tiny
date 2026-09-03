@@ -158,13 +158,15 @@ def mission_unknowns(
             table.add_column("Status", style="green")
 
             if not unknowns:
-                table.add_row("unk-01", "Does /api/v2/tokens accept unsigned JWTs?", "90%", "INVESTIGATING")
-                table.add_row("unk-02", "Is rate limiting enforced per IP or per API key?", "60%", "UNRESOLVED")
+                console.print(
+                    f"[yellow]No active uncertainties returned for {engagement_id}. "
+                    f"(HTTP {res.status_code} — the /engagements/{{id}}/unknowns endpoint "
+                    f"is not implemented on the backend.)[/yellow]"
+                )
             else:
                 for u in unknowns:
                     table.add_row(u.get("id", ""), u.get("question", ""), f"{u.get('importance', 0.5)*100:.0f}%", u.get("status", "UNRESOLVED"))
-
-            console.print(table)
+                console.print(table)
         except Exception as e:
             console.print(f"[red]Error: {e}[/red]")
 
@@ -176,18 +178,18 @@ def mission_decisions(
     token: str = typer.Option("", "--token", "-t", help="JWT Auth token"),
 ):
     """Display 'Why this action?' structured decision traces."""
-    console.print(Panel(
-        f"[bold cyan]DECISION TRACE TIMELINE: {engagement_id}[/bold cyan]\n\n"
-        f"[bold yellow]Decision #1:[/bold yellow] Selected '[bold]Dynamic: Test /api/v2/tokens[/bold]'\n"
-        f"  [bold]Unknown Addressed:[/bold] Does /api/v2 enforce signature verification?\n"
-        f"  [bold]Expected Info Gain:[/bold] 0.90 | [bold]Estimated Cost:[/bold] 0.20 | [bold]Risk:[/bold] 0.05\n"
-        f"  [bold]Selection Reason:[/bold] Highest information-to-risk ratio among candidate actions\n"
-        f"  [bold]Predicted Outcome:[/bold] Status 200 or 403\n"
-        f"  [bold]Actual Outcome:[/bold] HTTP 200 OK with leaked token payload\n"
-        f"  [bold]Prediction Error:[/bold] 0.00 (Perfect Match)\n"
-        f"  [bold]Confidence Shift:[/bold] 45.0% → 82.5%",
-        border_style="cyan",
-    ))
+    console.print(
+        Panel(
+            f"[bold cyan]Decision traces for {engagement_id}[/bold cyan]\n\n"
+            f"[bold]Backend endpoint:[/bold] GET /engagements/{engagement_id}/decisions\n"
+            f"[bold]Status:[/bold] [red]Not implemented on the sonic-core API[/red]\n\n"
+            f"[dim]This command previously printed a hardcoded, fabricated decision trace "
+            f"(fake info-gain scores, fake prediction errors, fake confidence shifts). "
+            f"That was misleading, so it now reports the gap instead until the backend "
+            f"provides real decision-trace data.[/dim]",
+            border_style="yellow",
+        )
+    )
 
 
 @app.command(name="next-action")
@@ -197,15 +199,16 @@ def mission_next_action(
     token: str = typer.Option("", "--token", "-t", help="JWT Auth token"),
 ):
     """Show the top-ranked next-best action and utility score breakdown."""
-    console.print(Panel(
-        f"[bold green]TOP-RANKED NEXT ACTION: {engagement_id}[/bold green]\n\n"
-        f"[bold]Action:[/bold] Verifier: Validate Token Leak PoC\n"
-        f"[bold]Agent Type:[/bold] verifier\n"
-        f"[bold]Expected Info Gain:[/bold] 0.85\n"
-        f"[bold]Confidence Gain:[/bold] +0.40\n"
-        f"[bold]Score Breakdown:[/bold] Score 2.125 = (InfoGain:0.85 * ConfGain:0.40 * Discrim:1.5) / (Cost:0.20 + Risk:0.05)",
-        border_style="green",
-    ))
+    console.print(
+        Panel(
+            f"[bold green]Next-best action for {engagement_id}[/bold green]\n\n"
+            f"[bold]Backend endpoint:[/bold] GET /engagements/{engagement_id}/next-action\n"
+            f"[bold]Status:[/bold] [red]Not implemented on the sonic-core API[/red]\n\n"
+            f"[dim]Previously this printed a fabricated utility-score breakdown. It now "
+            f"reports the gap instead until the backend exposes real next-action data.[/dim]",
+            border_style="yellow",
+        )
+    )
 
 
 @app.command(name="tasks")

@@ -1,8 +1,9 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { Settings, Shield, Cpu, Save, Check } from "lucide-react";
+import { Settings, Shield, Cpu, Save, Check, Lock } from "lucide-react";
 import { api } from "../../lib/api";
+import { getUserSession } from "../../lib/auth";
 
 export default function SettingsPage() {
   const [llmBaseUrl, setLlmBaseUrl] = useState("https://api.openai.com/v1");
@@ -16,6 +17,9 @@ export default function SettingsPage() {
   const [saved, setSaved] = useState(false);
   const [apiKeySet, setApiKeySet] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [userRole, setUserRole] = useState<string | null>(null);
+
+  const isAdmin = userRole === "admin" || userRole === "administrator";
 
   const loadSettings = async () => {
     try {
@@ -34,6 +38,7 @@ export default function SettingsPage() {
   };
 
   useEffect(() => {
+    setUserRole(getUserSession()?.role ?? null);
     loadSettings();
   }, []);
 
@@ -59,7 +64,12 @@ export default function SettingsPage() {
       setLlmApiKey("");
       setTimeout(() => setSaved(false), 3000);
     } catch (err: any) {
-      setError(`Failed to save settings: ${err.message}`);
+      const msg = err?.message || "";
+      if (msg.includes("403") || msg.toLowerCase().includes("admin") || msg.toLowerCase().includes("forbidden")) {
+        setError("Administrator access is required to change live settings. Your current role is read-only. Sign in with an admin account to save changes.");
+      } else {
+        setError(`Failed to save settings: ${msg}`);
+      }
     } finally {
       setSaving(false);
     }
@@ -77,11 +87,21 @@ export default function SettingsPage() {
             Manage Immutable Safety Rules, Scope Allowlist, and LLM Provider Endpoints.
           </p>
         </div>
-        <button onClick={handleSave} disabled={saving} className="btn-primary !py-2 text-xs disabled:opacity-50">
+        <button onClick={handleSave} disabled={saving || !isAdmin} className="btn-primary !py-2 text-xs disabled:opacity-50" title={isAdmin ? "" : "Admin role required to save"}>
           {saving ? <span className="w-3.5 h-3.5 border-2 border-white/40 border-t-white rounded-full animate-spin" /> : saved ? <Check className="w-3.5 h-3.5" /> : <Save className="w-3.5 h-3.5" />}
-          <span>{saving ? "SAVING…" : saved ? "SAVED LIVE!" : "SAVE CONFIGURATION"}</span>
+          <span>{saving ? "SAVING…" : saved ? "SAVED LIVE!" : isAdmin ? "SAVE CONFIGURATION" : "ADMIN ONLY"}</span>
         </button>
       </div>
+
+      {!isAdmin && userRole !== null && (
+        <div className="p-3 rounded-lg bg-warning/10 border border-warning/30 text-warning text-xs font-mono flex items-center gap-2">
+          <Lock className="w-3.5 h-3.5 shrink-0" />
+          <span>
+            Read-only view — your role (<strong className="uppercase">{userRole}</strong>) cannot modify live settings.
+            Configuration changes require an administrator account.
+          </span>
+        </div>
+      )}
 
       {error && (
         <div className="p-3 rounded-lg bg-danger/10 border border-danger/30 text-danger text-xs font-mono">{error}</div>

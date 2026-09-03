@@ -10,6 +10,9 @@ import {
   MousePointer,
   Keyboard,
   Send,
+  TerminalSquare,
+  ChevronDown,
+  ChevronUp,
 } from "lucide-react";
 import { DesktopState, CommandResult } from "../../types/workstation";
 import { api } from "../../lib/api";
@@ -45,7 +48,11 @@ export function ComputerSurface({
   const [inputText, setInputText] = useState("");
   const [sendingInput, setSendingInput] = useState(false);
   const [clickRipples, setClickRipples] = useState<Array<{ id: number; x: number; y: number }>>([]);
+  const [showCmdPanel, setShowCmdPanel] = useState(false);
+  const [cmdInput, setCmdInput] = useState("");
+  const [cmdRunning, setCmdRunning] = useState(false);
   const canvasRef = useRef<HTMLDivElement>(null);
+  const cmdLogRef = useRef<HTMLDivElement>(null);
 
   const fetchScreenshot = async () => {
     try {
@@ -69,6 +76,25 @@ export function ComputerSurface({
     return () => clearInterval(interval);
   }, [sessionId]);
 
+  // Auto-scroll the command log to the newest line.
+  useEffect(() => {
+    if (cmdLogRef.current) {
+      cmdLogRef.current.scrollTop = cmdLogRef.current.scrollHeight;
+    }
+  }, [commandLogs, showCmdPanel]);
+
+  const runCommand = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const cmd = cmdInput.trim();
+    if (!cmd || cmdRunning || !onRunCommand) return;
+    setCmdRunning(true);
+    setCmdInput("");
+    try {
+      await onRunCommand(cmd);
+    } finally {
+      setCmdRunning(false);
+    }
+  };
   const handleCanvasClick = async (e: React.MouseEvent<HTMLDivElement>) => {
     if (!isInteractive || !canvasRef.current) return;
     const rect = canvasRef.current.getBoundingClientRect();
@@ -297,6 +323,66 @@ export function ComputerSurface({
                 <span>Sync Display</span>
               </button>
             </div>
+          </div>
+        )}
+      </div>
+
+      {/* Command terminal panel — executes inside the sandbox via onRunCommand */}
+      <div className="border-t border-ink-700 bg-ink-900 flex-shrink-0">
+        <button
+          onClick={() => setShowCmdPanel((v) => !v)}
+          className="w-full px-3 py-2 flex items-center justify-between text-xs font-mono text-muted hover:text-white transition"
+        >
+          <span className="flex items-center gap-1.5">
+            <TerminalSquare className="w-3.5 h-3.5 text-secondary-400" />
+            <span className="font-semibold">Sandbox Command Terminal</span>
+            <span className="text-[10px] text-muted-dim">({commandLogs.length} lines)</span>
+          </span>
+          {showCmdPanel ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronUp className="w-3.5 h-3.5" />}
+        </button>
+        {showCmdPanel && (
+          <div className="px-3 pb-3 space-y-2">
+            <div
+              ref={cmdLogRef}
+              className="h-32 overflow-auto rounded border border-ink-700 bg-ink-950 p-2 text-[11px] font-mono leading-relaxed"
+            >
+              {commandLogs.length === 0 ? (
+                <div className="text-muted-dim">No commands run yet. Execute a command below.</div>
+              ) : (
+                commandLogs.map((line, i) => {
+                  const isPrompt = line.startsWith("sonic@daytona");
+                  const isFail = line.startsWith("[FAIL-CLOSED REJECTED]");
+                  return (
+                    <div
+                      key={i}
+                      className={`whitespace-pre-wrap break-all ${
+                        isPrompt ? "text-secondary-400" : isFail ? "text-danger" : "text-muted-bright"
+                      }`}
+                    >
+                      {line}
+                    </div>
+                  );
+                })
+              )}
+            </div>
+            <form onSubmit={runCommand} className="flex items-center gap-2">
+              <span className="text-[11px] font-mono text-secondary-400 shrink-0">sonic@daytona:~$</span>
+              <input
+                type="text"
+                value={cmdInput}
+                onChange={(e) => setCmdInput(e.target.value)}
+                placeholder="Run a command inside the sandbox (fail-closed enforced)…"
+                className="flex-1 bg-ink-950 border border-ink-700 focus:border-secondary-500 px-2 py-1 text-[11px] font-mono text-white rounded outline-none"
+              />
+              <button
+                type="submit"
+                disabled={cmdRunning || !cmdInput.trim()}
+                className="px-3 py-1 bg-secondary-600/20 hover:bg-secondary-600/30 border border-secondary-500/50 text-secondary-300 font-mono font-bold text-[11px] rounded flex items-center gap-1 disabled:opacity-40"
+              >
+                {cmdRunning ? <span className="w-3 h-3 border-2 border-secondary-500/40 border-t-secondary-300 rounded-full animate-spin" /> : <Send className="w-3 h-3" />}
+                <span>Run</span>
+              </button>
+            </form>
           </div>
         )}
       </div>

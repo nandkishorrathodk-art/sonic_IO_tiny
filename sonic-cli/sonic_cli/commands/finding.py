@@ -9,6 +9,12 @@ Commands for managing trustworthy findings, verification chains, and evidence pa
     sonic finding provenance <id>   # Inspect complete WHO/WHAT/WHERE provenance
     sonic finding confidence <id>   # Display transparent confidence breakdown
     sonic finding review <id>       # Approve / Reject human review findings
+
+NOTE: The verifying/custody endpoints these commands target are not yet exposed by
+the sonic-core API (there is no /findings router). To avoid presenting fabricated
+trust output (fake hashes, fake confidence scores, fake "100% reproducible" claims)
+each command reports the backend gap honestly instead of printing canned panels.
+When the backend exposes these endpoints, wire them here to surface real data.
 """
 
 from __future__ import annotations
@@ -17,7 +23,6 @@ import httpx
 import typer
 from rich.console import Console
 from rich.panel import Panel
-from rich.table import Table
 
 app = typer.Typer(help="🛡️ Finding Verification, Evidence Custody & Trust Management")
 console = Console()
@@ -28,6 +33,23 @@ def _get_client(server: str, token: str) -> httpx.Client:
     if token:
         headers["Authorization"] = f"Bearer {token}"
     return httpx.Client(base_url=server, headers=headers, timeout=15)
+
+
+def _not_implemented(feature: str, endpoint: str, detail: str = "") -> None:
+    """Report an unimplemented backend feature honestly instead of fabricating output."""
+    body = (
+        f"[bold yellow]{feature} is not available.[/bold yellow]\n\n"
+        f"[bold]Backend endpoint:[/bold] {endpoint}\n"
+        f"[bold]Status:[/bold] [red]Not implemented on the sonic-core API[/red]\n"
+    )
+    if detail:
+        body += f"\n[bold]Detail:[/bold] {detail}\n"
+    body += (
+        "\n[dim]This command previously printed hardcoded sample output (fake hashes, "
+        "confidence scores, and reproduction results). That was misleading for a trust "
+        "system, so it now reports the gap instead until the backend provides real data.[/dim]"
+    )
+    console.print(Panel(body, border_style="yellow"))
 
 
 @app.command(name="verify")
@@ -43,10 +65,16 @@ def verify_finding(
             res = client.post(f"/findings/{finding_id}/verify")
             if res.status_code == 200:
                 console.print(f"[bold green]✓ Independent verification completed successfully for {finding_id}.[/bold green]")
+            elif res.status_code == 404:
+                _not_implemented(
+                    "Finding verification",
+                    f"POST /findings/{finding_id}/verify",
+                    "No /findings router is registered on the backend.",
+                )
             else:
-                console.print(f"[yellow]Simulation / Response ({res.status_code}): Verified via secondary verifier.[/yellow]")
-        except Exception:
-            console.print(f"[green]✓ Independent verification recorded for finding {finding_id}.[/green]")
+                console.print(f"[red]Verification request failed (HTTP {res.status_code}): {res.text}[/red]")
+        except Exception as e:
+            console.print(f"[red]Could not reach backend: {e}[/red]")
 
 
 @app.command(name="challenge")
@@ -56,13 +84,11 @@ def challenge_finding(
     token: str = typer.Option("", "--token", "-t", help="JWT Auth token"),
 ):
     """Trigger an adversarial falsification challenge to eliminate confirmation bias."""
-    console.print(Panel(
-        f"[bold purple]ADVERSARIAL FALSIFICATION CHALLENGE: {finding_id}[/bold purple]\n\n"
-        f"[bold]Hypothesis Tested:[/bold] Vulnerability is an active exploitable flaw\n"
-        f"[bold]Falsification Probe:[/bold] Testing alternative explanation (intended guest renewal service)\n"
-        f"[bold]Result:[/bold] Counter-explanation DISPROVED. Elevated admin tokens confirmed.",
-        border_style="purple",
-    ))
+    _not_implemented(
+        "Adversarial falsification challenge",
+        f"POST /findings/{finding_id}/challenge",
+        "The backend does not expose a falsification endpoint yet.",
+    )
 
 
 @app.command(name="reproduce")
@@ -72,14 +98,11 @@ def reproduce_finding(
     token: str = typer.Option("", "--token", "-t", help="JWT Auth token"),
 ):
     """Execute reproduction procedure in isolated sandbox ComputeProvider."""
-    console.print(Panel(
-        f"[bold green]CONTROLLED SANDBOX REPRODUCTION: {finding_id}[/bold green]\n\n"
-        f"[bold]Sandbox ID:[/bold] sandbox-reprod-01 (Isolated Container)\n"
-        f"[bold]PoC Command:[/bold] curl -s -X POST https://target/api/v2/tokens -H 'alg: none'\n"
-        f"[bold]Reproduction Status:[/bold] [bold green]100% REPRODUCIBLE[/bold green]\n"
-        f"[bold]Output SHA-256:[/bold] e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-        border_style="green",
-    ))
+    _not_implemented(
+        "Sandbox reproduction",
+        f"POST /findings/{finding_id}/reproduce",
+        "No reproduction endpoint exists; do not trust reproduction claims until wired.",
+    )
 
 
 @app.command(name="evidence")
@@ -89,18 +112,37 @@ def list_finding_evidence(
     token: str = typer.Option("", "--token", "-t", help="JWT Auth token"),
 ):
     """List all attached immutable evidence items with SHA-256 hashes."""
-    table = Table(title=f"Evidence Items: {finding_id}", border_style="cyan")
-    table.add_column("Evidence ID", style="dim")
-    table.add_column("Artifact Type", style="cyan")
-    table.add_column("Tool", style="yellow")
-    table.add_column("SHA-256 Hash", style="white")
-    table.add_column("Quality", style="green")
-
-    table.add_row("evi-01", "HTTP_REQUEST", "httpx", "a1b2c3d4e5f6... (Verified)", "100%")
-    table.add_row("evi-02", "HTTP_RESPONSE", "httpx", "8f9a7b6c5d4e... (Verified)", "95%")
-    table.add_row("evi-03", "TOOL_OUTPUT", "curl_sandbox", "7c6b5a4d3e2f... (Verified)", "100%")
-
-    console.print(table)
+    with _get_client(server, token) as client:
+        try:
+            res = client.get(f"/findings/{finding_id}/evidence")
+            if res.status_code == 200:
+                data = res.json()
+                from rich.table import Table
+                table = Table(title=f"Evidence Items: {finding_id}", border_style="cyan")
+                table.add_column("Evidence ID", style="dim")
+                table.add_column("Artifact Type", style="cyan")
+                table.add_column("Tool", style="yellow")
+                table.add_column("SHA-256 Hash", style="white")
+                table.add_column("Quality", style="green")
+                for ev in data.get("evidence", []):
+                    table.add_row(
+                        str(ev.get("id", "")),
+                        str(ev.get("artifact_type", "")),
+                        str(ev.get("tool", "")),
+                        str(ev.get("sha256", "")),
+                        str(ev.get("quality", "")),
+                    )
+                console.print(table)
+            elif res.status_code == 404:
+                _not_implemented(
+                    "Evidence listing",
+                    f"GET /findings/{finding_id}/evidence",
+                    "No /findings router is registered on the backend.",
+                )
+            else:
+                console.print(f"[red]Evidence request failed (HTTP {res.status_code}): {res.text}[/red]")
+        except Exception as e:
+            console.print(f"[red]Could not reach backend: {e}[/red]")
 
 
 @app.command(name="provenance")
@@ -110,16 +152,11 @@ def inspect_provenance(
     token: str = typer.Option("", "--token", "-t", help="JWT Auth token"),
 ):
     """Inspect complete WHO/WHAT/WHERE cryptographic provenance."""
-    console.print(Panel(
-        f"[bold cyan]CRYPTOGRAPHIC PROVENANCE MANIFEST: {finding_id}[/bold cyan]\n\n"
-        f"[bold]Tenant ID:[/bold] tenant-acme\n"
-        f"[bold]Engagement ID:[/bold] eng-alpha-01\n"
-        f"[bold]Discovered By:[/bold] discovery-agent (execution-01)\n"
-        f"[bold]Independently Verified By:[/bold] verifier-agent-2 (execution-03)\n"
-        f"[bold]Sandbox ID:[/bold] daytona-sandbox-west2\n"
-        f"[bold]Chain-of-Custody Integrity:[/bold] [bold green]VALID & UNTAMPERED (SHA-256 Verified)[/bold green]",
-        border_style="cyan",
-    ))
+    _not_implemented(
+        "Cryptographic provenance",
+        f"GET /findings/{finding_id}/provenance",
+        "Provenance manifests are not exposed by the backend yet.",
+    )
 
 
 @app.command(name="confidence")
@@ -129,18 +166,11 @@ def inspect_confidence(
     token: str = typer.Option("", "--token", "-t", help="JWT Auth token"),
 ):
     """Display transparent confidence breakdown and reasons."""
-    console.print(Panel(
-        f"[bold yellow]CONFIDENCE & SEVERITY REPORT: {finding_id}[/bold yellow]\n\n"
-        f"[bold]Severity (Impact):[/bold] [bold red]CRITICAL[/bold red]\n"
-        f"[bold]Confidence Score:[/bold] [bold green]92.5% (VERY_HIGH)[/bold green]\n\n"
-        f"[bold]Calculation Breakdown:[/bold]\n"
-        f"  • Base Evidence Quality: +0.38 (3 verified items)\n"
-        f"  • Independent Confirmation: +0.25 (2 independent agents)\n"
-        f"  • Sandbox Reproduction: +0.25 (100% reproducible)\n"
-        f"  • Valid PoC: +0.10\n"
-        f"  • Contradictions Penalty: 0.00 (0 unresolved conflicts)",
-        border_style="yellow",
-    ))
+    _not_implemented(
+        "Confidence breakdown",
+        f"GET /findings/{finding_id}/confidence",
+        "Confidence scores are not computed/exposed by the backend yet.",
+    )
 
 
 @app.command(name="review")
@@ -151,4 +181,18 @@ def review_finding(
     token: str = typer.Option("", "--token", "-t", help="JWT Auth token"),
 ):
     """Submit human review decision for findings flagged for review."""
-    console.print(f"[bold green]✓ Human review [{action.upper()}] processed for finding {finding_id}.[/bold green]")
+    with _get_client(server, token) as client:
+        try:
+            res = client.post(f"/findings/{finding_id}/review", json={"action": action})
+            if res.status_code == 200:
+                console.print(f"[bold green]✓ Human review [{action.upper()}] processed for finding {finding_id}.[/bold green]")
+            elif res.status_code == 404:
+                _not_implemented(
+                    "Human review submission",
+                    f"POST /findings/{finding_id}/review",
+                    "No /findings router is registered on the backend.",
+                )
+            else:
+                console.print(f"[red]Review request failed (HTTP {res.status_code}): {res.text}[/red]")
+        except Exception as e:
+            console.print(f"[red]Could not reach backend: {e}[/red]")

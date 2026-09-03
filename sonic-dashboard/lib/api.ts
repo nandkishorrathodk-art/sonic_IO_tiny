@@ -241,4 +241,39 @@ export const api = {
       method: "POST",
       body: JSON.stringify(config),
     }),
+
+  // Self-Security Lab
+  runSecurityAudit: () =>
+    apiClient<any>("/security/audit", { method: "POST", timeout: 60000 }),
+
+  getSecurityTests: () =>
+    apiClient<any>("/security/tests"),
+
+  getSecurityFindings: () =>
+    apiClient<any>("/security/findings"),
+
+  getReleaseGate: () =>
+    apiClient<any>("/security/release-gate"),
+
+  getAttackSurface: () =>
+    apiClient<any>("/security/attack-surface"),
+
+  reproduceSecurityTest: (testId: string) =>
+    apiClient<any>(`/security/reproduce/${encodeURIComponent(testId)}`, { method: "POST", timeout: 60000 }),
+
+  // Experiment lifecycle
+  approveExperiment: (id: string) =>
+    apiClient<any>(`/experiments/${encodeURIComponent(id)}/approve`, { method: "POST" }),
+
+  rejectExperiment: (id: string, reason: string) =>
+    apiClient<any>(`/experiments/${encodeURIComponent(id)}/reject?reason=${encodeURIComponent(reason)}`, { method: "POST" }),
+
+  promoteExperiment: (id: string) =>
+    apiClient<any>(`/experiments/${encodeURIComponent(id)}/promote`, { method: "POST" }),
+
+  getExperimentWeaknesses: () =>
+    apiClient<any>("/experiments/weaknesses/summary"),
+
+  getExperimentHistory: () =>
+    apiClient<any>("/experiments/history/timeline"),
 };

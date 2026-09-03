@@ -1308,6 +1308,11 @@ The Round 2 CLI audit de-fabricated 5 files but left several CLI commands honest
 - **CLI re-wired** (removed all remaining `_no_backend` panels): evolution.py (`weaknesses`/`approve`/`reject`/`promote`/`history` → new endpoints), research.py (`hypotheses`/`leads`/`anomalies` → new endpoints), security.py (all 6 commands → new `/security` router), computer.py (`services`/`snapshot` → new workstation endpoints). No "no backend endpoint" / "not exposed" strings remain in the CLI.
 - **Tests**: `tests/test_round2_gap_fill.py` (+19 tests covering experiment lifecycle, safety-violation auto-reject, security audit/tests/findings/release-gate/reproduce/attack-surface, engagement sub-routes, workstation services/snapshots). Full suite: **570 passed, 37 skipped, 0 failures**.
 
+### Round 2 frontend gap-fill (2026-09-03)
+- **`app/security-lab/page.tsx`** — was a stub that just re-exported the Evolution page. Replaced with a real Self-Security Lab dashboard that calls the new `/security` endpoints: test catalog (`getSecurityTests`), attack-surface inventory (`getAttackSurface`), release-gate verdict (`getReleaseGate`), findings (`getSecurityFindings`), run-audit (`runSecurityAudit`), and per-test reproduce buttons. No mock data — all rendered from API responses.
+- **`lib/api.ts`** — added API client methods for the new endpoints: `runSecurityAudit`, `getSecurityTests`, `getSecurityFindings`, `getReleaseGate`, `getAttackSurface`, `reproduceSecurityTest`, plus experiment lifecycle (`approveExperiment`/`rejectExperiment`/`promoteExperiment`/`getExperimentWeaknesses`/`getExperimentHistory`).
+- Dashboard build passes (`npm run build`) — all 17 routes compile, `/security-lab` now a real 3.79 kB page.
+
 ## AI + control upgrade (reliability hardening)
 Two independent robustness layers were added on top of the existing AI core
 and control loop — the legacy text-parsed ReAct and provider paths are

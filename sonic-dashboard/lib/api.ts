@@ -276,4 +276,11 @@ export const api = {
 
   getExperimentHistory: () =>
     apiClient<any>("/experiments/history/timeline"),
+
+  // Agents
+  getAgents: () =>
+    apiClient<any>("/agents/"),
+
+  getAgent: (agentId: string) =>
+    apiClient<any>(`/agents/${encodeURIComponent(agentId)}`),
 };

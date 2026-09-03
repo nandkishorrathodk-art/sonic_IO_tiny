@@ -1354,3 +1354,64 @@ unchanged and still the default; the new paths are opt-in additions.
     recovery is triggered (the provider state is fine; the agent just needs to
     re-observe). Non-coordinate actions (terminal exec, etc.) are unaffected.
   - Tests: `sonic-core/tests/test_ai_and_control_upgrade.py` (25 tests).
+
+## Round 3 — Computer + Agents Bug Fixes
+
+### Computer subsystem (`sonic-core/sonic/computer/`)
+
+- **CLI `list` crash** (`sonic-cli/sonic_cli/commands/computer.py`):
+  `/workstation/sessions` returns a bare JSON list, but the CLI called
+  `data.get("sessions", [])` on it, crashing with `AttributeError`.
+  Fixed to detect a list and use it directly.
+- **CLI `screenshot` field mismatch**: the CLI read `image`, but the backend
+  returns `screenshot_base64` + `desktop_state`. Fixed the field mapping.
+- **Fabricated git diff** (`provider.py`): `git_action("diff")` returned a
+  hardcoded fake `auth.py` diff when the real command produced nothing.
+  Now returns `res.stdout or ""` (real output or honest empty string).
+- **Dead code after `raise`** (`provider.py`): `gui_action` had
+  unreachable code after `raise RuntimeError`. Removed; the raise now
+  follows the audit record.
+- Tests: `sonic-core/tests/test_round3_computer_agents_fixes.py`.
+
+### Agents subsystem (`sonic-core/sonic/agents/`, `sonic/swarm.py`)
+
+- **Swarm failed-task routing** (`swarm.py`): the dispatch loop and the
+  exception handler in `_execute_single_task` routed failures to
+  `on_task_completed({"status": "failed"})` instead of `on_task_failed`.
+  Both call sites now call `director.on_task_failed(...)`.
+- **MetaOrchestrator no-op removal** (`swarm.py`): `MetaOrchestrator.run()`
+  was a planning-only no-op but it was registered in `agent_configs` and the
+  dispatch `agent_map`, risking dead dispatch. Removed from both registries
+  and dropped the unused import. The `Director` orchestrates the swarm;
+  `MetaOrchestrator` remains available for legacy planning but is never
+  dispatched as a task executor.
+- **Divergent agent registries** (`api/routes/agents.py`): `/agents/`
+  surfaced only legacy engagement-scoped agents, while `/live/agents`
+  showed a separate runtime feed. `/agents/` now surfaces the real
+  `SwarmRunner.get_status()` agent registry (primary), with the legacy
+  `EngagementManager` list as fallback. Response includes a `source` field
+  (`swarm` | `engagement` | `none`).
+- **CodeFix fabricated fallback patch** (`agents/codefix.py`): the except
+  block returned a fake `server.js` diff and a fake regression test. Now
+  returns empty `patch_diff`/`regression_tests` with an honest error
+  message and logs the parse failure.
+- **Orchestrator bare except** (`agents/orchestrator.py`):
+  `evaluate_findings` swallowed parse errors silently. Now logs the error
+  via `logger.error` and includes the cause in the fallback reason.
+- **ExploitValidator dead expression** (`agents/exploit_validator.py`):
+  removed a standalone `finding.get("poc", "")` no-op expression.
+- Tests: `sonic-core/tests/test_round3_computer_agents_fixes.py` (12 tests)
+  and `sonic-core/tests/test_swarm_wiring.py` (updated for the removed
+  orchestrator from the agent map).
+
+### Frontend (`sonic-dashboard/`)
+
+- **New `/agents` page** (`app/agents/page.tsx`): a real Agent Swarm Registry
+  view backed by `GET /agents/`. Shows live agent name/type/status/task/model
+  with status-colored badges and a `source` indicator. Replaces the previous
+  stub.
+- **Sidebar nav expanded** (`components/workstation/WorkstationSidebar.tsx`):
+  added Computer, Research, Experiments, Agents, and Security Lab to the
+  primary navigation (previously only Workstation/Missions/Graph/Evidence).
+- `lib/api.ts`: added `getAgents()` and `getAgent()` API methods.
+- Dashboard builds cleanly (`npm run build`); all 19 routes compile.

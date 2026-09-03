@@ -40,8 +40,8 @@ def test_dynamic_agent_registered_in_swarm():
         # Manually mirror initialize's agent config to assert wiring.
         from sonic.agents.dynamic_execution import DynamicExecutionAgent
         assert "dynamic" in dict(zip(
-            ["orchestrator", "recon", "static", "dynamic", "hypothesis", "verifier"],
-            [None] * 6,
+            ["recon", "static", "dynamic", "hypothesis", "verifier"],
+            [None] * 5,
         ))
         # Verify the class is importable and constructible
         agent = DynamicExecutionAgent(model_router=None, graph_memory=None,
@@ -55,7 +55,8 @@ def test_agent_map_routes_dynamic_to_dynamic_agent():
     # The mapping is built inside _run_dispatch_loop; verify the expected key.
     expected_map = {
         "recon": "recon", "static": "static", "hypothesis": "hypothesis",
-        "verifier": "verifier", "dynamic": "dynamic", "orchestrator": "orchestrator",
+        "verifier": "verifier", "dynamic": "dynamic", "codefix": "codefix",
+        "exploit_validator": "exploit_validator",
     }
     assert expected_map["dynamic"] == "dynamic"
 

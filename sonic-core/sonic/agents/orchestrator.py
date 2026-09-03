@@ -190,5 +190,6 @@ Return JSON: {{"action": "continue|complete|pivot", "reason": "...", "next_prior
             if "```" in content:
                 content = content.split("```json")[1].split("```")[0] if "```json" in content else content.split("```")[1].split("```")[0]
             return json.loads(content)
-        except Exception:
-            return {"action": "continue", "reason": "Unable to parse evaluation, continuing"}
+        except Exception as e:
+            logger.error("orchestrator_eval_parse_failed", error=str(e))
+            return {"action": "continue", "reason": f"Unable to parse evaluation ({str(e)[:100]}), continuing"}

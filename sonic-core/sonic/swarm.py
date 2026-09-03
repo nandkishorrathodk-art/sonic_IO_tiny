@@ -22,7 +22,6 @@ from sonic.agents.director import Director
 from sonic.agents.dynamic_execution import DynamicExecutionAgent
 from sonic.agents.exploit_validator import ExploitValidator
 from sonic.agents.hypothesis import HypothesisGenerator
-from sonic.agents.orchestrator import MetaOrchestrator
 from sonic.agents.react_engine import (
     ReActEngine,
     create_default_tool_registry,
@@ -104,8 +103,11 @@ class SwarmRunner:
         self.react_engine = ReActEngine(self.tool_registry, max_iterations=8)
 
         # 5. Spawn Core Agents
+        # NOTE: MetaOrchestrator is intentionally excluded — its run() is a
+        # legacy planning-only no-op. The Director now orchestrates the swarm;
+        # individual agents (recon/static/dynamic/hypothesis/verifier/codefix)
+        # execute the task-graph nodes dispatched by the Director.
         agent_configs = [
-            ("orchestrator", MetaOrchestrator),
             ("recon", ReconAgent),
             ("static", StaticReasoningAgent),
             ("dynamic", DynamicExecutionAgent),
@@ -310,7 +312,6 @@ class SwarmRunner:
             "hypothesis": "hypothesis",
             "verifier": "verifier",
             "dynamic": "dynamic",     # autonomous pentest loop
-            "orchestrator": "orchestrator",
             "codefix": "codefix",
             "exploit_validator": "exploit_validator",
         }
@@ -348,10 +349,10 @@ class SwarmRunner:
                 agent = self._agents.get(agent_name)
                 if agent is None:
                     # No agent available — mark as failed
-                    await self.director.on_task_completed(
+                    await self.director.on_task_failed(
                         engagement_id=engagement_id,
                         task_id=task_payload.get("task_id", ""),
-                        result={"status": "failed", "error": f"No agent for type {agent_type}"},
+                        error=f"No agent for type {agent_type}",
                     )
                     failed += 1
                     continue
@@ -446,10 +447,10 @@ class SwarmRunner:
             return result
         except Exception as e:
             logger.error("single_task_failed", task_id=task_id, error=str(e))
-            await self.director.on_task_completed(
+            await self.director.on_task_failed(
                 engagement_id=engagement_id,
                 task_id=task_id,
-                result={"status": "failed", "error": str(e)},
+                error=str(e),
             )
             raise
 

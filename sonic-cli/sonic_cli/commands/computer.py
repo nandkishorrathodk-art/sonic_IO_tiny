@@ -68,21 +68,23 @@ def list_computers(
         data = _call(client, "GET", "/workstation/sessions")
         if data is None:
             return
-        sessions = data.get("sessions", [])
+        sessions = data if isinstance(data, list) else data.get("sessions", [])
         if not sessions:
             console.print("[yellow]No active computer workspaces (sessions) found.[/yellow]")
             return
         table = Table(title="Computer Workspaces (Sessions)", border_style="cyan")
         table.add_column("Session ID", style="dim")
-        table.add_column("Tenant", style="cyan")
+        table.add_column("Mission Name", style="white")
         table.add_column("Status", style="green")
-        table.add_column("Created At", style="yellow")
+        table.add_column("Git Branch", style="yellow")
+        table.add_column("Logs", justify="right")
         for s in sessions:
             table.add_row(
                 str(s.get("session_id", s.get("id", ""))),
-                str(s.get("tenant_id", s.get("email", ""))),
+                str(s.get("mission_name", ""))[:40],
                 str(s.get("status", "n/a")),
-                str(s.get("created_at", "")),
+                str(s.get("git_branch", "")),
+                str(s.get("log_count", "")),
             )
         console.print(table)
 
@@ -162,12 +164,23 @@ def screenshot(
         data = _call(client, "GET", "/workstation/desktop/screenshot", params={"session_id": workspace_id})
         if data is None:
             return
+        has_img = bool(data.get("screenshot_base64"))
         console.print(Panel(
             f"[bold cyan]📸 DESKTOP SCREENSHOT: {workspace_id}[/bold cyan]\n\n"
             f"[bold]Width:[/bold] {data.get('width', 'n/a')} | [bold]Height:[/bold] {data.get('height', 'n/a')}\n"
-            f"[bold]Has image:[/bold] {'yes' if data.get('image') else 'no'}",
+            f"[bold]Desktop state:[/bold] {data.get('desktop_state', 'n/a')}\n"
+            f"[bold]Active window:[/bold] {data.get('active_window', 'n/a')}\n"
+            f"[bold]Has image:[/bold] {'yes' if has_img else 'no'}",
             border_style="cyan",
         ))
+        if has_img:
+            import base64
+            out_path = f"sonic-screenshot-{workspace_id}.png"
+            with open(out_path, "wb") as f:
+                f.write(base64.b64decode(data["screenshot_base64"]))
+            console.print(f"[green]Saved screenshot to {out_path}[/green]")
+        elif data.get("desktop_state") == "NO_DISPLAY":
+            console.print("[yellow]No desktop provisioned — run `sonic computer create` first.[/yellow]")
 
 
 @app.command(name="apps")

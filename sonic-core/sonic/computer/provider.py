@@ -298,9 +298,6 @@ class UnifiedComputerProvider(ComputerProvider):
         actor: str = "operator",
     ) -> ScreenObservation:
         ws = self._require_workspace(workspace_id)
-
-        raise RuntimeError("GUI actions require a provider with a real desktop backend")
-
         self._record_audit(
             session_id=actor,
             workspace_id=workspace_id,
@@ -309,9 +306,9 @@ class UnifiedComputerProvider(ComputerProvider):
             action=f"GUI_{action.action.value}",
             application=action.app_name,
             resource=f"x={action.x}, y={action.y}, text={action.text}",
-            result="SUCCESS",
+            result="DENIED",
         )
-        return await self.screenshot(workspace_id)
+        raise RuntimeError("GUI actions require a provider with a real desktop backend")
 
     # -------------------------------------------------------------
     # 3. Terminal & Processes
@@ -613,7 +610,7 @@ class UnifiedComputerProvider(ComputerProvider):
             return res.exit_code == 0 or res.exit_code == 126
         elif action == "diff":
             res = await self.compute.execute(workspace_id, "git diff || true")
-            return res.stdout or "diff --git a/auth.py b/auth.py\n+ def check(): return True\n"
+            return res.stdout or ""
         return False
 
     # -------------------------------------------------------------

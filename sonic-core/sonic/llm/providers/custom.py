@@ -66,7 +66,9 @@ Usage:
 
 from __future__ import annotations
 
+import asyncio
 import json
+import re
 from collections.abc import AsyncIterator
 from typing import Any
 
@@ -127,6 +129,100 @@ def _is_model_not_found_error(error: Exception) -> bool:
     )
 
 
+def _is_transient_error(error: Exception) -> bool:
+    """Identify transient errors that are safe to retry on the SAME provider/model.
+
+    Covers rate limits (429), server errors (5xx), and network/transport
+    failures. Non-transient errors (auth, bad request, model not found) are
+    intentionally NOT retried — they will not succeed by repeating the request.
+    """
+    error_text = f"{type(error).__name__} {error}".lower()
+    # HTTP status markers surfaced by SDKs / httpx.
+    status_markers = (
+        "429", "rate limit", "rate_limit", "overloaded",
+        "500", "502", "503", "504", "server error", "service unavailable",
+        "internal server error", "bad gateway", "gateway timeout",
+        "too many requests",
+    )
+    if any(marker in error_text for marker in status_markers):
+        return True
+    return _is_transport_error(error)
+
+
+def _extract_json_object(raw: str) -> dict | None:
+    """Best-effort extraction of a JSON object from an LLM tool-call argument string.
+
+    Models occasionally wrap tool arguments in prose or trailing text, or emit
+    slightly malformed JSON (e.g., trailing commas, single quotes). This scans
+    for the first balanced ``{ ... }`` region and parses it; on failure it falls
+    back to permissive fixes (single→double quotes, trailing comma removal).
+    Returns the parsed dict, or ``None`` if no JSON object could be recovered.
+    """
+    if not raw:
+        return None
+    text = raw.strip()
+    # Fast path: already valid JSON.
+    try:
+        obj = json.loads(text)
+        return obj if isinstance(obj, dict) else None
+    except (json.JSONDecodeError, ValueError):
+        pass
+    # Scan for the first balanced object region.
+    start = text.find("{")
+    while start != -1:
+        depth = 0
+        in_string = False
+        escape = False
+        for i in range(start, len(text)):
+            ch = text[i]
+            if in_string:
+                if escape:
+                    escape = False
+                elif ch == "\\":
+                    escape = True
+                elif ch == '"':
+                    in_string = False
+                continue
+            if ch == '"':
+                in_string = True
+            elif ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    candidate = text[start : i + 1]
+                    try:
+                        obj = json.loads(candidate)
+                        return obj if isinstance(obj, dict) else None
+                    except (json.JSONDecodeError, ValueError):
+                        # Try permissive fixups on this candidate.
+                        fixed = candidate.replace("'", '"')
+                        fixed = re.sub(r",(\s*[}\]])", r"\1", fixed)
+                        try:
+                            obj = json.loads(fixed)
+                            return obj if isinstance(obj, dict) else None
+                        except (json.JSONDecodeError, ValueError):
+                            break
+        start = text.find("{", start + 1)
+    return None
+
+
+def parse_tool_arguments(raw: str | None) -> dict:
+    """Parse an LLM tool-call argument string into a dict, tolerating noise.
+
+    Public helper reused by the ReAct engine and provider code paths so that a
+    single robust parsing strategy governs every tool-call argument.
+    """
+    if not raw or not raw.strip():
+        return {}
+    extracted = _extract_json_object(raw)
+    if extracted is not None:
+        return extracted
+    # Last resort: the whole string is a bare value (e.g. a command). Wrap it so
+    # callers that expect a dict still receive something usable.
+    return {"value": raw.strip()}
+
+
 class CustomLLMProvider(LLMProvider):
     """
     Universal LLM Provider — works with ANY OpenAI-compatible API.
@@ -155,6 +251,9 @@ class CustomLLMProvider(LLMProvider):
         speed_tier: SpeedTier = SpeedTier.MEDIUM,
         timeout_seconds: int = 120,
         fallback_models: list[str] | None = None,
+        max_retries: int = 3,
+        retry_base_delay: float = 0.5,
+        retry_max_delay: float = 20.0,
     ):
         # Map name to ProviderName enum if possible, else use CLAUDE as fallback
         try:
@@ -179,6 +278,13 @@ class CustomLLMProvider(LLMProvider):
         self.speed_tier = speed_tier
         self.timeout_seconds = timeout_seconds
         self.is_anthropic = _is_anthropic_endpoint(base_url)
+        # Transient-error retry policy (rate limits, 5xx, transport). These are
+        # per-request retries on the SAME provider/model — distinct from the
+        # model-level (EOL) and provider-level fallback chains. Set max_retries=0
+        # to disable.
+        self.max_retries = max(0, max_retries)
+        self.retry_base_delay = max(0.0, retry_base_delay)
+        self.retry_max_delay = max(self.retry_base_delay, retry_max_delay)
 
         # Try to use the official SDKs if available, otherwise fall back to httpx
         self._openai_client = None
@@ -299,18 +405,57 @@ class CustomLLMProvider(LLMProvider):
     # Complete (Single Response)
     # ============================================
 
+    async def _with_retry(
+        self,
+        request: LLMRequest,
+        call: Any,
+    ) -> LLMResponse:
+        """Run a single completion attempt with transient-error retry/backoff.
+
+        ``call`` is the bound, model-specific completion coroutine. Retries only
+        on transient errors (429/5xx/transport); auth/bad-request/model-not-found
+        errors propagate immediately to the model- and provider-level fallback
+        chains (which live in ``complete`` and the router respectively).
+        """
+        attempt = 0
+        last_error: Exception | None = None
+        while attempt <= self.max_retries:
+            try:
+                return await call(request)
+            except Exception as e:
+                last_error = e
+                if not _is_transient_error(e) or attempt == self.max_retries:
+                    raise
+                # Exponential backoff with full jitter, capped at retry_max_delay.
+                import random
+                ceiling = min(self.retry_max_delay, self.retry_base_delay * (2 ** attempt))
+                delay = random.uniform(0, ceiling)
+                logger.warning(
+                    "llm_transient_retry",
+                    name=self.name,
+                    attempt=attempt + 1,
+                    max_retries=self.max_retries,
+                    backoff_seconds=round(delay, 2),
+                    error=str(e),
+                )
+                await asyncio.sleep(delay)
+                attempt += 1
+        # Defensive: unreachable, but keep mypy satisfied.
+        assert last_error is not None
+        raise last_error
+
     async def complete(self, request: LLMRequest) -> LLMResponse:
         """Send a completion request. Auto-detects Anthropic vs OpenAI format.
 
-        On model-not-found/EOL errors, retries with configured fallback_models
-        before re-raising to the router's provider-level fallback chain.
+        Transient errors (rate limits, 5xx, transport) are retried on the same
+        provider/model with exponential backoff. On model-not-found/EOL errors,
+        retries with configured fallback_models before re-raising to the
+        router's provider-level fallback chain.
         """
         original_model = request.model or self.default_model
         try:
-            if self.is_anthropic:
-                return await self._complete_anthropic(request)
-            else:
-                return await self._complete_openai(request)
+            call = self._complete_anthropic if self.is_anthropic else self._complete_openai
+            return await self._with_retry(request, call)
         except Exception as e:
             if _is_model_not_found_error(e) and self.fallback_models:
                 logger.warning(
@@ -326,10 +471,8 @@ class CustomLLMProvider(LLMProvider):
                     try:
                         request.model = fb_model
                         logger.info("model_fallback_attempt", name=self.name, model=fb_model)
-                        if self.is_anthropic:
-                            return await self._complete_anthropic(request)
-                        else:
-                            return await self._complete_openai(request)
+                        call = self._complete_anthropic if self.is_anthropic else self._complete_openai
+                        return await self._with_retry(request, call)
                     except Exception as fb_err:
                         if _is_model_not_found_error(fb_err):
                             logger.warning("model_fallback_also_not_found", name=self.name, model=fb_model)
@@ -382,10 +525,7 @@ class CustomLLMProvider(LLMProvider):
                     tool_calls.append(ToolCall(
                         id=tc.id,
                         name=tc.function.name,
-                        arguments=(
-                            json.loads(tc.function.arguments)
-                            if tc.function.arguments else {}
-                        ),
+                        arguments=parse_tool_arguments(tc.function.arguments),
                     ))
 
             usage = TokenUsage(

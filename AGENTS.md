@@ -35,6 +35,10 @@ multi-tenant RBAC.
 ## Testing
 - `python -m pytest sonic-core/tests/`
 - Security regression suite: `sonic-core/tests/test_p0_security_hardening.py`
+- New upgrade tests: `sonic-core/tests/test_ai_and_control_upgrade.py` covers
+  LLM retry/backoff, robust tool-argument JSON parsing, ReAct native
+  function-calling with parallel tool execution, and ComputerUseAgent
+  coordinate-bounds validation.
 - Known pre-existing failures (environmental, NOT code bugs):
   - `test_phase13/*` through `test_phase19/*` — require a live Docker daemon
     (`DockerProvider` runs `docker`); not available in CI/this sandbox.
@@ -1270,4 +1274,46 @@ The `/dev/tcp` "OPEN" heuristic is unreliable behind a deny-proxy; always
 follow up with a real `curl`/`nc` HTTP GET and compare body+RTT to
 distinguish a live host (varied banner, higher RTT) from a deny-proxy
 (identical short 403, sub-ms RTT).
+
+## AI + control upgrade (reliability hardening)
+Two independent robustness layers were added on top of the existing AI core
+and control loop — the legacy text-parsed ReAct and provider paths are
+unchanged and still the default; the new paths are opt-in additions.
+
+- **LLM provider resilience** (`sonic/llm/providers/custom.py`):
+  - Transient-error retry/backoff on the SAME provider/model (429 rate-limit,
+    5xx, transport errors) via `_with_retry` with exponential backoff + full
+    jitter, before the existing model-level (`fallback_models`) and router
+    provider-level fallback chains kick in. Configurable via `max_retries`,
+    `retry_base_delay`, `retry_max_delay` (default 3 / 0.5s / 20s; set to 0 to
+    disable). Auth/bad-request/model-not-found errors are NOT retried — they
+    flow straight to the fallback chain.
+  - Robust tool-call argument parsing via `parse_tool_arguments`:
+    extracts the first JSON object from noisy/prose-wrapped tool-call output,
+    fixes trailing commas and single quotes, wraps bare values as `{"value": …}`,
+    and returns `{}` for empty/None. Used by both the OpenAI tool-call path and
+    the ReAct engine so one parser governs all tool arguments.
+- **ReAct native function-calling** (`sonic/agents/react_engine.py`):
+  - `ToolRegistry.to_llm_tool_definitions()` converts the registry into
+    provider-agnostic JSON-schema tool definitions for `LLMRequest.tools`.
+  - `ReActEngine.execute_with_tools(task, think_fn, …)` runs the ReAct loop
+    using native function-calling instead of `Action: name[arg]` text regex.
+    ALL `tool_calls` in a single step are executed concurrently
+    (`asyncio.gather`), so the agent fans out independent probes in one turn
+    instead of one per step. Results are fed back as `tool`-role messages
+    keyed by call id for correct multi-turn threading. No tool calls with
+    non-empty content terminates as the final answer.
+  - `_execute_tool` now accepts dict arguments (function-calling path) and
+    coerces them to the positional string handlers expect; the legacy text
+    path is unchanged.
+- **Control loop coordinate validation** (`sonic/computer_use/agent.py`):
+  - The agent now tracks the real screen dimensions (`_screen_width`,
+    `_screen_height`), refreshed on every `observe()` and screenshot action.
+  - `execute_action` validates GUI coordinate actions (click/double-click/
+    move/scroll/drag, including drag targets) against the tracked screen
+    bounds BEFORE execution. Out-of-bounds, negative, or non-integer
+    coordinates are recorded as `BLOCKED` and never reach the provider — no
+    recovery is triggered (the provider state is fine; the agent just needs to
+    re-observe). Non-coordinate actions (terminal exec, etc.) are unaffected.
+  - Tests: `sonic-core/tests/test_ai_and_control_upgrade.py` (25 tests).
 

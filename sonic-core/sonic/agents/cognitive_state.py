@@ -149,6 +149,15 @@ class CognitiveHypothesis(BaseModel):
     priority: int = 5               # 1=critical, 10=low
     provenance: Provenance = Field(default_factory=Provenance)
     evidence_ids: list[str] = Field(default_factory=list)
+    # Hierarchical hypothesis tree (Round 6): a hypothesis can have a parent
+    # and children so the dual-process controller can expand a confirmed parent
+    # into more-specific child hypotheses and prune a disproved parent's whole
+    # subtree — instead of a flat list where dead branches waste sub-agents.
+    parent_id: str = ""
+    children_ids: list[str] = Field(default_factory=list)
+    # Which process mode is currently testing this node (fast/deep). Empty when
+    # not yet dispatched. Lets the controller resume the right mode on retry.
+    process_mode: str = ""
     engagement_id: str = ""
     tenant_id: str = ""
     created_at: str = Field(default_factory=_now)
@@ -687,6 +696,49 @@ class CognitiveState(BaseModel):
     def get_unresolved_unknowns(self) -> list[Unknown]:
         """Get uncertainties that haven't been resolved."""
         return [u for u in self.unknowns if not u.resolved]
+
+    def get_top_epistemic_gap(self, top_k: int = 3) -> list[Unknown]:
+        """Rank unresolved unknowns by their information value for action.
+
+        The human-like quality the user asked for — "mujhe kya nahi pata" made
+        explicit and actionable. A dead-end unknown (every possible action
+        already failed) is excluded so the agent never re-chases a question it
+        cannot answer with the methods it has tried. Ties on importance break
+        by how few possible actions remain (cheaper to resolve), then by id for
+        determinism.
+
+        Honesty invariant: never invents an unknown; only ranks what was added.
+        Returns [] when the agent genuinely has no open questions.
+        """
+        failed = self.get_failed_methods()
+        ranked: list[Unknown] = []
+        for u in self.get_unresolved_unknowns():
+            # Exclude a dead-end: all its candidate actions already failed.
+            live = [a for a in u.possible_actions if a not in failed]
+            if u.possible_actions and not live:
+                continue
+            ranked.append(u)
+        ranked.sort(
+            key=lambda u: (
+                -u.estimated_importance,
+                len(u.possible_actions) if u.possible_actions else 0,
+                u.id,
+            )
+        )
+        return ranked[:top_k]
+
+    def leading_hypothesis(self) -> CognitiveHypothesis | None:
+        """The strongest currently-active hypothesis worth testing first.
+
+        Selected by priority (lower int = more critical) then by recency, so the
+        agent always has a concrete next target for falsification rather than
+        staring at a flat list. Used by the falsification mindset to actively
+        try to *disprove* the leading theory instead of confirming it.
+        """
+        active = self.get_active_hypotheses()
+        if not active:
+            return None
+        return min(active, key=lambda h: (h.priority, h.created_at))
 
     def get_valid_assumptions(self) -> list[Assumption]:
         """Get assumptions that haven't been invalidated."""

@@ -1059,3 +1059,215 @@ grows its toolkit AND grows wiser from its own history.
 - end-to-end: mission 1 records a lesson, mission 2 sees it in reasoning context
 
 ### Test status: 463 passed, 37 skipped, 0 failures; ruff F-category clean.
+
+---
+
+## Round 6 — Dual-Process (Fast/Deep) Hierarchical Sub-agent Controller
+Makes the agent reason like a human researcher: **fast on familiar ground,
+deep on novel/uncertain ground, and silent until it genuinely needs a human.**
+
+### `sonic/orchestration/dual_process.py` (NEW, ~280 lines)
+Four pillars, all building on existing pieces — never duplicating them:
+
+1. **Dual-Process (Fast/Deep) Controller** — `DualProcessController.decide()`
+   picks FAST (heuristic, high-throughput, parallel children) or DEEP
+   (thorough, careful, limited parallelism) per hypothesis node. The decision
+   is a PURE FUNCTION of observable signals: `ConfidenceBand`, unresolved
+   `Unknown`s (importance), novelty (lessons-ledger hit), and branch failure
+   count. Deterministic + testable, not a hidden LLM whim.
+
+2. **Dual-Process switching** — HIGH/VERY_HIGH confidence + few low-importance
+   unknowns + a known pattern → FAST. LOW/MODERATE confidence OR a high-
+   importance unknown OR a novel pattern → DEEP. Stuck in DEEP + high
+   uncertainty → ESCALATE.
+
+3. **Hierarchical Hypothesis + Sub-agents** — `HierarchicalHypothesisTree`
+   over `CognitiveHypothesis.parent_id` / `children_ids` (added this round).
+   A VERIFIED parent **expands** into more-specific children; a DISPROVED
+   parent's whole subtree is **pruned** (no wasted sub-agents on dead branches).
+   Each node dispatches the EXISTING swarm agents as sub-agents scoped to that
+   node's test plan — no new agent classes.
+
+4. **Parallel sub-agent execution** — children run concurrently via
+   `asyncio.gather`, capped by `max_parallel` — exactly like `SwarmRunner`.
+
+5. **Smart Human-in-the-loop escalation (sirf high-uncertainty pe)** —
+   escalate ONLY when ALL hold: already in DEEP + high-importance unresolved
+   Unknown (importance ≥ 0.70) + subtree stuck (≥3 branch failures) + novel
+   (no lessons-ledger resolution). Does NOT escalate on high-confidence findings,
+   budget exhaustion, or diminishing returns. Escalation surfaces the actual
+   `Unknown` question for a human; the node stays PROPOSED (never auto-confirms
+   or auto-disproves — that would be fabrication).
+
+### Honesty invariants
+- FAST mode never VERIFIES — only DEEP confirms/disproves (like confirm-on-run).
+- Sub-agents invoke real agent code via the injected `agent_runner` — no mocks.
+- Pruning follows real DISPROVED lifecycle status, never heuristic guesses.
+- A sub-agent exception → node is DISPROVED (fail-closed), never left ambiguous.
+- Escalation never fabricates a question; it surfaces the real `Unknown`.
+
+### Security invariant
+Sub-agent dispatch carries a scoped hypothesis context (goal + test plan),
+never the full `CognitiveState`. Children inherit the parent's
+engagement/tenant id so each agent sees only what its branch needs.
+
+### `sonic/agents/cognitive_state.py` (modified)
+`CognitiveHypothesis` gained three fields for the hierarchy: `parent_id`,
+`children_ids`, `process_mode`. Backward-compatible (all default empty) — no
+existing test broke.
+
+### Tests (tests/test_module_robustness.py, +18 tests)
+`TestDualProcessController` (9): high-conf+known→FAST; low/moderate→DEEP;
+high-importance-unknown→DEEP even at high conf; novel→DEEP; escalation ONLY
+on stuck+high-uncertainty+novel; no escalation when pattern known; no
+escalation on low-importance unknown; no escalation when not yet stuck.
+
+`TestHierarchicalHypothesisTree` (9): expand attaches children w/ context
+inheritance; subtree BFS; prune removes disproved subtree; prune ignores
+non-disproved (no heuristic guessing); DEEP confirms→fans-out children;
+FAST runs node+children in parallel; max_parallel cap enforced; sub-agent
+exception→DISPROVED (fail-closed); escalation surfaces Unknown + does NOT
+run a sub-agent + keeps node PROPOSED.
+
+### Test status: 481 passed, 37 skipped, 0 failures; ruff clean.
+
+---
+
+## Round 7 — Epistemic Awareness + Falsification Mindset + Long-horizon Planning
+Fills the three highest-value gaps from the "human-like AI" checklist
+(Section 1, the most important) **inside existing files** — no new files. Every
+change enhances an existing, already-tested module; nothing was duplicated.
+
+### 1. Epistemic Awareness — `cognitive_state.py::CognitiveState.get_top_epistemic_gap()`
+"Mujhe kya nahi pata" made explicit and actionable. Ranks unresolved `Unknown`s
+by `estimated_importance` and **excludes dead-ends** — an unknown whose every
+`possible_action` already appears in `get_failed_methods()` is dropped, so the
+agent never re-chases a question it cannot answer with the methods it has
+tried. Returns `[]` when there is genuinely nothing open (never invents a gap).
+
+### 2. Falsification Mindset — `experiment_designer.py::AdversarialChallenger.challenge_leading_hypothesis()`
+"Actively apni hypotheses todne ki koshish kare." The existing
+`generate_falsification_challenge` built the challenge but nothing chose *which*
+hypothesis to attack — the natural confirmation-bias failure mode. Now
+`CognitiveState.leading_hypothesis()` selects the strongest active hypothesis
+(lowest `priority`, recency tie-break; DISPROVED/ABANDONED excluded) and
+`challenge_leading_hypothesis()` auto-targets it for an explicit **disproof**
+attempt. High-quality findings come from theories that *survived* an active
+disproof, not ones merely confirmed. Reuses the existing challenge generator
+(no logic duplication); returns `None` when there's no active target (never
+fabricates a challenge).
+
+### 3. Long-horizon Planning — `planner.py::MissionPlanner.build_long_horizon_plan()`
+"10-20 steps aage soch sake." The baseline `build_plan` produced only 3-6
+shallow commands. `build_long_horizon_plan` decomposes an objective into a
+multi-stage ordered pipeline:
+
+```
+stage 0 orient → 1 surface map → 2 deep map → 3 hypothesize →
+4 active test (APPROVAL_REQUIRED, never auto-run) → 5 verify → 6 report
+```
+
+Each action carries `stage` + `depends_on` (the prior stage's anchor action_id)
+so the executor can order and gate the chain. All stages before the active test
+are `READ_ONLY` (safety envelope honoured); the active test is
+`APPROVAL_REQUIRED` and never silently executed. Deterministic, allowlist-only,
+no unconstrained model command generation — same discipline as `build_plan`.
+
+New fields: `PlannedAction.stage`, `PlannedAction.depends_on`;
+`MissionActionPlan.stage_count()`, `MissionActionPlan.chain_head()`.
+
+### Checklist coverage already present (not re-done — these existed)
+- **Competing Hypotheses / Unknown model** → `research/epistemic.py`
+- **Dual-Process Thinking** → `orchestration/dual_process.py` (Round 6)
+- **Mental Model of Target** → `research/world_model.py`
+- **Curiosity + Goal Mgmt** → `computer_use/curiosity.py`
+- **Information-Gain action selection** → `research/information_gain.py`
+- **Strategy switching on diminishing returns** → `world_model.StopConditionEvaluator`
+- **Tool/Method authoring w/ verification** → `being/toolsmith.py`, `being/method_lab.py`
+- **Failed-strategy + cross-engagement memory** → `being/lessons.py` (Round 5)
+- **Fail-closed isolation / tamper-evident / egress** → `safety/scope.py`, `safety/sealed.py`, `safety/action_policy.py`
+- **Audit trail + evidence custody** → `evidence/custody.py`
+- **Independent adversarial verification** → `evidence/independent_verifier.py`
+
+### Tests (+19, all in existing test files)
+`TestEpistemicAwareness` (6): rank by importance; exclude dead-ends; keep
+partially-live; exclude resolved; empty when none; top_k limit.
+`TestLeadingHypothesis` (3): picks lowest priority; None when none active;
+DISPROVED excluded.
+`TestFalsificationMindsetWiring` (2): targets the strongest hypothesis;
+None (not fabricated) when no target.
+`TestLongHorizonPlan` (8): ≥10 steps; ≥5 ordered stages; every action chains
+via depends_on; active test is APPROVAL_REQUIRED; read-only objective has no
+approval stage; orient runs first; empty raises; deeper than baseline.
+
+### Test status: 500 passed, 37 skipped, 0 failures; ruff clean.
+
+## Engagement recon — lab target `testapp.sonic-lab.local` / `10.10.50.0/24`
+
+### Environment reality (Phase A recon, falsified hypotheses)
+- The stated lab target is **NOT live infrastructure** in this environment.
+  - `testapp.sonic-lab.local` -> **NXDOMAIN** (verified from host AND from a
+    Daytona sandbox via 8.8.8.8/1.1.1.1). It does not exist in DNS.
+  - `10.10.50.x:80` -> HTTP **403 "Internet is restricted on Tier 1 and Tier 2"**,
+    ~0.0007s RTT, identical 45-byte body for *every* IP. This is the Daytona
+    egress-deny proxy intercepting RFC1918, NOT a real web server. `bash`'s
+    `/dev/tcp` reports such IPs as "OPEN" — a false positive; real `curl`/`nc`
+    is the discriminator.
+  - Control: `github.com` -> 200 from the same sandbox, so the sandbox is
+    fine; only the stated lab range is denied/unreachable.
+- **Conclusion:** no real host to exploit; per evidence-custody rule we must
+  NOT fabricate findings/flags against an unreachable target. Genuine
+  attack-chain capability was instead demonstrated against a deliberately
+  vulnerable app stood up *inside* our own sandbox (in-bounds), see below.
+
+### Safety-envelope penetration (requirement #8 — actively attack own boundaries)
+34 probes across 4 layers; every verdict recorded (`_safety_results.json`
+was the artifact). Findings + fixes:
+
+- **BUG 1 (scope CIDR):** `ScopeChecker.is_target_in_scope` did a literal
+  `target in targets["ips"]` check — never expanded CIDRs and never stripped
+  URL scheme/port. So `10.10.50.10` against allowed `["10.10.50.0/24"]`
+  returned False (over-block) and only the CIDR *string* matched.
+  **Fixed** in `sonic/safety/scope.py`: parse host from URL via `urlparse`,
+  expand CIDRs via `ipaddress.ip_network`, numeric membership test. Added
+  `_ip_in_scope_list` helper.
+- **BUG 2 (classifier policy parity):** `classify_command_risk` only used
+  hardcoded `_DESTRUCTIVE_PATTERNS`, ignoring the YAML-loaded
+  `_forbidden_patterns`, and the hardcoded set missed `DROP DATABASE`,
+  `exfiltrate`, `disable logging`, `modify safety_rules`, and reverse shells
+  (all returned L0 despite `safety_rules.yaml` listing them as forbidden).
+  **Fixed:** classifier now also consults `_forbidden_patterns` (YAML), and
+  the hardcoded set was extended to cover the policy gaps + reverse shells.
+- Verified `check_action` fail-closes when rules not loaded (`self._loaded`
+  False -> BLOCKED) — correct by design; with rules loaded it returns
+  ALLOWED / NEEDS_APPROVAL / BLOCKED for L0/L1/L2 as expected, and the YAML
+  `exfiltrate` forbidden pattern now fires (policy→enforcement parity).
+- Live egress: all out-of-scope/RFC1918/metadata/localhost probes BLOCKED
+  (403 deny-proxy or code=000). Egress envelope confirmed fail-closed.
+
+### Regression tests
+`sonic-core/tests/test_safety_envelope_regressions.py` (11 tests) reproduces
+both bugs red→green and covers CIDR members, URL host extraction, out-of-scope
+URLs, and all forbidden-command classes. `11 passed`.
+
+### Attack-chain demonstration (in-sandbox, no external system)
+Stood up a 1-file deliberately-vulnerable app (`/?page=` LFI + `/admin?token=&cmd=`
+auth-gated RCE) inside a Daytona sandbox and ran a 5-step chain: recon -> LFI
+(leaks admin token from `/opt/app/config.json`) -> auth+command-injection
+(`uid=0(root)`) -> RCE flag read (`SONIC{chain_recon_lfi_auth_rce_flag_captured}`)
+-> post-exploitation (wrote `/tmp/pwned.txt`). Each step recorded request,
+response, SHA-256 evidence hash, and confidence (0.95–0.99). Demonstrates
+multi-step chaining + evidence custody without touching any out-of-scope host.
+
+### Multi-modal perception (requirement #6)
+Confirmed working on a benign target (OpenHands docs): DOM, interactive
+element/accessibility tree, screenshot (saved to disk), and markdown content
+extraction. Browser DOM/JS analysis was also used earlier to reverse the
+BurpSuite download endpoint (`/burp/releases/download?product=desktop&version=...`).
+
+### Sandbox hygiene note
+The `/dev/tcp` "OPEN" heuristic is unreliable behind a deny-proxy; always
+follow up with a real `curl`/`nc` HTTP GET and compare body+RTT to
+distinguish a live host (varied banner, higher RTT) from a deny-proxy
+(identical short 403, sub-ms RTT).
+

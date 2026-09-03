@@ -144,3 +144,43 @@ class AdversarialChallenger:
         )
 
         return candidate, prediction
+
+    @staticmethod
+    def challenge_leading_hypothesis(cognitive_state: object, target: str) -> tuple[ActionCandidate, Prediction] | None:
+        """Falsification mindset: auto-target the *strongest* active hypothesis.
+
+        The human-like quality from the checklist — "actively apni hypotheses
+        todne ki koshish kare". Instead of confirming the leading theory (the
+        natural confirmation-bias failure mode), this picks the leading
+        hypothesis via ``CognitiveState.leading_hypothesis()`` and designs an
+        explicit disproof attempt against it. High-quality findings come from
+        theories that *survived* an active disproof attempt, not from ones that
+        were merely confirmed.
+
+        Returns None when there is no active hypothesis to challenge — the
+        caller should then gather more evidence before falsifying.
+
+        ``cognitive_state`` is typed as ``object`` to avoid a circular import
+        (cognitive_state.py does not import research); the only methods used
+        are ``leading_hypothesis()`` and the hypothesis's fields. This mirrors
+        the existing duck-typed accessors in CognitiveState.
+        """
+        lead = cognitive_state.leading_hypothesis()  # type: ignore[attr-defined]
+        if lead is None:
+            logger.info("falsification_no_target", reason="no active hypothesis to challenge")
+            return None
+        # Adapt the CognitiveHypothesis into the CompetingHypothesis shape the
+        # existing challenge generator expects — we reuse generate_falsification_challenge
+        # rather than duplicating its logic.
+        comp = CompetingHypothesis(
+            id=lead.id,
+            statement=lead.title or lead.description,
+            rationale=lead.rationale,
+            falsification_criteria=lead.expected_observation,
+            supporting_evidence=lead.evidence_ids,
+        )
+        logger.info(
+            "falsification_targeting", hypothesis_id=lead.id, priority=lead.priority,
+            note="active disproof attempt on the leading hypothesis",
+        )
+        return AdversarialChallenger.generate_falsification_challenge(comp, target)

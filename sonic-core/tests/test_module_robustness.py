@@ -224,7 +224,8 @@ class TestProvenanceTimestamps:
 
     @pytest.mark.asyncio
     async def test_confirm_sets_provenance_only_on_success(self):
-        from sonic.being.toolsmith import AuthoredTool, ToolsmithLoop as Toolsmith
+        from sonic.being.toolsmith import AuthoredTool
+        from sonic.being.toolsmith import ToolsmithLoop as Toolsmith
 
         class _FakeResult:
             exit_code = 0
@@ -249,7 +250,8 @@ class TestProvenanceTimestamps:
 
     @pytest.mark.asyncio
     async def test_confirm_does_not_set_provenance_on_failure(self):
-        from sonic.being.toolsmith import AuthoredTool, ToolsmithLoop as Toolsmith
+        from sonic.being.toolsmith import AuthoredTool
+        from sonic.being.toolsmith import ToolsmithLoop as Toolsmith
 
         class _FakeResult:
             exit_code = 126  # fail-closed by sandbox
@@ -297,8 +299,8 @@ class TestWindowToggle:
 
     @pytest.mark.asyncio
     async def test_app_focus_allowed_by_policy(self):
-        from sonic.safety.action_policy import ActionPolicy
         from sonic.computer_use.models import ComputerActionType
+        from sonic.safety.action_policy import ActionPolicy
         pol = ActionPolicy(workspace_root="/home/sonic/workspace")
         v = pol.evaluate(
             ComputerActionType.APP_FOCUS.value,
@@ -311,7 +313,12 @@ class TestWindowToggle:
     async def test_headless_provider_refuses_app_focus(self):
         """A headless UnifiedComputerProvider has no desktop, so GUI actions
         (including SELECT_WINDOW) must fail-closed — never a silent no-op."""
-        from sonic.computer.models import GUIAction, GUIActionType, ComputerWorkspace, ComputerWorkspaceType
+        from sonic.computer.models import (
+            ComputerWorkspace,
+            ComputerWorkspaceType,
+            GUIAction,
+            GUIActionType,
+        )
         from sonic.computer.provider import UnifiedComputerProvider
 
         class _StubCompute:
@@ -350,8 +357,8 @@ class TestAppInstallGate:
 
     @pytest.mark.asyncio
     async def test_app_install_allowed_by_policy(self):
-        from sonic.safety.action_policy import ActionPolicy
         from sonic.computer_use.models import ComputerActionType
+        from sonic.safety.action_policy import ActionPolicy
         pol = ActionPolicy(workspace_root="/home/sonic/workspace")
         v = pol.evaluate(
             ComputerActionType.APP_INSTALL.value,
@@ -405,8 +412,8 @@ class TestAppInstallGate:
         TERMINAL_EXEC is L0_SAFE (not destructive), so the command gate allows
         it — it does NOT consult ApplicationPolicy. APP_INSTALL is the path that
         does. This test asserts the documented behavior so it is not lost."""
-        from sonic.safety.action_policy import ActionPolicy
         from sonic.computer_use.models import ComputerActionType
+        from sonic.safety.action_policy import ActionPolicy
         pol = ActionPolicy(workspace_root="/home/sonic/workspace")
         v = pol.evaluate(
             ComputerActionType.TERMINAL_EXEC.value,
@@ -452,16 +459,16 @@ class TestHumanLikeInteraction:
 
     @pytest.mark.asyncio
     async def test_gui_wait_allowed_by_policy(self):
-        from sonic.safety.action_policy import ActionPolicy
         from sonic.computer_use.models import ComputerActionType
+        from sonic.safety.action_policy import ActionPolicy
         pol = ActionPolicy(workspace_root="/home/sonic/workspace")
         v = pol.evaluate(ComputerActionType.GUI_WAIT.value, "", {"seconds": 3})
         assert v.allowed, f"GUI_WAIT must be allowed: {v.reason}"
 
     @pytest.mark.asyncio
     async def test_browser_download_allowed_by_policy(self):
-        from sonic.safety.action_policy import ActionPolicy
         from sonic.computer_use.models import ComputerActionType
+        from sonic.safety.action_policy import ActionPolicy
         pol = ActionPolicy(workspace_root="/home/sonic/workspace")
         v = pol.evaluate(
             ComputerActionType.BROWSER_DOWNLOAD.value,
@@ -723,11 +730,11 @@ class TestLessonsLedger:
         ]
         lessons = extract_lessons(traces, "scan the target")
         assert len(lessons) == 3
-        kinds = {l.kind for l in lessons}
+        kinds = {lesson.kind for lesson in lessons}
         assert LessonKind.AVOID in kinds
         assert LessonKind.REUSE in kinds
         # The AVOID lesson carries the failed evidence, not a fabricated one.
-        avoid = next(l for l in lessons if l.kind == LessonKind.AVOID)
+        avoid = next(lesson for lesson in lessons if lesson.kind == LessonKind.AVOID)
         assert "connection refused" in avoid.evidence
 
     def test_extract_lessons_empty_trace_yields_none(self):
@@ -895,3 +902,305 @@ class TestLessonsLedger:
         _sys, user = a2._build_reasoning_context("scan the target with nmap", obs, 1, "", "")
         assert "[AVOID]" in user, "past lesson must be injected into the next mission's reasoning"
         assert "nmap" in user
+
+
+# =====================================================================
+# Round 6: Dual-Process (Fast/Deep) hierarchical sub-agent controller
+# =====================================================================
+
+class TestDualProcessController:
+    """The controller picks FAST vs DEEP deterministically from observable
+    signals (confidence, unknowns, novelty, branch failures) — and escalates
+    to a human ONLY on genuinely novel high-uncertainty dead-ends."""
+
+    def _hyp(self, title="oauth bypass", desc="does token leak?"):
+        from sonic.agents.cognitive_state import CognitiveHypothesis
+        return CognitiveHypothesis(title=title, description=desc)
+
+    def _unknown(self, q, importance):
+        from sonic.agents.cognitive_state import Unknown
+        return Unknown(question=q, estimated_importance=importance)
+
+    def test_high_confidence_known_pattern_low_unknowns_is_fast(self):
+        """HIGH confidence + no high-importance unknowns + known pattern → FAST."""
+        from sonic.orchestration.dual_process import DualProcessController, ProcessMode
+        ctrl = DualProcessController(known_pattern_fn=lambda g: True)
+        d = ctrl.decide(self._hyp(), [], confidence_score=0.85)
+        assert d.mode == ProcessMode.FAST
+        assert not d.should_escalate
+
+    def test_low_confidence_is_deep(self):
+        """LOW confidence → DEEP regardless of other signals."""
+        from sonic.orchestration.dual_process import DualProcessController, ProcessMode
+        ctrl = DualProcessController()
+        d = ctrl.decide(self._hyp(), [], confidence_score=0.20)
+        assert d.mode == ProcessMode.DEEP
+
+    def test_moderate_confidence_is_deep(self):
+        """MODERATE confidence (0.40-0.69) → DEEP."""
+        from sonic.orchestration.dual_process import DualProcessController, ProcessMode
+        ctrl = DualProcessController()
+        d = ctrl.decide(self._hyp(), [], confidence_score=0.55)
+        assert d.mode == ProcessMode.DEEP
+
+    def test_high_importance_unknown_is_deep_even_at_high_confidence(self):
+        """A high-importance unresolved question → DEEP even with high conf."""
+        from sonic.orchestration.dual_process import DualProcessController, ProcessMode
+        ctrl = DualProcessController(known_pattern_fn=lambda g: True)
+        uk = [self._unknown("does auth scope leak?", 0.85)]
+        d = ctrl.decide(self._hyp(), uk, confidence_score=0.90)
+        assert d.mode == ProcessMode.DEEP
+
+    def test_novel_pattern_is_deep_even_at_high_confidence(self):
+        """No prior resolution in lessons ledger → DEEP even with high conf."""
+        from sonic.orchestration.dual_process import DualProcessController, ProcessMode
+        ctrl = DualProcessController(known_pattern_fn=lambda g: False)
+        d = ctrl.decide(self._hyp(), [], confidence_score=0.90)
+        assert d.mode == ProcessMode.DEEP
+        assert "novel" in d.reason
+
+    def test_escalation_only_on_stuck_novel_high_uncertainty(self):
+        """Escalate ONLY when stuck + high-importance unknown + novel. The core
+        'sirf high-uncertainty pe' invariant."""
+        from sonic.orchestration.dual_process import DualProcessController
+        ctrl = DualProcessController(known_pattern_fn=lambda g: False)
+        uk = [self._unknown("is the token signed?", 0.80)]
+        d = ctrl.decide(self._hyp(), uk, branch_failures=3, confidence_score=0.30)
+        assert d.should_escalate is True
+        assert "human input" in d.escalation_reason
+
+    def test_no_escalation_when_pattern_known(self):
+        """Even if stuck, if the lessons ledger has a resolution → NO escalation
+        (the agent should reuse the lesson, not ask a human)."""
+        from sonic.orchestration.dual_process import DualProcessController
+        ctrl = DualProcessController(known_pattern_fn=lambda g: True)
+        uk = [self._unknown("is the token signed?", 0.80)]
+        d = ctrl.decide(self._hyp(), uk, branch_failures=5, confidence_score=0.30)
+        assert d.should_escalate is False
+
+    def test_no_escalation_when_low_importance_unknown(self):
+        """Stuck + low-importance unknown → DEEP, not escalation (the question
+        doesn't matter enough to bother a human)."""
+        from sonic.orchestration.dual_process import DualProcessController
+        ctrl = DualProcessController(known_pattern_fn=lambda g: False)
+        uk = [self._unknown("cosmetic banner?", 0.20)]
+        d = ctrl.decide(self._hyp(), uk, branch_failures=4, confidence_score=0.30)
+        assert d.should_escalate is False
+
+    def test_no_escalation_when_not_stuck(self):
+        """High-importance novel unknown but not yet stuck → DEEP (keep trying),
+        not escalation on the first attempt."""
+        from sonic.orchestration.dual_process import DualProcessController
+        ctrl = DualProcessController(known_pattern_fn=lambda g: False)
+        uk = [self._unknown("is the token signed?", 0.80)]
+        d = ctrl.decide(self._hyp(), uk, branch_failures=1, confidence_score=0.30)
+        assert d.should_escalate is False
+
+
+class TestHierarchicalHypothesisTree:
+    """Hypotheses form a tree: expand on confirm, prune on disprove, dispatch
+    children in parallel capped by max_parallel."""
+
+    def _hyp(self, hid, title="h"):
+        from sonic.agents.cognitive_state import CognitiveHypothesis
+        h = CognitiveHypothesis(title=title, description=hid)
+        h.id = hid
+        return h
+
+    def test_expand_attaches_children_under_parent(self):
+        from sonic.orchestration.dual_process import (
+            DualProcessController,
+            HierarchicalHypothesisTree,
+        )
+        tree = HierarchicalHypothesisTree(DualProcessController())
+        parent = self._hyp("p1", "oauth bypass")
+        child = self._hyp("c1", "token leak via header")
+        tree.add(parent)
+        tree.expand("p1", [child])
+        assert child.parent_id == "p1"
+        assert "c1" in parent.children_ids
+        # child inherits parent engagement/tenant context (security scoping).
+        assert child.engagement_id == parent.engagement_id
+
+    def test_subtree_ids_bfs_traversal(self):
+        from sonic.orchestration.dual_process import (
+            DualProcessController,
+            HierarchicalHypothesisTree,
+        )
+        tree = HierarchicalHypothesisTree(DualProcessController())
+        root = self._hyp("r")
+        a = self._hyp("a")
+        b = self._hyp("b")
+        a1 = self._hyp("a1")
+        tree.add(root)
+        tree.expand("r", [a, b])
+        tree.expand("a", [a1])
+        ids = tree.subtree_ids("r")
+        assert ids == ["r", "a", "b", "a1"]
+
+    def test_prune_removes_disproved_subtree(self):
+        from sonic.agents.cognitive_state import HypothesisLifecycle
+        from sonic.orchestration.dual_process import (
+            DualProcessController,
+            HierarchicalHypothesisTree,
+        )
+        tree = HierarchicalHypothesisTree(DualProcessController())
+        root = self._hyp("r")
+        child = self._hyp("c")
+        tree.add(root)
+        tree.expand("r", [child])
+        root.lifecycle = HypothesisLifecycle.DISPROVED
+        pruned = tree.prune("r")
+        assert set(pruned) == {"r", "c"}
+        assert tree.get("r") is None
+        assert tree.get("c") is None
+
+    def test_prune_ignores_non_disproved_node(self):
+        """Pruning follows real DISPROVED status only — a PROPOSED node is
+        never pruned (no heuristic guessing that kills a live branch)."""
+        from sonic.orchestration.dual_process import (
+            DualProcessController,
+            HierarchicalHypothesisTree,
+        )
+        tree = HierarchicalHypothesisTree(DualProcessController())
+        root = self._hyp("r")
+        tree.add(root)
+        assert tree.prune("r") == []
+        assert tree.get("r") is not None
+
+    @pytest.mark.asyncio
+    async def test_dispatch_deep_confirms_then_fans_out_children(self):
+        """DEEP mode: node confirms → children fan out in DEEP. Children run
+        via real agent_runner (no fabricated reasoning)."""
+        from sonic.agents.cognitive_state import HypothesisLifecycle
+        from sonic.orchestration.dual_process import (
+            DualProcessController,
+            HierarchicalHypothesisTree,
+            ProcessMode,
+        )
+
+        # Force DEEP via low confidence + novel pattern.
+        ctrl = DualProcessController(known_pattern_fn=lambda g: False)
+        tree = HierarchicalHypothesisTree(ctrl, max_parallel=4)
+        root = self._hyp("r", "novel bypass")
+        child = self._hyp("c", "specific leak")
+        tree.add(root)
+        tree.expand("r", [child])
+
+        calls = []
+
+        async def runner(hyp, mode):
+            calls.append((hyp.id, mode))
+            return {"status": "confirmed", "findings": [{"vuln": hyp.title}]}
+
+        results = await tree.dispatch("r", [], runner, confidence_score=0.30)
+        # Root ran in DEEP and confirmed; child then fanned out in DEEP.
+        assert ("r", ProcessMode.DEEP) in calls
+        assert ("c", ProcessMode.DEEP) in calls
+        assert any(r.confirmed for r in results if r.node_id == "r")
+        assert root.lifecycle == HypothesisLifecycle.VERIFIED
+
+    @pytest.mark.asyncio
+    async def test_dispatch_fast_runs_node_and_children_in_parallel(self):
+        """FAST mode: node + children run concurrently in one gather batch."""
+        from sonic.orchestration.dual_process import (
+            DualProcessController,
+            HierarchicalHypothesisTree,
+            ProcessMode,
+        )
+        ctrl = DualProcessController(known_pattern_fn=lambda g: True)
+        tree = HierarchicalHypothesisTree(ctrl, max_parallel=4)
+        root = self._hyp("r", "known bypass")
+        c1 = self._hyp("c1")
+        c2 = self._hyp("c2")
+        tree.add(root)
+        tree.expand("r", [c1, c2])
+
+        seen = []
+
+        async def runner(hyp, mode):
+            seen.append(hyp.id)
+            assert mode == ProcessMode.FAST
+            return {"status": "proposed"}
+
+        await tree.dispatch("r", [], runner, confidence_score=0.90)
+        assert set(seen) == {"r", "c1", "c2"}
+
+    @pytest.mark.asyncio
+    async def test_dispatch_respects_max_parallel_cap(self):
+        """max_parallel caps concurrency — children batch into chunks, never
+        exceeding the cap. Mirrors SwarmRunner's gather discipline."""
+        from sonic.orchestration.dual_process import (
+            DualProcessController,
+            HierarchicalHypothesisTree,
+        )
+        ctrl = DualProcessController(known_pattern_fn=lambda g: True)
+        tree = HierarchicalHypothesisTree(ctrl, max_parallel=2)
+        root = self._hyp("r", "known")
+        children = [self._hyp(f"c{i}") for i in range(5)]
+        tree.add(root)
+        tree.expand("r", children)
+
+        in_flight = 0
+        max_observed = 0
+
+        async def runner(hyp, mode):
+            nonlocal in_flight, max_observed
+            in_flight += 1
+            max_observed = max(max_observed, in_flight)
+            await asyncio.sleep(0.01)
+            in_flight -= 1
+            return {"status": "proposed"}
+
+        await tree.dispatch("r", [], runner, confidence_score=0.90)
+        assert max_observed <= 2, f"max_parallel exceeded: {max_observed}"
+
+    @pytest.mark.asyncio
+    async def test_dispatch_failure_disproves_node(self):
+        """A sub-agent that raises → node is DISPROVED (fail-closed), never
+        left in an ambiguous PROPOSED state."""
+        from sonic.agents.cognitive_state import HypothesisLifecycle
+        from sonic.orchestration.dual_process import (
+            DualProcessController,
+            HierarchicalHypothesisTree,
+        )
+        ctrl = DualProcessController(known_pattern_fn=lambda g: False)
+        tree = HierarchicalHypothesisTree(ctrl)
+        root = self._hyp("r", "novel")
+        tree.add(root)
+
+        async def runner(hyp, mode):
+            raise RuntimeError("sub-agent crashed")
+
+        results = await tree.dispatch("r", [], runner, confidence_score=0.30)
+        assert results[0].status == HypothesisLifecycle.DISPROVED
+        assert root.lifecycle == HypothesisLifecycle.DISPROVED
+
+    @pytest.mark.asyncio
+    async def test_dispatch_escalation_surfaces_unknown_does_not_confirm(self):
+        """On escalation the node stays PROPOSED — escalation surfaces the
+        question for a human; it never auto-confirms or auto-disproves."""
+        from sonic.agents.cognitive_state import HypothesisLifecycle, Unknown
+        from sonic.orchestration.dual_process import (
+            DualProcessController,
+            HierarchicalHypothesisTree,
+        )
+
+        ctrl = DualProcessController(known_pattern_fn=lambda g: False)
+        tree = HierarchicalHypothesisTree(ctrl)
+        root = self._hyp("r", "novel hard question")
+        tree.add(root)
+        uk = [Unknown(question="is the jwt alg none?", estimated_importance=0.85)]
+
+        called = []
+
+        async def runner(hyp, mode):
+            called.append(hyp.id)
+            return {"status": "proposed"}
+
+        results = await tree.dispatch(
+            "r", uk, runner, branch_failures=3, confidence_score=0.20,
+        )
+        assert not called, "escalation must NOT run a sub-agent (it pauses for human)"
+        assert results[0].status == HypothesisLifecycle.PROPOSED
+        assert "human input" in results[0].findings[0]

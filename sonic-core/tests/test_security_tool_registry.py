@@ -112,7 +112,7 @@ class _StubComputer:
 def test_build_security_tools_returns_real_adapters():
     p = _RecordingProvider()
     tools = build_security_tools(p)
-    assert set(tools.keys()) == {"nmap", "nuclei", "ffuf", "http_client"}
+    assert set(tools.keys()) == {"nmap", "nuclei", "ffuf", "http_client", "burpsuite"}
     assert isinstance(tools["nmap"], NmapAdapter)
     assert isinstance(tools["nuclei"], NucleiAdapter)
     assert isinstance(tools["ffuf"], FFUFAdapter)
@@ -124,16 +124,16 @@ def test_build_security_tools_returns_real_adapters():
 def test_registry_lookup_and_extension():
     p = _RecordingProvider()
     reg = SecurityToolRegistry(p)
-    assert len(reg) == 4
+    assert len(reg) == 5
     assert "nmap" in reg
     assert reg.get("nope") is None
     assert isinstance(reg.get("nmap"), NmapAdapter)
     # as_dict is what ComputerUseAgent(security_tools=...) consumes
-    assert set(reg.as_dict().keys()) == {"nmap", "nuclei", "ffuf", "http_client"}
+    assert set(reg.as_dict().keys()) == {"nmap", "nuclei", "ffuf", "http_client", "burpsuite"}
     # register() is the plugin extension point
     reg.register("custom", NmapAdapter(p))
     assert "custom" in reg
-    assert len(reg) == 5
+    assert len(reg) == 6
 
 
 def test_get_default_registry_is_provider_scoped():
@@ -162,7 +162,7 @@ def test_worker_uses_registry_for_tools(monkeypatch):
     import sonic.queue.worker as wmod
     monkeypatch.setattr(wmod, "get_job_queue", lambda *a, **k: type("Q", (), {"_stub": True})())
     worker = wmod.SonicWorker(provider=p)
-    assert set(worker._tools.keys()) == {"nmap", "nuclei", "ffuf", "http_client"}
+    assert set(worker._tools.keys()) == {"nmap", "nuclei", "ffuf", "http_client", "burpsuite"}
     assert isinstance(worker._tools["nmap"], NmapAdapter)
 
 

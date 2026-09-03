@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Terminal as TerminalIcon, Maximize2, Minimize2, RotateCcw, Wifi, WifiOff } from "lucide-react";
 import { createTerminalWebSocket } from "../../lib/ws";
+import { AnsiText } from "../../components/common/AnsiText";
 
 export default function TerminalPage() {
   const termRef = useRef<HTMLDivElement>(null);
@@ -23,9 +24,7 @@ export default function TerminalPage() {
   const inputRef = useRef<HTMLInputElement>(null);
 
   const connectWs = () => {
-    if (wsRef.current) {
-      wsRef.current.close();
-    }
+    if (wsRef.current) wsRef.current.close();
 
     const ws = createTerminalWebSocket({
       onOpen: () => {
@@ -64,9 +63,7 @@ export default function TerminalPage() {
         "\x1b[31m[FAIL-CLOSED]: Cannot send command. Terminal is DISCONNECTED from sandbox.\x1b[0m\n",
       ]);
     }
-    if (cmd.trim()) {
-      setCommandHistory((prev) => [cmd, ...prev.slice(0, 50)]);
-    }
+    if (cmd.trim()) setCommandHistory((prev) => [cmd, ...prev.slice(0, 50)]);
     setHistoryIdx(-1);
     setInputLine("");
   };
@@ -93,60 +90,51 @@ export default function TerminalPage() {
 
   useEffect(() => {
     connectWs();
-    return () => {
-      wsRef.current?.close();
-    };
+    return () => { wsRef.current?.close(); };
   }, []);
 
   useEffect(() => {
-    if (termRef.current) {
-      termRef.current.scrollTop = termRef.current.scrollHeight;
-    }
+    if (termRef.current) termRef.current.scrollTop = termRef.current.scrollHeight;
   }, [buffer]);
 
   return (
-    <div className={`p-6 space-y-4 max-w-7xl mx-auto ${fullscreen ? "fixed inset-0 z-50 bg-slate-950 p-4" : ""}`}>
-      {/* Header */}
-      <div className="flex items-center justify-between pb-4 border-b border-slate-800">
+    <div className={`min-h-screen bg-ink-950 bg-grid-glow ${fullscreen ? "fixed inset-0 z-50 p-4" : "p-6"} space-y-4 max-w-7xl mx-auto`}>
+      <div className="flex items-center justify-between pb-4 border-b border-ink-800">
         <div className="flex items-center gap-2">
-          <TerminalIcon className="w-5 h-5 text-emerald-400" />
+          <TerminalIcon className="w-5 h-5 text-success" />
           <h2 className="text-xl font-bold text-white tracking-tight">Virtual Computer Terminal</h2>
           {connected ? (
-            <span className="flex items-center gap-1 text-[10px] px-2 py-0.5 rounded bg-emerald-950 text-emerald-400 border border-emerald-800 font-mono font-bold">
+            <span className="chip border border-success/40 bg-success/10 text-success">
               <Wifi className="w-3 h-3" /> LIVE (SANDBOX BOUND)
             </span>
           ) : (
-            <span className="flex items-center gap-1 text-[10px] px-2 py-0.5 rounded bg-red-950 text-red-400 border border-red-800 font-mono font-bold">
+            <span className="chip border border-danger/40 bg-danger/10 text-danger">
               <WifiOff className="w-3 h-3" /> DISCONNECTED
             </span>
           )}
         </div>
 
         <div className="flex items-center gap-2">
-          <button
-            onClick={connectWs}
-            className="px-3 py-1.5 bg-emerald-950/80 hover:bg-emerald-900 border border-emerald-800/80 text-emerald-400 text-xs font-mono font-bold rounded-lg flex items-center gap-1.5 transition"
-          >
+          <button onClick={connectWs} className="btn-secondary !px-3 !py-1.5 text-xs font-mono">
             <RotateCcw className="w-3 h-3" /> {connected ? "Reconnect" : "Connect"}
           </button>
           <button
             onClick={() => setFullscreen(!fullscreen)}
-            className="p-1.5 bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-300 rounded-lg transition"
+            className="p-1.5 bg-ink-800 hover:bg-ink-700 border border-ink-700 text-muted-bright rounded-lg transition"
           >
             {fullscreen ? <Minimize2 className="w-4 h-4" /> : <Maximize2 className="w-4 h-4" />}
           </button>
         </div>
       </div>
 
-      {/* Terminal Window */}
-      <div className="glass-card rounded-xl border border-slate-800 overflow-hidden">
-        <div className="flex items-center gap-2 px-4 py-2 bg-slate-900/90 border-b border-slate-800">
+      <div className="glass-card rounded-xl overflow-hidden">
+        <div className="flex items-center gap-2 px-4 py-2 bg-ink-900/90 border-b border-ink-800">
           <div className="flex gap-1.5">
-            <div className="w-3 h-3 rounded-full bg-red-500/80"></div>
-            <div className="w-3 h-3 rounded-full bg-yellow-500/80"></div>
-            <div className="w-3 h-3 rounded-full bg-emerald-500/80"></div>
+            <div className="w-3 h-3 rounded-full bg-danger/80" />
+            <div className="w-3 h-3 rounded-full bg-warning/80" />
+            <div className="w-3 h-3 rounded-full bg-success/80" />
           </div>
-          <span className="text-[11px] text-slate-500 font-mono ml-2">
+          <span className="text-[11px] text-muted-dim font-mono ml-2">
             sonic@sandbox:{sessionId || "~"} — /bin/bash (Isolated)
           </span>
         </div>
@@ -154,17 +142,17 @@ export default function TerminalPage() {
         <div
           ref={termRef}
           onClick={() => inputRef.current?.focus()}
-          className="bg-[#0a0e14] p-4 font-mono text-sm text-emerald-300 overflow-y-auto cursor-text"
+          className="bg-ink-950 p-4 font-mono text-sm text-success overflow-y-auto cursor-text"
           style={{ minHeight: fullscreen ? "calc(100vh - 160px)" : "500px", maxHeight: fullscreen ? "calc(100vh - 160px)" : "500px" }}
         >
           {buffer.map((line, i) => (
             <pre key={i} className="whitespace-pre-wrap leading-relaxed">
-              {line}
+              <AnsiText text={line} />
             </pre>
           ))}
 
-          <div className="flex items-center gap-2 mt-2 pt-2 border-t border-slate-800">
-            <span className="text-emerald-400 font-bold">sonic@sandbox:~$</span>
+          <div className="flex items-center gap-2 mt-2 pt-2 border-t border-ink-800">
+            <span className="text-success font-bold">sonic@sandbox:~$</span>
             <input
               ref={inputRef}
               type="text"
@@ -172,8 +160,8 @@ export default function TerminalPage() {
               onChange={(e) => setInputLine(e.target.value)}
               onKeyDown={handleKeyDown}
               disabled={!connected}
-              className="flex-1 bg-transparent text-sm text-white outline-none font-mono placeholder:text-slate-600 disabled:opacity-50"
-              placeholder={connected ? "Type container command..." : "Terminal disconnected. Connect to sandbox first."}
+              className="flex-1 bg-transparent text-sm text-white outline-none font-mono placeholder:text-muted-dim disabled:opacity-50"
+              placeholder={connected ? "Type container command…" : "Terminal disconnected. Connect to sandbox first."}
             />
           </div>
         </div>

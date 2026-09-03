@@ -1271,3 +1271,9 @@ follow up with a real `curl`/`nc` HTTP GET and compare body+RTT to
 distinguish a live host (varied banner, higher RTT) from a deny-proxy
 (identical short 403, sub-ms RTT).
 
+
+## sonic-cli audit (2026-09-03)
+Backend routes (sonic-core/sonic/api/main.py): health (/health,/health/detailed), /auth, /engagements (POST /,POST /{id}/run,GET /{id},GET /{id}/findings,GET /,POST /kill), /agents, /graph (/stats,/search,/query,/engagement/{id}/summary,/finding/{uid}), /experiments, /terminal, /live, /jobs, /workstation.
+FIXED: status.py KeyError on partial payload (data["status"] -> data.get("status","unknown")); mission state & hypotheses now call existing GET /engagements/{id} instead of non-existent /state and /hypotheses.
+LEFT gracefully degraded (no backend equivalent, do NOT invent routes): mission unknowns/tasks/replan/pause/resume, finding verify (/findings/{id}/verify has no /findings router).
+Tests: sonic-cli/tests has only __init__.py (no test files); python -m pytest -> no tests ran, exit 0.

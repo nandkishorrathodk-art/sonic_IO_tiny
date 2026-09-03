@@ -58,13 +58,13 @@ async def _maybe_start_being_life_loop(settings):
         from sonic.computer_use.agent import ComputerUseAgent
         from sonic.computer_use.curiosity import CuriosityLoop
         from sonic.memory.vector import get_vector_memory
-        from sonic.sandbox.factory import get_sandbox_provider
+        from sonic.sandbox.virtual_computer import get_sandbox_provider
 
         tenant_id = os.environ.get("SONIC_BEING_TENANT", "default")
         being = get_or_create_being(tenant_id)
 
         # Re-attach the home desktop (Phase 2 persistent body).
-        provider = get_sandbox_provider()
+        provider = await get_sandbox_provider()
         home = None
         if hasattr(provider, "get_or_create_home"):
             home = await provider.get_or_create_home(tenant_id)

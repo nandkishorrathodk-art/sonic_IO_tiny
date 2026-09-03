@@ -1,5 +1,5 @@
 import React, { useState } from "react";
-import { FileCode, Copy, Check, Save, ChevronDown, RotateCcw } from "lucide-react";
+import { FileCode, Copy, Check, Save, RotateCcw } from "lucide-react";
 
 interface CodeViewerProps {
   activeFile: string;
@@ -46,37 +46,34 @@ export function CodeViewer({
 
   if (viewMode === "changes") {
     return (
-      <div className="flex-1 rounded-lg border border-[#21262D] bg-[#161B22] flex flex-col overflow-hidden p-4 font-mono text-xs space-y-2">
-        <div className="flex items-center justify-between border-b border-[#30363D] pb-2">
+      <div className="flex-1 panel flex flex-col overflow-hidden p-4 font-mono text-xs space-y-2">
+        <div className="flex items-center justify-between border-b border-ink-700 pb-2">
           <span className="font-semibold text-white">Live Git Diff</span>
           {onRefreshDiff && (
-            <button
-              onClick={onRefreshDiff}
-              className="text-[#58A6FF] hover:underline text-[11px] flex items-center gap-1"
-            >
+            <button onClick={onRefreshDiff} className="btn-ghost text-secondary-400">
               <RotateCcw className="w-3 h-3" />
               <span>Refresh Diff</span>
             </button>
           )}
         </div>
-        <div className="flex-1 overflow-y-auto space-y-1 text-[11px] leading-relaxed whitespace-pre-wrap bg-[#0D1117] p-3 rounded border border-[#21262D]">
+        <div className="flex-1 overflow-y-auto space-y-1 text-[11px] leading-relaxed whitespace-pre-wrap bg-ink-950 p-3 rounded border border-ink-700">
           {gitDiff ? (
             gitDiff.split("\n").map((l, i) => (
               <div
                 key={i}
                 className={
                   l.startsWith("+")
-                    ? "text-[#7EE787] bg-[#7EE787]/10 px-1"
+                    ? "text-success bg-success/10 px-1"
                     : l.startsWith("-")
-                    ? "text-[#FF7B72] bg-[#FF7B72]/10 px-1"
-                    : "text-[#8B949E]"
+                    ? "text-danger bg-danger/10 px-1"
+                    : "text-muted"
                 }
               >
                 {l}
               </div>
             ))
           ) : (
-            <span className="text-[#8B949E]">Working tree clean. No uncommitted modifications.</span>
+            <span className="text-muted">Working tree clean. No uncommitted modifications.</span>
           )}
         </div>
       </div>
@@ -84,29 +81,28 @@ export function CodeViewer({
   }
 
   return (
-    <div className="flex-1 rounded-lg border border-[#21262D] bg-[#161B22] flex flex-col overflow-hidden shadow-xl">
-      {/* File Header */}
-      <div className="h-8 border-b border-[#21262D] bg-[#1C2128] px-3 flex items-center justify-between text-xs font-mono text-[#8B949E]">
+    <div className="flex-1 panel flex flex-col overflow-hidden shadow-xl">
+      <div className="h-8 border-b border-ink-700 bg-ink-800 px-3 flex items-center justify-between text-xs font-mono text-muted">
         <div className="flex items-center gap-2 truncate">
-          <FileCode className="w-3.5 h-3.5 text-[#58A6FF]" />
-          <span className="text-[#58A6FF] font-semibold truncate">{activeFile ? activeFile.split("/").pop() : "No file selected"}</span>
-          {activeFile && <span className="text-[10px] text-[#8B949E] truncate">{activeFile}</span>}
+          <FileCode className="w-3.5 h-3.5 text-secondary-400" />
+          <span className="text-secondary-400 font-semibold truncate">{activeFile ? activeFile.split("/").pop() : "No file selected"}</span>
+          {activeFile && <span className="text-[10px] text-muted-dim truncate">{activeFile}</span>}
         </div>
         <div className="flex items-center gap-2">
           {editable ? (
             <button
               onClick={handleSave}
               disabled={saving}
-              className="px-2 py-0.5 rounded bg-[#238636] text-white hover:bg-[#2ea043] transition text-[11px] font-semibold flex items-center gap-1"
+              className="px-2 py-0.5 rounded bg-success/20 text-success border border-success/40 hover:bg-success/30 transition text-[11px] font-semibold flex items-center gap-1"
             >
               <Save className="w-3 h-3" />
-              <span>{saving ? "Saving..." : "Save File"}</span>
+              <span>{saving ? "Saving…" : "Save File"}</span>
             </button>
           ) : (
             <button
               onClick={handleStartEdit}
               disabled={!activeFile || !fileContent.length}
-              className="px-2 py-0.5 rounded bg-[#21262D] text-[#C9D1D9] hover:text-white transition text-[11px] disabled:opacity-40 disabled:cursor-not-allowed"
+              className="btn-ghost disabled:opacity-40 disabled:cursor-not-allowed !px-2 !py-0.5"
             >
               Edit File
             </button>
@@ -114,32 +110,31 @@ export function CodeViewer({
           <button
             onClick={handleCopy}
             disabled={!fileContent.length}
-            className="text-[#8B949E] hover:text-white p-1 rounded hover:bg-[#2D333B] transition disabled:opacity-40 disabled:cursor-not-allowed"
+            className="text-muted hover:text-white p-1 rounded hover:bg-ink-700 transition disabled:opacity-40 disabled:cursor-not-allowed"
             title="Copy content"
           >
-            {copied ? <Check className="w-3.5 h-3.5 text-[#3FB950]" /> : <Copy className="w-3.5 h-3.5" />}
+            {copied ? <Check className="w-3.5 h-3.5 text-success" /> : <Copy className="w-3.5 h-3.5" />}
           </button>
         </div>
       </div>
 
-      {/* Editor Body */}
       {editable ? (
         <textarea
           value={editedText}
           onChange={(e) => setEditedText(e.target.value)}
-          className="flex-1 p-3 font-mono text-xs leading-relaxed bg-[#0D1117] text-[#C9D1D9] outline-none resize-none"
+          className="flex-1 p-3 font-mono text-xs leading-relaxed bg-ink-950 text-slate-200 outline-none resize-none"
         />
       ) : (
-        <div className="flex-1 overflow-y-auto p-3 font-mono text-xs leading-relaxed bg-[#0D1117]">
+        <div className="flex-1 overflow-y-auto p-3 font-mono text-xs leading-relaxed bg-ink-950">
           {fileContent.length ? fileContent.map((line, i) => (
-            <div key={i} className="flex hover:bg-[#161B22]/50 leading-5">
-              <span className="w-10 text-right pr-4 text-[#484F58] font-mono text-[11px]">
+            <div key={i} className="flex hover:bg-ink-850/50 leading-5">
+              <span className="w-10 text-right pr-4 text-muted-dim font-mono text-[11px] select-none">
                 {i + 1}
               </span>
-              <span className="flex-1 whitespace-pre text-[#C9D1D9]">{line}</span>
+              <span className="flex-1 whitespace-pre text-slate-200">{line}</span>
             </div>
           )) : (
-            <div className="h-full flex items-center justify-center text-xs text-[#6E7681]">
+            <div className="h-full flex items-center justify-center text-xs text-muted-dim">
               Select a real file from the agent worklog after a workspace is connected.
             </div>
           )}

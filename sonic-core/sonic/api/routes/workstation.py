@@ -465,7 +465,8 @@ async def _run_mission_preflight(tenant_id: str, session_id: str, mission_id: st
     security_tools = None
     try:
         security_tools = get_default_registry(ComputerAsComputeProvider(comp))
-    except Exception:
+    except Exception as exc:
+        logger.warning("workstation_mission_security_registry_failed", error=str(exc))
         security_tools = None
     executor = MissionToolExecutor(comp, security_tools=security_tools)
     pending_actions = list(plan.actions)

@@ -30,8 +30,10 @@ def status_command(
             console.print(json.dumps(data, indent=2))
             return
 
-        # Rich formatted output
-        status_emoji = "🟢" if data["status"] == "healthy" else "🟡"
+        # Rich formatted output. Use .get() with defaults so a partial payload
+        # from the backend (e.g. missing "status") never raises KeyError.
+        status = data.get("status", "unknown")
+        status_emoji = "🟢" if status == "healthy" else "🟡"
 
         table = Table(title="Service Status", border_style="cyan")
         table.add_column("Service", style="bold")
@@ -43,7 +45,7 @@ def status_command(
 
         console.print(
             Panel(
-                f"{status_emoji} System: [bold]{data['status'].upper()}[/bold]\n"
+                f"{status_emoji} System: [bold]{status.upper()}[/bold]\n"
                 f"Version: {data.get('version', 'unknown')}",
                 title="🔴 SONIC-REDA",
                 border_style="cyan",

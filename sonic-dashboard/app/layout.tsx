@@ -1,9 +1,22 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "SONIC WORKSTATION — Autonomous AI Engineer & Computer Workspace",
-  description: "Next-Generation Autonomous AI Developer & Security Researcher Workstation",
+  title: {
+    default: "SONIC-REDA — Autonomous AI Red Team Workstation",
+    template: "%s · SONIC-REDA",
+  },
+  description:
+    "Next-generation autonomous AI red-team agent: full virtual computer control, evidence-backed kill-chains, and self-evolving multi-agent swarm intelligence.",
+  applicationName: "SONIC-REDA",
+  authors: [{ name: "SONIC-REDA" }],
+  keywords: ["autonomous agent", "red team", "security", "AI", "pentest", "evidence"],
+};
+
+export const viewport: Viewport = {
+  themeColor: "#070910",
+  width: "device-width",
+  initialScale: 1,
 };
 
 export default function RootLayout({
@@ -13,7 +26,7 @@ export default function RootLayout({
 }) {
   return (
     <html lang="en" className="dark">
-      <body className="bg-[#0A0C10] text-slate-100 min-h-screen flex flex-col antialiased font-sans selection:bg-blue-600 selection:text-white overflow-hidden">
+      <body className="bg-ink-950 text-slate-200 min-h-screen antialiased font-sans selection:bg-primary-500 selection:text-white">
         {children}
       </body>
     </html>

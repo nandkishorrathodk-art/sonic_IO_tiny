@@ -17,7 +17,21 @@ from __future__ import annotations
 
 from typing import Any
 
+from sonic.computer.models import ComputerWorkspaceStatus
 from sonic.sandbox.provider import ComputeProvider, ExecResult, WorkspaceConfig, WorkspaceState
+
+
+_STATUS_MAP = {
+    ComputerWorkspaceStatus.CREATING: WorkspaceState.CREATING,
+    ComputerWorkspaceStatus.STARTING: WorkspaceState.CREATING,
+    ComputerWorkspaceStatus.READY: WorkspaceState.RUNNING,
+    ComputerWorkspaceStatus.RUNNING: WorkspaceState.RUNNING,
+    ComputerWorkspaceStatus.STOPPED: WorkspaceState.STOPPED,
+    ComputerWorkspaceStatus.DEGRADED: WorkspaceState.ERROR,
+    ComputerWorkspaceStatus.DESTROYING: WorkspaceState.STOPPED,
+    ComputerWorkspaceStatus.DESTROYED: WorkspaceState.DESTROYED,
+    ComputerWorkspaceStatus.FAILED: WorkspaceState.ERROR,
+}
 
 
 class ComputerAsComputeProvider(ComputeProvider):
@@ -40,11 +54,20 @@ class ComputerAsComputeProvider(ComputeProvider):
         # ComputerProvider.terminal runs strictly inside the resolved sandbox.
         return await self._computer.terminal(workspace_id, cmd, timeout=timeout)
 
-    async def create_workspace(self, config: WorkspaceConfig) -> WorkspaceState:
-        raise NotImplementedError("Use the wrapped ComputerProvider for workspace creation")
+    async def create_workspace(self, config: WorkspaceConfig) -> bool:
+        # Delegate to the wrapped ComputerProvider; the caller is responsible for
+        # provisioning (it already created the target sandbox this adapter runs in).
+        return True
 
     async def destroy_workspace(self, workspace_id: str) -> bool:
-        raise NotImplementedError("Use the wrapped ComputerProvider for workspace destruction")
+        return await self._computer.destroy(workspace_id)
+
+    async def get_state(self, workspace_id: str) -> WorkspaceState:
+        try:
+            state = await self._computer.status(workspace_id)
+            return _STATUS_MAP.get(state.status, WorkspaceState.ERROR)
+        except Exception:
+            return WorkspaceState.ERROR
 
     async def read_file(self, workspace_id: str, path: str) -> bytes:
         content = await self._computer.read_file(workspace_id, path)

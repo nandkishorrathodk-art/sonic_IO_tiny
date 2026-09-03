@@ -1,8 +1,9 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { Share2, RefreshCw, Loader2, CircleDot, Layers } from "lucide-react";
+import { Share2, RefreshCw, CircleDot, X } from "lucide-react";
 import { api } from "../../lib/api";
+import { PageShell, PageHeader, StateBlock } from "../../components/common/PageShell";
 
 interface GraphNode {
   id: string;
@@ -17,11 +18,20 @@ interface GraphEdge {
   type: string;
 }
 
+function nodeAccent(type: string): { border: string; text: string; bg: string } {
+  const t = type.toLowerCase();
+  if (t.includes("finding")) return { border: "border-danger/50", text: "text-danger", bg: "bg-danger/10" };
+  if (t.includes("asset")) return { border: "border-secondary-500/50", text: "text-secondary-400", bg: "bg-secondary-600/10" };
+  if (t.includes("evidence")) return { border: "border-success/50", text: "text-success", bg: "bg-success/10" };
+  if (t.includes("hypothesis")) return { border: "border-warning/50", text: "text-warning", bg: "bg-warning/10" };
+  return { border: "border-accent-500/50", text: "text-accent-400", bg: "bg-accent-600/10" };
+}
+
 export default function GraphExplorer() {
   const [nodes, setNodes] = useState<GraphNode[]>([]);
   const [edges, setEdges] = useState<GraphEdge[]>([]);
   const [backend, setBackend] = useState<string>("InMemoryGraph");
-  const [loading, setLoading] = useState<boolean>(true);
+  const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [selectedNode, setSelectedNode] = useState<GraphNode | null>(null);
 
@@ -44,99 +54,106 @@ export default function GraphExplorer() {
     fetchGraph();
   }, []);
 
-  const getNodeColor = (type: string) => {
-    const t = type.toLowerCase();
-    if (t.includes("finding")) return "border-red-500 text-red-400 bg-red-950/40";
-    if (t.includes("asset")) return "border-cyan-500 text-cyan-400 bg-cyan-950/40";
-    if (t.includes("hypothesis")) return "border-purple-500 text-purple-400 bg-purple-950/40";
-    if (t.includes("evidence")) return "border-emerald-500 text-emerald-400 bg-emerald-950/40";
-    if (t.includes("agent")) return "border-blue-500 text-blue-400 bg-blue-950/40";
-    return "border-slate-700 text-slate-300 bg-slate-900/40";
-  };
-
   return (
-    <div className="p-6 space-y-6 max-w-7xl mx-auto font-sans">
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-slate-800">
-        <div>
-          <div className="flex items-center gap-2">
-            <Share2 className="w-5 h-5 text-purple-400" />
-            <h2 className="text-xl font-bold text-white tracking-tight">Agent-to-Agent Graph Memory</h2>
-          </div>
-          <p className="text-xs text-slate-400 mt-1">
-            Inter-agent shared knowledge graph ({backend} powered) mapping assets, hypotheses, and findings.
-          </p>
-        </div>
-
-        <div className="flex items-center gap-2">
-          <button
-            onClick={fetchGraph}
-            className="px-3.5 py-2 bg-slate-900 hover:bg-slate-800 border border-slate-700 rounded-xl text-xs font-semibold text-slate-200 flex items-center gap-2 transition"
-          >
-            <RefreshCw className={`w-3.5 h-3.5 text-cyan-400 ${loading ? "animate-spin" : ""}`} />
-            <span>Sync Graph</span>
+    <PageShell>
+      <PageHeader
+        accent="accent"
+        icon={<Share2 className="w-6 h-6 text-accent-400" />}
+        title="GRAPH MEMORY EXPLORER"
+        badge={backend}
+        subtitle={`${nodes.length} nodes · ${edges.length} edges — the agent's persistent threat knowledge graph.`}
+        actions={
+          <button onClick={fetchGraph} className="btn-ghost text-accent-400">
+            <RefreshCw className={`w-3.5 h-3.5 ${loading ? "animate-spin" : ""}`} />
+            <span>Refresh</span>
           </button>
-        </div>
-      </div>
+        }
+      />
 
-      {error && (
-        <div className="p-3 rounded-lg bg-red-950/40 border border-red-800 text-red-300 text-xs font-mono">
-          {error}
+      <StateBlock
+        error={error}
+        loading={loading}
+        loadingText="Loading Graph Memory…"
+        empty={nodes.length === 0}
+        emptyIcon={<CircleDot className="w-8 h-8" />}
+        emptyTitle="Graph Memory is Empty"
+        emptyText="Discovered assets, hypotheses, and verified findings will appear here during active missions."
+        spinnerColor="border-t-accent-400"
+      >
+        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
+          {nodes.map((node) => {
+            const a = nodeAccent(node.type);
+            return (
+              <button
+                key={node.id}
+                onClick={() => setSelectedNode(node)}
+                className={`panel p-3 text-left space-y-1 hover:-translate-y-0.5 transition border ${a.border}`}
+              >
+                <span className={`text-[10px] font-mono ${a.text} block uppercase tracking-wide`}>{node.type}</span>
+                <span className="text-xs font-semibold text-white truncate block">{node.label}</span>
+                <span className="text-[9px] font-mono text-muted-dim block truncate">ID: {node.id}</span>
+              </button>
+            );
+          })}
+        </div>
+      </StateBlock>
+
+      {/* Node detail drawer */}
+      {selectedNode && (
+        <div
+          className="fixed inset-0 z-50 flex items-end md:items-center md:justify-end bg-black/60 backdrop-blur-sm p-4"
+          onClick={() => setSelectedNode(null)}
+        >
+          <div
+            className="glass-card rounded-2xl p-6 w-full max-w-md space-y-4 animate-fade-in-up"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-start justify-between">
+              <div className="space-y-1">
+                <span className={`chip border ${nodeAccent(selectedNode.type).border} ${nodeAccent(selectedNode.type).bg} ${nodeAccent(selectedNode.type).text}`}>
+                  {selectedNode.type}
+                </span>
+                <h3 className="text-lg font-bold text-white">{selectedNode.label}</h3>
+              </div>
+              <button onClick={() => setSelectedNode(null)} className="p-1 rounded text-muted hover:text-white hover:bg-ink-800 transition">
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <div className="space-y-2">
+              <div className="text-[10px] font-mono text-muted-dim">ID</div>
+              <div className="text-xs font-mono text-muted-bright break-all">{selectedNode.id}</div>
+            </div>
+            {Object.keys(selectedNode.properties || {}).length > 0 && (
+              <div className="space-y-2">
+                <div className="text-[10px] font-mono text-muted-dim uppercase tracking-wide">Properties</div>
+                <pre className="text-[11px] font-mono text-muted-bright bg-ink-950 border border-ink-700 rounded-lg p-3 overflow-x-auto whitespace-pre-wrap">
+                  {JSON.stringify(selectedNode.properties, null, 2)}
+                </pre>
+              </div>
+            )}
+            {edges.filter((e) => e.source === selectedNode.id || e.target === selectedNode.id).length > 0 && (
+              <div className="space-y-2">
+                <div className="text-[10px] font-mono text-muted-dim uppercase tracking-wide">
+                  Relationships ({edges.filter((e) => e.source === selectedNode.id || e.target === selectedNode.id).length})
+                </div>
+                <div className="space-y-1">
+                  {edges
+                    .filter((e) => e.source === selectedNode.id || e.target === selectedNode.id)
+                    .map((e, i) => (
+                      <div key={i} className="text-[11px] font-mono text-muted flex items-center gap-2">
+                        <span className="text-accent-400">{e.type}</span>
+                        <span className="text-muted-dim">→</span>
+                        <span className="text-secondary-400 truncate">
+                          {e.target === selectedNode.id ? e.source : e.target}
+                        </span>
+                      </div>
+                    ))}
+                </div>
+              </div>
+            )}
+          </div>
         </div>
       )}
-
-      {/* Graph Visual Canvas */}
-      <div className="glass-card rounded-xl p-6 border border-slate-800 min-h-[480px] relative overflow-hidden flex flex-col justify-between">
-        <div className="flex items-center justify-between z-10 flex-wrap gap-2">
-          <div className="flex items-center gap-2 bg-slate-900/90 px-3 py-1.5 rounded-lg border border-slate-800 text-xs font-mono">
-            <Layers className="w-3.5 h-3.5 text-purple-400" />
-            <span>Nodes: {nodes.length} | Edges: {edges.length}</span>
-          </div>
-        </div>
-
-        {loading ? (
-          <div className="my-auto text-center py-12">
-            <Loader2 className="w-8 h-8 animate-spin text-purple-400 mx-auto mb-2" />
-            <p className="text-xs text-slate-400 font-mono">Querying Graph Memory...</p>
-          </div>
-        ) : nodes.length === 0 ? (
-          <div className="my-auto text-center py-12">
-            <CircleDot className="w-10 h-10 text-slate-600 mx-auto mb-2" />
-            <h4 className="text-sm font-bold text-white mb-1">Graph Memory is Empty</h4>
-            <p className="text-xs text-slate-400 max-w-sm mx-auto">
-              Run a mission from the Workstation to populate the knowledge graph with discovered assets and findings.
-            </p>
-          </div>
-        ) : (
-          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3 my-6 z-10">
-            {nodes.map((n) => (
-              <div
-                key={n.id}
-                onClick={() => setSelectedNode(n)}
-                className={`p-3.5 rounded-xl border backdrop-blur-md transition hover:scale-105 cursor-pointer ${getNodeColor(
-                  n.type
-                )} ${selectedNode?.id === n.id ? "ring-2 ring-white/50" : ""}`}
-              >
-                <span className="text-[10px] font-mono block opacity-70 mb-1">{n.type}</span>
-                <span className="text-xs font-bold font-mono block truncate">{n.label}</span>
-                <span className="text-[9px] font-mono text-slate-400 block mt-1">ID: {n.id}</span>
-              </div>
-            ))}
-          </div>
-        )}
-
-        {/* Selected Node Inspector */}
-        {selectedNode && (
-          <div className="glass-card p-4 rounded-xl border border-slate-700/80 bg-slate-950/80 z-20 mt-4">
-            <div className="flex items-center justify-between mb-2">
-              <span className="text-xs font-bold text-white font-mono">Node Inspector: {selectedNode.id}</span>
-              <button onClick={() => setSelectedNode(null)} className="text-xs text-slate-400 hover:text-white">✕</button>
-            </div>
-            <pre className="bg-[#0a0d14] p-3 rounded-lg text-[11px] font-mono text-cyan-300 overflow-x-auto max-h-40">
-              {JSON.stringify(selectedNode.properties, null, 2)}
-            </pre>
-          </div>
-        )}
-      </div>
-    </div>
+    </PageShell>
   );
 }

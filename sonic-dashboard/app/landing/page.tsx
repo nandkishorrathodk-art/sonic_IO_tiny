@@ -7,22 +7,17 @@ import {
   Terminal as TerminalIcon,
   ShieldCheck,
   Cpu,
-  Server,
   Cloud,
-  Sparkles,
   ArrowRight,
-  Layers,
-  Activity,
-  Zap,
   Lock,
-  GitBranch,
   Dna,
   FileCheck2,
   Share2,
-  CheckCircle,
-  Play,
+  Crosshair,
+  ChevronRight,
 } from "lucide-react";
 import { API_BASE } from "../../lib/api";
+import { BrandMark } from "../../components/common/BrandMark";
 
 export default function LandingPage() {
   const [systemHealth, setSystemHealth] = useState<any>(null);
@@ -38,207 +33,179 @@ export default function LandingPage() {
 
   const isHealthy = systemHealth?.overall_status === "healthy";
 
+  const capabilities = [
+    { icon: <Cloud className="w-5 h-5 text-secondary-400" />, title: "Daytona Cloud", sub: "noVNC XFCE Desktop" },
+    { icon: <Cpu className="w-5 h-5 text-success" />, title: "Multi-Model AI", sub: "Llama 3.2 Vision" },
+    { icon: <ShieldCheck className="w-5 h-5 text-accent-400" />, title: "Fail-Closed", sub: "Zero Host Execution" },
+    { icon: <Share2 className="w-5 h-5 text-primary-400" />, title: "Graph Memory", sub: "Persistent Threat Matrix" },
+  ];
+
+  const features = [
+    {
+      icon: <Monitor className="w-5 h-5" />,
+      accent: "secondary",
+      title: "Daytona Graphical Workstation",
+      desc: "A real interactive Linux GUI powered by Xvfb, XFCE, and x11vnc — streamed live via noVNC directly into the dashboard, with full mouse & keyboard takeover.",
+      tag: "Port 6080 WebSocket Stream",
+    },
+    {
+      icon: <Cpu className="w-5 h-5" />,
+      accent: "success",
+      title: "Multi-Model Reasoning Core",
+      desc: "Direct integration with NVIDIA NIM and OpenAI-compatible endpoints, executing Meta Llama 3.2 Vision, 90B reasoning, and CodeLlama for autonomous plan formulation.",
+      tag: "Universal OpenAI-Compatible Router",
+    },
+    {
+      icon: <ShieldCheck className="w-5 h-5" />,
+      accent: "accent",
+      title: "Fail-Closed Tenant Isolation",
+      desc: "Path-traversal proof filesystem, cryptographically signed JWT auth, and zero host command execution guarantee absolute workload isolation per tenant.",
+      tag: "Security Invariant 503 Enforced",
+    },
+  ];
+
   return (
-    <div className="min-h-screen bg-[#07090E] text-slate-100 flex flex-col font-sans relative overflow-x-hidden selection:bg-blue-600 selection:text-white">
-      {/* Background Ambient Glowing Lights */}
-      <div className="absolute top-[-15%] left-[20%] w-[600px] h-[600px] bg-blue-600/15 rounded-full blur-[140px] pointer-events-none" />
-      <div className="absolute top-[30%] right-[-10%] w-[500px] h-[500px] bg-indigo-600/15 rounded-full blur-[130px] pointer-events-none" />
-      <div className="absolute bottom-[-10%] left-[-5%] w-[700px] h-[700px] bg-cyan-600/10 rounded-full blur-[160px] pointer-events-none" />
+    <div className="min-h-screen bg-ink-950 text-slate-200 flex flex-col font-sans relative overflow-x-hidden">
+      {/* Ambient background */}
+      <div className="fixed inset-0 bg-grid-glow pointer-events-none" />
+      <div className="absolute top-[-15%] left-[20%] w-[600px] h-[600px] bg-primary-600/10 rounded-full blur-[140px] pointer-events-none" />
+      <div className="absolute top-[30%] right-[-10%] w-[500px] h-[500px] bg-secondary-600/10 rounded-full blur-[130px] pointer-events-none" />
 
       {/* Top Navbar */}
-      <header className="h-16 border-b border-[#1E2436]/60 backdrop-blur-xl px-6 md:px-12 flex items-center justify-between sticky top-0 z-50">
-        <div className="flex items-center gap-3">
-          <div className="w-8 h-8 rounded-xl bg-gradient-to-tr from-blue-600 via-indigo-600 to-cyan-400 p-0.5 shadow-lg shadow-blue-500/25">
-            <div className="w-full h-full bg-[#0C0E16] rounded-[10px] flex items-center justify-center font-mono font-black text-xs text-blue-400">
-              S
-            </div>
-          </div>
-          <div>
-            <span className="font-extrabold tracking-wider text-sm text-white">SONIC-REDA</span>
-            <span className="text-[10px] font-mono ml-2 text-cyan-400 font-semibold uppercase hidden sm:inline">
-              Autonomous Workstation
-            </span>
-          </div>
-        </div>
-
-        <div className="flex items-center gap-4 text-xs font-mono">
-          <Link
-            href="/graph"
-            className="text-slate-400 hover:text-white transition px-3 py-1.5 rounded-lg hover:bg-slate-800/40 hidden md:block"
-          >
-            Graph Memory
+      <header className="h-16 border-b border-ink-800/80 backdrop-blur-xl bg-ink-950/70 px-6 md:px-12 flex items-center justify-between sticky top-0 z-50">
+        <BrandMark withWordmark href="/landing" />
+        <div className="flex items-center gap-3 text-xs font-mono">
+          <Link href="/graph" className="btn-ghost hidden md:inline-flex">Graph Memory</Link>
+          <Link href="/evidence" className="btn-ghost hidden md:inline-flex">Evidence Board</Link>
+          <Link href="/login" className="btn-secondary !px-4 !py-2 text-xs">
+            <Lock className="w-3.5 h-3.5" />
+            <span>Sign In</span>
           </Link>
-          <Link
-            href="/evidence"
-            className="text-slate-400 hover:text-white transition px-3 py-1.5 rounded-lg hover:bg-slate-800/40 hidden md:block"
-          >
-            Evidence Board
-          </Link>
-          <Link
-            href="/login"
-            className="text-slate-300 hover:text-white transition px-3 py-1.5 rounded-lg border border-slate-700/80 hover:border-slate-500 bg-[#0E131F]"
-          >
-            Sign In / Tenant
-          </Link>
-          <Link
-            href="/"
-            className="px-4 py-2 rounded-xl bg-gradient-to-r from-blue-600 via-indigo-600 to-cyan-500 hover:from-blue-500 hover:to-cyan-400 text-white font-bold tracking-wide shadow-lg shadow-blue-500/25 transition flex items-center gap-1.5"
-          >
-            <span>Launch Workstation</span>
+          <Link href="/" className="btn-primary !px-4 !py-2 text-xs">
+            <span>Launch</span>
             <ArrowRight className="w-3.5 h-3.5" />
           </Link>
         </div>
       </header>
 
-      {/* Hero Section */}
-      <section className="px-6 md:px-12 pt-20 pb-16 max-w-7xl mx-auto flex flex-col items-center text-center space-y-8 z-10">
-        {/* Status Chip */}
-        <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-blue-950/80 border border-blue-800/60 text-blue-300 text-xs font-mono shadow-inner">
-          <span className={`w-2 h-2 rounded-full ${isHealthy ? "bg-emerald-400 animate-pulse" : "bg-slate-500"}`} />
+      {/* Hero */}
+      <section className="relative px-6 md:px-12 pt-24 pb-16 max-w-7xl mx-auto flex flex-col items-center text-center space-y-8 z-10">
+        <div className="chip border bg-ink-850/80 border-ink-700 text-muted-bright animate-fade-in-up">
+          <span className={`w-2 h-2 rounded-full ${isHealthy ? "bg-success animate-pulse" : "bg-muted-dim"}`} />
           <span>{isHealthy ? "CONTROL PLANE ONLINE" : "CONTROL PLANE STATUS UNKNOWN"}</span>
         </div>
 
-        {/* Hero Title */}
-        <h1 className="text-4xl sm:text-6xl md:text-7xl font-extrabold tracking-tight text-white max-w-5xl leading-[1.1]">
-          The Autonomous AI Engineer &{" "}
-          <span className="bg-gradient-to-r from-blue-400 via-indigo-300 to-cyan-400 bg-clip-text text-transparent">
-            Graphical Workstation
-          </span>
+        <h1 className="text-4xl sm:text-6xl md:text-7xl font-extrabold tracking-tight text-white max-w-5xl leading-[1.08] animate-fade-in-up">
+          The Autonomous AI
+          <br />
+          <span className="text-gradient">Red Team Workstation</span>
         </h1>
 
-        {/* Hero Subtitle */}
-        <p className="text-base sm:text-lg text-slate-400 max-w-3xl font-mono leading-relaxed">
-          Full Linux GUI Desktop streaming with real XFCE + noVNC, NVIDIA NIM multi-model reasoning,
-          isolated container sandboxes, and fail-closed host security.
+        <p className="text-base sm:text-lg text-muted max-w-3xl font-mono leading-relaxed animate-fade-in-up">
+          A self-evolving multi-agent swarm that observes, reasons, and proves real kill-chains —
+          backed by full Linux GUI streaming, isolated sandboxes, and cryptographic evidence.
         </p>
 
-        {/* CTA Buttons */}
-        <div className="flex flex-wrap items-center justify-center gap-4 pt-4">
-          <Link
-            href="/"
-            className="px-8 py-4 rounded-2xl bg-gradient-to-r from-blue-600 via-indigo-600 to-cyan-500 hover:from-blue-500 hover:to-cyan-400 text-white font-bold text-sm tracking-wide shadow-2xl shadow-blue-500/40 transition flex items-center gap-2 hover:scale-[1.02]"
-          >
+        <div className="flex flex-wrap items-center justify-center gap-4 pt-2 animate-fade-in-up">
+          <Link href="/" className="btn-primary !px-8 !py-4 text-sm hover:scale-[1.02]">
             <span>Open Workstation Surface</span>
             <ArrowRight className="w-4 h-4" />
           </Link>
-          <Link
-            href="/login"
-            className="px-6 py-4 rounded-2xl bg-[#111624] hover:bg-[#182033] border border-slate-700/80 text-slate-200 font-bold text-sm tracking-wide transition flex items-center gap-2"
-          >
-            <Lock className="w-4 h-4 text-purple-400" />
-            <span>Tenant Authentication</span>
-          </Link>
-          <Link
-            href="/terminal"
-            className="px-6 py-4 rounded-2xl bg-[#111624] hover:bg-[#182033] border border-slate-700/80 text-slate-200 font-bold text-sm tracking-wide transition flex items-center gap-2 font-mono text-xs"
-          >
-            <TerminalIcon className="w-4 h-4 text-emerald-400" />
+          <Link href="/terminal" className="btn-ghost !px-5 !py-4 text-sm border border-ink-700 hover:border-ink-600 font-mono">
+            <TerminalIcon className="w-4 h-4 text-secondary-400" />
             <span>Interactive PTY Shell</span>
           </Link>
         </div>
 
-        {/* System Capability Badges */}
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 w-full max-w-4xl pt-8 font-mono text-xs text-left">
-          <div className="p-3.5 rounded-xl bg-[#0D111A]/90 border border-slate-800 flex items-center gap-3">
-            <Cloud className="w-5 h-5 text-blue-400 flex-shrink-0" />
-            <div>
-              <div className="text-white font-bold">Daytona Cloud</div>
-              <div className="text-slate-500 text-[10px]">noVNC XFCE Desktop</div>
+        {/* Capability badges */}
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 w-full max-w-4xl pt-10 font-mono text-xs text-left animate-fade-in-up">
+          {capabilities.map((c) => (
+            <div key={c.title} className="panel p-3.5 flex items-center gap-3 hover:border-ink-600 transition">
+              <div className="grid place-items-center w-9 h-9 rounded-lg bg-ink-900 border border-ink-700 shrink-0">
+                {c.icon}
+              </div>
+              <div className="min-w-0">
+                <div className="text-white font-bold truncate">{c.title}</div>
+                <div className="text-muted-dim text-[10px] truncate">{c.sub}</div>
+              </div>
             </div>
-          </div>
-          <div className="p-3.5 rounded-xl bg-[#0D111A]/90 border border-slate-800 flex items-center gap-3">
-            <Cpu className="w-5 h-5 text-emerald-400 flex-shrink-0" />
-            <div>
-              <div className="text-white font-bold">NVIDIA NIM LLM</div>
-              <div className="text-slate-500 text-[10px]">Meta Llama 3.2 Vision</div>
-            </div>
-          </div>
-          <div className="p-3.5 rounded-xl bg-[#0D111A]/90 border border-slate-800 flex items-center gap-3">
-            <ShieldCheck className="w-5 h-5 text-purple-400 flex-shrink-0" />
-            <div>
-              <div className="text-white font-bold">Fail-Closed</div>
-              <div className="text-slate-500 text-[10px]">Zero Host OS Execution</div>
-            </div>
-          </div>
-          <div className="p-3.5 rounded-xl bg-[#0D111A]/90 border border-slate-800 flex items-center gap-3">
-            <Share2 className="w-5 h-5 text-pink-400 flex-shrink-0" />
-            <div>
-              <div className="text-white font-bold">Graph Memory</div>
-              <div className="text-slate-500 text-[10px]">Persistent Threat Matrix</div>
-            </div>
-          </div>
+          ))}
         </div>
       </section>
 
-      {/* Feature Grid Section */}
-      <section className="px-6 md:px-12 py-16 max-w-7xl mx-auto z-10 w-full">
-        <div className="text-center space-y-2 mb-12">
+      {/* Feature grid */}
+      <section className="relative px-6 md:px-12 py-16 max-w-7xl mx-auto z-10 w-full">
+        <div className="text-center space-y-2 mb-12 animate-fade-in-up">
           <h2 className="text-2xl sm:text-3xl font-bold tracking-tight text-white">
             Architecture & Engineering Capabilities
           </h2>
-          <p className="text-xs text-slate-400 font-mono">
+          <p className="text-xs text-muted font-mono">
             Engineered for high-assurance autonomous mission execution and live verification.
           </p>
         </div>
 
         <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-          {/* Card 1: Daytona Computer */}
-          <div className="p-6 rounded-2xl bg-[#0F131F]/80 border border-slate-800/80 backdrop-blur-lg space-y-4 hover:border-blue-500/50 transition">
-            <div className="w-10 h-10 rounded-xl bg-blue-600/20 border border-blue-500/40 flex items-center justify-center text-blue-400">
-              <Monitor className="w-5 h-5" />
+          {features.map((f) => (
+            <div
+              key={f.title}
+              className="glass-card rounded-2xl p-6 space-y-4 hover:-translate-y-1 transition group animate-fade-in-up"
+            >
+              <div
+                className={`grid place-items-center w-11 h-11 rounded-xl border ${
+                  f.accent === "secondary"
+                    ? "bg-secondary-600/15 border-secondary-500/40 text-secondary-400"
+                    : f.accent === "success"
+                    ? "bg-success/15 border-success/40 text-success"
+                    : "bg-accent-600/15 border-accent-500/40 text-accent-400"
+                }`}
+              >
+                {f.icon}
+              </div>
+              <h3 className="text-base font-bold text-white">{f.title}</h3>
+              <p className="text-xs text-muted font-mono leading-relaxed">{f.desc}</p>
+              <div
+                className={`text-[11px] font-mono flex items-center gap-1 ${
+                  f.accent === "secondary"
+                    ? "text-secondary-400"
+                    : f.accent === "success"
+                    ? "text-success"
+                    : "text-accent-400"
+                }`}
+              >
+                <span>{f.tag}</span>
+                <ChevronRight className="w-3 h-3 group-hover:translate-x-0.5 transition" />
+              </div>
             </div>
-            <h3 className="text-base font-bold text-white">Daytona Graphical Workstation</h3>
-            <p className="text-xs text-slate-400 font-mono leading-relaxed">
-              Real interactive Linux GUI powered by Xvfb :99, XFCE desktop environment, and x11vnc streamed
-              via noVNC directly into the dashboard.
-            </p>
-            <div className="text-[11px] font-mono text-blue-400 flex items-center gap-1">
-              <span>Port 6080 WebSocket Stream</span>
-              <ArrowRight className="w-3 h-3" />
-            </div>
-          </div>
+          ))}
+        </div>
+      </section>
 
-          {/* Card 2: NVIDIA NIM LLM */}
-          <div className="p-6 rounded-2xl bg-[#0F131F]/80 border border-slate-800/80 backdrop-blur-lg space-y-4 hover:border-emerald-500/50 transition">
-            <div className="w-10 h-10 rounded-xl bg-emerald-600/20 border border-emerald-500/40 flex items-center justify-center text-emerald-400">
-              <Cpu className="w-5 h-5" />
+      {/* Principle strip */}
+      <section className="relative px-6 md:px-12 pb-16 max-w-7xl mx-auto z-10 w-full">
+        <div className="glass-card rounded-2xl p-8 grid grid-cols-1 md:grid-cols-3 gap-6 text-center">
+          {[
+            { icon: <FileCheck2 className="w-5 h-5 text-success" />, t: "Evidence > Claims", d: "No finding ships without real request + response proof." },
+            { icon: <Crosshair className="w-5 h-5 text-primary-400" />, t: "Sonic, never reckless", d: "Speed under an immutable, default-deny safety layer." },
+            { icon: <Dna className="w-5 h-5 text-accent-400" />, t: "Measured self-evolution", d: "Agents improve only through verified canary experiments." },
+          ].map((p) => (
+            <div key={p.t} className="space-y-2">
+              <div className="grid place-items-center w-10 h-10 mx-auto rounded-xl bg-ink-900 border border-ink-700">
+                {p.icon}
+              </div>
+              <h4 className="text-sm font-bold text-white">{p.t}</h4>
+              <p className="text-xs text-muted font-mono">{p.d}</p>
             </div>
-            <h3 className="text-base font-bold text-white">NVIDIA NIM Multi-Model AI</h3>
-            <p className="text-xs text-slate-400 font-mono leading-relaxed">
-              Direct integration with NVIDIA NIM endpoints executing Meta Llama 3.2 Vision, 90B Reasoning,
-              and CodeLlama for autonomous plan formulation.
-            </p>
-            <div className="text-[11px] font-mono text-emerald-400 flex items-center gap-1">
-              <span>Universal OpenAI-Compatible Router</span>
-              <ArrowRight className="w-3 h-3" />
-            </div>
-          </div>
-
-          {/* Card 3: Security & Multi-Tenant */}
-          <div className="p-6 rounded-2xl bg-[#0F131F]/80 border border-slate-800/80 backdrop-blur-lg space-y-4 hover:border-purple-500/50 transition">
-            <div className="w-10 h-10 rounded-xl bg-purple-600/20 border border-purple-500/40 flex items-center justify-center text-purple-400">
-              <ShieldCheck className="w-5 h-5" />
-            </div>
-            <h3 className="text-base font-bold text-white">Fail-Closed Tenant Isolation</h3>
-            <p className="text-xs text-slate-400 font-mono leading-relaxed">
-              Path-traversal proof, cryptographically signed JWT auth, and zero host command execution
-              guarantee absolute workload isolation.
-            </p>
-            <div className="text-[11px] font-mono text-purple-400 flex items-center gap-1">
-              <span>Security Invariant 503 Enforced</span>
-              <ArrowRight className="w-3 h-3" />
-            </div>
-          </div>
+          ))}
         </div>
       </section>
 
       {/* Footer */}
-      <footer className="mt-auto border-t border-[#1E2436]/60 px-6 md:px-12 py-6 flex flex-col sm:flex-row items-center justify-between text-xs font-mono text-slate-500 gap-3 z-10">
+      <footer className="relative mt-auto border-t border-ink-800/80 px-6 md:px-12 py-6 flex flex-col sm:flex-row items-center justify-between text-xs font-mono text-muted-dim gap-3 z-10">
         <div>SONIC-REDA Autonomous Workstation Core v1.3.0</div>
         <div className="flex items-center gap-4">
-          <Link href="/login" className="hover:text-slate-300">Login</Link>
-          <Link href="/" className="hover:text-slate-300">Workstation</Link>
-          <Link href="/settings" className="hover:text-slate-300">Settings</Link>
+          <Link href="/login" className="hover:text-slate-300 transition">Login</Link>
+          <Link href="/" className="hover:text-slate-300 transition">Workstation</Link>
+          <Link href="/settings" className="hover:text-slate-300 transition">Settings</Link>
         </div>
       </footer>
     </div>

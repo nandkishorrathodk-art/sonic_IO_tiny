@@ -74,9 +74,9 @@ def mission_state(
     """Display the cognitive state world model (Facts, Hypotheses, Unknowns)."""
     with _get_client(server, token) as client:
         try:
-            res = client.get(f"/engagements/{engagement_id}/state")
-            if res.status_code == 404:
-                res = client.get(f"/engagements/{engagement_id}")
+            # No dedicated /state endpoint exists on the backend; the engagement
+            # summary (GET /engagements/{id}) is the equivalent source of truth.
+            res = client.get(f"/engagements/{engagement_id}")
 
             if res.status_code != 200:
                 console.print(f"[red]Error fetching state: {res.text}[/red]")
@@ -111,10 +111,12 @@ def mission_hypotheses(
     """List competing hypotheses, confidence scores, and counter-evidence."""
     with _get_client(server, token) as client:
         try:
-            res = client.get(f"/engagements/{engagement_id}/hypotheses")
+            # No dedicated /hypotheses endpoint exists on the backend; the
+            # engagement summary (GET /engagements/{id}) is the equivalent source.
+            res = client.get(f"/engagements/{engagement_id}")
             if res.status_code != 200:
-                console.print("[yellow]Fetching hypotheses from engagement summary...[/yellow]")
-                res = client.get(f"/engagements/{engagement_id}")
+                console.print(f"[red]Error fetching hypotheses: {res.text}[/red]")
+                return
 
             data = res.json()
             hypos = data.get("hypotheses", [])

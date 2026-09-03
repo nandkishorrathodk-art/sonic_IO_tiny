@@ -29,24 +29,17 @@ export function clearAuth(): void {
   localStorage.removeItem(USER_KEY);
 }
 
-export function getUserSession(): UserSession {
-  if (typeof window === "undefined") {
-    return { email: "engineer@company.com", name: "Lead Engineer", role: "operator", tenant_id: "default" };
-  }
+export function getUserSession(): UserSession | null {
+  if (typeof window === "undefined") return null;
   const raw = localStorage.getItem(USER_KEY);
   if (raw) {
     try {
       return JSON.parse(raw);
     } catch {
-      // ignore
+      // ignore malformed entry
     }
   }
-  return {
-    email: "engineer@company.com",
-    name: "Lead Engineer",
-    role: "operator",
-    tenant_id: "default",
-  };
+  return null;
 }
 
 /**
@@ -62,7 +55,9 @@ export async function ensureAuthToken(apiBase: string): Promise<string> {
     if (res.ok) {
       const data = await res.json();
       if (data?.access_token) {
-        setAuthToken(data.access_token, data.token?.user);
+        // dev-token returns the user nested under token.user
+        const user = data.token?.user;
+        setAuthToken(data.access_token, user);
         return data.access_token;
       }
     }

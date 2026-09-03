@@ -1,16 +1,9 @@
 "use client";
 
 import React, { useState, useEffect } from "react";
-import {
-  Dna,
-  ShieldCheck,
-  RefreshCw,
-  Play,
-  Loader2,
-  AlertCircle,
-  TrendingUp,
-} from "lucide-react";
+import { Dna, Play, RefreshCw, ShieldCheck, AlertCircle } from "lucide-react";
 import { api } from "../../lib/api";
+import { PageShell, PageHeader, StateBlock } from "../../components/common/PageShell";
 
 export default function EvolutionPage() {
   const [experiments, setExperiments] = useState<any[]>([]);
@@ -53,99 +46,81 @@ export default function EvolutionPage() {
     }
   };
 
+  const pct = (v: unknown) =>
+    typeof v === "number" && Number.isFinite(v) ? (v * 100).toFixed(1) : "—";
+  const hasScore =
+    benchmarkResult?.metrics &&
+    typeof benchmarkResult.f1_score === "number" &&
+    typeof benchmarkResult.precision === "number" &&
+    typeof benchmarkResult.recall === "number";
+
   return (
-    <div className="p-6 space-y-6 max-w-7xl mx-auto font-sans">
-      {/* Header & Global Status */}
-      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 bg-[#0F131F]/90 border border-slate-800/80 p-5 rounded-2xl">
-        <div className="flex items-center gap-4">
-          <div className="w-12 h-12 rounded-xl bg-gradient-to-tr from-purple-600 via-pink-500 to-cyan-500 p-0.5 shadow-lg shadow-purple-500/20 flex items-center justify-center">
-            <div className="w-full h-full bg-[#0C0E16] rounded-[10px] flex items-center justify-center">
-              <Dna className="w-6 h-6 text-pink-400" />
-            </div>
-          </div>
-          <div>
-            <div className="flex items-center gap-2">
-              <h2 className="text-lg font-bold text-white tracking-wide">AUTONOMOUS SELF-EVOLUTION ENGINE</h2>
-              <span className="px-2 py-0.5 text-[10px] font-mono bg-purple-950 text-purple-300 border border-purple-800/60 rounded-full font-semibold">
-                CANARY LAB
-              </span>
-            </div>
-            <p className="text-xs text-slate-400 mt-0.5 font-mono">
-              Ground-truth canary benchmarking, zero-regression gating, and candidate skill evolution.
-            </p>
-          </div>
-        </div>
+    <PageShell>
+      <PageHeader
+        accent="accent"
+        icon={<Dna className="w-6 h-6 text-primary-400" />}
+        title="AUTONOMOUS SELF-EVOLUTION ENGINE"
+        badge="CANARY LAB"
+        subtitle="Ground-truth canary benchmarking, zero-regression gating, and candidate skill evolution."
+        actions={
+          <>
+            <button onClick={handleRunBenchmark} disabled={benchmarking} className="btn-secondary !px-4 !py-2 text-xs disabled:opacity-50">
+              {benchmarking ? <span className="w-4 h-4 border-2 border-secondary-400/40 border-t-secondary-400 rounded-full animate-spin" /> : <Play className="w-4 h-4 fill-current" />}
+              <span>{benchmarking ? "Benchmarking…" : "Run Canary Lab"}</span>
+            </button>
+            <button onClick={fetchExperiments} className="btn-ghost">
+              <RefreshCw className={`w-3.5 h-3.5 ${loading ? "animate-spin" : ""}`} />
+              <span>Refresh</span>
+            </button>
+          </>
+        }
+      />
 
-        <div className="flex items-center gap-2">
-          <button
-            onClick={handleRunBenchmark}
-            disabled={benchmarking}
-            className="px-4 py-2 bg-purple-600/20 hover:bg-purple-600/30 text-purple-300 border border-purple-500/40 rounded-xl text-xs font-semibold flex items-center gap-2 transition disabled:opacity-50"
-          >
-            {benchmarking ? <Loader2 className="w-4 h-4 animate-spin" /> : <Play className="w-4 h-4 fill-current" />}
-            <span>{benchmarking ? "Benchmarking..." : "Run Canary Lab"}</span>
-          </button>
-          <button
-            onClick={fetchExperiments}
-            className="px-3.5 py-2 bg-slate-900 hover:bg-slate-800 border border-slate-700 text-slate-300 rounded-xl text-xs font-semibold flex items-center gap-1.5 transition"
-          >
-            <RefreshCw className={`w-3.5 h-3.5 ${loading ? "animate-spin" : ""}`} />
-            <span>Refresh</span>
-          </button>
-        </div>
-      </div>
-
-      {/* Benchmark Result Banner */}
       {benchmarkResult && (
-        <div className="glass-card p-4 rounded-xl border border-emerald-800 bg-emerald-950/30 text-xs font-mono space-y-2">
-          <div className="flex items-center justify-between text-emerald-400 font-bold">
+        <div className={`glass-card p-4 rounded-xl border text-xs font-mono space-y-2 ${hasScore ? "border-success/40 bg-success/10 text-success" : "border-warning/40 bg-warning/10 text-warning"}`}>
+          <div className="flex items-center justify-between font-bold flex-wrap gap-2">
             <span className="flex items-center gap-2">
               <ShieldCheck className="w-4 h-4" />
-              Canary Benchmark Completed: F1 Score {(benchmarkResult.f1_score * 100).toFixed(1)}%
+              <span>
+                {hasScore
+                  ? `Canary Benchmark Completed: F1 Score ${pct(benchmarkResult.f1_score)}%`
+                  : `Real lab command ${benchmarkResult.verified ? "passed" : "did not pass"}`}
+              </span>
             </span>
-            <span>Precision: {(benchmarkResult.precision * 100).toFixed(1)}% | Recall: {(benchmarkResult.recall * 100).toFixed(1)}%</span>
+            {hasScore && <span>Precision: {pct(benchmarkResult.precision)}% | Recall: {pct(benchmarkResult.recall)}%</span>}
           </div>
         </div>
       )}
 
-      {/* Main Content */}
-      {error ? (
-        <div className="p-4 rounded-xl bg-red-950/40 border border-red-800/60 text-red-300 text-xs font-mono">
-          <strong>Backend Error:</strong> {error}
-        </div>
-      ) : loading ? (
-        <div className="py-20 text-center space-y-2">
-          <Loader2 className="w-8 h-8 animate-spin text-pink-400 mx-auto" />
-          <span className="text-xs text-slate-400 font-mono">Querying Self-Evolution Pipeline...</span>
-        </div>
-      ) : experiments.length === 0 && challenges.length === 0 ? (
-        <div className="glass-card rounded-2xl p-12 border border-slate-800 text-center space-y-3">
-          <AlertCircle className="w-10 h-10 text-slate-600 mx-auto" />
-          <h3 className="text-sm font-bold text-white">No Evolution Experiments Active</h3>
-          <p className="text-xs text-slate-400 max-w-md mx-auto">
-            Click "Run Canary Lab" to test current agent skills against the ground-truth benchmark suite.
-          </p>
-        </div>
-      ) : (
+      <StateBlock
+        error={error}
+        loading={loading}
+        loadingText="Querying Self-Evolution Pipeline…"
+        empty={experiments.length === 0 && challenges.length === 0}
+        emptyIcon={<AlertCircle className="w-8 h-8" />}
+        emptyTitle="No Evolution Experiments Active"
+        emptyText='Click "Run Canary Lab" to test current agent skills against the ground-truth benchmark suite.'
+        spinnerColor="border-t-primary-400"
+      >
         <div className="space-y-4">
-          <h3 className="text-xs font-mono font-bold text-slate-400 uppercase tracking-wider">
+          <h3 className="text-xs font-mono font-bold text-muted uppercase tracking-wider">
             Ground-Truth Canary Challenges ({challenges.length})
           </h3>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
             {challenges.map((c, i) => (
-              <div key={c.id || i} className="glass-card p-4 rounded-xl border border-slate-800 flex items-center justify-between font-mono text-xs">
+              <div key={c.id || i} className="glass-card p-4 rounded-xl flex items-center justify-between font-mono text-xs">
                 <div>
                   <span className="font-bold text-white">{c.title || c.id}</span>
-                  <p className="text-[10px] text-purple-400 mt-0.5">{c.vuln_class}</p>
+                  <p className="text-[10px] text-primary-400 mt-0.5">{c.vuln_class}</p>
                 </div>
-                <span className="px-2 py-0.5 rounded bg-purple-950 text-purple-300 border border-purple-800 text-[10px]">
+                <span className="chip border border-primary-500/40 bg-primary-600/10 text-primary-400">
                   {c.difficulty || "Canary"}
                 </span>
               </div>
             ))}
           </div>
         </div>
-      )}
-    </div>
+      </StateBlock>
+    </PageShell>
   );
 }

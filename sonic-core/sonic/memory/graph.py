@@ -129,6 +129,10 @@ class GraphMemory:
             record = await result.single()
             return record["uid"] if record else None
 
+    async def add_node(self, label: str, data: dict[str, Any]) -> str | None:
+        """Create a generic labelled node (used by BaseAgent.remember)."""
+        return await self._create_node(label, data)
+
     async def _get_node(self, label: str, uid: str, tenant_id: str | None = None) -> dict | None:
         """Get a node by uid, optionally filtered by tenant_id."""
         if not self._driver:

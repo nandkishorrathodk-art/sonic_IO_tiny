@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { Settings, Shield, Cpu, Lock, Save, Check, Loader2, RefreshCw } from "lucide-react";
+import { Settings, Shield, Cpu, Save, Check } from "lucide-react";
 import { api } from "../../lib/api";
 
 export default function SettingsPage() {
@@ -66,101 +66,84 @@ export default function SettingsPage() {
   };
 
   return (
-    <div className="p-6 space-y-6 max-w-4xl mx-auto font-sans">
-      <div className="pb-4 border-b border-slate-800 flex items-center justify-between">
+    <div className="min-h-screen bg-ink-950 bg-grid-glow max-w-4xl mx-auto p-6 space-y-6 font-sans">
+      <div className="pb-4 border-b border-ink-800 flex items-center justify-between">
         <div>
           <div className="flex items-center gap-2">
-            <Settings className="w-5 h-5 text-slate-400" />
+            <Settings className="w-5 h-5 text-muted" />
             <h2 className="text-xl font-bold text-white tracking-tight">Scope & System Configuration</h2>
           </div>
-          <p className="text-xs text-slate-400 mt-1">
+          <p className="text-xs text-muted mt-1 font-mono">
             Manage Immutable Safety Rules, Scope Allowlist, and LLM Provider Endpoints.
           </p>
         </div>
-
-        <button
-          onClick={handleSave}
-          disabled={saving}
-          className="px-4 py-2 bg-red-600 hover:bg-red-500 disabled:opacity-50 text-white font-bold text-xs rounded-lg flex items-center gap-2 transition duration-150"
-        >
-          {saving ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : saved ? <Check className="w-3.5 h-3.5 text-white" /> : <Save className="w-3.5 h-3.5" />}
-          <span>{saving ? "SAVING..." : saved ? "SAVED LIVE!" : "SAVE CONFIGURATION"}</span>
+        <button onClick={handleSave} disabled={saving} className="btn-primary !py-2 text-xs disabled:opacity-50">
+          {saving ? <span className="w-3.5 h-3.5 border-2 border-white/40 border-t-white rounded-full animate-spin" /> : saved ? <Check className="w-3.5 h-3.5" /> : <Save className="w-3.5 h-3.5" />}
+          <span>{saving ? "SAVING…" : saved ? "SAVED LIVE!" : "SAVE CONFIGURATION"}</span>
         </button>
       </div>
 
       {error && (
-        <div className="p-3 rounded-lg bg-red-950/40 border border-red-800 text-red-300 text-xs font-mono">
-          {error}
-        </div>
+        <div className="p-3 rounded-lg bg-danger/10 border border-danger/30 text-danger text-xs font-mono">{error}</div>
       )}
 
-      {/* Custom LLM Provider Section */}
-      <div className="glass-card rounded-xl p-5 border border-slate-800 space-y-4">
+      {/* LLM provider */}
+      <div className="glass-card rounded-xl p-5 space-y-4">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
-            <Cpu className="w-4 h-4 text-purple-400" />
-            <h3 className="text-sm font-bold text-slate-200 uppercase tracking-wider">LLM Provider Configuration</h3>
+            <Cpu className="w-4 h-4 text-accent-400" />
+            <h3 className="text-sm font-bold text-muted-bright uppercase tracking-wider">LLM Provider Configuration</h3>
           </div>
-          <span className={`text-[10px] px-2 py-0.5 rounded font-mono font-bold ${
-            apiKeySet ? "bg-emerald-950 text-emerald-400 border border-emerald-800" : "bg-purple-950 text-purple-400 border border-purple-800"
-          }`}>
-            {apiKeySet ? "● API KEY ACTIVE" : "Universal OpenAI / Anthropic / Local Ollama"}
+          <span className={`chip border ${apiKeySet ? "border-success/40 bg-success/10 text-success" : "border-accent-500/40 bg-accent-600/10 text-accent-400"}`}>
+            {apiKeySet ? "● API KEY ACTIVE" : "Universal OpenAI / Anthropic / Local"}
           </span>
         </div>
 
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs font-mono">
           <div>
-            <label className="text-slate-400 block mb-1">Provider Base URL</label>
-            <input
-              type="text"
-              value={llmBaseUrl}
-              onChange={(e) => setLlmBaseUrl(e.target.value)}
-              placeholder="https://api.openai.com/v1"
-              className="w-full px-3 py-2 bg-slate-900 border border-slate-700 rounded-lg text-white font-mono text-xs focus:outline-none focus:border-cyan-500"
-            />
+            <label className="text-muted block mb-1">Provider Base URL</label>
+            <input type="text" value={llmBaseUrl} onChange={(e) => setLlmBaseUrl(e.target.value)} placeholder="https://api.openai.com/v1" className="input-field !text-xs" />
           </div>
           <div>
-            <label className="text-slate-400 block mb-1">
-              API Key {apiKeySet && <span className="text-emerald-400 font-bold">(Configured)</span>}
+            <label className="text-muted block mb-1">
+              API Key {apiKeySet && <span className="text-success font-bold">(Configured)</span>}
             </label>
-            <input
-              type="password"
-              value={llmApiKey}
-              onChange={(e) => setLlmApiKey(e.target.value)}
-              placeholder={apiKeySet ? "••••••••••••••••••••" : "sk-..."}
-              className="w-full px-3 py-2 bg-slate-900 border border-slate-700 rounded-lg text-white font-mono text-xs focus:outline-none focus:border-cyan-500"
-            />
+            <input type="password" value={llmApiKey} onChange={(e) => setLlmApiKey(e.target.value)} placeholder={apiKeySet ? "••••••••••••••••" : "sk-..."} className="input-field !text-xs" />
           </div>
           <div>
-            <label className="text-slate-400 block mb-1">Default Model</label>
-            <input
-              type="text"
-              value={llmModel}
-              onChange={(e) => setLlmModel(e.target.value)}
-              placeholder="gpt-4o, claude-3-5-sonnet"
-              className="w-full px-3 py-2 bg-slate-900 border border-slate-700 rounded-lg text-white font-mono text-xs focus:outline-none focus:border-cyan-500"
-            />
+            <label className="text-muted block mb-1">Default Model</label>
+            <input type="text" value={llmModel} onChange={(e) => setLlmModel(e.target.value)} placeholder="gpt-4o, claude-3-5-sonnet" className="input-field !text-xs" />
           </div>
         </div>
       </div>
 
-      {/* Scope Allowlist Section */}
-      <div className="glass-card rounded-xl p-5 border border-slate-800 space-y-4">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <Shield className="w-4 h-4 text-emerald-400" />
-            <h3 className="text-sm font-bold text-slate-200 uppercase tracking-wider">Target Scope Allowlist</h3>
+      {/* Integration endpoints (now wired to real state) */}
+      <div className="glass-card rounded-xl p-5 space-y-4">
+        <div className="flex items-center gap-2">
+          <Settings className="w-4 h-4 text-secondary-400" />
+          <h3 className="text-sm font-bold text-muted-bright uppercase tracking-wider">Integration Endpoints</h3>
+        </div>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs font-mono">
+          <div>
+            <label className="text-muted block mb-1">Daytona API URL</label>
+            <input type="text" value={daytonaUrl} onChange={(e) => setDaytonaUrl(e.target.value)} className="input-field !text-xs" />
+          </div>
+          <div>
+            <label className="text-muted block mb-1">Burp Suite API URL</label>
+            <input type="text" value={burpUrl} onChange={(e) => setBurpUrl(e.target.value)} className="input-field !text-xs" />
           </div>
         </div>
+      </div>
 
+      {/* Scope allowlist */}
+      <div className="glass-card rounded-xl p-5 space-y-4">
+        <div className="flex items-center gap-2">
+          <Shield className="w-4 h-4 text-success" />
+          <h3 className="text-sm font-bold text-muted-bright uppercase tracking-wider">Target Scope Allowlist</h3>
+        </div>
         <div>
-          <label className="text-slate-400 block mb-1 text-xs font-mono">Permitted Targets (Comma separated)</label>
-          <input
-            type="text"
-            value={allowedDomains}
-            onChange={(e) => setAllowedDomains(e.target.value)}
-            className="w-full px-3 py-2 bg-slate-900 border border-slate-700 rounded-lg text-white font-mono text-xs focus:outline-none focus:border-emerald-500"
-          />
+          <label className="text-muted block mb-1 text-xs font-mono">Permitted Targets (Comma separated)</label>
+          <input type="text" value={allowedDomains} onChange={(e) => setAllowedDomains(e.target.value)} className="input-field !text-xs" />
         </div>
       </div>
     </div>

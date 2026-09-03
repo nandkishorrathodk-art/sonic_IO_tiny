@@ -4,12 +4,11 @@ import React, { useState, useEffect } from "react";
 import {
   FileText,
   Monitor,
-  GitPullRequest,
+  PanelRightClose,
   Share2,
   FileCheck2,
   Dna,
   Compass,
-  PanelRightClose,
 } from "lucide-react";
 import { api } from "../lib/api";
 import { WorkstationState, SystemStatus, WorkstationTab, CommandResult } from "../types/workstation";
@@ -24,13 +23,21 @@ import { EvidenceView } from "../components/evidence/EvidenceView";
 import { EvolutionView } from "../components/evolution/EvolutionView";
 import { MissionView } from "../components/mission/MissionView";
 
+const TABS: { id: WorkstationTab; label: string; icon: React.ReactNode }[] = [
+  { id: "desktop", label: "Computer", icon: <Monitor className="w-3.5 h-3.5 text-success" /> },
+  { id: "code", label: "Code", icon: <FileText className="w-3.5 h-3.5 text-secondary-400" /> },
+  { id: "changes", label: "Changes", icon: <FileText className="w-3.5 h-3.5 text-warning" /> },
+  { id: "research", label: "Research", icon: <Share2 className="w-3.5 h-3.5 text-accent-400" /> },
+  { id: "evidence", label: "Evidence", icon: <FileCheck2 className="w-3.5 h-3.5 text-success" /> },
+  { id: "evolution", label: "Evolution", icon: <Dna className="w-3.5 h-3.5 text-primary-400" /> },
+  { id: "mission", label: "Mission", icon: <Compass className="w-3.5 h-3.5 text-primary-400" /> },
+];
+
 export default function SonicDevinWorkstation() {
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [rightPanelOpen, setRightPanelOpen] = useState(true);
   const [activeTab, setActiveTab] = useState<WorkstationTab>("desktop");
   const [connectionStatus, setConnectionStatus] = useState<SystemStatus>("CONNECTING");
-  // Keep the landing view isolated from the legacy/default history. A fresh
-  // session is intentionally empty until the operator sends the first prompt.
   const [sessionId, setSessionId] = useState("fresh");
   const [workstationState, setWorkstationState] = useState<WorkstationState | null>(null);
   const [activeFile, setActiveFile] = useState("");
@@ -55,13 +62,9 @@ export default function SonicDevinWorkstation() {
       setWorkstationState(state);
       setConnectionStatus("LIVE");
       setErrorMessage(null);
-
-      // Refresh session list
       try {
         const sessions = await api.listSessions();
-        if (sessions && sessions.length > 0) {
-          setSessionList(sessions);
-        }
+        if (sessions && sessions.length > 0) setSessionList(sessions);
       } catch {
         // keep current list
       }
@@ -104,12 +107,9 @@ export default function SonicDevinWorkstation() {
     setActiveFile(path);
     try {
       const data = await api.getFileContent(path, sessionId);
-      if (data?.lines) {
-        setFileContent(data.lines);
-      } else if (data?.content) {
-        setFileContent(data.content.split("\n"));
-      }
-    } catch (err) {
+      if (data?.lines) setFileContent(data.lines);
+      else if (data?.content) setFileContent(data.content.split("\n"));
+    } catch {
       setFileContent(["# Error reading file from filesystem."]);
     }
   };
@@ -126,10 +126,7 @@ export default function SonicDevinWorkstation() {
   useEffect(() => {
     fetchWorkstationData(sessionId);
     fetchDiff();
-
-    const interval = setInterval(() => {
-      fetchWorkstationData(sessionId);
-    }, 5000);
+    const interval = setInterval(() => fetchWorkstationData(sessionId), 5000);
     return () => clearInterval(interval);
   }, [sessionId]);
 
@@ -137,16 +134,9 @@ export default function SonicDevinWorkstation() {
     setLoading(true);
     try {
       const res = await api.sendPrompt(prompt, sessionId, mode.toLowerCase());
-      if (mode === "Autonomous") {
-        setActiveTab("mission");
-      }
-      if (res?.state) {
-        setWorkstationState(res.state);
-      }
+      if (mode === "Autonomous") setActiveTab("mission");
+      if (res?.state) setWorkstationState(res.state);
 
-      // The prompt endpoint queues background reasoning and returns before the
-      // model finishes. Keep this conversation in a working state until the
-      // backend publishes the real response or a fail-closed terminal result.
       for (let attempt = 0; attempt < 90; attempt += 1) {
         await new Promise((resolve) => setTimeout(resolve, 1000));
         try {
@@ -155,14 +145,13 @@ export default function SonicDevinWorkstation() {
           if (nextState?.status !== "RUNNING") break;
         } catch {
           // The existing five-second refresh remains responsible for recovery
-          // if a transient state poll fails.
         }
       }
       await fetchDiff();
       try {
         const sessions = await api.listSessions();
         if (sessions) setSessionList(sessions);
-      } catch { }
+      } catch {}
     } catch (err: any) {
       alert(`Execution error: ${err.message}`);
     } finally {
@@ -174,9 +163,7 @@ export default function SonicDevinWorkstation() {
     setCommandLogs((prev) => [...prev, `sonic@sandbox-01:~$ ${cmd}`]);
     try {
       const res = await api.executeCommand(cmd, sessionId);
-      if (res?.output) {
-        setCommandLogs((prev) => [...prev, res.output.trim()]);
-      }
+      if (res?.output) setCommandLogs((prev) => [...prev, res.output.trim()]);
       await fetchWorkstationData(sessionId);
       return res;
     } catch (err: any) {
@@ -196,15 +183,12 @@ export default function SonicDevinWorkstation() {
   };
 
   return (
-    <div className="flex flex-col h-screen w-screen bg-[#0D0F12] text-[#E6EDF3] overflow-hidden font-sans">
-      {/* Offline Alert Banner */}
+    <div className="flex flex-col h-screen w-screen bg-ink-950 text-slate-200 overflow-hidden font-sans">
       {connectionStatus === "OFFLINE" && (
         <OfflineBanner onRetry={() => fetchWorkstationData(sessionId)} message={errorMessage || undefined} />
       )}
 
-      {/* Main Workspace Frame */}
       <div className="flex flex-1 min-h-0 overflow-hidden">
-        {/* 1. Left Sidebar */}
         <WorkstationSidebar
           sidebarOpen={sidebarOpen}
           setSidebarOpen={setSidebarOpen}
@@ -222,9 +206,7 @@ export default function SonicDevinWorkstation() {
           onDeleteSession={handleDeleteSession}
         />
 
-        {/* 2. Main Workstation Body */}
-        <div className="flex-1 flex flex-col min-w-0 h-full overflow-hidden bg-[#0D0F12]">
-          {/* Top Header */}
+        <div className="flex-1 flex flex-col min-w-0 h-full overflow-hidden bg-ink-950">
           <WorkstationHeader
             sidebarOpen={sidebarOpen}
             setSidebarOpen={setSidebarOpen}
@@ -234,16 +216,12 @@ export default function SonicDevinWorkstation() {
             connectionStatus={connectionStatus}
           />
 
-          {/* 2-Column Split Workspace */}
           <div className="flex-1 grid grid-cols-12 overflow-hidden">
-            {/* Left Column: Worklog Execution Stream (Col 6) */}
-            <div className={`${rightPanelOpen ? "col-span-6" : "col-span-12"} border-r border-[#21262D] flex flex-col h-full bg-[#0D0F12] overflow-hidden`}>
+            <div className={`${rightPanelOpen ? "col-span-6" : "col-span-12"} border-r border-ink-800 flex flex-col h-full bg-ink-900 overflow-hidden`}>
               <WorklogFeed
                 worklog={workstationState?.worklog || []}
                 currentAction={
-                  loading || workstationState?.status === "RUNNING"
-                    ? workstationState?.current_action
-                    : undefined
+                  loading || workstationState?.status === "RUNNING" ? workstationState?.current_action : undefined
                 }
                 loading={loading}
                 onSendPrompt={handleSendPrompt}
@@ -255,141 +233,61 @@ export default function SonicDevinWorkstation() {
               />
             </div>
 
-            {/* Right Column: Dynamic Tab Surface (Col 6) */}
-            {rightPanelOpen && <div className="col-span-6 flex flex-col h-full bg-[#0D0F12] overflow-hidden">
-              {/* Tab Switcher Bar */}
-              <div className="h-10 border-b border-[#21262D] bg-[#12151A] px-3 flex items-center justify-between text-xs">
-                <div className="flex items-center gap-1 min-w-0">
+            {rightPanelOpen && (
+              <div className="col-span-6 flex flex-col h-full bg-ink-950 overflow-hidden">
+                <div className="h-10 border-b border-ink-800 bg-ink-900 px-3 flex items-center justify-between text-xs">
+                  <div className="flex items-center gap-1 min-w-0 overflow-x-auto">
+                    {TABS.map((tab) => (
+                      <button
+                        key={tab.id}
+                        onClick={() => {
+                          setActiveTab(tab.id);
+                          if (tab.id === "changes") fetchDiff();
+                        }}
+                        className={`px-3 py-1 rounded text-xs font-medium flex items-center gap-1.5 transition whitespace-nowrap ${
+                          activeTab === tab.id
+                            ? "bg-ink-800 text-white font-semibold"
+                            : "text-muted hover:text-white"
+                        }`}
+                      >
+                        {tab.icon}
+                        <span>{tab.label}</span>
+                      </button>
+                    ))}
+                  </div>
                   <button
-                    onClick={() => setActiveTab("desktop")}
-                    className={`px-3 py-1 rounded text-xs font-medium flex items-center gap-1.5 transition ${activeTab === "desktop"
-                        ? "bg-[#21262D] text-white font-semibold"
-                        : "text-[#8B949E] hover:text-white"
-                      }`}
+                    type="button"
+                    onClick={() => setRightPanelOpen(false)}
+                    className="p-1 rounded text-muted hover:text-white hover:bg-ink-800 transition shrink-0"
+                    title="Hide Computer panel"
+                    aria-label="Hide Computer panel"
                   >
-                    <Monitor className="w-3.5 h-3.5 text-[#3FB950]" />
-                    <span>Computer</span>
-                  </button>
-
-                  <button
-                    onClick={() => setActiveTab("code")}
-                    className={`px-3 py-1 rounded text-xs font-medium flex items-center gap-1.5 transition ${activeTab === "code"
-                        ? "bg-[#21262D] text-white font-semibold"
-                        : "text-[#8B949E] hover:text-white"
-                      }`}
-                  >
-                    <FileText className="w-3.5 h-3.5 text-[#58A6FF]" />
-                    <span>Code</span>
-                  </button>
-
-                  <button
-                    onClick={() => {
-                      setActiveTab("changes");
-                      fetchDiff();
-                    }}
-                    className={`px-3 py-1 rounded text-xs font-medium flex items-center gap-1.5 transition ${activeTab === "changes"
-                        ? "bg-[#21262D] text-white font-semibold"
-                        : "text-[#8B949E] hover:text-white"
-                      }`}
-                  >
-                    <span>Changes</span>
-                  </button>
-
-                  <button
-                    onClick={() => setActiveTab("research")}
-                    className={`px-3 py-1 rounded text-xs font-medium flex items-center gap-1.5 transition ${activeTab === "research"
-                        ? "bg-[#21262D] text-white font-semibold"
-                        : "text-[#8B949E] hover:text-white"
-                      }`}
-                  >
-                    <Share2 className="w-3.5 h-3.5 text-purple-400" />
-                    <span>Research</span>
-                  </button>
-
-                  <button
-                    onClick={() => setActiveTab("evidence")}
-                    className={`px-3 py-1 rounded text-xs font-medium flex items-center gap-1.5 transition ${activeTab === "evidence"
-                        ? "bg-[#21262D] text-white font-semibold"
-                        : "text-[#8B949E] hover:text-white"
-                      }`}
-                  >
-                    <FileCheck2 className="w-3.5 h-3.5 text-emerald-400" />
-                    <span>Evidence</span>
-                  </button>
-
-                  <button
-                    onClick={() => setActiveTab("evolution")}
-                    className={`px-3 py-1 rounded text-xs font-medium flex items-center gap-1.5 transition ${activeTab === "evolution"
-                        ? "bg-[#21262D] text-white font-semibold"
-                        : "text-[#8B949E] hover:text-white"
-                      }`}
-                  >
-                    <Dna className="w-3.5 h-3.5 text-pink-400" />
-                    <span>Evolution</span>
-                  </button>
-
-                  <button
-                    onClick={() => setActiveTab("mission")}
-                    className={`px-3 py-1 rounded text-xs font-medium flex items-center gap-1.5 transition ${activeTab === "mission"
-                        ? "bg-[#21262D] text-white font-semibold"
-                        : "text-[#8B949E] hover:text-white"
-                      }`}
-                  >
-                    <Compass className="w-3.5 h-3.5 text-cyan-400" />
-                    <span>Mission</span>
+                    <PanelRightClose className="w-4 h-4" />
                   </button>
                 </div>
-                <button
-                  type="button"
-                  onClick={() => setRightPanelOpen(false)}
-                  className="p-1 rounded text-[#8B949E] hover:text-white hover:bg-[#21262D] transition shrink-0"
-                  title="Hide Computer panel"
-                  aria-label="Hide Computer panel"
-                >
-                  <PanelRightClose className="w-4 h-4" />
-                </button>
+
+                <div className="flex-1 overflow-hidden p-3 flex flex-col">
+                  {activeTab === "desktop" && (
+                    <ComputerSurface
+                      desktopState={workstationState?.desktop}
+                      onRunCommand={handleRunCommand}
+                      commandLogs={commandLogs}
+                      sessionId={sessionId}
+                    />
+                  )}
+                  {activeTab === "code" && (
+                    <CodeViewer activeFile={activeFile} fileContent={fileContent} gitDiff={gitDiff} viewMode="code" onSaveFile={handleSaveFile} />
+                  )}
+                  {activeTab === "changes" && (
+                    <CodeViewer activeFile={activeFile} fileContent={fileContent} gitDiff={gitDiff} viewMode="changes" onRefreshDiff={fetchDiff} />
+                  )}
+                  {activeTab === "research" && <ResearchView />}
+                  {activeTab === "evidence" && <EvidenceView sessionId={sessionId} />}
+                  {activeTab === "evolution" && <EvolutionView sessionId={sessionId} />}
+                  {activeTab === "mission" && <MissionView workstationState={workstationState} sessionId={sessionId} />}
+                </div>
               </div>
-
-              {/* Tab Surface Body */}
-              <div className="flex-1 overflow-hidden p-3 flex flex-col">
-                {activeTab === "desktop" && (
-                  <ComputerSurface
-                    desktopState={workstationState?.desktop}
-                    onRunCommand={handleRunCommand}
-                    commandLogs={commandLogs}
-                    sessionId={sessionId}
-                  />
-                )}
-
-                {activeTab === "code" && (
-                  <CodeViewer
-                    activeFile={activeFile}
-                    fileContent={fileContent}
-                    gitDiff={gitDiff}
-                    viewMode="code"
-                    onSaveFile={handleSaveFile}
-                  />
-                )}
-
-                {activeTab === "changes" && (
-                  <CodeViewer
-                    activeFile={activeFile}
-                    fileContent={fileContent}
-                    gitDiff={gitDiff}
-                    viewMode="changes"
-                    onRefreshDiff={fetchDiff}
-                  />
-                )}
-
-                {activeTab === "research" && <ResearchView />}
-
-                {activeTab === "evidence" && <EvidenceView sessionId={sessionId} />}
-
-                {activeTab === "evolution" && <EvolutionView sessionId={sessionId} />}
-
-                {activeTab === "mission" && <MissionView workstationState={workstationState} sessionId={sessionId} />}
-              </div>
-            </div>}
+            )}
           </div>
         </div>
       </div>

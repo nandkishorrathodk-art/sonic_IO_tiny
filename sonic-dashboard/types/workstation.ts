@@ -48,6 +48,18 @@ export interface WorkstationState {
   current_action?: string;
   worklog: WorklogItem[];
   desktop: DesktopState;
+  mission?: MissionSummary;
+}
+
+export interface MissionSummary {
+  status?: string;
+  objective?: string;
+  events?: Array<{
+    id: string;
+    type: string;
+    title: string;
+    content?: string;
+  }>;
 }
 
 export interface FileTreeResponse {

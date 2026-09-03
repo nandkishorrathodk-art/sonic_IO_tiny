@@ -153,6 +153,23 @@ export const api = {
       `/workstation/desktop/stream?session_id=${encodeURIComponent(sessionId)}`
     ),
 
+  postGUIAction: (
+    sessionId: string = "default",
+    actionData: {
+      action: string;
+      x?: number;
+      y?: number;
+      text?: string;
+      key?: string;
+      app_name?: string;
+      scroll_delta?: number;
+    }
+  ) =>
+    apiClient<any>(`/workstation/desktop/gui-action?session_id=${encodeURIComponent(sessionId)}`, {
+      method: "POST",
+      body: JSON.stringify(actionData),
+    }),
+
   executeDesktopAction: (actionData: {
     action: string;
     target?: string;

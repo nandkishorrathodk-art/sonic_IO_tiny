@@ -161,7 +161,9 @@ async def lifespan(app: FastAPI):
         await graph.init_schema()
         logger.info("graph_schema_initialized")
     else:
-        logger.warning("graph_memory_unavailable", msg="Running without Graph Memory")
+        from sonic.memory.router import get_smart_memory
+        smart_mem = await get_smart_memory()
+        logger.info("persistent_sqlite_graph_memory_ready", backend=type(smart_mem).__name__)
 
     # AI-Human layer: re-attach the persistent being for the default tenant and
     # spawn its always-on curiosity life loop. The being's identity + mind are

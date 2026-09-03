@@ -1082,6 +1082,7 @@ class ComputerUseAgent:
         workspace_id: str,
         goal: str,
         steps: int = 5,
+        step_callback: Optional[Any] = None,
     ) -> list[ComputerDecisionTrace]:
         """Runs an end-to-end closed-loop autonomous engineering mission.
 
@@ -1133,6 +1134,15 @@ class ComputerUseAgent:
 
             # 3. ACT & VERIFY
             trace = await self.execute_action(workspace_id, action_type, target, payload, expected)
+
+            # Invoke real-time step streaming callback if provided
+            if step_callback is not None:
+                try:
+                    cb_res = step_callback(trace)
+                    if asyncio.iscoroutine(cb_res):
+                        await cb_res
+                except Exception as cb_err:
+                    logger.warning("run_mission_step_callback_failed", error=str(cb_err))
 
             # Track consecutive failures for stuck/replan detection.
             if trace.status == "FAILED":

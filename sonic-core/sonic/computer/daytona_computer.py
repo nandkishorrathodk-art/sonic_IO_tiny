@@ -21,6 +21,10 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
+from dotenv import load_dotenv
+
+load_dotenv()
+
 from sonic.computer.models import (
     ApplicationPolicy,
     ComputerAuditEvent,
@@ -545,30 +549,39 @@ class DaytonaComputerProvider(ComputerProvider):
         """
         Captures a real pixel observation of the sandbox desktop.
         Routes via Daytona computer_use.screenshot when sandbox is active,
-        or via local container X11 frame grabber (scrot).
+        or via direct X11 frame grabber (import / scrot) on DISPLAY=:0.
         When no real display is available, returns NO_DISPLAY state with empty screenshot.
         """
         sandbox = await self._resolve_sandbox(workspace_id)
-        if sandbox and hasattr(sandbox, "computer_use"):
-            try:
-                # Capture real live screenshot from Daytona computer_use API
-                response = await sandbox.computer_use.screenshot.take_full_screen()
-                b64 = getattr(response, "screenshot", None) or ""
-                size = getattr(response, "size_bytes", 0) or 0
-                if b64 and (size > 100 or len(b64) > 100):
-                    # Extract real visible text from the accessibility tree (AT-SPI)
-                    visible_text, controls = await self._extract_visible_text(sandbox)
-                    return ScreenObservation(
-                        screenshot_base64=b64,
-                        width=1280,
-                        height=800,
-                        active_window=self._active_windows.get(workspace_id, "XFCE Desktop"),
-                        visible_text=visible_text,
-                        detected_controls=controls,
-                        desktop_state="INTERACTIVE",
-                    )
-            except Exception as e:
-                logger.warning("daytona_direct_screenshot_failed", error=str(e))
+        if sandbox:
+            b64 = ""
+            if hasattr(sandbox, "computer_use"):
+                try:
+                    response = await sandbox.computer_use.screenshot.take_full_screen()
+                    b64 = getattr(response, "screenshot", None) or ""
+                except Exception as e:
+                    logger.warning("daytona_direct_screenshot_failed", error=str(e))
+
+            if not b64:
+                try:
+                    scr_cmd = "DISPLAY=:0 import -window root /tmp/sonic_screen.png 2>/dev/null && base64 -w0 /tmp/sonic_screen.png"
+                    res = await sandbox.process.exec(scr_cmd)
+                    if res.exit_code == 0 and res.result and len(res.result.strip()) > 100:
+                        b64 = res.result.strip()
+                except Exception as e:
+                    logger.warning("daytona_x11_screenshot_failed", error=str(e))
+
+            if b64:
+                visible_text, controls = await self._extract_visible_text(sandbox)
+                return ScreenObservation(
+                    screenshot_base64=b64,
+                    width=1280,
+                    height=800,
+                    active_window=self._active_windows.get(workspace_id, "XFCE Desktop"),
+                    visible_text=visible_text,
+                    detected_controls=controls,
+                    desktop_state="INTERACTIVE",
+                )
 
         # NO_DISPLAY: no live desktop frame exists — never fabricate a pixel
         return ScreenObservation(
@@ -613,6 +626,24 @@ class DaytonaComputerProvider(ComputerProvider):
         except Exception as e:
             logger.debug("daytona_accessibility_tree_failed", error=str(e))
 
+        if not texts:
+            try:
+                # Fallback to real X11 window titles via wmctrl / xdotool
+                res = await sandbox.process.exec(
+                    "DISPLAY=:0 wmctrl -l 2>/dev/null || DISPLAY=:0 xdotool search --onlyvisible --name '' getwindowname 2>/dev/null"
+                )
+                if res.exit_code == 0 and res.result:
+                    for line in res.result.splitlines():
+                        line = line.strip()
+                        if line:
+                            parts = line.split(None, 3)
+                            wtitle = parts[-1] if len(parts) >= 4 else line
+                            if wtitle:
+                                texts.append(wtitle)
+                                controls.append("window")
+            except Exception:
+                pass
+
         # Deduplicate while preserving order, cap length
         seen = set()
         unique_texts = []
@@ -643,11 +674,7 @@ class DaytonaComputerProvider(ComputerProvider):
         Dispatches authentic mouse and keyboard events directly into the remote X11 desktop.
         """
         sandbox = await self._resolve_sandbox(workspace_id)
-        if not sandbox or not hasattr(sandbox, "computer_use"):
-            # OFFLINE / NO-SANDBOX: degrade to a NO_DISPLAY observation instead
-            # of raising, so a workstation without a live desktop still returns a
-            # valid screen state (consistent with screenshot()). A missing-coords
-            # CLICK also falls through here to return the current observation.
+        if not sandbox:
             logger.warning(
                 "daytona_gui_action_no_sandbox",
                 workspace_id=workspace_id,
@@ -676,84 +703,81 @@ class DaytonaComputerProvider(ComputerProvider):
                 logger.warning("daytona_gui_click_missing_coordinates", action=action_type.value, x=action.x, y=action.y)
                 return await self.screenshot(workspace_id)
 
-        if sandbox and hasattr(sandbox, "computer_use"):
-            try:
+        try:
+            if hasattr(sandbox, "computer_use"):
                 cu = sandbox.computer_use
                 if action_type in [GUIActionType.CLICK, GUIActionType.DOUBLE_CLICK]:
-                    # SDK AsyncMouse.click(x, y, button, double) — positional x, y required
                     await cu.mouse.click(action.x, action.y, button="left", double=(action_type == GUIActionType.DOUBLE_CLICK))
-
                 elif action_type == GUIActionType.MOVE:
                     await cu.mouse.move(action.x, action.y)
-
                 elif action_type == GUIActionType.DRAG:
-                    # Press-move-release gesture (a human drag): move to source,
-                    # hold, move to destination, release. Lets the agent
-                    # drag-drop a file onto a folder or slide a wizard control.
                     sx, sy = action.x, action.y
                     dx, dy = action.x2, action.y2
-                    if sx is None or sy is None or dx is None or dy is None:
-                        logger.warning("daytona_gui_drag_missing_coords", x=sx, y=sy, x2=dx, y2=dy)
-                        return await self.screenshot(workspace_id)
-                    await cu.mouse.move(sx, sy)
-                    await cu.mouse.down()
-                    await cu.mouse.move(dx, dy)
-                    await cu.mouse.up()
-
-                elif action_type == GUIActionType.SCROLL:
-                    # Use xdotool for scroll wheel: button 4=up, 5=down
-                    delta = getattr(action, 'scroll_delta', -3)
-                    x = action.x or 640
-                    y = action.y or 400
-                    button = 4 if delta > 0 else 5
-                    clicks = abs(delta)
-                    cmd_parts = [f"DISPLAY=:0 xdotool mousemove {x} {y}"]
-                    for _ in range(clicks):
-                        cmd_parts.append(f"DISPLAY=:0 xdotool click {button}")
-                    scroll_cmd = " && ".join(cmd_parts)
-                    await sandbox.process.exec(scroll_cmd)
-
+                    if sx is not None and sy is not None and dx is not None and dy is not None:
+                        await cu.mouse.move(sx, sy)
+                        await cu.mouse.down()
+                        await cu.mouse.move(dx, dy)
+                        await cu.mouse.up()
                 elif action_type == GUIActionType.TYPE and action.text:
                     await cu.keyboard.type(action.text)
-
                 elif action_type == GUIActionType.KEYPRESS and action.key:
                     await cu.keyboard.press(action.key)
+            else:
+                # Direct X11 dispatch via xdotool on DISPLAY=:0
+                if action_type in [GUIActionType.CLICK, GUIActionType.DOUBLE_CLICK]:
+                    repeat = " --repeat 2" if action_type == GUIActionType.DOUBLE_CLICK else ""
+                    await sandbox.process.exec(f"DISPLAY=:0 xdotool mousemove {action.x} {action.y} click{repeat} 1")
+                elif action_type == GUIActionType.MOVE:
+                    await sandbox.process.exec(f"DISPLAY=:0 xdotool mousemove {action.x} {action.y}")
+                elif action_type == GUIActionType.DRAG:
+                    sx, sy, dx, dy = action.x, action.y, action.x2, action.y2
+                    if sx is not None and sy is not None and dx is not None and dy is not None:
+                        await sandbox.process.exec(f"DISPLAY=:0 xdotool mousemove {sx} {sy} mousedown 1 mousemove {dx} {dy} mouseup 1")
+                elif action_type == GUIActionType.TYPE and action.text:
+                    safe_text = shlex.quote(action.text)
+                    await sandbox.process.exec(f"DISPLAY=:0 xdotool type --clearmodifiers {safe_text}")
+                elif action_type == GUIActionType.KEYPRESS and action.key:
+                    safe_key = shlex.quote(action.key)
+                    await sandbox.process.exec(f"DISPLAY=:0 xdotool key {safe_key}")
 
-                elif action_type == GUIActionType.OPEN_APP and action.app_name:
-                    self._active_windows[workspace_id] = action.app_name
-                    # Launch the app on the computer_use Xvfb display (:0) via process exec.
-                    # app_name may include args (e.g. 'chromium --no-sandbox URL'), so run
-                    # via the shell to preserve them rather than shlex.quote-ing the whole string.
-                    try:
-                        await sandbox.process.exec(f"DISPLAY=:0 {action.app_name} &")
-                    except Exception:
-                        pass
+            # Common handlers for SCROLL, APPS, WINDOWS
+            if action_type == GUIActionType.SCROLL:
+                delta = getattr(action, 'scroll_delta', -3)
+                x = action.x or 640
+                y = action.y or 400
+                button = 4 if delta > 0 else 5
+                clicks = abs(delta)
+                cmd_parts = [f"DISPLAY=:0 xdotool mousemove {x} {y}"]
+                for _ in range(clicks):
+                    cmd_parts.append(f"DISPLAY=:0 xdotool click {button}")
+                scroll_cmd = " && ".join(cmd_parts)
+                await sandbox.process.exec(scroll_cmd)
 
-                elif action_type == GUIActionType.CLOSE_APP and action.app_name:
-                    await sandbox.process.exec(f"pkill -f -- {shlex.quote(action.app_name)}")
-                    if self._active_windows.get(workspace_id) == action.app_name:
-                        self._active_windows[workspace_id] = "XFCE Desktop"
+            elif action_type == GUIActionType.OPEN_APP and action.app_name:
+                self._active_windows[workspace_id] = action.app_name
+                try:
+                    await sandbox.process.exec(f"DISPLAY=:0 {action.app_name} &")
+                except Exception:
+                    pass
 
-                elif action_type == GUIActionType.SELECT_WINDOW:
-                    # Toggle focus between desktop windows (e.g. Chromium ↔ a
-                    # terminal app) without relaunching. wmctrl finds the
-                    # window by (sub)title and activates it; if the window is
-                    # already focused this is a no-op. Falls back to xdotool
-                    # search+activate when wmctrl is unavailable.
-                    title = action.app_name or action.window_id or ""
-                    if title:
-                        # The sandbox gate already constrains this to the Xvfb
-                        # display :0; we only pass the (quoted) title.
-                        safe = shlex.quote(title)
-                        await sandbox.process.exec(
-                            f"DISPLAY=:0 (wmctrl -a {safe} 2>/dev/null || "
-                            f"xdotool search --name {safe} windowactivate 2>/dev/null) || true"
-                        )
-                        self._active_windows[workspace_id] = title
+            elif action_type == GUIActionType.CLOSE_APP and action.app_name:
+                await sandbox.process.exec(f"pkill -f -- {shlex.quote(action.app_name)}")
+                if self._active_windows.get(workspace_id) == action.app_name:
+                    self._active_windows[workspace_id] = "XFCE Desktop"
 
-            except Exception as e:
-                logger.error("daytona_gui_action_dispatch_error", error=str(e))
-                raise RuntimeError(f"Daytona GUI action failed: {e}") from e
+            elif action_type == GUIActionType.SELECT_WINDOW:
+                title = action.app_name or action.window_id or ""
+                if title:
+                    safe = shlex.quote(title)
+                    await sandbox.process.exec(
+                        f"DISPLAY=:0 (wmctrl -a {safe} 2>/dev/null || "
+                        f"xdotool search --name {safe} windowactivate 2>/dev/null) || true"
+                    )
+                    self._active_windows[workspace_id] = title
+
+        except Exception as e:
+            logger.error("daytona_gui_action_dispatch_error", error=str(e))
+            raise RuntimeError(f"Daytona GUI action failed: {e}") from e
 
         if action.app_name:
             self._active_windows[workspace_id] = action.app_name

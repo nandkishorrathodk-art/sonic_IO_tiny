@@ -250,15 +250,16 @@ async def get_scan_status(user: User = Depends(require_auth)):
 @router.get("/graph")
 async def get_live_graph(user: User = Depends(require_auth)):
     """Retrieve graph memory nodes & relationships."""
-    memory = get_memory_sync()
-    if hasattr(memory, "_nodes"):
+    from sonic.memory.router import get_smart_memory
+    memory = await get_smart_memory()
+    if hasattr(memory, "get_all_graph_data"):
+        nodes, edges = await memory.get_all_graph_data(user.email)
+        return {"nodes": nodes, "edges": edges, "backend": "SqliteGraph", "tenant_id": user.email}
+    elif hasattr(memory, "_nodes"):
         raw_nodes = memory._nodes
         raw_rels = memory._relationships
         nodes = []
         for uid, data in raw_nodes.items():
-            # Memory records are tenant-owned. Older records without an
-            # explicit tenant marker are intentionally omitted rather than
-            # exposed across users.
             if data.get("tenant_id") != user.email:
                 continue
             label = data.get("_label", "Unknown")
@@ -282,7 +283,30 @@ async def get_live_graph(user: User = Depends(require_auth)):
 @router.get("/evidence")
 async def get_live_evidence(user: User = Depends(require_auth)):
     """Retrieve full verified evidence packages."""
+    from sonic.api.routes.workstation import _tenant_workstations
     findings = [f for f in _system_state["findings"] if f.get("tenant_id") == user.email]
+
+    # Aggregate session evidence from all workstation sessions
+    seen_hashes = {f.get("manifest_hash") or f.get("sha256") for f in findings if (f.get("manifest_hash") or f.get("sha256"))}
+    tenant_sessions = _tenant_workstations.get(user.email, {})
+    for sdata in tenant_sessions.values():
+        for ev in sdata.get("evidence", []):
+            ev_hash = ev.get("sha256") or ev.get("manifest_hash")
+            if ev_hash and ev_hash in seen_hashes:
+                continue
+            if ev_hash:
+                seen_hashes.add(ev_hash)
+            findings.append({
+                "id": ev.get("id"),
+                "title": ev.get("title"),
+                "target": ev.get("target"),
+                "severity": ev.get("severity", "INFORMATIONAL"),
+                "verified": ev.get("verified", True),
+                "manifest_hash": ev.get("sha256"),
+                "output": ev.get("output", ""),
+                "captured_at": ev.get("captured_at"),
+                "tenant_id": user.email,
+            })
     return {
         "findings": findings,
         "count": len(findings),

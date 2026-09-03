@@ -1065,6 +1065,46 @@ async def get_desktop_screenshot(
     return obs.model_dump()
 
 
+class WorkstationGUIActionRequest(BaseModel):
+    action: str = Field(..., description="CLICK, DOUBLE_CLICK, TYPE, KEYPRESS, MOVE, SCROLL, OPEN_APP, CLOSE_APP")
+    x: int | None = None
+    y: int | None = None
+    text: str | None = None
+    key: str | None = None
+    app_name: str | None = None
+    scroll_delta: int = -3
+
+
+@router.post("/workstation/desktop/gui-action")
+async def dispatch_workstation_gui_action(
+    req: WorkstationGUIActionRequest,
+    session_id: str = Query("default"),
+    user: User = Depends(require_operator),
+):
+    """Dispatches real interactive mouse/keyboard/app actions directly into the desktop for human takeover."""
+    comp = get_daytona_computer()
+    target_id = _session_workspace_id(user, session_id)
+    if not target_id:
+        raise HTTPException(status_code=400, detail="No active desktop session.")
+
+    try:
+        action_type = GUIActionType(req.action.upper())
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"Unsupported action type: {req.action}")
+
+    action_obj = GUIAction(
+        action=action_type,
+        x=req.x,
+        y=req.y,
+        text=req.text,
+        key=req.key,
+        app_name=req.app_name,
+        scroll_delta=req.scroll_delta,
+    )
+    obs = await comp.gui_action(workspace_id=target_id, action=action_obj, actor=user.email)
+    return obs.model_dump()
+
+
 @router.get("/workstation/desktop/stream")
 async def get_desktop_stream(
     session_id: str = Query("default"),
@@ -1797,6 +1837,9 @@ async def _run_prompt_reasoning(tenant_id: str, session_id: str, prompt: str) ->
                             default_model=model_to_use,
                         )
 
+                        from sonic.tools.registry import build_security_tools
+                        tools_dict = build_security_tools(computer)
+
                         agent = ComputerUseAgent(
                             computer_provider=computer,
                             autonomy_level=ComputerAutonomyLevel.L3_AUTONOMOUS,
@@ -1804,20 +1847,15 @@ async def _run_prompt_reasoning(tenant_id: str, session_id: str, prompt: str) ->
                             max_actions=50,
                             llm_router=llm,
                             tenant_id=tenant_id,
+                            security_tools=tools_dict,
                         )
 
                         _append_worklog(state, "action", "Agent Visual Computer Use",
                             f"Starting autonomous visual computer use for: {prompt[:100]}")
 
-                        traces = await agent.run_mission(
-                            workspace_id=desktop_id,
-                            goal=prompt,
-                            steps=15,
-                        )
-
-                        # Stream each step into the worklog
-                        for trace in traces:
+                        async def _on_step(trace):
                             step_type = "action" if trace.status in ("SUCCESS", "RECOVERED") else "error"
+                            state["current_action"] = f"Step {trace.step_index}: {trace.action_type.value} on {trace.target_resource}"
                             _append_worklog(
                                 state, step_type,
                                 f"Step {trace.step_index}: {trace.action_type.value}",
@@ -1826,16 +1864,75 @@ async def _run_prompt_reasoning(tenant_id: str, session_id: str, prompt: str) ->
                                 f"Status: {trace.status}",
                             )
 
+                            # Auto-synthesize Evidence and Graph Memory nodes from discoveries
+                            obs_text = trace.actual_observation or ""
+                            has_discovery = any(k in obs_text.lower() for k in ("open", "http", "200 ok", "discovered", "vulnerability", "port", "https://"))
+                            if has_discovery and trace.target_resource:
+                                import hashlib
+                                ev_id = f"ev-{uuid.uuid4().hex[:8]}"
+                                sha256_hash = hashlib.sha256(obs_text.encode("utf-8")).hexdigest()
+                                
+                                # Add to session evidence
+                                if "evidence" not in state:
+                                    state["evidence"] = []
+                                state["evidence"].append({
+                                    "id": ev_id,
+                                    "title": f"{trace.action_type.value}: {trace.target_resource}",
+                                    "target": trace.target_resource,
+                                    "severity": "INFORMATIONAL",
+                                    "verified": True,
+                                    "sha256": sha256_hash,
+                                    "output": obs_text[:3000],
+                                    "captured_at": datetime.now(UTC).isoformat(),
+                                })
+
+                                # Add to persistent Graph Memory
+                                try:
+                                    from sonic.memory.router import get_smart_memory
+                                    from sonic.memory.schemas import AssetNode, FindingNode, RelationshipType
+                                    mem = await get_smart_memory()
+                                    target_clean = trace.target_resource.replace("https://", "").replace("http://", "").split("/")[0].split(":")[0]
+                                    if target_clean and len(target_clean) > 2:
+                                        asset_uid = f"asset-{target_clean}"
+                                        await mem.create_node(AssetNode(uid=asset_uid, value=target_clean, asset_type="domain", tenant_id=tenant_id))
+                                        finding_uid = f"finding-{sha256_hash[:8]}"
+                                        await mem.create_node(FindingNode(
+                                            uid=finding_uid,
+                                            title=f"{trace.action_type.value}: {trace.target_resource}",
+                                            description=obs_text[:200],
+                                            severity="info",
+                                            tenant_id=tenant_id,
+                                        ))
+                                        await mem.create_relationship(
+                                            from_label="Finding", from_uid=finding_uid,
+                                            to_label="Asset", to_uid=asset_uid,
+                                            rel_type=RelationshipType.DISCOVERED_ON.value,
+                                            tenant_id=tenant_id,
+                                        )
+                                except Exception as mem_err:
+                                    logger.debug("workstation_graph_memory_update_failed", error=str(mem_err))
+
+                            _persist_workstation_state()
+
+                        traces = await agent.run_mission(
+                            workspace_id=desktop_id,
+                            goal=prompt,
+                            steps=6,
+                            step_callback=_on_step,
+                        )
+
                         # Final summary
                         succeeded = sum(1 for t in traces if t.status in ("SUCCESS", "RECOVERED"))
                         failed = sum(1 for t in traces if t.status == "FAILED")
                         blocked = sum(1 for t in traces if t.status == "BLOCKED")
+                        state["current_action"] = f"Visual Computer Use Complete ({succeeded} succeeded)"
                         _append_worklog(
                             state, "response",
                             "Visual Computer Use Complete",
                             f"Completed {len(traces)} steps: {succeeded} succeeded, "
                             f"{failed} failed, {blocked} blocked",
                         )
+                        _persist_workstation_state()
                         return
                     except Exception as agent_err:
                         logger.warning("visual_computer_use_failed", error=str(agent_err))

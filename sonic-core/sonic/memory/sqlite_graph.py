@@ -142,6 +142,19 @@ class SqliteGraph:
     # Internal helpers (write-through)
     # ============================================
 
+    async def create_node(self, node: Any) -> str | None:
+        """Generic node creator for any pydantic node or dict."""
+        if hasattr(node, "model_dump"):
+            data = node.model_dump()
+            label = type(node).__name__.replace("Node", "")
+        elif isinstance(node, dict):
+            data = dict(node)
+            label = data.pop("_label", "Node")
+        else:
+            data = dict(node.__dict__)
+            label = type(node).__name__.replace("Node", "")
+        return await self._create_node(label, data)
+
     async def _create_node(self, label: str, props: dict[str, Any]) -> str | None:
         assert self._db is not None
         uid = props.get("uid") or f"{label.lower()}-{uuid.uuid4().hex[:8]}"
@@ -428,3 +441,46 @@ class SqliteGraph:
             "total_relationships": total_rels,
             **{k.lower() + "s": v for k, v in labels.items()},
         }
+
+    async def get_all_graph_data(self, tenant_id: str | None = None) -> tuple[list[dict], list[dict]]:
+        """Retrieve all nodes and relationships for graph visualization."""
+        assert self._db is not None
+        node_sql = "SELECT uid, label, props_json FROM memory_nodes"
+        node_params: list[Any] = []
+        if tenant_id:
+            node_sql += " WHERE tenant_id = ?"
+            node_params.append(tenant_id)
+
+        nodes: list[dict] = []
+        async with self._db.execute(node_sql, node_params) as cur:
+            for uid, label, props_json in await cur.fetchall():
+                try:
+                    props = json.loads(props_json)
+                except Exception:
+                    props = {}
+                nodes.append({
+                    "id": uid,
+                    "label": props.get("title") or props.get("value") or props.get("name") or uid,
+                    "type": label,
+                    "properties": props,
+                })
+
+        node_ids = {n["id"] for n in nodes}
+        rel_sql = "SELECT from_uid, to_uid, type FROM memory_relationships"
+        rel_params: list[Any] = []
+        if tenant_id:
+            rel_sql += " WHERE tenant_id = ?"
+            rel_params.append(tenant_id)
+
+        edges: list[dict] = []
+        async with self._db.execute(rel_sql, rel_params) as cur:
+            for from_uid, to_uid, rel_type in await cur.fetchall():
+                if from_uid in node_ids and to_uid in node_ids:
+                    edges.append({
+                        "source": from_uid,
+                        "target": to_uid,
+                        "type": rel_type,
+                    })
+
+        return nodes, edges
+

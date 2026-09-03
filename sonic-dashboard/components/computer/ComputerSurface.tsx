@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import {
   Cloud,
   Maximize2,
@@ -8,6 +8,9 @@ import {
   Bot,
   Shield,
   Eye,
+  MousePointer,
+  Keyboard,
+  Send,
 } from "lucide-react";
 import { DesktopState, CommandResult } from "../../types/workstation";
 import { api } from "../../lib/api";
@@ -39,6 +42,11 @@ export function ComputerSurface({
   const [screenshotBase64, setScreenshotBase64] = useState<string | null>(null);
   const [fullscreen, setFullscreen] = useState(false);
   const [loadingScreen, setLoadingScreen] = useState(false);
+  const [isInteractive, setIsInteractive] = useState(false);
+  const [inputText, setInputText] = useState("");
+  const [sendingInput, setSendingInput] = useState(false);
+  const [clickRipples, setClickRipples] = useState<Array<{ id: number; x: number; y: number }>>([]);
+  const canvasRef = useRef<HTMLDivElement>(null);
 
   const fetchScreenshot = async () => {
     try {
@@ -62,6 +70,54 @@ export function ComputerSurface({
     const interval = setInterval(fetchScreenshot, 3000);
     return () => clearInterval(interval);
   }, [sessionId]);
+
+  const handleCanvasClick = async (e: React.MouseEvent<HTMLDivElement>) => {
+    if (!isInteractive || !canvasRef.current) return;
+    const rect = canvasRef.current.getBoundingClientRect();
+    const scaleX = 1280 / rect.width;
+    const scaleY = 800 / rect.height;
+    const x = Math.round((e.clientX - rect.left) * scaleX);
+    const y = Math.round((e.clientY - rect.top) * scaleY);
+
+    // Visual ripple effect
+    const rippleId = Date.now();
+    setClickRipples((prev) => [...prev, { id: rippleId, x: e.clientX - rect.left, y: e.clientY - rect.top }]);
+    setTimeout(() => {
+      setClickRipples((prev) => prev.filter((r) => r.id !== rippleId));
+    }, 800);
+
+    try {
+      await api.postGUIAction(sessionId, { action: "CLICK", x, y });
+      setTimeout(fetchScreenshot, 300);
+    } catch (err) {
+      console.error("Failed to dispatch GUI click:", err);
+    }
+  };
+
+  const handleSendText = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!inputText.trim()) return;
+    setSendingInput(true);
+    try {
+      await api.postGUIAction(sessionId, { action: "TYPE", text: inputText });
+      await api.postGUIAction(sessionId, { action: "KEYPRESS", key: "Return" });
+      setInputText("");
+      setTimeout(fetchScreenshot, 400);
+    } catch (err) {
+      console.error("Failed to type text:", err);
+    } finally {
+      setSendingInput(false);
+    }
+  };
+
+  const handleSendKey = async (key: string) => {
+    try {
+      await api.postGUIAction(sessionId, { action: "KEYPRESS", key });
+      setTimeout(fetchScreenshot, 300);
+    } catch (err) {
+      console.error("Failed to press key:", err);
+    }
+  };
 
   const hasScreenshot = Boolean(screenshotBase64 && screenshotBase64.length > 100);
   const isLive = Boolean(desktopState?.workspace_id || desktopState?.sandbox_id || hasScreenshot);
@@ -103,10 +159,20 @@ export function ComputerSurface({
         </div>
 
         <div className="flex items-center gap-2">
-          <span className="hidden sm:flex items-center gap-1 text-[10px] font-mono text-slate-400 bg-[#0D1117] border border-[#30363D] px-2 py-0.5 rounded">
-            <Eye className="w-3 h-3 text-slate-400" />
-            <span>Read-Only Monitor</span>
-          </span>
+          {/* Interactive Takeover Toggle */}
+          <button
+            onClick={() => setIsInteractive(!isInteractive)}
+            className={`px-2.5 py-0.5 rounded text-[10px] font-mono font-semibold flex items-center gap-1.5 transition border ${
+              isInteractive
+                ? "bg-amber-950/80 text-amber-300 border-amber-500/60 shadow-lg shadow-amber-500/20"
+                : "bg-[#0D1117] text-slate-400 border-[#30363D] hover:text-white"
+            }`}
+            title="Toggle direct mouse & keyboard control"
+          >
+            <MousePointer className={`w-3 h-3 ${isInteractive ? "text-amber-400 animate-bounce" : ""}`} />
+            <span>{isInteractive ? "HUMAN TAKEOVER (ACTIVE)" : "TAKE OVER"}</span>
+          </button>
+
           <button
             onClick={async (e) => { e.stopPropagation(); await fetchScreenshot(); }}
             className="p-1 hover:bg-[#21262D] rounded text-[#8B949E] hover:text-white transition"
@@ -124,32 +190,98 @@ export function ComputerSurface({
         </div>
       </div>
 
-      {/* Main Surface Body: Read-Only Autonomous Agent Live Screen */}
+      {/* Main Surface Body: Live Screen + Optional Takeover Overlay */}
       <div
-        className="flex-1 bg-[#06080D] relative flex items-center justify-center overflow-hidden select-none"
+        className="flex-1 bg-[#06080D] relative flex flex-col items-center justify-center overflow-hidden select-none"
         style={{ minHeight: 0 }}
       >
         {hasScreenshot ? (
-          /* Live read-only X11 desktop canvas for agent monitoring */
-          <div className="w-full h-full max-w-[1280px] max-h-[800px] aspect-[16/10] rounded border border-[#21262D] bg-[#000000] relative shadow-2xl overflow-hidden flex items-center justify-center m-2">
-            <img
-              src={`data:image/png;base64,${screenshotBase64}`}
-              alt="Daytona Graphical Desktop"
-              className="w-full h-full object-contain pointer-events-none select-none"
-            />
+          <div className="w-full h-full flex flex-col items-center justify-center p-2 relative">
+            <div
+              ref={canvasRef}
+              onClick={handleCanvasClick}
+              className={`w-full h-full max-w-[1280px] max-h-[800px] aspect-[16/10] rounded border border-[#21262D] bg-[#000000] relative shadow-2xl overflow-hidden flex items-center justify-center ${
+                isInteractive ? "cursor-crosshair ring-2 ring-amber-500/50" : ""
+              }`}
+            >
+              <img
+                src={`data:image/png;base64,${screenshotBase64}`}
+                alt="Daytona Graphical Desktop"
+                className="w-full h-full object-contain pointer-events-none select-none"
+              />
 
-            {/* Exclusive Autonomous Control Badge */}
-            <div className="absolute top-2.5 left-2.5 z-20 flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-black/80 border border-emerald-500/30 text-[11px] font-mono text-emerald-400 shadow-lg backdrop-blur-sm pointer-events-none">
-              <Bot className="w-3.5 h-3.5 text-emerald-400" />
-              <span>SONIC Autonomous Desktop</span>
-              <span className="text-[9px] text-slate-400 uppercase tracking-wider ml-1 bg-slate-800 px-1 py-0.2 rounded">Live Feed</span>
+              {/* Click Ripple Indicators */}
+              {clickRipples.map((r) => (
+                <span
+                  key={r.id}
+                  style={{ left: r.x, top: r.y }}
+                  className="absolute -translate-x-1/2 -translate-y-1/2 w-6 h-6 rounded-full border-2 border-amber-400 bg-amber-400/30 animate-ping pointer-events-none z-30"
+                />
+              ))}
+
+              {/* Exclusive Autonomous Control Badge */}
+              <div className="absolute top-2.5 left-2.5 z-20 flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-black/80 border border-emerald-500/30 text-[11px] font-mono text-emerald-400 shadow-lg backdrop-blur-sm pointer-events-none">
+                <Bot className="w-3.5 h-3.5 text-emerald-400" />
+                <span>SONIC Autonomous Desktop</span>
+                <span className="text-[9px] text-slate-400 uppercase tracking-wider ml-1 bg-slate-800 px-1 py-0.2 rounded">Live Feed</span>
+              </div>
+
+              {/* Interactive Takeover Indicator */}
+              {isInteractive && (
+                <div className="absolute top-2.5 right-2.5 z-20 flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-amber-950/90 border border-amber-500/50 text-[11px] font-mono text-amber-300 shadow-lg backdrop-blur-sm pointer-events-none">
+                  <MousePointer className="w-3.5 h-3.5 text-amber-400" />
+                  <span>Click anywhere to control</span>
+                </div>
+              )}
+
+              {/* Security Guarantee Pill */}
+              <div className="absolute bottom-2.5 right-2.5 z-20 flex items-center gap-1.5 px-2 py-0.5 rounded bg-black/70 border border-[#30363D] text-[10px] font-mono text-slate-400 backdrop-blur-sm pointer-events-none">
+                <Shield className="w-3 h-3 text-blue-400" />
+                <span>Agent Sandboxed (Fail-Closed)</span>
+              </div>
             </div>
 
-            {/* Security Guarantee Pill */}
-            <div className="absolute bottom-2.5 right-2.5 z-20 flex items-center gap-1.5 px-2 py-0.5 rounded bg-black/70 border border-[#30363D] text-[10px] font-mono text-slate-400 backdrop-blur-sm pointer-events-none">
-              <Shield className="w-3 h-3 text-blue-400" />
-              <span>Agent Sandboxed (Fail-Closed)</span>
-            </div>
+            {/* Quick Keyboard Bar in Interactive Mode */}
+            {isInteractive && (
+              <div className="w-full max-w-[1280px] mt-2 flex items-center gap-2 bg-[#161B22] border border-amber-500/30 p-2 rounded-lg z-20">
+                <Keyboard className="w-4 h-4 text-amber-400 shrink-0 ml-1" />
+                <form onSubmit={handleSendText} className="flex-1 flex items-center gap-2">
+                  <input
+                    type="text"
+                    value={inputText}
+                    onChange={(e) => setInputText(e.target.value)}
+                    placeholder="Type here to send keystrokes directly into active window..."
+                    className="flex-1 bg-[#0D1117] border border-[#30363D] focus:border-amber-500 px-3 py-1 text-xs font-mono text-white rounded outline-none"
+                  />
+                  <button
+                    type="submit"
+                    disabled={sendingInput || !inputText.trim()}
+                    className="px-3 py-1 bg-amber-600 hover:bg-amber-500 text-black font-mono font-bold text-xs rounded flex items-center gap-1 disabled:opacity-40"
+                  >
+                    <Send className="w-3 h-3" />
+                    <span>Send</span>
+                  </button>
+                </form>
+                <div className="flex items-center gap-1 border-l border-[#30363D] pl-2">
+                  <button
+                    onClick={() => handleSendKey("Return")}
+                    className="px-2 py-1 bg-[#21262D] hover:bg-[#30363D] text-slate-300 text-[10px] font-mono rounded"
+                  >
+                    Enter
+                  </button>
+                  <button
+                    onClick={() => handleSendKey("Escape")}
+                    className="px-2 py-1 bg-[#21262D] hover:bg-[#30363D] text-slate-300 text-[10px] font-mono rounded"
+                  >
+                    Esc
+                  </button>
+                  <button
+                    onClick={() => handleSendKey("Tab")}
+                    className="px-2 py-1 bg-[#21262D] hover:bg-[#30363D] text-slate-300 text-[10px] font-mono rounded"
+                  >
+                    Tab
+                  </button>
+                </div>
           </div>
         ) : isLive ? (
           /* Loading state while first screenshot is captured */

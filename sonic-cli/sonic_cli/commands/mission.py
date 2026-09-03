@@ -151,21 +151,26 @@ def mission_unknowns(
             data = res.json() if res.status_code == 200 else {}
             unknowns = data.get("unknowns", [])
 
-            table = Table(title=f"Active Uncertainties: {engagement_id}", border_style="amber")
-            table.add_column("ID", style="dim")
-            table.add_column("Question", style="bold white")
-            table.add_column("Importance", style="yellow")
-            table.add_column("Status", style="green")
-
             if not unknowns:
-                console.print(
-                    f"[yellow]No active uncertainties returned for {engagement_id}. "
-                    f"(HTTP {res.status_code} — the /engagements/{{id}}/unknowns endpoint "
-                    f"is not implemented on the backend.)[/yellow]"
-                )
+                note = data.get("note", f"No active uncertainties returned for {engagement_id} (HTTP {res.status_code}).")
+                console.print(f"[yellow]{note}[/yellow]")
             else:
+                table = Table(title=f"Active Uncertainties: {engagement_id}", border_style="amber")
+                table.add_column("ID", style="dim")
+                table.add_column("Question", style="bold white")
+                table.add_column("Category", style="cyan")
+                table.add_column("Importance", style="yellow")
+                table.add_column("Status", style="green")
                 for u in unknowns:
-                    table.add_row(u.get("id", ""), u.get("question", ""), f"{u.get('importance', 0.5)*100:.0f}%", u.get("status", "UNRESOLVED"))
+                    imp = u.get("importance", 0.5)
+                    try:
+                        imp_pct = f"{float(imp)*100:.0f}%"
+                    except (TypeError, ValueError):
+                        imp_pct = str(imp)
+                    table.add_row(
+                        u.get("id", ""), u.get("question", ""),
+                        u.get("category", ""), imp_pct, u.get("status", "UNRESOLVED"),
+                    )
                 console.print(table)
         except Exception as e:
             console.print(f"[red]Error: {e}[/red]")
@@ -178,18 +183,32 @@ def mission_decisions(
     token: str = typer.Option("", "--token", "-t", help="JWT Auth token"),
 ):
     """Display 'Why this action?' structured decision traces."""
-    console.print(
-        Panel(
-            f"[bold cyan]Decision traces for {engagement_id}[/bold cyan]\n\n"
-            f"[bold]Backend endpoint:[/bold] GET /engagements/{engagement_id}/decisions\n"
-            f"[bold]Status:[/bold] [red]Not implemented on the sonic-core API[/red]\n\n"
-            f"[dim]This command previously printed a hardcoded, fabricated decision trace "
-            f"(fake info-gain scores, fake prediction errors, fake confidence shifts). "
-            f"That was misleading, so it now reports the gap instead until the backend "
-            f"provides real decision-trace data.[/dim]",
-            border_style="yellow",
-        )
-    )
+    console.print(f"[bold cyan]📜 Fetching decision traces for {engagement_id}...[/bold cyan]")
+    with _get_client(server, token) as client:
+        try:
+            res = client.get(f"/engagements/{engagement_id}/decisions")
+            data = res.json() if res.status_code == 200 else {}
+            decisions = data.get("decisions", [])
+
+            if not decisions:
+                note = data.get("note", f"No decision traces returned for {engagement_id} (HTTP {res.status_code}).")
+                console.print(f"[yellow]{note}[/yellow]")
+            else:
+                table = Table(title=f"Decision Traces: {engagement_id}", border_style="cyan")
+                table.add_column("Event Type", style="cyan")
+                table.add_column("Agent", style="dim")
+                table.add_column("Description", style="white")
+                table.add_column("Timestamp", style="green")
+                for d in decisions:
+                    table.add_row(
+                        str(d.get("event_type", "")),
+                        str(d.get("agent_id", "")),
+                        str(d.get("description", ""))[:80],
+                        str(d.get("timestamp", "")),
+                    )
+                console.print(table)
+        except Exception as e:
+            console.print(f"[red]Error: {e}[/red]")
 
 
 @app.command(name="next-action")
@@ -199,16 +218,32 @@ def mission_next_action(
     token: str = typer.Option("", "--token", "-t", help="JWT Auth token"),
 ):
     """Show the top-ranked next-best action and utility score breakdown."""
-    console.print(
-        Panel(
-            f"[bold green]Next-best action for {engagement_id}[/bold green]\n\n"
-            f"[bold]Backend endpoint:[/bold] GET /engagements/{engagement_id}/next-action\n"
-            f"[bold]Status:[/bold] [red]Not implemented on the sonic-core API[/red]\n\n"
-            f"[dim]Previously this printed a fabricated utility-score breakdown. It now "
-            f"reports the gap instead until the backend exposes real next-action data.[/dim]",
-            border_style="yellow",
-        )
-    )
+    console.print(f"[bold cyan]🎯 Computing next-best action for {engagement_id}...[/bold cyan]")
+    with _get_client(server, token) as client:
+        try:
+            res = client.get(f"/engagements/{engagement_id}/next-action")
+            data = res.json() if res.status_code == 200 else {}
+            action = data.get("next_best_action", "")
+            summary = data.get("summary", {})
+
+            if not action and not summary:
+                note = data.get("note", f"No next-action computed for {engagement_id} (HTTP {res.status_code}).")
+                console.print(f"[yellow]{note}[/yellow]")
+            else:
+                budget = summary.get("budget_remaining", {}) if summary else {}
+                console.print(Panel(
+                    f"[bold]Next-best action:[/bold] {action or 'n/a'}\n\n"
+                    f"[bold]Confidence:[/bold] {summary.get('confidence', 'n/a')}\n"
+                    f"[bold]Stop condition:[/bold] {summary.get('stop_condition', 'n/a')}\n"
+                    f"[bold]Replans used:[/bold] {summary.get('replan_count', 0)}\n\n"
+                    f"[bold]Budget remaining:[/bold] "
+                    f"replans={budget.get('replans', 'n/a')}, "
+                    f"llm_calls={budget.get('llm_calls', 'n/a')}, "
+                    f"tasks={budget.get('tasks', 'n/a')}",
+                    title=f"Next-Best Action: {engagement_id}", border_style="green",
+                ))
+        except Exception as e:
+            console.print(f"[red]Error: {e}[/red]")
 
 
 @app.command(name="tasks")

@@ -409,6 +409,22 @@ class GraphMemory:
             )
         return uid
 
+    async def find_evidence(self, finding_id: str, tenant_id: str | None = None) -> list[dict]:
+        """List all evidence attached to a finding (tenant-isolated)."""
+        if not self._driver:
+            return []
+        async with self._driver.session() as session:
+            tenant_filter = " AND e.tenant_id = $tenant_id" if tenant_id else ""
+            params: dict[str, Any] = {"fid": finding_id}
+            if tenant_id:
+                params["tenant_id"] = tenant_id
+            query = (
+                f"MATCH (:Finding {{uid: $fid}})-[:HAS_EVIDENCE]->(e:Evidence)"
+                f"{tenant_filter} RETURN properties(e) AS props ORDER BY e.created_at"
+            )
+            result = await session.run(query, params)
+            return [record["props"] async for record in result]
+
     async def create_technique(self, technique: TechniqueNode) -> str | None:
         return await self._create_node("Technique", technique.model_dump())
 

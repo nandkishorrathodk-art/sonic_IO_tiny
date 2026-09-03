@@ -234,6 +234,20 @@ class InMemoryGraph:
             )
         return uid
 
+    async def find_evidence(self, finding_id: str, tenant_id: str | None = None) -> list[dict]:
+        """List all evidence attached to a finding (tenant-isolated)."""
+        results: list[dict] = []
+        for r in self._relationships:
+            if r.get("type") != RelationshipType.HAS_EVIDENCE or r.get("from_uid") != finding_id:
+                continue
+            if tenant_id and r.get("tenant_id") != tenant_id:
+                continue
+            ev_uid = r.get("to_uid")
+            node = self._nodes.get(ev_uid)
+            if node and node.get("_label") == "Evidence":
+                results.append({k: v for k, v in node.items() if k != "_label"})
+        return results
+
     async def create_technique(self, technique: TechniqueNode) -> str | None:
         return await self._create_node("Technique", technique.model_dump())
 

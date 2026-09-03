@@ -342,6 +342,26 @@ class SqliteGraph:
             )
         return uid
 
+    async def find_evidence(self, finding_id: str, tenant_id: str | None = None) -> list[dict]:
+        """List all evidence attached to a finding (tenant-isolated)."""
+        assert self._db is not None
+        sql = (
+            "SELECT n.label, n.props_json FROM memory_nodes n "
+            "JOIN memory_relationships r ON r.to_uid = n.uid "
+            "WHERE r.type = ? AND r.from_uid = ? AND n.label = 'Evidence'"
+        )
+        params: list[Any] = [RelationshipType.HAS_EVIDENCE, finding_id]
+        if tenant_id:
+            sql += " AND r.tenant_id = ?"
+            params.append(tenant_id)
+        out: list[dict] = []
+        async with self._db.execute(sql, params) as cur:
+            for label_val, props_json in await cur.fetchall():
+                node = json.loads(props_json)
+                node["_label"] = label_val
+                out.append({k: v for k, v in node.items() if k != "_label"})
+        return out
+
     async def create_technique(self, technique: TechniqueNode) -> str | None:
         return await self._create_node("Technique", technique.model_dump())
 

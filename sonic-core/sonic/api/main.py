@@ -23,6 +23,7 @@ from sonic.api.routes import (
     auth,
     engagements,
     experiments,
+    findings,
     graph,
     health,
     jobs,
@@ -224,6 +225,7 @@ app.include_router(llm.router, prefix="/llm", tags=["LLM"])
 app.include_router(engagements.router, prefix="/engagements", tags=["Engagements"])
 app.include_router(agents.router, prefix="/agents", tags=["Agents"])
 app.include_router(graph.router, prefix="/graph", tags=["Graph Memory"])
+app.include_router(findings.router, prefix="/findings", tags=["Findings"])
 app.include_router(experiments.router, prefix="/experiments", tags=["Experiments"])
 app.include_router(terminal.router, prefix="/terminal", tags=["Terminal"])
 app.include_router(live.router, prefix="/live", tags=["Live Dashboard"])

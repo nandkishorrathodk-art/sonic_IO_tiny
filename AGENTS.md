@@ -1293,6 +1293,21 @@ Full gap audit of all CLI command files + cross-check of every API path against 
 Frontend audit: dashboard only calls /workstation and /live routes (all registered) + /auth. No /engagements or /findings calls from frontend (those are CLI-only). Frontend "mock/placeholder" grep hits are all HTML placeholder attributes, not fake data. Settings save is wired (GET+POST /live/settings). No broken frontend API calls found.
 Backend "not implemented": executor.py returns "Tool adapter is not implemented" as a fail-closed safety result when no tool adapter is registered (correct behavior, not a bug). No other genuine "not implemented" stubs remain.
 
+### Round 2 backend gap-fill (2026-09-03)
+The Round 2 CLI audit de-fabricated 5 files but left several CLI commands honestly reporting "no backend endpoint". This round implements the missing backend endpoints so the CLI renders real data, then re-wires the CLI commands to them.
+- **NEW `/security` router** (`sonic/api/routes/security.py`, registered in main.py at prefix `/security`):
+  - `POST /audit` — runs an 11-domain adversarial acceptance suite catalog (SEC-AUTH-01…SEC-EVOL-01) mapped to real pytest files; stores findings + computes a release-gate verdict.
+  - `GET /attack-surface` — enumerates the deployed attack surface by traversing all registered FastAPI routes (descends into `_IncludedRouter.original_router` for FastAPI ≥0.115), classifying Auth / Workstation / Public Health / API surfaces with risk ratings.
+  - `GET /tests` — returns the static test catalog (11 tests with id/category/name/severity/last_verdict).
+  - `GET /findings` — returns recorded audit findings (last audit, total, active failures).
+  - `GET /release-gate` — returns current gate verdict (`NO_AUDIT_RUN` / `RELEASE_CANDIDATE_CERTIFIED` / `FAIL_CRITICAL` / `FAIL_NON_CRITICAL`) + active failures.
+  - `POST /reproduce/{test_id}` — re-runs a single cataloged test by mapping its pytest path; 404 for unknown IDs.
+- **`/experiments` router expanded**: `POST /{id}/approve` (PROPOSED→canary_testing, Operator-only, 409 on wrong state), `POST /{id}/reject` (archive with reason), `POST /{id}/promote` (canary→promoted, sets active version), `GET /weaknesses/summary` (mines rejected/rolled-back experiments into categorized weakness patterns incl. SAFETY_VIOLATION), `GET /history/timeline` (version history of promoted generations + all-experiments table with baseline/candidate scores).
+- **`/engagements` router expanded**: `GET /{id}/hypotheses`, `GET /{id}/leads`, `GET /{id}/anomalies` — surface Director CognitiveState when available; honest `note` for linear-pipeline engagements (never fabricate).
+- **`/workstation` router expanded**: `GET /workstation/services` (probes known sandbox services via `service_action`), `POST /workstation/snapshot` (Operator-only, persists named session-state snapshot), `GET /workstation/snapshots` (list snapshots).
+- **CLI re-wired** (removed all remaining `_no_backend` panels): evolution.py (`weaknesses`/`approve`/`reject`/`promote`/`history` → new endpoints), research.py (`hypotheses`/`leads`/`anomalies` → new endpoints), security.py (all 6 commands → new `/security` router), computer.py (`services`/`snapshot` → new workstation endpoints). No "no backend endpoint" / "not exposed" strings remain in the CLI.
+- **Tests**: `tests/test_round2_gap_fill.py` (+19 tests covering experiment lifecycle, safety-violation auto-reject, security audit/tests/findings/release-gate/reproduce/attack-surface, engagement sub-routes, workstation services/snapshots). Full suite: **570 passed, 37 skipped, 0 failures**.
+
 ## AI + control upgrade (reliability hardening)
 Two independent robustness layers were added on top of the existing AI core
 and control loop — the legacy text-parsed ReAct and provider paths are

@@ -17,9 +17,9 @@ fake success messages.
     sonic computer terminal <cmd>     # Execute a command inside the computer
     sonic computer files              # List files in the workspace directory
     sonic computer processes          # (running processes surfaced via `status`)
-    sonic computer services           # (no dedicated backend endpoint yet)
+    sonic computer services           # List managed background services
     sonic computer git                # View Git repository diff
-    sonic computer snapshot           # (no dedicated backend endpoint yet)
+    sonic computer snapshot           # Create a workspace snapshot
     sonic computer reset              # Reset computer workspace state
     sonic computer destroy <id>       # Destroy a computer workspace session
 """
@@ -56,19 +56,6 @@ def _call(client: httpx.Client, method: str, path: str, **kwargs) -> dict | None
         console.print(f"[red]Request failed (HTTP {res.status_code}): {res.text}[/red]")
         return None
     return res.json()
-
-
-def _no_backend(cmd: str, endpoint: str, hint: str = "") -> None:
-    body = (
-        f"[bold yellow]{cmd} is not available.[/bold yellow]\n\n"
-        f"[bold]Backend endpoint:[/bold] {endpoint}\n"
-        f"[bold]Status:[/bold] [red]Not exposed by the sonic-core API[/red]\n\n"
-        "[dim]This command previously printed fabricated sample data. It now "
-        "reports the gap honestly.[/dim]"
-    )
-    if hint:
-        body += f"\n\n[green]{hint}[/green]"
-    console.print(Panel(body, border_style="yellow"))
 
 
 @app.command(name="list")
@@ -325,9 +312,25 @@ def list_services(
     server: str = typer.Option("http://localhost:8000", "--server", "-s", help="Backend server URL"),
     token: str = typer.Option("", "--token", "-t", help="JWT Auth token"),
 ):
-    """List background services managed inside the computer (no dedicated backend endpoint yet)."""
-    _no_backend("Managed services inventory", "GET /workstation/services",
-                "Running services are not surfaced by a dedicated endpoint; use `sonic computer terminal \"systemctl list-units\"`.")
+    """List background services managed inside the computer."""
+    with _get_client(server, token) as client:
+        data = _call(client, "GET", "/workstation/services", params={"session_id": workspace_id})
+        if data is None:
+            return
+        if data.get("note"):
+            console.print(f"[yellow]{data['note']}[/yellow]")
+        services = data.get("services", [])
+        if not services:
+            console.print(f"[yellow]No services reported for {workspace_id}.[/yellow]")
+            return
+        table = Table(title=f"Managed Services in {workspace_id}", border_style="cyan")
+        table.add_column("Service Name", style="bold white")
+        table.add_column("Status", style="green")
+        for s in services:
+            status = str(s.get("status", ""))
+            sc = "green" if status == "running" else "yellow"
+            table.add_row(str(s.get("name", "")), f"[{sc}]{status}[/{sc}]")
+        console.print(table)
 
 
 @app.command(name="git")
@@ -356,8 +359,14 @@ def snapshot_workspace(
     server: str = typer.Option("http://localhost:8000", "--server", "-s", help="Backend server URL"),
     token: str = typer.Option("", "--token", "-t", help="JWT Auth token"),
 ):
-    """Create a persistent snapshot of the workspace (no dedicated backend endpoint yet)."""
-    _no_backend(f"Snapshot '{name}'", "POST /workstation/snapshot")
+    """Create a persistent snapshot of the workstation session state."""
+    with _get_client(server, token) as client:
+        data = _call(client, "POST", "/workstation/snapshot", params={"session_id": workspace_id, "name": name})
+        if data is None:
+            return
+        snap = data.get("snapshot", {})
+        console.print(f"[green]📸 Snapshot '{snap.get('name', name)}' created for workspace {workspace_id}.[/green]")
+        console.print(f"[dim]Status: {snap.get('status', 'n/a')} | Worklog entries: {snap.get('worklog_entries', 0)}[/dim]")
 
 
 @app.command(name="reset")

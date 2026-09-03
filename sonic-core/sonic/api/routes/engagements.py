@@ -380,6 +380,114 @@ async def pause_engagement(
     return {"engagement_id": engagement_id, "status": "paused"}
 
 
+def _director_raw(engagement_id: str):
+    """Return the live in-memory CognitiveState object, or None.
+
+    This exposes the full pydantic CognitiveState (not just the summary dict)
+    so sub-routes can read hypotheses, predictions, and contradictions lists.
+    """
+    director = get_director()
+    return director._states.get(engagement_id)
+
+
+@router.get("/{engagement_id}/hypotheses")
+async def get_engagement_hypotheses(
+    engagement_id: str,
+    user: User = Depends(require_auth),
+):
+    """Display the competing hypothesis portfolio with confidence and falsification status."""
+    await _validate_engagement(engagement_id, user)
+    raw = _director_raw(engagement_id)
+    if raw is None:
+        state = _director_state(engagement_id)
+        if not state:
+            return {
+                "engagement_id": engagement_id,
+                "hypotheses": [],
+                "note": "No cognitive state for this engagement — it was run via the "
+                        "linear pipeline, which does not track competing hypotheses.",
+            }
+        return {"engagement_id": engagement_id, "hypotheses": state.get("competing_hypotheses", [])}
+    hypos = raw.get_active_hypotheses()
+    return {
+        "engagement_id": engagement_id,
+        "hypotheses": [
+            {
+                "id": h.id,
+                "statement": h.statement,
+                "status": str(h.lifecycle),
+                "confidence": h.confidence,
+                "parent_id": h.parent_hypothesis_id or "",
+                "evidence_supporting": len([e for e in raw.evidence if h.id in (e.related_hypothesis_ids or []) and e.supports]),
+                "evidence_refuting": len([e for e in raw.evidence if h.id in (e.related_hypothesis_ids or []) and not e.supports]),
+            }
+            for h in hypos
+        ],
+    }
+
+
+@router.get("/{engagement_id}/leads")
+async def get_engagement_leads(
+    engagement_id: str,
+    user: User = Depends(require_auth),
+):
+    """Inspect discovered opportunity and serendipity leads (surprising observations)."""
+    await _validate_engagement(engagement_id, user)
+    raw = _director_raw(engagement_id)
+    if raw is None:
+        state = _director_state(engagement_id)
+        if not state:
+            return {
+                "engagement_id": engagement_id,
+                "leads": [],
+                "note": "No cognitive state for this engagement — it was run via the "
+                        "linear pipeline, which does not track discovery leads.",
+            }
+        return {"engagement_id": engagement_id, "leads": state.get("observations", [])}
+    # Leads = surprising/novel observations from the event log
+    leads = [
+        {
+            "id": o.id,
+            "description": o.description,
+            "source": o.source,
+            "timestamp": o.timestamp,
+        }
+        for o in raw.observations
+    ]
+    return {"engagement_id": engagement_id, "leads": leads}
+
+
+@router.get("/{engagement_id}/anomalies")
+async def get_engagement_anomalies(
+    engagement_id: str,
+    user: User = Depends(require_auth),
+):
+    """View prediction deviations and novel anomalies (prediction vs reality mismatches)."""
+    await _validate_engagement(engagement_id, user)
+    raw = _director_raw(engagement_id)
+    if raw is None:
+        state = _director_state(engagement_id)
+        if not state:
+            return {
+                "engagement_id": engagement_id,
+                "anomalies": [],
+                "contradictions": [],
+                "note": "No cognitive state for this engagement — it was run via the "
+                        "linear pipeline, which does not track prediction anomalies.",
+            }
+        return {
+            "engagement_id": engagement_id,
+            "anomalies": state.get("prediction_comparisons", []),
+            "contradictions": state.get("contradictions", []),
+        }
+    return {
+        "engagement_id": engagement_id,
+        "anomalies": raw.prediction_comparisons,
+        "contradictions": raw.contradictions,
+        "predictions_total": len(raw.predictions),
+    }
+
+
 @router.post("/{engagement_id}/resume")
 async def resume_engagement(
     engagement_id: str,

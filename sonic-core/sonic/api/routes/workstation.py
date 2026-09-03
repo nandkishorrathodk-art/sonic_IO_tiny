@@ -2135,3 +2135,62 @@ async def send_workstation_prompt(
         "message": f"Objective '{prompt_text}' accepted for autonomous reasoning.",
         "state": state,
     }
+
+
+# ---------------------------------------------------------------------------
+# Phase 22 — Services & Snapshots (gap-fill for the CLI computer commands)
+# ---------------------------------------------------------------------------
+
+@router.get("/workstation/services")
+async def list_workstation_services(
+    session_id: str = Query("default"),
+    user: User = Depends(require_auth),
+):
+    """List background services managed inside the workstation sandbox."""
+    workspace_id = _session_workspace_id(user, session_id)
+    if not workspace_id:
+        return {"services": [], "note": "No active workstation workspace for this session."}
+    comp = get_daytona_computer()
+    services = []
+    # Probe a small set of well-known services that the policy declares.
+    known = ["xvfb", "code-server", "chromium", "nginx"]
+    for name in known:
+        try:
+            info = await comp.service_action(workspace_id, name, "status")
+            services.append({"name": name, "status": getattr(info, "status", "unknown")})
+        except Exception:
+            services.append({"name": name, "status": "not_found"})
+    return {"services": services, "workspace_id": workspace_id}
+
+
+@router.post("/workstation/snapshot")
+async def create_workstation_snapshot(
+    session_id: str = Query("default"),
+    name: str = Query("baseline", description="Snapshot name"),
+    user: User = Depends(require_operator),
+):
+    """Create a persistent snapshot record of the workstation session state."""
+    state = _get_or_create_session(user.email, session_id)
+    snapshots = state.setdefault("_snapshots", [])
+    snapshot = {
+        "name": name,
+        "created_at": _timestamp(),
+        "created_by": user.email,
+        "mission_name": state.get("mission_name", ""),
+        "status": state.get("status", ""),
+        "worklog_entries": len(state.get("worklog", [])),
+    }
+    snapshots.append(snapshot)
+    _persist_workstation_state()
+    _append_worklog(state, "action", "Snapshot Created", f"Snapshot '{name}' captured")
+    return {"status": "created", "snapshot": snapshot}
+
+
+@router.get("/workstation/snapshots")
+async def list_workstation_snapshots(
+    session_id: str = Query("default"),
+    user: User = Depends(require_auth),
+):
+    """List all named snapshots recorded for a workstation session."""
+    state = _get_or_create_session(user.email, session_id)
+    return {"snapshots": state.get("_snapshots", [])}

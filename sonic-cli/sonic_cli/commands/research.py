@@ -9,9 +9,9 @@ or anomaly tables.
     sonic research status          # Mission status + next-best action
     sonic research tracks          # Task-graph investigation tracks
     sonic research questions       # Active uncertainty questions (= unknowns)
-    sonic research hypotheses      # (no backend endpoint yet)
-    sonic research leads           # (no backend endpoint yet)
-    sonic research anomalies       # (no backend endpoint yet)
+    sonic research hypotheses      # Competing hypothesis portfolio
+    sonic research leads           # Discovery / serendipity leads (observations)
+    sonic research anomalies       # Prediction deviations & novel anomalies
     sonic research report          # Decision traces + next-action summary
 """
 
@@ -143,25 +143,43 @@ def list_questions(
         console.print(table)
 
 
-def _no_backend(cmd: str, endpoint: str) -> None:
-    console.print(Panel(
-        f"[bold yellow]{cmd} is not available.[/bold yellow]\n\n"
-        f"[bold]Backend endpoint:[/bold] {endpoint}\n"
-        f"[bold]Status:[/bold] [red]Not exposed by the sonic-core API[/red]\n\n"
-        "[dim]This command previously printed hardcoded, fabricated sample data. "
-        "It now reports the gap honestly until the backend exposes real data.[/dim]",
-        border_style="yellow",
-    ))
-
-
 @app.command(name="hypotheses")
 def list_hypotheses(
     mission_id: str = typer.Option(..., "--mission", "-m", help="Mission / Engagement ID"),
     server: str = typer.Option("http://localhost:8000", "--server", "-s", help="Backend server URL"),
     token: str = typer.Option("", "--token", "-t", help="JWT Auth token"),
 ):
-    """View the competing hypothesis portfolio (no backend endpoint yet)."""
-    _no_backend("Hypothesis portfolio", f"GET /engagements/{mission_id}/hypotheses")
+    """View the competing hypothesis portfolio with confidence and falsification status."""
+    with _get_client(server, token) as client:
+        data = _get_json(client, f"/engagements/{mission_id}/hypotheses")
+        if data is None:
+            return
+        if data.get("note"):
+            console.print(f"[yellow]{data['note']}[/yellow]")
+        hypos = data.get("hypotheses", [])
+        if not hypos:
+            console.print("[yellow]No competing hypotheses recorded for this engagement.[/yellow]")
+            return
+        table = Table(title=f"Competing Hypothesis Portfolio — {mission_id}", border_style="cyan")
+        table.add_column("ID", style="dim")
+        table.add_column("Statement", style="white")
+        table.add_column("Status", style="yellow")
+        table.add_column("Confidence", justify="right", style="magenta")
+        table.add_column("Support", justify="center", style="green")
+        table.add_column("Refute", justify="center", style="red")
+        for h in hypos:
+            if isinstance(h, dict):
+                table.add_row(
+                    str(h.get("id", "")),
+                    str(h.get("statement", h.get("title", "")))[:50],
+                    str(h.get("status", h.get("lifecycle", ""))),
+                    f"{h.get('confidence', 0):.2f}" if isinstance(h.get("confidence"), (int, float)) else str(h.get("confidence", "")),
+                    str(h.get("evidence_supporting", "")),
+                    str(h.get("evidence_refuting", "")),
+                )
+            else:
+                table.add_row(str(h))
+        console.print(table)
 
 
 @app.command(name="leads")
@@ -170,8 +188,33 @@ def list_leads(
     server: str = typer.Option("http://localhost:8000", "--server", "-s", help="Backend server URL"),
     token: str = typer.Option("", "--token", "-t", help="JWT Auth token"),
 ):
-    """Inspect discovered opportunity and serendipity leads (no backend endpoint yet)."""
-    _no_backend("Serendipity leads", f"GET /engagements/{mission_id}/leads")
+    """Inspect discovered opportunity and serendipity leads (observations)."""
+    with _get_client(server, token) as client:
+        data = _get_json(client, f"/engagements/{mission_id}/leads")
+        if data is None:
+            return
+        if data.get("note"):
+            console.print(f"[yellow]{data['note']}[/yellow]")
+        leads = data.get("leads", [])
+        if not leads:
+            console.print("[yellow]No discovery leads recorded for this engagement.[/yellow]")
+            return
+        table = Table(title=f"Discovery Leads — {mission_id}", border_style="green")
+        table.add_column("ID", style="dim")
+        table.add_column("Description", style="white")
+        table.add_column("Source", style="cyan")
+        table.add_column("Timestamp", style="yellow")
+        for l in leads:
+            if isinstance(l, dict):
+                table.add_row(
+                    str(l.get("id", l.get("observation_id", ""))),
+                    str(l.get("description", l.get("summary", "")))[:50],
+                    str(l.get("source", "")),
+                    str(l.get("timestamp", l.get("created_at", "")))[:19],
+                )
+            else:
+                table.add_row(str(l))
+        console.print(table)
 
 
 @app.command(name="anomalies")
@@ -180,8 +223,31 @@ def list_anomalies(
     server: str = typer.Option("http://localhost:8000", "--server", "-s", help="Backend server URL"),
     token: str = typer.Option("", "--token", "-t", help="JWT Auth token"),
 ):
-    """View prediction deviations and novel anomalies (no backend endpoint yet)."""
-    _no_backend("Prediction anomalies", f"GET /engagements/{mission_id}/anomalies")
+    """View prediction deviations and novel anomalies (prediction vs reality)."""
+    with _get_client(server, token) as client:
+        data = _get_json(client, f"/engagements/{mission_id}/anomalies")
+        if data is None:
+            return
+        if data.get("note"):
+            console.print(f"[yellow]{data['note']}[/yellow]")
+        anomalies = data.get("anomalies", [])
+        contradictions = data.get("contradictions", [])
+        console.print(f"[bold]Predictions total:[/bold] {data.get('predictions_total', 'n/a')}")
+        if anomalies:
+            table = Table(title=f"Prediction Anomalies — {mission_id}", border_style="red")
+            table.add_column("Anomaly", style="white")
+            for a in anomalies[:30]:
+                if isinstance(a, dict):
+                    table.add_row(", ".join(f"{k}={v}" for k, v in a.items())[:80])
+                else:
+                    table.add_row(str(a))
+            console.print(table)
+        else:
+            console.print("[green]No prediction anomalies — all predictions matched reality.[/green]")
+        if contradictions:
+            console.print(f"[bold red]Contradictions detected: {len(contradictions)}[/bold red]")
+            for c in contradictions[:10]:
+                console.print(f"  • {c}")
 
 
 @app.command(name="report")

@@ -34,11 +34,19 @@ _engagement_manager = None
 
 
 def get_engagement_manager():
-    """Get or create the EngagementManager singleton."""
+    """Get or create the EngagementManager singleton.
+
+    The EngagementManager is wired to a sandbox provider + reproduction engine
+    so the dynamic and verification phases act on a REAL compute substrate. The
+    provider is built lazily on first run (in ``run_engagement``) because the
+    factory resolves Docker/Daytona availability at call time; here we only set
+    up the cheap resources and mark the sandbox as pending.
+    """
     global _engagement_manager
     if _engagement_manager is None:
         from sonic.agents.engagement import EngagementManager
         from sonic.config import CONFIGS_DIR
+        from sonic.integrations.bugbounty import BugBountyClient
         from sonic.llm.router import ModelRouter
         from sonic.memory.router import get_memory_sync
         from sonic.safety.scope import get_scope_checker
@@ -51,8 +59,27 @@ def get_engagement_manager():
             model_router=router_instance,
             graph_memory=memory,
             scope_checker=scope,
+            # The sandbox provider + reproduction engine are attached lazily on
+            # the first run (see run_engagement) — building them here would be
+            # too eager for headless/test boots that never run an engagement.
+            bug_bounty_client=BugBountyClient(),
         )
     return _engagement_manager
+
+
+async def _ensure_engagement_sandbox() -> None:
+    """Lazily attach a sandbox provider + reproduction engine to the manager.
+
+    Idempotent. Resolves the best available compute provider (Docker/Daytona/
+    LocalDev fail-closed) and binds a ReproductionEngine to it, so the dynamic
+    phase runs probes in-sandbox and the verifier reproduces PoCs in-sandbox.
+    In environments without Docker/Daytona the fail-closed provider is attached
+    (and probes stay on the host path, as before) — never fatal.
+    """
+    from sonic.sandbox.factory import get_compute_provider
+
+    manager = get_engagement_manager()
+    await manager.ensure_sandbox(get_compute_provider)
 
 
 # ---- Endpoints ----
@@ -96,6 +123,10 @@ async def run_engagement(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Engagement not found or unauthorized",
         )
+
+    # Attach a sandbox provider + reproduction engine (lazy, idempotent) so the
+    # dynamic phase runs in-sandbox and the verifier reproduces PoCs in-sandbox.
+    await _ensure_engagement_sandbox()
 
     results = await manager.run_engagement(
         engagement_id, phases=request.phases, tenant_id=user.tenant_id
@@ -147,6 +178,35 @@ async def get_engagement_findings(
 
     report = await manager.get_findings_report(engagement_id, tenant_id=user.tenant_id)
     return report
+
+
+class PrepareReportsRequest(BaseModel):
+    platform: str = "hackerone"  # "hackerone" or "bugcrowd"
+
+
+@router.post("/{engagement_id}/submit-report")
+async def prepare_bug_bounty_reports(
+    engagement_id: str,
+    request: PrepareReportsRequest = PrepareReportsRequest(),
+    user: User = Depends(require_operator),
+):
+    """Render every VERIFIED finding into a platform-ready draft report.
+
+    The (previously unwired) BugBountyClient is now reachable from the
+    engagement pipeline. Draft reports are returned for operator review;
+    actual submission to HackerOne/Bugcrowd still requires API keys and an
+    explicit operator action — this never auto-discloses a finding.
+    """
+    manager = get_engagement_manager()
+    status_data = await manager.get_engagement_status(engagement_id, tenant_id=user.tenant_id)
+    if "error" in status_data:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Engagement not found or unauthorized",
+        )
+    return await manager.prepare_bug_bounty_reports(
+        engagement_id, platform=request.platform, tenant_id=user.tenant_id
+    )
 
 
 @router.get("/")

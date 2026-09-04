@@ -1415,3 +1415,63 @@ unchanged and still the default; the new paths are opt-in additions.
   primary navigation (previously only Workstation/Missions/Graph/Evidence).
 - `lib/api.ts`: added `getAgents()` and `getAgent()` API methods.
 - Dashboard builds cleanly (`npm run build`); all 19 routes compile.
+
+## Engagement pipeline → execution substrate wiring (Gap 1–4)
+Closed the central architectural gap flagged by audit: the user-facing
+engagement (pentest) pipeline built its agents with ONLY (router, memory,
+scope), so it never reached the real compute substrate that the
+Mission/Director and Being paths use. The dynamic phase fired HTTP probes
+from the host, the verifier never reproduced findings in-sandbox, and the
+BugBountyClient existed but was referenced nowhere.
+
+### `agents/engagement.py` — inject shared resources into the agents
+- `EngagementManager.__init__` gains optional `sandbox_provider`,
+  `reproduction_engine`, `bug_bounty_client` (all default None → legacy
+  host-probe behaviour preserved for existing callers/tests).
+- `ensure_sandbox(provider_factory)`: lazily attach a ComputeProvider and
+  build a `ReproductionEngine` bound to it. Idempotent (no-op once attached).
+  Supports an awaitable OR sync factory; used by the route to bind
+  `get_compute_provider`.
+- `_workspace_for(engagement_id, tenant_id)`: provisions (or reuses the
+  per-tenant home via `get_or_create_home`) a sandbox workspace, cached per
+  engagement. Returns "" when no provider (legacy path).
+- `_run_dynamic`: now creates the `DynamicExecutionAgent` with
+  `sandbox_provider` + `workspace_id`, so HTTP probes run INSIDE the sandbox
+  (curl in the container) when a provider is attached.
+- `_run_verify`: now creates the `VerifierAgent` with `reproduction_engine`,
+  so `_engine_verify` runs real in-sandbox PoC reproduction instead of
+  falling back to HTTP/LLM.
+- `prepare_bug_bounty_reports(engagement_id, platform)`: renders every
+  VERIFIED finding into a platform-ready `DraftReport` via the previously-dead
+  `BugBountyClient`. Returns drafts for operator review — does NOT auto-submit
+  (submission still needs API keys + explicit action; no auto-disclosure).
+
+### `api/routes/engagements.py` — wire the production singleton
+- `get_engagement_manager()`: now constructs the manager with a
+  `BugBountyClient` (was unreachable before). Sandbox provider stays lazy.
+- `_ensure_engagement_sandbox()`: lazily attaches the best available
+  `get_compute_provider` + reproduction engine (idempotent); called in
+  `run_engagement` before the pipeline starts. Fail-closed provider is fine
+  (probes stay on host path as before — never fatal).
+- New `POST /{engagement_id}/submit-report` route: renders verified findings
+  into bug-bounty draft reports (operator-gated; no auto-disclosure).
+
+### Done-gate (`test_engagement_wiring.py`, 9 tests)
+- legacy 3-arg construction still works (resources default None);
+- `_run_dynamic` injects the sandbox provider + a real workspace_id into the
+  agent instance (verified on the REAL agent, not a mock of the wiring);
+- `_run_verify` injects the reproduction engine into the agent instance;
+- `ensure_sandbox` builds a `ReproductionEngine` from a provider and is
+  idempotent (a second factory call is never invoked);
+- `prepare_bug_bounty_reports` renders verified findings into draft reports
+  (title/poc present) and returns [] when there are no verified findings;
+- `_workspace_for` returns "" without a provider and provisions+caches with one.
+
+### Test baseline (after engagement wiring)
+- 589 passed, 37 skipped. The 2 `test_round3_computer_agents_fixes.py`
+  failures (`ModuleNotFoundError: sonic_cli`) and the
+  `test_phase1_persistent_memory` collection error are pre-existing
+  environmental issues (verified on the clean baseline: sonic_cli is not
+  installed; phase1 fails only under full-suite singleton/.env interference,
+  passes alone — matches the known-pre-existing notes above). No regressions
+  introduced.

@@ -52,13 +52,92 @@ class EngagementManager:
         model_router: ModelRouter,
         graph_memory: GraphMemory,
         scope_checker: ScopeChecker,
+        *,
+        sandbox_provider: Any = None,
+        reproduction_engine: Any = None,
+        bug_bounty_client: Any = None,
     ):
+        """
+        Shared resources are injected so the agents can act on a REAL compute
+        substrate instead of firing probes from the host process.
+
+        - ``sandbox_provider``: a ComputeProvider (Docker/Daytona/LocalDev) the
+          dynamic agent runs HTTP probes inside (curl in the sandbox) and the
+          reproduction engine reproduces PoCs in. When None, the dynamic agent
+          falls back to direct host probes (the legacy behaviour) so existing
+          callers keep working.
+        - ``reproduction_engine``: a ReproductionEngine bound to the provider;
+          when supplied the Verifier reproduces findings in-sandbox instead of
+          only re-firing HTTP / LLM-guessing. Built lazily from the provider in
+          ``ensure_sandbox`` if not passed.
+        - ``bug_bounty_client``: a BugBountyClient used to render verified
+          findings into platform-ready draft reports.
+        """
         self.router = model_router
         self.memory = graph_memory
         self.scope = scope_checker
+        self.sandbox_provider = sandbox_provider
+        self.reproduction_engine = reproduction_engine
+        self.bug_bounty_client = bug_bounty_client
 
         self.active_engagements: dict[str, dict] = {}
         self.agents: dict[str, Any] = {}
+        # engagement_id -> sandbox workspace_id (provisioned lazily per tenant).
+        self._workspaces: dict[str, str] = {}
+
+    async def ensure_sandbox(self, provider_factory: Any = None) -> None:
+        """Attach (or build) the sandbox provider + reproduction engine.
+
+        Idempotent: a no-op once a provider is attached. ``provider_factory`` is
+        an awaitable returning a ComputeProvider (e.g. ``get_sandbox_provider``
+        or ``get_compute_provider`` wrapped to async). When a provider is built,
+        a ReproductionEngine is bound to it unless one was already supplied.
+        """
+        if self.sandbox_provider is not None:
+            return
+        if provider_factory is None:
+            return
+        provider = provider_factory
+        # Support both an awaitable factory and a sync callable.
+        if callable(provider_factory):
+            maybe = provider_factory()
+            provider = await maybe if hasattr(maybe, "__await__") else maybe
+        if provider is None:
+            return
+        self.sandbox_provider = provider
+        if self.reproduction_engine is None:
+            try:
+                from sonic.evidence.reproduction_engine import ReproductionEngine
+                self.reproduction_engine = ReproductionEngine(compute_provider=provider)
+            except Exception as e:  # import wiring, never fatal to the run
+                logger.warning("reproduction_engine_build_failed", error=str(e))
+
+    async def _workspace_for(self, engagement_id: str, tenant_id: str = "default") -> str:
+        """Return a sandbox workspace_id for the engagement, provisioning once.
+
+        Returns "" when no provider is attached (legacy host-probe path).
+        """
+        if self.sandbox_provider is None:
+            return ""
+        cached = self._workspaces.get(engagement_id)
+        if cached:
+            return cached
+        workspace_id = ""
+        provider = self.sandbox_provider
+        try:
+            # A long-lived per-tenant home is preferred over a throwaway workspace.
+            if hasattr(provider, "get_or_create_home"):
+                home = await provider.get_or_create_home(tenant_id)
+                workspace_id = getattr(home, "id", "") or ""
+            if not workspace_id and hasattr(provider, "create_workspace"):
+                from sonic.sandbox.provider import WorkspaceConfig
+                ws_id = f"eng-{engagement_id[:8] or tenant_id}"
+                await provider.create_workspace(WorkspaceConfig(workspace_id=ws_id))
+                workspace_id = ws_id
+        except Exception as e:
+            logger.warning("engagement_workspace_provision_failed", error=str(e))
+        self._workspaces[engagement_id] = workspace_id
+        return workspace_id
 
     def _create_agent(self, agent_class: type, **kwargs: Any) -> Any:
         """Create an agent with shared resources injected."""
@@ -294,8 +373,23 @@ class EngagementManager:
         self, engagement_id: str, target: str,
         hypothesis_results: dict, recon_results: dict
     ) -> dict:
-        """Run the autonomous dynamic pentest loop."""
-        agent = self._create_agent(DynamicExecutionAgent)
+        """Run the autonomous dynamic pentest loop.
+
+        When a sandbox provider is attached the probe runs INSIDE the sandbox
+        (curl in the container) instead of from the host, so active testing
+        happens through the isolated compute substrate the user provisioned.
+        """
+        eng = self.active_engagements.get(engagement_id, {})
+        scope_config = eng.get("scope") or {}
+        tenant_id = eng.get("tenant_id", "default")
+        workspace_id = await self._workspace_for(engagement_id, tenant_id)
+
+        agent = self._create_agent(
+            DynamicExecutionAgent,
+            sandbox_provider=self.sandbox_provider,
+            workspace_id=workspace_id,
+            scope_config=scope_config,
+        )
         self.active_engagements[engagement_id]["agents_used"].append(agent.agent_id)
 
         await self.memory.register_agent(AgentNode(
@@ -305,8 +399,6 @@ class EngagementManager:
             engagement_id=engagement_id,
         ))
 
-        eng = self.active_engagements.get(engagement_id, {})
-        scope_config = eng.get("scope") or {}
         result = await agent.run({
             "target": target,
             "engagement_id": engagement_id,
@@ -318,8 +410,18 @@ class EngagementManager:
         return result
 
     async def _run_verify(self, engagement_id: str) -> dict:
-        """Run verification phase on all unverified findings."""
-        agent = self._create_agent(VerifierAgent)
+        """Run verification phase on all unverified findings.
+
+        When a reproduction engine is attached, the Verifier reproduces each
+        finding's PoC inside the sandbox (real execution) instead of only
+        re-firing the HTTP request or LLM-guessing.
+        """
+        eng = self.active_engagements.get(engagement_id, {})
+        agent = self._create_agent(
+            VerifierAgent,
+            reproduction_engine=self.reproduction_engine,
+            scope_config=eng.get("scope") or {},
+        )
         self.active_engagements[engagement_id]["agents_used"].append(agent.agent_id)
 
         await self.memory.register_agent(AgentNode(
@@ -329,7 +431,6 @@ class EngagementManager:
             engagement_id=engagement_id,
         ))
 
-        eng = self.active_engagements.get(engagement_id, {})
         result = await agent.run({
             "engagement_id": engagement_id,
             "scope_config": eng.get("scope") or {},
@@ -439,6 +540,53 @@ class EngagementManager:
             },
             "findings": findings,
             "generated_at": datetime.now(UTC).isoformat(),
+        }
+
+    async def prepare_bug_bounty_reports(
+        self, engagement_id: str, platform: str = "hackerone",
+        tenant_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Render every VERIFIED finding into a platform-ready draft report.
+
+        This wires the (previously dead) BugBountyClient into the engagement
+        pipeline: verified findings no longer sit idle in graph memory, they
+        become submission-ready reports. Returns the reports without submitting
+        them anywhere — submission to HackerOne/Bugcrowd still requires API
+        keys and an explicit operator action.
+        """
+        report = await self.get_findings_report(engagement_id, tenant_id=tenant_id)
+        findings = report.get("findings", [])
+
+        client = self.bug_bounty_client
+        if client is None:
+            from sonic.integrations.bugbounty import BugBountyClient
+            client = BugBountyClient()
+
+        drafts = []
+        for finding in findings:
+            try:
+                drafts.append(client.format_report(finding, platform=platform))
+            except Exception as e:
+                logger.warning("bugbounty_report_failed", finding=finding.get("uid", ""), error=str(e))
+
+        logger.info(
+            "bugbounty_reports_prepared",
+            engagement_id=engagement_id, verified=len(findings), drafts=len(drafts),
+        )
+        return {
+            "engagement_id": engagement_id,
+            "platform": platform,
+            "total_verified": len(findings),
+            "draft_reports": [
+                {
+                    "title": d.title,
+                    "severity": d.severity,
+                    "vulnerability_type": d.vulnerability_type,
+                    "description": d.description,
+                    "poc": d.poc,
+                }
+                for d in drafts
+            ],
         }
 
     def list_agents(self) -> list[dict]:

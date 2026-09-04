@@ -37,10 +37,7 @@ def get_engagement_manager():
     """Get or create the EngagementManager singleton.
 
     The EngagementManager is wired to a sandbox provider + reproduction engine
-    so the dynamic and verification phases act on a REAL compute substrate. The
-    provider is built lazily on first run (in ``run_engagement``) because the
-    factory resolves Docker/Daytona availability at call time; here we only set
-    up the cheap resources and mark the sandbox as pending.
+    so the dynamic and verification phases act on a REAL compute substrate.
     """
     global _engagement_manager
     if _engagement_manager is None:
@@ -55,14 +52,28 @@ def get_engagement_manager():
         memory = get_memory_sync()
         scope = get_scope_checker()
 
+        # Wire sandbox provider (Daytona > Docker > LocalDev fail-closed)
+        compute_provider = None
+        try:
+            from sonic.sandbox.factory import get_compute_provider
+            compute_provider = get_compute_provider()
+        except Exception:
+            pass
+
+        # Wire bug bounty client
+        import os
+        h1_key = os.environ.get("HACKERONE_API_KEY", "")
+        bc_key = os.environ.get("BUGCROWD_API_KEY", "")
+        bugbounty_client = BugBountyClient(hackerone_api_key=h1_key, bugcrowd_api_key=bc_key)
+
         _engagement_manager = EngagementManager(
             model_router=router_instance,
             graph_memory=memory,
             scope_checker=scope,
-            # The sandbox provider + reproduction engine are attached lazily on
-            # the first run (see run_engagement) — building them here would be
-            # too eager for headless/test boots that never run an engagement.
-            bug_bounty_client=BugBountyClient(),
+            sandbox_provider=compute_provider,
+            compute_provider=compute_provider,
+            bug_bounty_client=bugbounty_client,
+            bugbounty_client=bugbounty_client,
         )
     return _engagement_manager
 

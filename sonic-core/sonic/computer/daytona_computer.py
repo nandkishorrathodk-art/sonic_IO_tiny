@@ -234,6 +234,14 @@ class DaytonaComputerProvider(ComputerProvider):
                 try:
                     sandbox = await client.get(target_id)
                     if sandbox:
+                        state_token = self._normalize_sandbox_state(getattr(sandbox, "state", None))
+                        if state_token in ("STOPPED", "ARCHIVED", "PAUSED"):
+                            try:
+                                logger.info("daytona_starting_inactive_sandbox", target_id=target_id, state=state_token)
+                                await client.start(sandbox)
+                            except Exception as start_err:
+                                logger.warning("daytona_sandbox_start_failed", error=str(start_err))
+
                         if workspace_id:
                             self._sandboxes[workspace_id] = sandbox
                         self._sandboxes[target_id] = sandbox
@@ -474,12 +482,28 @@ class DaytonaComputerProvider(ComputerProvider):
         """Returns the real-time operational state of the graphical desktop."""
         ws = self.workspaces.get(workspace_id)
         tenant_id = ws.tenant_id if ws else ""
-        active_app = self._active_windows.get(workspace_id, "None")
-
         # Query real running processes from sandbox
         real_processes = []
         resource_usage = {"cpu_pct": 0.0, "memory_mb": 0.0}
         sandbox = await self._resolve_sandbox(workspace_id)
+
+        # Query real open windows using wmctrl
+        open_windows: list[str] = []
+        try:
+            wm_res = await self.terminal(workspace_id, "DISPLAY=:0 wmctrl -l")
+            if wm_res.exit_code == 0 and wm_res.stdout:
+                for line in wm_res.stdout.splitlines():
+                    parts = line.split(maxsplit=3)
+                    if len(parts) >= 4:
+                        win_title = parts[3].strip()
+                        if win_title not in ("xfce4-panel", "Desktop") and win_title not in open_windows:
+                            open_windows.append(win_title)
+        except Exception:
+            pass
+
+        active_app = self._active_windows.get(workspace_id)
+        if not active_app or active_app == "None":
+            active_app = open_windows[0] if open_windows else "Desktop"
         # Derive real workspace status from the sandbox state.
         # Daytona returns a SandboxState enum whose str() includes the
         # enum name (e.g. "<SandboxState.STARTED: 'started'>"); normalize to
@@ -531,7 +555,7 @@ class DaytonaComputerProvider(ComputerProvider):
             tenant_id=tenant_id,
             status=ws_status,
             active_application=active_app,
-            open_applications=[active_app] if active_app != "None" else [],
+            open_applications=open_windows or ([active_app] if active_app != "None" else []),
             active_window=active_app,
             working_directory=working_dir,
             running_processes=real_processes,
@@ -755,10 +779,16 @@ class DaytonaComputerProvider(ComputerProvider):
 
             elif action_type == GUIActionType.OPEN_APP and action.app_name:
                 self._active_windows[workspace_id] = action.app_name
+                app_cmd = action.app_name.strip()
                 try:
-                    await sandbox.process.exec(f"DISPLAY=:0 {action.app_name} &")
+                    wm_check = await sandbox.process.exec("DISPLAY=:0 wmctrl -l")
+                    is_already_open = wm_check.result and app_cmd.lower() in wm_check.result.lower()
+                    if is_already_open:
+                        await sandbox.process.exec(f"DISPLAY=:0 (wmctrl -a {shlex.quote(app_cmd)} 2>/dev/null || xdotool search --onlyvisible --class {shlex.quote(app_cmd)} windowactivate 2>/dev/null) || true")
+                    else:
+                        await sandbox.process.exec(f"DISPLAY=:0 {app_cmd} &")
                 except Exception:
-                    pass
+                    await sandbox.process.exec(f"DISPLAY=:0 {app_cmd} &")
 
             elif action_type == GUIActionType.CLOSE_APP and action.app_name:
                 await sandbox.process.exec(f"pkill -f -- {shlex.quote(action.app_name)}")

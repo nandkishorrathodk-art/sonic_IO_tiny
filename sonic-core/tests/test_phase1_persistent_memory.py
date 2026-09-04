@@ -57,11 +57,10 @@ def isolated_memory_db(tmp_path, monkeypatch):
     # Clean up the DB file (WAL side-files too).
     for suffix in ("", "-wal", "-shm"):
         p = Path(db_file + suffix)
-        if p.exists():
-            try:
-                p.unlink()
-            except PermissionError:
-                pass
+        try:
+            p.unlink(missing_ok=True)
+        except (PermissionError, FileNotFoundError):
+            pass
 
 
 

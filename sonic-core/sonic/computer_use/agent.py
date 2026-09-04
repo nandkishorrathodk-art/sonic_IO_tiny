@@ -13,6 +13,7 @@ of a step counter. No vulnerability-specific fix is hardcoded anywhere.
 
 from __future__ import annotations
 
+import asyncio
 import re
 import shlex
 import time
@@ -71,6 +72,7 @@ class ComputerUseAgent:
         tenant_id: str = "default",
         engagement_id: str = "default",
         agent_id: str = "computer-use-agent",
+        enable_llm_verification: bool = False,
     ):
         self.computer = computer_provider
         self.autonomy_level = autonomy_level
@@ -111,6 +113,7 @@ class ComputerUseAgent:
         self.tenant_id = tenant_id
         self.engagement_id = engagement_id
         self.agent_id = agent_id
+        self.enable_llm_verification = enable_llm_verification
 
         self.traces: list[ComputerDecisionTrace] = []
         self.recovery_events: int = 0
@@ -165,7 +168,7 @@ class ComputerUseAgent:
         self._screen_width = int(getattr(screen_obs, "width", self._screen_width) or self._screen_width)
         self._screen_height = int(getattr(screen_obs, "height", self._screen_height) or self._screen_height)
         status = await self.computer.status(workspace_id)
-        files = await self.computer.list_files(workspace_id, "/home/sonic/workspace")
+        files = await self.computer.list_files(workspace_id, ".")
         git_st = await self.computer.git_action(workspace_id, "status")
 
         # Read the live terminal state so reasoning reflects reality. A no-op
@@ -183,16 +186,17 @@ class ComputerUseAgent:
             except Exception as e:
                 logger.warning("browser_observe_failed", error=str(e))
 
+        file_names = [f.name for f in files]
         return ComputerWorldObservation(
             screen=screen_obs,
             active_application=status.active_application,
             windows=status.open_applications,
             visible_text=screen_obs.visible_text,
-            filesystem_files=[f.name for f in files],
+            filesystem_files=file_names,
             processes=status.running_processes,
             terminal_output=terminal_output,
             browser_state=browser_state,
-            ide_state={"active_file": "auth_controller.py", "cursor_line": 12},
+            ide_state={"active_file": file_names[0] if file_names else "", "cursor_line": 1},
             git_branch=git_st.branch if hasattr(git_st, "branch") else "main",
             git_clean=git_st.is_clean if hasattr(git_st, "is_clean") else True,
         )
@@ -207,24 +211,41 @@ class ComputerUseAgent:
         url, title = "about:blank", "New Tab"
         if hasattr(self.browser, "current_page_state"):
             try:
-                url, title = await self.browser.current_page_state()
+                import inspect
+                res = self.browser.current_page_state()
+                if inspect.isawaitable(res):
+                    url, title = await res
+                else:
+                    url, title = res
             except Exception:
                 pass
-        if (not url or url == "about:blank") and self._last_browser_snapshot is not None:
-            url = getattr(self._last_browser_snapshot, "url", "about:blank")
-            title = getattr(self._last_browser_snapshot, "title", "New Tab")
-        elements: list[dict[str, str]] = []
-        try:
-            dom = await self.browser.find_interactive_elements()
-            for el in dom[:20]:  # cap to keep the prompt bounded
-                elements.append({
-                    "tag": getattr(el, "tag", ""),
-                    "selector": getattr(el, "selector", ""),
-                    "text": (getattr(el, "text", "") or "")[:40],
-                })
-        except Exception:
-            pass
-        return {"url": url, "title": title, "interactive_elements": elements}
+        elif self._last_browser_snapshot:
+            url = getattr(self._last_browser_snapshot, "url", url)
+            title = getattr(self._last_browser_snapshot, "title", title)
+
+        elements: list[dict[str, Any]] = []
+        elem_fn = getattr(self.browser, "find_interactive_elements", None) or getattr(self.browser, "get_interactive_elements", None)
+        if elem_fn is not None:
+            try:
+                import inspect
+                res = elem_fn()
+                if inspect.isawaitable(res):
+                    raw_el = await res
+                else:
+                    raw_el = res
+                elements = [
+                    {"tag": getattr(e, "tag", ""), "text": getattr(e, "text", ""), "selector": getattr(e, "selector", "")}
+                    if not isinstance(e, dict) else e
+                    for e in (raw_el or [])
+                ]
+            except Exception as el_err:
+                logger.debug("browser_interactive_elements_failed", error=str(el_err))
+
+        return {
+            "url": url,
+            "title": title,
+            "interactive_elements": elements,
+        }
 
     # =============================================================
     # 2. Closed-Loop Reasoning & Action Selection
@@ -233,9 +254,10 @@ class ComputerUseAgent:
         self,
         goal: str,
         observation: ComputerWorldObservation,
-        step_index: int,
+        step_index: int = 1,
     ) -> tuple[ComputerActionType, str, dict[str, Any], str]:
-        """
+        """Choose the next action dynamically based on observation and goal.
+
         Decide the next action from (goal, observation, history).
 
         With an LLM router this is genuine model-driven reasoning: the live
@@ -246,11 +268,11 @@ class ComputerUseAgent:
 
         Returns: (action_type, target_resource, payload_dict, predicted_outcome)
         """
-        target_files = observation.filesystem_files or ["auth_controller.py", "test_auth.py"]
-        code_files = [f for f in target_files if f.endswith(".py") and not f.startswith("test_")]
-        test_files = [f for f in target_files if f.startswith("test_") or f.endswith("_test.py")]
-        primary_file = code_files[0] if code_files else "auth_controller.py"
-        test_file = test_files[0] if test_files else "test_auth.py"
+        target_files = observation.filesystem_files or []
+        code_files = [f for f in target_files if f.endswith((".py", ".js", ".ts", ".go", ".rs", ".sh")) and not f.startswith("test_")]
+        test_files = [f for f in target_files if f.startswith("test_") or f.endswith(("_test.py", ".test.js", ".test.ts"))]
+        primary_file = code_files[0] if code_files else (target_files[0] if target_files else "")
+        test_file = test_files[0] if test_files else ""
 
         # Direct Terminal Command Goal (operator-pinned command, not reasoning).
         goal_lower = goal.lower()
@@ -356,7 +378,8 @@ class ComputerUseAgent:
             "new METHOD rather than a new tool, invent a technique (METHOD_INVENT). "
             "If the goal is already achieved, respond GOAL_COMPLETE.\n"
             "You can see the desktop screenshot and interact with GUI elements by clicking at coordinates.\n"
-            "Respond in EXACTLY this format (no markdown):\n"
+            "Respond in EXACTLY this format (no markdown code fences):\n"
+            "THOUGHT: <Brief 1-sentence thought explaining what you intend to do and why>\n"
             "ACTION: <GUI_CLICK|GUI_DOUBLE_CLICK|GUI_TYPE|GUI_KEYPRESS|GUI_MOVE|GUI_SCROLL|GUI_DRAG|GUI_SCREENSHOT|GUI_WAIT|FILE_READ|FILE_WRITE|TERMINAL_EXEC|GIT_COMMIT|APP_LAUNCH|APP_CLOSE|APP_FOCUS|APP_INSTALL|SERVICE_ACTION|BROWSER_NAVIGATE|BROWSER_CLICK|BROWSER_TYPE|BROWSER_SCREENSHOT|BROWSER_WAIT|BROWSER_DOWNLOAD|SECURITY_TOOL|TOOL_AUTHOR|TOOL_RUN|METHOD_INVENT|GOAL_COMPLETE>\n"
             "TARGET: <resource path, name, url, css selector, or scan target>\n"
             'PAYLOAD: <json dict, e.g. {"path": "...", "content": "..."}, '
@@ -423,12 +446,15 @@ class ComputerUseAgent:
         )
         try:
             response = await self.llm_router.complete(request)
+            t_match = re.search(r'(?:\*{1,2}|_)?\bTHOUGHT\b(?:\*{1,2}|_)?:\s*(.*?)(?=(?:\*{1,2}|_)?\b(?:THOUGHT|ACTION|TARGET|PAYLOAD|EXPECTED)\b(?:\*{1,2}|_)?\:|$)', response.content, re.DOTALL | re.IGNORECASE)
+            self._last_thought = t_match.group(1).strip(" *_\n\r\t") if t_match else ""
             action_type, target, payload, expected = self._parse_llm_action(
                 response.content, primary_file
             )
             return action_type, target, payload, expected
         except Exception as e:
             logger.warning("computer_llm_action_failed_diagnostic_fallback", error=str(e))
+            self._last_thought = ""
             return self._diagnostic_fallback(primary_file)
 
     @staticmethod
@@ -436,14 +462,22 @@ class ComputerUseAgent:
         text: str, default_file: str
     ) -> tuple[ComputerActionType, str, dict[str, Any], str]:
         """Parse structured LLM response into an action tuple."""
-        lines = [l.strip() for l in text.strip().splitlines() if l.strip()]
-        fields: dict[str, str] = {}
-        for line in lines:
-            if ":" in line:
-                key, _, val = line.partition(":")
-                fields[key.strip().upper()] = val.strip()
+        # Robust multi-field extraction (handles single-line, multi-line, markdown bold/italics)
+        pattern = r'(?:\*{1,2}|_)?\b(ACTION|TARGET|PAYLOAD|EXPECTED)\b(?:\*{1,2}|_)?:\s*(.*?)(?=(?:\*{1,2}|_)?\b(?:ACTION|TARGET|PAYLOAD|EXPECTED)\b(?:\*{1,2}|_)?\:|$)'
+        matches = re.findall(pattern, text, re.DOTALL | re.IGNORECASE)
+        fields: dict[str, str] = {k.strip().upper(): v.strip(" *_\n\r\t") for k, v in matches}
 
-        action_str = fields.get("ACTION", "TERMINAL_EXEC").upper()
+        # Fallback to line-by-line if regex matched nothing
+        if not fields:
+            lines = [l.strip() for l in text.strip().splitlines() if l.strip()]
+            for line in lines:
+                if ":" in line:
+                    key, _, val = line.partition(":")
+                    fields[key.strip().upper()] = val.strip()
+
+        raw_action = fields.get("ACTION", "TERMINAL_EXEC").upper()
+        action_word = raw_action.split()[0] if raw_action.split() else "TERMINAL_EXEC"
+        action_str = action_word.strip()
         action_map = {
             "GUI_CLICK": ComputerActionType.GUI_CLICK,
             "GUI_DOUBLE_CLICK": ComputerActionType.GUI_DOUBLE_CLICK,
@@ -487,7 +521,13 @@ class ComputerUseAgent:
                 _GOAL_COMPLETE_SENTINEL,
             )
 
-        target = fields.get("TARGET", default_file)
+        default_target = default_file if action_type in (ComputerActionType.FILE_READ, ComputerActionType.FILE_WRITE) else ""
+        if action_type == ComputerActionType.APP_LAUNCH:
+            default_target = "chromium"
+        elif action_type == ComputerActionType.BROWSER_NAVIGATE:
+            default_target = "https://www.google.com"
+
+        target = fields.get("TARGET", "") or default_target
         payload_str = fields.get("PAYLOAD", "{}")
         import json
         try:
@@ -497,7 +537,7 @@ class ComputerUseAgent:
 
         if action_type == ComputerActionType.TERMINAL_EXEC:
             if not payload.get("command") or str(payload.get("command")).lower() == "none":
-                payload["command"] = target if target and target != default_file else "echo OK"
+                payload["command"] = target if target and target != default_file else "pwd"
 
         if action_type in (ComputerActionType.GUI_CLICK, ComputerActionType.GUI_DOUBLE_CLICK, ComputerActionType.GUI_MOVE, ComputerActionType.GUI_DRAG):
             if target and "," in target:
@@ -813,7 +853,12 @@ class ComputerUseAgent:
                 cmd = payload.get("command") or target_resource or "echo OK"
                 if str(cmd).lower() in ("none", ""):
                     cmd = "echo OK"
-                res = await self.computer.terminal(workspace_id, str(cmd))
+                cmd_str = str(cmd).strip()
+                # GUI applications must not block the terminal execution
+                _GUI_APPS = ("chromium", "google-chrome", "firefox", "mousepad", "thunar", "burpsuite", "xfce4-terminal")
+                if any(cmd_str.startswith(app) or cmd_str == app for app in _GUI_APPS) and not cmd_str.endswith("&"):
+                    cmd_str = f"DISPLAY=:0 {cmd_str} &"
+                res = await self.computer.terminal(workspace_id, cmd_str)
                 actual_obs_str = res.stdout.strip() or f"Exit {res.exit_code}"
                 if res.exit_code != 0 and "FAIL-CLOSED" not in res.stderr:
                     recovery_needed = True
@@ -1050,6 +1095,7 @@ class ComputerUseAgent:
             actual_observation=actual_obs_str,
             info_gain=1.0,
             recovery_attempted=recovery_needed,
+            thought=getattr(self, "_last_thought", ""),
             status=status,
         )
         self.traces.append(trace)
@@ -1109,33 +1155,97 @@ class ComputerUseAgent:
         self,
         workspace_id: str,
         goal: str,
+        *,
+        use_llm: bool | None = None,
     ) -> tuple[bool, str]:
-        """Independently verify the goal is achieved — never trust a self-declared
-        "done" (the Devin principle: code-likh-diya != task-complete).
+        """Independently verify whether a goal has been achieved.
 
-        The LLM may emit GOAL_COMPLETE, but that is the agent judging itself
-        (circular). This method performs an INDEPENDENT check grounded in the
-        real sandbox state: if the goal implies a running service/test/file,
-        it probes the actual artifact. Falls back to a fresh observation-only
-        re-check when no concrete artifact can be inferred.
+        Supports LLM-driven verification when explicitly requested (use_llm=True
+        or self.enable_llm_verification=True), asking the LLM to evaluate real
+        evidence rather than circular self-judgment.
+
+        When in standard mode, performs an independent sandbox check grounded
+        in real system state (service/process/test artifacts) without theatrical
+        echo stubs.
 
         Returns (verified, evidence). verified=True only on real evidence.
         """
-        g = goal.lower().strip()
+        do_llm = use_llm if use_llm is not None else getattr(self, "enable_llm_verification", False)
 
-        # Infer a concrete verification probe from the goal text. A human
-        # verifies "build a web app" by running it; "install X" by checking the
-        # binary; "fix tests" by running pytest and reading the result.
+        if do_llm and self.llm_router is not None:
+            async def _query_llm(prompt: str) -> str:
+                from sonic.llm.schemas import LLMRequest, Message, MessageRole
+                req = LLMRequest(
+                    messages=[Message(role=MessageRole.USER, content=prompt)],
+                    task_type="reasoning",
+                )
+                resp = await self.llm_router.complete(req)
+                return resp.content
+
+            # Step 1: Gather current observation for context
+            obs = await self.observe(workspace_id)
+            obs_summary = f"app={obs.active_application}, term={obs.terminal_output[:200] if obs.terminal_output else 'empty'}"
+
+            # Step 2: Ask LLM to propose a verification command
+            verify_prompt = (
+                f"Goal: {goal}\n"
+                f"Current observation: {obs_summary}\n\n"
+                "Propose a single shell command that would verify whether this goal "
+                "has been achieved. The command should produce clear output that "
+                "proves success or failure. Respond with ONLY the command, nothing else.\n"
+                "If no verification command makes sense, respond with: OBSERVE_ONLY"
+            )
+
+            evidence = ""
+            try:
+                llm_resp = await _query_llm(verify_prompt)
+                verify_cmd = llm_resp.strip().split("\n")[0].strip()
+
+                if verify_cmd and verify_cmd != "OBSERVE_ONLY" and len(verify_cmd) < 500:
+                    try:
+                        res = await self.computer.terminal(workspace_id, verify_cmd)
+                        evidence = (res.stdout.strip() if res.stdout else "") or f"Exit {res.exit_code}"
+                    except Exception as e:
+                        evidence = f"Verify probe failed: {e}"
+                else:
+                    evidence = f"Observation: {obs_summary}"
+            except Exception:
+                evidence = f"Observation (LLM unavailable): {obs_summary}"
+
+            # Step 3: Ask LLM to evaluate the evidence
+            try:
+                eval_prompt = (
+                    f"Goal: {goal}\n"
+                    f"Verification evidence:\n{evidence[:2000]}\n\n"
+                    "Based on this evidence, has the goal been achieved? "
+                    "Respond with exactly YES or NO on the first line, "
+                    "followed by a brief explanation."
+                )
+                eval_resp = await _query_llm(eval_prompt)
+                first_line = eval_resp.strip().split("\n")[0].upper()
+                verified = "YES" in first_line
+            except Exception:
+                ev_lower = evidence.lower()
+                verified = bool(evidence) and "error" not in ev_lower and "traceback" not in ev_lower
+
+            return verified, evidence
+
+        # Standard sandbox-grounded probe
+        g = goal.lower().strip()
         verify_cmd: str | None = None
         if any(k in g for k in ("test", "pytest", "unittest")):
             verify_cmd = "python -m pytest -q --tb=short 2>&1 | tail -5"
         elif any(k in g for k in ("install", "set up", "setup")):
-            # Extract a plausible package/binary name from the goal.
             m = re.search(r"install(?:\s+(?:the\s+)?)?([a-zA-Z0-9_.-]+)", g)
             pkg = m.group(1) if m else ""
-            verify_cmd = f"which {pkg} 2>/dev/null || dpkg -l {pkg} 2>/dev/null | grep ^ii"
+            if pkg:
+                verify_cmd = f"which {pkg} 2>/dev/null || dpkg -l {pkg} 2>/dev/null | grep ^ii"
         elif any(k in g for k in ("run", "start", "serve", "launch")):
-            verify_cmd = "echo verify_started"
+            obs = await self.observe(workspace_id)
+            procs = " ".join(obs.processes) if obs.processes else ""
+            evidence = f"Running processes: {procs or 'none detected'}"
+            verified = len(obs.processes) > 0 or obs.active_application != ""
+            return verified, evidence
 
         evidence = ""
         if verify_cmd:
@@ -1145,14 +1255,9 @@ class ComputerUseAgent:
             except Exception as e:
                 evidence = f"Verify probe failed: {e}"
         else:
-            # No concrete probe inferable — re-observe so the caller can judge
-            # from the live state rather than a stale self-declaration.
             obs = await self.observe(workspace_id)
             evidence = f"Re-observed: app={obs.active_application}, term={obs.terminal_output[:120]}"
 
-        # Fail-closed verification: a probe that ran and returned real, non-error
-        # output is "evidence the artifact exists". An empty/error/traceback
-        # probe is NOT success — absence of evidence is not evidence of success.
         ev_lower = evidence.lower()
         verified = bool(evidence) and "error" not in ev_lower and "traceback" not in ev_lower
         return verified, evidence

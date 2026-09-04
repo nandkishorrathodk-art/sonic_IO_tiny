@@ -200,6 +200,8 @@ export function WorklogFeed({
           }
 
           if (item.title === "Thinking" || item.type === "action") {
+            const isPureThinking = item.title === "Thinking";
+            const displayTitle = isPureThinking ? "Thinking" : (item.title || "Action Executed");
             return (
               <div key={itemId} className="rounded-lg border border-ink-700 bg-ink-850 p-3 space-y-2 my-2 shadow-sm">
                 <div
@@ -208,7 +210,7 @@ export function WorklogFeed({
                 >
                   <div className="flex items-center gap-1.5">
                     {isExpanded ? <ChevronDown className="w-3.5 h-3.5 text-muted" /> : <ChevronRight className="w-3.5 h-3.5 text-muted" />}
-                    <span className="text-white font-medium">Thinking</span>
+                    <span className={isPureThinking ? "text-cyan-400 font-medium" : "text-white font-medium"}>{displayTitle}</span>
                   </div>
                 </div>
                 {isExpanded && item.content && (

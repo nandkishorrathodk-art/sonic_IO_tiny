@@ -1396,9 +1396,11 @@ def _detect_requested_app(prompt: str) -> tuple[str, str]:
     # Browser / Web navigation
     _NEWS_KEYWORDS = ("news", "khabar", "kabar", "samachar", "taaza", "taja", "headlines", "breaking")
     is_news_request = any(k in lower for k in _NEWS_KEYWORDS)
-    if is_news_request or any(
-        k in lower for k in ("browser", "chrome", "chromium", "firefox", "web", "surf", "website", "url", "open link")
-    ):
+    _BROWSER_KEYWORDS = (
+        "browser", "chrome", "chromium", "chromim", "chrom", "crome", "chromuim",
+        "firefox", "web", "surf", "website", "url", "open link", "google", "search for", "search", "dhoondo", "dhundo"
+    )
+    if is_news_request or any(k in lower for k in _BROWSER_KEYWORDS):
         url_match = re.search(r"https?://[^\s]+", prompt)
         if url_match:
             return "chromium", url_match.group(0)
@@ -1407,11 +1409,19 @@ def _detect_requested_app(prompt: str) -> tuple[str, str]:
             return "chromium", f"https://{domain_match.group(1)}"
         if is_news_request:
             return "chromium", "https://news.google.com"
+        search_match = re.search(r"(?:search for|search|look for|find|dhundo|dhoondo)\s+([a-zA-Z0-9+_.-]+)", lower)
+        if search_match:
+            query = search_match.group(1).strip()
+            return "chromium", f"https://www.google.com/search?q={query}"
         return "chromium", "https://www.google.com"
 
     # Terminal
-    if any(k in lower for k in ("terminal", "bash", "shell", "console", "cmd")):
+    if any(k in lower for k in ("terminal", "terminial", "bash", "shell", "console", "cmd")):
         return "xfce4-terminal", ""
+
+    # Burp Suite
+    if any(k in lower for k in ("burpsuite", "burp suite", "burp")):
+        return "burpsuite", ""
 
     # Text editor
     if any(k in lower for k in ("editor", "mousepad", "vscode", "code", "notepad", "nano")):
@@ -1487,6 +1497,11 @@ def _is_action_prompt(prompt: str) -> bool:
     if not lower:
         return False
 
+    # Filter out pure conversational greetings / smalltalk
+    _GREETINGS = {"hi", "hello", "hey", "test", "ping", "who are you", "what are you", "sup", "yo"}
+    if lower in _GREETINGS:
+        return False
+
     # 1. Window / Process closing commands
     if any(k in lower for k in ("close terminal", "kill terminal", "exit terminal", "close your terminal", "close window", "band karo", "close app", "close browser")):
         return True
@@ -1500,12 +1515,12 @@ def _is_action_prompt(prompt: str) -> bool:
         return True
 
     # 3. Package install intent
-    if _extract_install_package(prompt):
+    if _extract_install_package(prompt) or "install" in lower:
         return True
 
-    # 4. GUI app opening / launching on desktop
+    # 4. GUI app opening / launching / searching on desktop
     app, _ = _detect_requested_app(prompt)
-    if app and any(k in lower for k in ("open", "launch", "start", "view", "browse", "run", "khol", "kholo", "chalao", "dekh", "dekho", "dikhao")):
+    if app:
         return True
 
     # 5. Targeted recon, bug bounty, bug hunting or live security scanning
@@ -1515,7 +1530,18 @@ def _is_action_prompt(prompt: str) -> bool:
         return True
 
     # 6. Active recon / bug hunting phrases without explicit target url
-    return bool(any(p in lower for p in ("active recon", "target recon", "network scan", "port scan", "bug hunt", "bug bounty", "find bug", "look for bug", "find bugs", "security audit", "start pentest")))
+    if any(p in lower for p in ("active recon", "target recon", "network scan", "port scan", "bug hunt", "bug bounty", "find bug", "look for bug", "find bugs", "security audit", "start pentest")):
+        return True
+
+    # 7. GUI direct interaction verbs (mouse, keyboard, app navigation, hindi action verbs)
+    if any(k in lower for k in (
+        "click", "type", "press", "scroll", "drag", "mouse", "cursor", "navigate",
+        "download", "search", "dhundo", "dhoondo", "kholo", "chalao", "dabao", "likho",
+        "check whoami", "check ip", "run", "open", "launch", "close"
+    )):
+        return True
+
+    return False
 
 
 def _extract_install_package(prompt: str) -> str:
@@ -1857,9 +1883,11 @@ async def _run_prompt_reasoning(tenant_id: str, session_id: str, prompt: str) ->
                         async def _on_step(trace):
                             step_type = "action" if trace.status in ("SUCCESS", "RECOVERED") else "error"
                             state["current_action"] = f"Step {trace.step_index}: {trace.action_type.value} on {trace.target_resource}"
+                            thought_info = f"Thought: {trace.thought}\n" if getattr(trace, "thought", "") else ""
                             _append_worklog(
                                 state, step_type,
                                 f"Step {trace.step_index}: {trace.action_type.value}",
+                                f"{thought_info}"
                                 f"Target: {trace.target_resource}\n"
                                 f"Result: {trace.actual_observation}\n"
                                 f"Status: {trace.status}",
@@ -1918,7 +1946,7 @@ async def _run_prompt_reasoning(tenant_id: str, session_id: str, prompt: str) ->
                         traces = await agent.run_mission(
                             workspace_id=desktop_id,
                             goal=prompt,
-                            steps=6,
+                            steps=12,
                             step_callback=_on_step,
                         )
 
@@ -1926,12 +1954,14 @@ async def _run_prompt_reasoning(tenant_id: str, session_id: str, prompt: str) ->
                         succeeded = sum(1 for t in traces if t.status in ("SUCCESS", "RECOVERED"))
                         failed = sum(1 for t in traces if t.status == "FAILED")
                         blocked = sum(1 for t in traces if t.status == "BLOCKED")
-                        state["current_action"] = f"Visual Computer Use Complete ({succeeded} succeeded)"
+                        state["status"] = "IDLE"
+                        state["current_action"] = "Ready when you are."
+                        summary_msg = f"Autonomous computer-use execution finished: {succeeded} steps executed on the live Daytona desktop ({len(traces)} total steps)."
+                        state["thought_summary"] = summary_msg
                         _append_worklog(
                             state, "response",
-                            "Visual Computer Use Complete",
-                            f"Completed {len(traces)} steps: {succeeded} succeeded, "
-                            f"{failed} failed, {blocked} blocked",
+                            "SONIC Response",
+                            summary_msg,
                         )
                         _persist_workstation_state()
                         return

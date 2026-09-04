@@ -253,14 +253,31 @@ class MissionDirector:
             # (was orphaned — BrowserAgent existed but no caller passed browser=).
             from sonic.agents.browser_agent import BrowserAgent
             from sonic.tools.registry import get_default_registry
+            from sonic.being.toolsmith import ToolsmithLoop
+            from sonic.being.method_lab import MethodLab
+            from sonic.being.craft import BeingCraft
+            from sonic.memory.vector import get_vector_memory
             browser = BrowserAgent(headless=True)
             await browser.launch()
+            registry = get_default_registry(self.computer.compute)
+            toolsmith = ToolsmithLoop(
+                craft=BeingCraft(being_id=f"mission-{mission_id}"),
+                llm=self.model_router,
+                registry=registry,
+            )
+            method_lab = MethodLab(
+                llm=self.model_router,
+                vector_memory=get_vector_memory(),
+                toolsmith=toolsmith,
+            )
             agent = ComputerUseAgent(
                 computer_provider=self.computer,
                 autonomy_level=self.autonomy_level,
                 mode=EngineeringMissionMode.ENGINEERING_MODE,
                 security_tools=get_default_registry(self.computer.compute).as_dict(),
                 browser=browser,
+                toolsmith=toolsmith,
+                method_lab=method_lab,
             )
             traces = await agent.run_mission(
                 workspace_id=ws.id,

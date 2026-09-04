@@ -26,10 +26,13 @@ from sonic.sandbox.egress import is_target_allowed
 logger = get_logger(__name__)
 
 from sonic.agents.dynamic_execution import DynamicExecutionAgent
+from sonic.agents.exploit_chain import ExploitChainEngine
 from sonic.agents.hypothesis import HypothesisGenerator
 from sonic.agents.recon import ReconAgent
 from sonic.agents.static_reasoning import StaticReasoningAgent
 from sonic.agents.verifier import VerifierAgent
+from sonic.evidence.independent_verifier import AdversarialReviewer, IndependentVerifier
+from sonic.evidence.reproduction_engine import ReproductionEngine
 from sonic.llm.router import ModelRouter
 from sonic.memory.graph import GraphMemory
 from sonic.memory.schemas import (
@@ -39,6 +42,7 @@ from sonic.memory.schemas import (
     FindingStatus,
 )
 from sonic.safety.scope import ScopeChecker
+from sonic.sandbox.provider import ComputeProvider
 
 
 class EngagementManager:
@@ -52,33 +56,22 @@ class EngagementManager:
         model_router: ModelRouter,
         graph_memory: GraphMemory,
         scope_checker: ScopeChecker,
+        compute_provider: Any = None,
         *,
         sandbox_provider: Any = None,
         reproduction_engine: Any = None,
         bug_bounty_client: Any = None,
+        bugbounty_client: Any = None,
+        **kwargs: Any,
     ):
-        """
-        Shared resources are injected so the agents can act on a REAL compute
-        substrate instead of firing probes from the host process.
-
-        - ``sandbox_provider``: a ComputeProvider (Docker/Daytona/LocalDev) the
-          dynamic agent runs HTTP probes inside (curl in the sandbox) and the
-          reproduction engine reproduces PoCs in. When None, the dynamic agent
-          falls back to direct host probes (the legacy behaviour) so existing
-          callers keep working.
-        - ``reproduction_engine``: a ReproductionEngine bound to the provider;
-          when supplied the Verifier reproduces findings in-sandbox instead of
-          only re-firing HTTP / LLM-guessing. Built lazily from the provider in
-          ``ensure_sandbox`` if not passed.
-        - ``bug_bounty_client``: a BugBountyClient used to render verified
-          findings into platform-ready draft reports.
-        """
         self.router = model_router
         self.memory = graph_memory
         self.scope = scope_checker
-        self.sandbox_provider = sandbox_provider
+        self.sandbox_provider = sandbox_provider if sandbox_provider is not None else compute_provider
+        self.provider = self.sandbox_provider
         self.reproduction_engine = reproduction_engine
-        self.bug_bounty_client = bug_bounty_client
+        self.bug_bounty_client = bug_bounty_client if bug_bounty_client is not None else bugbounty_client
+        self.bugbounty_client = self.bug_bounty_client
 
         self.active_engagements: dict[str, dict] = {}
         self.agents: dict[str, Any] = {}
@@ -235,7 +228,10 @@ class EngagementManager:
         eng["status"] = EngagementStatus.RUNNING
         await self.memory.update_engagement(engagement_id, status=EngagementStatus.RUNNING)
 
-        default_phases = ["recon", "hypothesis", "static", "dynamic", "verify", "report"]
+        default_phases = [
+            "recon", "hypothesis", "research", "static", "dynamic",
+            "computer_dynamic", "verify", "chain", "report", "submit",
+        ]
         run_phases = phases or default_phases
         results: dict[str, Any] = {}
 
@@ -253,6 +249,12 @@ class EngagementManager:
                         engagement_id, target, results.get("recon", {})
                     )
 
+                elif phase == "research":
+                    results["research"] = await self._run_research(
+                        engagement_id, target, results.get("hypothesis", {}),
+                        results.get("recon", {}),
+                    )
+
                 elif phase == "static":
                     results["static"] = await self._run_static(
                         engagement_id, target, results.get("recon", {})
@@ -265,11 +267,27 @@ class EngagementManager:
                         results.get("recon", {}),
                     )
 
+                elif phase == "computer_dynamic":
+                    results["computer_dynamic"] = await self._run_computer_dynamic(
+                        engagement_id, target,
+                        results.get("hypothesis", {}),
+                        results.get("recon", {}),
+                        results.get("dynamic", {}),
+                    )
+
                 elif phase == "verify":
                     results["verify"] = await self._run_verify(engagement_id)
 
+                elif phase == "chain":
+                    results["chain"] = await self._run_chain(
+                        engagement_id, results,
+                    )
+
                 elif phase == "report":
                     results["report"] = await self._run_report(engagement_id, target, results)
+
+                elif phase == "submit":
+                    results["submit"] = await self._run_submit(engagement_id, results)
 
                 logger.info("phase_complete", engagement=engagement_id, phase=phase)
 
@@ -412,15 +430,25 @@ class EngagementManager:
     async def _run_verify(self, engagement_id: str) -> dict:
         """Run verification phase on all unverified findings.
 
-        When a reproduction engine is attached, the Verifier reproduces each
-        finding's PoC inside the sandbox (real execution) instead of only
-        re-firing the HTTP request or LLM-guessing.
+        When a reproduction engine is attached (or a sandbox provider is available),
+        the Verifier reproduces each finding's PoC inside the sandbox (real execution)
+        instead of only re-firing the HTTP request or LLM-guessing.
         """
         eng = self.active_engagements.get(engagement_id, {})
+        reproduction_engine = self.reproduction_engine
+        if reproduction_engine is None and self.provider is not None:
+            reproduction_engine = ReproductionEngine(compute_provider=self.provider)
+
+        extra_kwargs: dict[str, Any] = {}
+        if reproduction_engine is not None:
+            extra_kwargs["reproduction_engine"] = reproduction_engine
+            extra_kwargs["independent_verifier"] = IndependentVerifier()
+            extra_kwargs["adversarial_reviewer"] = AdversarialReviewer()
+
         agent = self._create_agent(
             VerifierAgent,
-            reproduction_engine=self.reproduction_engine,
             scope_config=eng.get("scope") or {},
+            **extra_kwargs,
         )
         self.active_engagements[engagement_id]["agents_used"].append(agent.agent_id)
 
@@ -436,6 +464,270 @@ class EngagementManager:
             "scope_config": eng.get("scope") or {},
         })
         return result
+
+    # ---- NEW PHASES (Gap fixes) ----
+
+    async def _run_research(
+        self, engagement_id: str, target: str,
+        hypothesis_results: dict, recon_results: dict,
+    ) -> dict:
+        """Run autonomous research phase using ResearchManager (Gap #6).
+
+        Seeds research questions from recon assets and hypotheses,
+        runs investigation tracks, and returns structured findings.
+        Gracefully degrades if ResearchManager dependencies are unavailable.
+        """
+        try:
+            from sonic.researcher.manager import ResearchManager
+            from sonic.researcher.models import ResearchMode
+
+            eng = self.active_engagements.get(engagement_id, {})
+            tenant_id = eng.get("tenant_id", "default")
+
+            mgr = ResearchManager(
+                mission_id=engagement_id,
+                tenant_id=tenant_id,
+                goal=f"Security assessment of {target}",
+                mode=ResearchMode.AUTONOMOUS,
+            )
+
+            # Seed with recon facts
+            assets = recon_results.get("assets", [])
+            initial_facts = [
+                f"Discovered asset: {a.get('type', '')} = {a.get('value', '')}"
+                for a in assets[:20]
+            ]
+            mgr.add_initial_facts(initial_facts)
+
+            # Convert hypotheses to research questions
+            for h in hypothesis_results.get("hypotheses", [])[:10]:
+                title = h.get("title", "") or h.get("statement", "")
+                if title:
+                    mgr.add_question(
+                        question=f"Is this vulnerability exploitable: {title}?",
+                        importance=0.8,
+                    )
+                    # Also propose as a hypothesis in the research portfolio
+                    mgr.propose_hypothesis(
+                        statement=title,
+                        confidence=float(h.get("confidence", 0.5)),
+                    )
+
+            # Generate research report
+            report = mgr.generate_report()
+            logger.info("research_phase_complete",
+                        engagement=engagement_id,
+                        questions=len(mgr.questions),
+                        hypotheses=len(mgr.portfolio.hypotheses))
+            return {
+                "questions": len(mgr.questions),
+                "hypotheses": len(mgr.portfolio.hypotheses),
+                "report_summary": report.summary if hasattr(report, "summary") else str(report),
+                "initial_facts": initial_facts,
+            }
+        except Exception as e:
+            logger.warning("research_phase_skipped", error=str(e))
+            return {"skipped": True, "reason": str(e)}
+
+    async def _run_computer_dynamic(
+        self, engagement_id: str, target: str,
+        hypothesis_results: dict, recon_results: dict,
+        http_dynamic_results: dict,
+    ) -> dict:
+        """Run REAL dynamic testing via ComputerUseAgent in sandbox (Gaps #1, #2, #5).
+
+        This is the core gap fix: the engagement pipeline now routes through
+        ComputerUseAgent with real security tools (nmap/nuclei/ffuf/burp),
+        browser automation, and optionally Toolsmith + MethodLab.
+
+        The HTTP-probe dynamic phase (previous step) gives fast initial coverage.
+        This phase runs deeper scans inside the sandbox.
+        """
+        if self.provider is None:
+            logger.info("computer_dynamic_skipped_no_provider",
+                        engagement=engagement_id)
+            return {
+                "skipped": True,
+                "reason": "No ComputeProvider available — sandbox required for real tool execution",
+            }
+
+        try:
+            from sonic.computer_use.agent import ComputerUseAgent
+            from sonic.tools.registry import get_default_registry
+
+            # Wire the security tool registry (nmap, nuclei, ffuf, http_client, burp)
+            registry = get_default_registry(self.provider)
+            security_tools = registry.as_dict()
+
+            # Optionally wire Toolsmith + MethodLab for self-evolution during engagement
+            extra_agent_kwargs: dict[str, Any] = {}
+            try:
+                from sonic.being.craft import BeingCraft
+                from sonic.being.method_lab import MethodLab
+                from sonic.being.toolsmith import ToolsmithLoop
+                from sonic.memory.vector import get_vector_memory
+
+                toolsmith = ToolsmithLoop(
+                    craft=BeingCraft(being_id=f"engagement-{engagement_id}"),
+                    llm=self.router,
+                    registry=registry,
+                )
+                method_lab = MethodLab(
+                    llm=self.router,
+                    vector_memory=get_vector_memory(),
+                    toolsmith=toolsmith,
+                )
+                extra_agent_kwargs["toolsmith"] = toolsmith
+                extra_agent_kwargs["method_lab"] = method_lab
+                logger.info("toolsmith_method_lab_wired", engagement=engagement_id)
+            except Exception as e:
+                logger.debug("toolsmith_wiring_skipped", error=str(e))
+
+            # Optionally wire browser
+            browser = None
+            try:
+                from sonic.agents.browser_agent import BrowserAgent
+                browser = BrowserAgent(headless=True)
+                await browser.launch()
+            except Exception as e:
+                logger.debug("browser_wiring_skipped", error=str(e))
+
+            # Create the agent with all capabilities wired
+            agent = ComputerUseAgent(
+                computer_provider=self.provider,
+                security_tools=security_tools,
+                browser=browser,
+                **extra_agent_kwargs,
+            )
+
+            # Build the goal from engagement context
+            hypotheses_summary = ", ".join(
+                h.get("title", "")[:60]
+                for h in hypothesis_results.get("hypotheses", [])[:5]
+            )
+            http_findings = (http_dynamic_results or {}).get("findings", [])
+            http_summary = ", ".join(
+                f.get("title", "")[:40] for f in http_findings[:5]
+            )
+            goal = (
+                f"Perform comprehensive security assessment of {target}. "
+                f"Test hypotheses: {hypotheses_summary or 'general security testing'}. "
+                f"HTTP probe found: {http_summary or 'no initial findings'}. "
+                f"Use nmap for port scanning, nuclei for CVE detection, "
+                f"ffuf for directory fuzzing. Report all findings."
+            )
+
+            # Create a workspace and run the mission
+            ws_id = await self._workspace_for(engagement_id) or f"eng-{engagement_id[:12]}"
+
+            traces = await agent.run_mission(
+                workspace_id=ws_id,
+                goal=goal,
+                steps=10,
+            )
+
+            # Extract findings from traces
+            findings = []
+            for trace in (traces or []):
+                if hasattr(trace, "observation") and trace.observation:
+                    obs = trace.observation
+                    if isinstance(obs, str) and any(kw in obs.lower() for kw in
+                        ["open", "vuln", "found", "critical", "high", "medium",
+                         "cve-", "exposed", "injection", "xss"]):
+                        findings.append({
+                            "title": f"Security finding from {getattr(trace, 'action_type', 'scan')}",
+                            "description": obs[:500],
+                            "severity": "medium",
+                            "source": "computer_dynamic",
+                            "target": target,
+                        })
+
+            logger.info("computer_dynamic_complete",
+                        engagement=engagement_id,
+                        traces=len(traces or []),
+                        findings=len(findings))
+
+            return {
+                "traces": len(traces or []),
+                "findings": findings,
+                "tools_used": list(security_tools.keys()),
+                "goal": goal,
+            }
+        except Exception as e:
+            logger.warning("computer_dynamic_failed", error=str(e),
+                          engagement=engagement_id)
+            return {"skipped": True, "reason": str(e)}
+
+    async def _run_chain(self, engagement_id: str, results: dict) -> dict:
+        """Run exploit chaining analysis on verified findings (Gap #8).
+
+        Analyzes verified findings for opportunities to chain multiple
+        vulnerabilities into higher-impact exploits.
+        """
+        all_findings = self._collect_findings(results)
+        if len(all_findings) < 2:
+            return {"chains": [], "reason": "Need at least 2 findings to chain"}
+
+        eng = self.active_engagements.get(engagement_id, {})
+        target = eng.get("target", "")
+
+        engine = ExploitChainEngine(model_router=self.router)
+        chains = await engine.analyze_chains(all_findings, target=target)
+
+        chain_dicts = []
+        for chain in chains:
+            chain_dicts.append({
+                "chain_id": chain.chain_id,
+                "title": chain.title,
+                "combined_severity": chain.combined_severity,
+                "combined_impact": chain.combined_impact,
+                "steps": chain.chain_steps,
+                "confidence": chain.confidence,
+                "original_severities": chain.original_severities,
+                "finding_count": len(chain.findings),
+            })
+
+        logger.info("exploit_chain_analysis_complete",
+                    engagement=engagement_id,
+                    chains_found=len(chains))
+        return {"chains": chain_dicts}
+
+    async def _run_submit(self, engagement_id: str, results: dict) -> dict:
+        """Auto-format and optionally submit findings to bug bounty platforms (Gap #4).
+
+        When a BugBountyClient is configured, formats verified findings
+        as platform-ready draft reports. Does NOT auto-submit without
+        explicit confirmation — generates drafts for operator review.
+        """
+        client = self.bug_bounty_client or self.bugbounty_client
+        if client is None:
+            return {"skipped": True, "reason": "No BugBountyClient configured"}
+
+        all_findings = self._collect_findings(results)
+        reportable = [
+            f for f in all_findings
+            if (f.get("severity", "").lower() in ("critical", "high"))
+        ]
+        if not reportable:
+            return {"drafts": [], "reason": "No high/critical findings to report"}
+
+        drafts = []
+        for finding in reportable:
+            try:
+                draft = client.format_report(finding)
+                drafts.append({
+                    "title": finding.get("title", ""),
+                    "severity": finding.get("severity", ""),
+                    "draft": draft if isinstance(draft, dict) else str(draft),
+                })
+            except Exception as e:
+                logger.warning("bugbounty_format_failed",
+                             title=finding.get("title", ""), error=str(e))
+
+        logger.info("bugbounty_drafts_generated",
+                    engagement=engagement_id,
+                    drafts=len(drafts))
+        return {"drafts": drafts, "auto_submitted": False}
 
     async def _run_report(self, engagement_id: str, target: str, results: dict) -> dict:
         """Compile a final report from all verified findings."""

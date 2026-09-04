@@ -142,6 +142,7 @@ class ComputerDecisionTrace(BaseModel):
     actual_observation: str
     info_gain: float = 1.0
     recovery_attempted: bool = False
+    thought: str = ""
     status: str = "SUCCESS"  # "SUCCESS", "RECOVERED", "FAILED", "BLOCKED"
     timestamp: str = Field(default_factory=_now)
 

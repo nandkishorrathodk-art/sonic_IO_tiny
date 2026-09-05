@@ -18,12 +18,17 @@ if [ -z "$DBUS_SESSION_BUS_ADDRESS" ]; then
 fi
 
 # Configure Chrome wrapper to always run with --no-sandbox inside docker
-if [ ! -f /usr/local/bin/chrome ]; then
-    cat << 'EOF' > /usr/local/bin/chrome
+cat << 'EOF' > /usr/local/bin/chrome
 #!/bin/bash
 exec /usr/bin/google-chrome-stable --no-sandbox --disable-dev-shm-usage "$@"
 EOF
-    chmod +x /usr/local/bin/chrome
+chmod +x /usr/local/bin/chrome
+ln -sf /usr/local/bin/chrome /usr/local/bin/chromium 2>/dev/null || true
+ln -sf /usr/local/bin/chrome /usr/local/bin/chromium-browser 2>/dev/null || true
+
+# Patch Google Chrome system launcher if not already patched
+if [ -f /opt/google/chrome/google-chrome ] && ! grep -q -- '--no-sandbox' /opt/google/chrome/google-chrome; then
+    sed -i 's|exec -a "\$0" "\$HERE/chrome" "\$@"|exec -a "\$0" "\$HERE/chrome" --no-sandbox --disable-dev-shm-usage "\$@"|' /opt/google/chrome/google-chrome
 fi
 
 # Set up Desktop directory and shortcuts for user

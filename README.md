@@ -4,8 +4,10 @@
 [![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/downloads/)
 [![License: Proprietary](https://img.shields.io/badge/license-Proprietary-red.svg)]()
 
-> **Codename:** SONIC-REDA (Sonic Red Team Agent)  
-> **Status:** Phase 0 — Foundation  
+> **Codename:** SONIC A-SEA (Autonomous Self-Evolving Penetration Architect)  
+> **Status:** Phase 22 — Native Docker Cyber Workstation & Autonomous Reasoning  
+> 
+> 🤖 **If you are an AI Coding Agent working on this repository, please read [AI_AGENT_GUIDE.md](AI_AGENT_GUIDE.md) and [BLUEPRINT.md](BLUEPRINT.md) first!**
 
 ---
 
@@ -71,9 +73,12 @@ pip install -e sonic-cli[dev]
 #    uvicorn is not on PATH; invoke it as a module:
 APP_ENV=development python -m uvicorn sonic.api.main:app --port 12000 --reload
 
-# 6. Use the CLI
-sonic status
-sonic auth login
+# 6. Start Native Docker Cyber Workstation
+docker start sonic-desktop-workstation
+# Stream live XFCE4 desktop at: http://localhost:6080/vnc.html
+
+# 7. Launch Autonomous Agent Mission
+python scripts/launch_agent.py
 ```
 
 ## Project Structure

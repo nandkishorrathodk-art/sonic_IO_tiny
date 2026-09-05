@@ -27,3 +27,106 @@ def test_draw_action_marker_fallback():
     res = draw_action_marker(dummy_b64, (50, 50))
     assert res is not None
     assert len(res) > 0
+
+
+def test_resolve_ui_target_direct_coords():
+    from sonic.computer_use.grounding import resolve_ui_target
+    pt = resolve_ui_target("800,600", width=1280, height=800)
+    assert pt == (800, 600)
+
+
+def test_resolve_ui_target_landmarks():
+    from sonic.computer_use.grounding import resolve_ui_target
+    # Test common desktop landmarks on 1280x800
+    pt_app = resolve_ui_target("Applications menu", width=1280, height=800)
+    assert pt_app is not None
+    assert pt_app[0] < 50 and pt_app[1] < 50
+
+    pt_term = resolve_ui_target("Terminal icon", width=1280, height=800)
+    assert pt_term is not None
+    assert pt_term[0] < 100 and pt_term[1] < 50
+
+    pt_chrome = resolve_ui_target("Google Chrome", width=1280, height=800)
+    assert pt_chrome is not None
+
+    pt_close = resolve_ui_target("Window close", width=1280, height=800)
+    assert pt_close is not None
+    assert pt_close[0] > 1200
+
+
+def test_resolve_ui_target_grounding_fn():
+    from sonic.computer_use.grounding import resolve_ui_target
+
+    def mock_grounding(query: str, image_b64: str) -> str:
+        return "<|box_start|>(500, 500, 500, 500)<|box_end|>"
+
+    dummy_b64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+    pt = resolve_ui_target("Custom button", screenshot_b64=dummy_b64, width=1280, height=800, grounding_fn=mock_grounding)
+    assert pt == (640, 400)
+
+
+def test_draw_action_marker_styles():
+    dummy_b64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+    m_click = draw_action_marker(dummy_b64, (20, 20), label="CLICK")
+    m_right = draw_action_marker(dummy_b64, (20, 20), label="RIGHT_CLICK")
+    m_double = draw_action_marker(dummy_b64, (20, 20), label="DOUBLE_CLICK")
+    assert m_click and m_right and m_double
+    assert len(m_click) > 0
+
+
+import pytest
+from unittest.mock import AsyncMock, MagicMock
+from sonic.computer_use.agent import ComputerUseAgent
+from sonic.computer_use.models import ComputerActionType
+from sonic.computer.models import GUIActionType, ScreenObservation
+
+
+@pytest.mark.asyncio
+async def test_agent_visual_grounding_click_dispatch():
+    mock_computer = MagicMock()
+    mock_computer.gui_action = AsyncMock(return_value=ScreenObservation(screenshot_base64="", width=1280, height=800))
+    agent = ComputerUseAgent(computer_provider=mock_computer)
+    agent._screen_width = 1280
+    agent._screen_height = 800
+
+    trace = await agent.execute_action(
+        workspace_id="test-ws",
+        action_type=ComputerActionType.GUI_CLICK,
+        target_resource="Applications menu",
+        payload={},
+        predicted_outcome="Open application menu",
+    )
+
+    assert trace.status == "SUCCESS"
+    assert "Visual grounding resolved 'Applications menu'" in trace.actual_observation
+    assert mock_computer.gui_action.called
+    gui_call = mock_computer.gui_action.call_args[0][1]
+    assert gui_call.action == GUIActionType.CLICK
+    assert gui_call.x == 20
+    assert gui_call.y == 12
+
+
+@pytest.mark.asyncio
+async def test_agent_gui_right_click_dispatch():
+    mock_computer = MagicMock()
+    mock_computer.gui_action = AsyncMock(return_value=ScreenObservation(screenshot_base64="", width=1280, height=800))
+    agent = ComputerUseAgent(computer_provider=mock_computer)
+    agent._screen_width = 1280
+    agent._screen_height = 800
+
+    trace = await agent.execute_action(
+        workspace_id="test-ws",
+        action_type=ComputerActionType.GUI_RIGHT_CLICK,
+        target_resource="Terminal",
+        payload={},
+        predicted_outcome="Open terminal context menu",
+    )
+
+    assert trace.status == "SUCCESS"
+    assert "Visual grounding resolved 'Terminal'" in trace.actual_observation
+    assert mock_computer.gui_action.called
+    gui_call = mock_computer.gui_action.call_args[0][1]
+    assert gui_call.action == GUIActionType.RIGHT_CLICK
+    assert gui_call.x == 48
+    assert gui_call.y == 12
+

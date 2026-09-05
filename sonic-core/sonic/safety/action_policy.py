@@ -70,7 +70,7 @@ class ActionPolicy:
     # denied by default (fail-closed).
     DEFAULT_ALLOWED_TYPES = frozenset({
         # GUI desktop interaction (in-sandbox only, no host execution risk)
-        "GUI_CLICK", "GUI_DOUBLE_CLICK", "GUI_TYPE", "GUI_KEYPRESS",
+        "GUI_CLICK", "GUI_DOUBLE_CLICK", "GUI_RIGHT_CLICK", "GUI_TYPE", "GUI_KEYPRESS",
         "GUI_MOVE", "GUI_SCROLL", "GUI_SCREENSHOT", "GUI_DRAG", "GUI_WAIT",
         "FILE_READ", "FILE_WRITE", "TERMINAL_EXEC", "GIT_COMMIT",
         "APP_LAUNCH", "APP_CLOSE", "APP_FOCUS", "APP_INSTALL", "SERVICE_ACTION",

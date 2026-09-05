@@ -1488,12 +1488,14 @@ BugBountyClient existed but was referenced nowhere.
   - Backwards-compatible `get_computer()` and `get_daytona_computer()` route to `DockerComputerProvider` by default.
   - Added duck-typed `DockerContainerSandbox` adapter (`sonic/computer/docker_sandbox.py`) for existing callers.
 
-### 2. Repository Integration & Purpose
-- **Role of `open-computer-use` (`e2b-dev/open-computer-use`)**:
-  - Acts as the visual perception reference library.
-  - Adapted its visual grounding algorithms into `sonic/computer_use/grounding.py`:
+### 2. Repository Integration, Dark Reality & Visual Grounding
+- **Dark Reality of `open-computer-use` (`e2b-dev/open-computer-use`)**:
+  - The dark reality is that `open-computer-use` is a thin 200-line wrapper completely dependent on E2B's paid cloud sandbox (`e2b_desktop`). It cannot run locally on Docker or VPS without paid cloud API accounts.
+  - We extracted its genuine innovations and integrated them natively into SONIC:
     - `extract_bbox_midpoint()`: Extracts precise `(x, y)` coordinates from normalized model outputs (`[0, 1000]`, `[0.0, 1.0]`, or `<|box_start|>(x1,y1,x2,y2)<|box_end|>`), eliminating coordinate hallucination.
-    - `draw_action_marker()`: Renders interactive crosshairs and visual click targets onto screenshots for operator auditing in the dashboard.
+    - `resolve_ui_target()`: Natural-language UI query grounding with semantic desktop landmarks and multimodal vision grounding callbacks.
+    - `draw_action_marker()`: Renders interactive crosshairs and visual click targets onto screenshots (cyan for click, pink for right-click, orange for double-click) for operator auditing in the dashboard.
+    - `ComputerUseAgent.execute_action()`: Natural-language element click resolution (e.g. `TARGET: "Applications menu"` without raw pixel coordinates) and full `GUI_RIGHT_CLICK` support.
 - **Role of Target Repositories (`nandkishorrathodk-art/sonic` or client audit targets)**:
   - Repositories are mounted/cloned into `/root/workspace/` inside the Docker Workstation.
   - SONIC uses its workstation terminal, python runtime, and code analysis tools (`CodeGraph`, AST, grep) to inspect source code, discover logic bugs, and run local test suites.
@@ -1512,8 +1514,9 @@ BugBountyClient existed but was referenced nowhere.
 - Enforced strict tenant isolation in `_run_computer_dynamic`.
 - Modernized `sonic-dashboard/components/computer/ComputerSurface.tsx`: displays "SONIC Cyber Workstation", live feed indicator, and human takeover controls. All 21 Next.js routes compile cleanly (`npm run build`).
 
-### 5. Verification Test Matrix (17/17 Passed)
+### 5. Verification Test Matrix (33/33 Passed 100%)
+- `sonic-core/tests/test_visual_grounding.py` (9 tests): bbox midpoint extraction (box tags, float normalized), semantic landmarks, dynamic grounding fn, action aim marker styles, agent visual click dispatch, agent right-click dispatch — **PASSED**.
 - `sonic-core/tests/test_docker_computer_provider.py` (2 tests): lifecycle, status, terminal execution, screenshot, file read/write, application listing — **PASSED**.
 - `sonic-core/tests/test_docker_workstation_adapter.py` (3 tests): duck-typed sandbox adapter, VNC preview URL, terminal & screenshot — **PASSED**.
-- `sonic-core/tests/test_visual_grounding.py` (3 tests): bbox midpoint extraction (box tags, float normalized), action aim marker rendering — **PASSED**.
 - `sonic-core/tests/test_workstation_interrupt_and_resilience.py` (9 tests): interrupt flag, loop exit, RBAC authentication & rejection, tenant isolation, mission director coordination — **PASSED**.
+- `sonic-core/tests/test_phase_plan6_safety_envelope.py` (10 tests): fail-closed policy, rate limit, path confinement, egress filter, allowlist — **PASSED**.

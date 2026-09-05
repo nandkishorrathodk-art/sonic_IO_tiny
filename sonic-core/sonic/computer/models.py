@@ -61,6 +61,7 @@ class ComputerSessionMode(StrEnum):
 class GUIActionType(StrEnum):
     CLICK = "CLICK"
     DOUBLE_CLICK = "DOUBLE_CLICK"
+    RIGHT_CLICK = "RIGHT_CLICK"
     TYPE = "TYPE"
     KEYPRESS = "KEYPRESS"
     SCROLL = "SCROLL"

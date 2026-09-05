@@ -24,6 +24,7 @@ from sonic.computer.models import (
     GUIActionType,
 )
 from sonic.computer.provider import ComputerProvider
+from sonic.computer_use.grounding import draw_action_marker, resolve_ui_target
 from sonic.computer_use.models import (
     ComputerActionType,
     ComputerAutonomyLevel,
@@ -394,12 +395,12 @@ class ComputerUseAgent:
             "You can see the desktop screenshot and interact with GUI elements by clicking at coordinates.\n"
             "Respond in EXACTLY this format (no markdown code fences):\n"
             "THOUGHT: <Brief 1-sentence thought explaining what you intend to do and why>\n"
-            "ACTION: <GUI_CLICK|GUI_DOUBLE_CLICK|GUI_TYPE|GUI_KEYPRESS|GUI_MOVE|GUI_SCROLL|GUI_DRAG|GUI_SCREENSHOT|GUI_WAIT|FILE_READ|FILE_WRITE|TERMINAL_EXEC|GIT_COMMIT|APP_LAUNCH|APP_CLOSE|APP_FOCUS|APP_INSTALL|SERVICE_ACTION|BROWSER_NAVIGATE|BROWSER_CLICK|BROWSER_TYPE|BROWSER_SCREENSHOT|BROWSER_WAIT|BROWSER_DOWNLOAD|SECURITY_TOOL|TOOL_AUTHOR|TOOL_RUN|METHOD_INVENT|GOAL_COMPLETE>\n"
-            "TARGET: <resource path, application/window name, url, css selector, or coordinates>\n"
+            "ACTION: <GUI_CLICK|GUI_DOUBLE_CLICK|GUI_RIGHT_CLICK|GUI_TYPE|GUI_KEYPRESS|GUI_MOVE|GUI_SCROLL|GUI_DRAG|GUI_SCREENSHOT|GUI_WAIT|FILE_READ|FILE_WRITE|TERMINAL_EXEC|GIT_COMMIT|APP_LAUNCH|APP_CLOSE|APP_FOCUS|APP_INSTALL|SERVICE_ACTION|BROWSER_NAVIGATE|BROWSER_CLICK|BROWSER_TYPE|BROWSER_SCREENSHOT|BROWSER_WAIT|BROWSER_DOWNLOAD|SECURITY_TOOL|TOOL_AUTHOR|TOOL_RUN|METHOD_INVENT|GOAL_COMPLETE>\n"
+            "TARGET: <resource path, application/window name, url, css selector, coordinates, or UI element query>\n"
             'PAYLOAD: <json dict, e.g. {"path": "...", "content": "..."}, '
             '{"command": "..."}, {"url": "..."}, {"selector": "...", "text": "..."}, '
             '{"app_name": "..."}, {"tool": "...", "target": "...", "args": "..."}>\n'
-            'For GUI_CLICK/GUI_DOUBLE_CLICK/GUI_MOVE: TARGET must be actual numeric pixel coordinates like "640,400" (never the literal placeholder letters "x,y")\n'
+            'For GUI_CLICK/GUI_DOUBLE_CLICK/GUI_RIGHT_CLICK/GUI_MOVE: TARGET can be numeric pixel coordinates like "640,400" OR a visual UI query like "Applications menu", "Terminal icon", "Google Chrome", "search bar"\n'
             'For GUI_DRAG: TARGET is "x,y" (source) and PAYLOAD is {"x2": <int>, "y2": <int>} (destination)\n'
             'For GUI_TYPE: PAYLOAD is {"text": "..."}\n'
             'For GUI_KEYPRESS: PAYLOAD is {"key": "Return|Tab|Escape|ctrl+c|ctrl+v|alt+Tab|..."}\n'
@@ -508,6 +509,7 @@ class ComputerUseAgent:
         action_map = {
             "GUI_CLICK": ComputerActionType.GUI_CLICK,
             "GUI_DOUBLE_CLICK": ComputerActionType.GUI_DOUBLE_CLICK,
+            "GUI_RIGHT_CLICK": ComputerActionType.GUI_RIGHT_CLICK,
             "GUI_TYPE": ComputerActionType.GUI_TYPE,
             "GUI_KEYPRESS": ComputerActionType.GUI_KEYPRESS,
             "GUI_MOVE": ComputerActionType.GUI_MOVE,
@@ -620,7 +622,7 @@ class ComputerUseAgent:
                     cmd_str = re.sub(r'\s+commands?$', '', cmd_str, flags=re.IGNORECASE)
                 payload["command"] = cmd_str
 
-        if action_type in (ComputerActionType.GUI_CLICK, ComputerActionType.GUI_DOUBLE_CLICK, ComputerActionType.GUI_MOVE, ComputerActionType.GUI_DRAG):
+        if action_type in (ComputerActionType.GUI_CLICK, ComputerActionType.GUI_DOUBLE_CLICK, ComputerActionType.GUI_RIGHT_CLICK, ComputerActionType.GUI_MOVE, ComputerActionType.GUI_DRAG):
             if target and "," in target:
                 parts = target.split(",")
                 if len(parts) == 2 and parts[0].strip().isdigit() and parts[1].strip().isdigit():
@@ -659,7 +661,7 @@ class ComputerUseAgent:
     # =============================================================
     # Actions that target pixel coordinates and must stay on-screen.
     _COORDINATE_ACTIONS: frozenset[str] = frozenset({
-        "GUI_CLICK", "GUI_DOUBLE_CLICK", "GUI_MOVE", "GUI_SCROLL", "GUI_DRAG",
+        "GUI_CLICK", "GUI_DOUBLE_CLICK", "GUI_RIGHT_CLICK", "GUI_MOVE", "GUI_SCROLL", "GUI_DRAG",
     })
 
     def _validate_coordinates(
@@ -754,6 +756,34 @@ class ComputerUseAgent:
                 self.history.append({"action": action_type.value, "result": actual_obs_str})
                 return trace
 
+        # ----- Visual Grounding Target Resolution -----
+        # If numeric coordinates were not provided for a GUI action, attempt to
+        # resolve the target resource query (e.g. "Applications menu", "Terminal icon")
+        # to screen coordinates using the visual grounding engine.
+        resolved_via_grounding = False
+        if action_type in (
+            ComputerActionType.GUI_CLICK,
+            ComputerActionType.GUI_DOUBLE_CLICK,
+            ComputerActionType.GUI_RIGHT_CLICK,
+            ComputerActionType.GUI_MOVE,
+        ) and (payload.get("x") is None or payload.get("y") is None):
+            res_coords = resolve_ui_target(
+                query=target_resource,
+                screenshot_b64=self._last_screenshot_b64,
+                width=self._screen_width,
+                height=self._screen_height,
+            )
+            if res_coords is not None:
+                payload["x"], payload["y"] = res_coords
+                resolved_via_grounding = True
+                logger.info(
+                    "visual_grounding_target_resolved",
+                    action=action_type.value,
+                    query=target_resource,
+                    resolved_x=res_coords[0],
+                    resolved_y=res_coords[1],
+                )
+
         # ----- Coordinate bounds validation -----
         # GUI coordinate actions are validated against the last observed screen
         # size BEFORE execution. A model can hallucinate off-screen or negative
@@ -787,29 +817,63 @@ class ComputerUseAgent:
         try:
             if action_type == ComputerActionType.GUI_CLICK:
                 if payload.get("x") is None or payload.get("y") is None:
-                    actual_obs_str = "GUI_CLICK failed: integer pixel coordinates x,y required (e.g. TARGET: 640,400)"
+                    actual_obs_str = f"GUI_CLICK failed: integer pixel coordinates x,y required or visual target '{target_resource}' could not be resolved"
                     recovery_needed = True
                 else:
                     x = int(payload.get("x", 0))
                     y = int(payload.get("y", 0))
+                    if self._last_screenshot_b64:
+                        self._last_screenshot_b64 = draw_action_marker(
+                            self._last_screenshot_b64, (x, y), label="CLICK", color="#00ffcc"
+                        )
                     await self.computer.gui_action(
                         workspace_id,
                         GUIAction(action=GUIActionType.CLICK, x=x, y=y),
                     )
-                    actual_obs_str = f"Clicked at ({x}, {y})"
+                    if resolved_via_grounding:
+                        actual_obs_str = f"Visual grounding resolved '{target_resource}' to ({x}, {y}) and clicked"
+                    else:
+                        actual_obs_str = f"Clicked at ({x}, {y})"
 
             elif action_type == ComputerActionType.GUI_DOUBLE_CLICK:
                 if payload.get("x") is None or payload.get("y") is None:
-                    actual_obs_str = "GUI_DOUBLE_CLICK failed: integer pixel coordinates x,y required"
+                    actual_obs_str = f"GUI_DOUBLE_CLICK failed: integer pixel coordinates x,y required or visual target '{target_resource}' could not be resolved"
                     recovery_needed = True
                 else:
                     x = int(payload.get("x", 0))
                     y = int(payload.get("y", 0))
+                    if self._last_screenshot_b64:
+                        self._last_screenshot_b64 = draw_action_marker(
+                            self._last_screenshot_b64, (x, y), label="DOUBLE_CLICK", color="#ffaa00"
+                        )
                     await self.computer.gui_action(
                         workspace_id,
                         GUIAction(action=GUIActionType.DOUBLE_CLICK, x=x, y=y),
                     )
-                    actual_obs_str = f"Double-clicked at ({x}, {y})"
+                    if resolved_via_grounding:
+                        actual_obs_str = f"Visual grounding resolved '{target_resource}' to ({x}, {y}) and double-clicked"
+                    else:
+                        actual_obs_str = f"Double-clicked at ({x}, {y})"
+
+            elif action_type == ComputerActionType.GUI_RIGHT_CLICK:
+                if payload.get("x") is None or payload.get("y") is None:
+                    actual_obs_str = f"GUI_RIGHT_CLICK failed: integer pixel coordinates x,y required or visual target '{target_resource}' could not be resolved"
+                    recovery_needed = True
+                else:
+                    x = int(payload.get("x", 0))
+                    y = int(payload.get("y", 0))
+                    if self._last_screenshot_b64:
+                        self._last_screenshot_b64 = draw_action_marker(
+                            self._last_screenshot_b64, (x, y), label="RIGHT_CLICK", color="#ff3366"
+                        )
+                    await self.computer.gui_action(
+                        workspace_id,
+                        GUIAction(action=GUIActionType.RIGHT_CLICK, x=x, y=y),
+                    )
+                    if resolved_via_grounding:
+                        actual_obs_str = f"Visual grounding resolved '{target_resource}' to ({x}, {y}) and right-clicked"
+                    else:
+                        actual_obs_str = f"Right-clicked at ({x}, {y})"
 
             elif action_type == ComputerActionType.GUI_TYPE:
                 text = payload.get("text", "")
@@ -828,13 +892,20 @@ class ComputerUseAgent:
                 actual_obs_str = f"Pressed key: {key}"
 
             elif action_type == ComputerActionType.GUI_MOVE:
-                x = int(payload.get("x", 0))
-                y = int(payload.get("y", 0))
-                await self.computer.gui_action(
-                    workspace_id,
-                    GUIAction(action=GUIActionType.MOVE, x=x, y=y),
-                )
-                actual_obs_str = f"Moved mouse to ({x}, {y})"
+                if payload.get("x") is None or payload.get("y") is None:
+                    actual_obs_str = f"GUI_MOVE failed: coordinates required or visual target '{target_resource}' could not be resolved"
+                    recovery_needed = True
+                else:
+                    x = int(payload.get("x", 0))
+                    y = int(payload.get("y", 0))
+                    await self.computer.gui_action(
+                        workspace_id,
+                        GUIAction(action=GUIActionType.MOVE, x=x, y=y),
+                    )
+                    if resolved_via_grounding:
+                        actual_obs_str = f"Visual grounding resolved '{target_resource}' to ({x}, {y}) and moved mouse"
+                    else:
+                        actual_obs_str = f"Moved mouse to ({x}, {y})"
 
             elif action_type == ComputerActionType.GUI_DRAG:
                 # Press-move-release (a human drag). Source (x,y) may come from

@@ -61,12 +61,13 @@ async def main():
         self_host=True,
     )
 
-    # 4. Define High-Level Autonomous Goal (Goal-oriented, not script-chained)
-    goal = (
-        "Inspect the cyber workstation environment: run uname and check system architecture, "
-        "inspect listening ports via netstat or ss, locate installed browsers and security tools, "
+    # 4. Define High-Level Autonomous Goal (CLI argument or default)
+    default_goal = (
+        "Inspect the cyber workstation environment: check architecture, "
+        "inspect active services on ports 6080 and 5900, verify Google Chrome browser is installed and runnable, "
         "and summarize the workstation state."
     )
+    goal = sys.argv[1] if len(sys.argv) > 1 else default_goal
     print(f"\n[!] Mission Goal:\n    {goal}\n")
     print("[*] Starting autonomous observe -> reason -> act cycle (5 steps)...\n")
 

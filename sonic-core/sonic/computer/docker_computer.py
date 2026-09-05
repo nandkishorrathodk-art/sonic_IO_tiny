@@ -231,6 +231,12 @@ class DockerComputerProvider(ComputerProvider):
             else:
                 await self._docker_exec(f"DISPLAY=:99 xdotool click --repeat {repeat} 1")
 
+        elif atype == GUIActionType.RIGHT_CLICK:
+            if action.x is not None and action.y is not None:
+                await self._docker_exec(f"DISPLAY=:99 xdotool mousemove {action.x} {action.y} click 3")
+            else:
+                await self._docker_exec("DISPLAY=:99 xdotool click 3")
+
         elif atype == GUIActionType.MOVE and action.x is not None and action.y is not None:
             await self._docker_exec(f"DISPLAY=:99 xdotool mousemove {action.x} {action.y}")
 

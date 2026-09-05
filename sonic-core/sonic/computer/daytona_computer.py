@@ -762,6 +762,7 @@ class DaytonaComputerProvider(ComputerProvider):
         supported_actions = {
             GUIActionType.CLICK,
             GUIActionType.DOUBLE_CLICK,
+            GUIActionType.RIGHT_CLICK,
             GUIActionType.TYPE,
             GUIActionType.KEYPRESS,
             GUIActionType.MOVE,
@@ -774,7 +775,7 @@ class DaytonaComputerProvider(ComputerProvider):
         if action_type not in supported_actions:
             raise RuntimeError(f"Daytona GUI action {action_type.value} is not supported by this provider")
 
-        if action_type in [GUIActionType.CLICK, GUIActionType.DOUBLE_CLICK]:
+        if action_type in [GUIActionType.CLICK, GUIActionType.DOUBLE_CLICK, GUIActionType.RIGHT_CLICK]:
             if action.x is None or action.y is None:
                 logger.warning("daytona_gui_click_missing_coordinates", action=action_type.value, x=action.x, y=action.y)
                 return await self.screenshot(workspace_id)
@@ -784,6 +785,8 @@ class DaytonaComputerProvider(ComputerProvider):
                 cu = sandbox.computer_use
                 if action_type in [GUIActionType.CLICK, GUIActionType.DOUBLE_CLICK]:
                     await cu.mouse.click(action.x, action.y, button="left", double=(action_type == GUIActionType.DOUBLE_CLICK))
+                elif action_type == GUIActionType.RIGHT_CLICK:
+                    await cu.mouse.click(action.x, action.y, button="right")
                 elif action_type == GUIActionType.MOVE:
                     await cu.mouse.move(action.x, action.y)
                 elif action_type == GUIActionType.DRAG:
@@ -803,6 +806,8 @@ class DaytonaComputerProvider(ComputerProvider):
                 if action_type in [GUIActionType.CLICK, GUIActionType.DOUBLE_CLICK]:
                     repeat = " --repeat 2" if action_type == GUIActionType.DOUBLE_CLICK else ""
                     await sandbox.process.exec(f"DISPLAY=:0 xdotool mousemove {action.x} {action.y} click{repeat} 1")
+                elif action_type == GUIActionType.RIGHT_CLICK:
+                    await sandbox.process.exec(f"DISPLAY=:0 xdotool mousemove {action.x} {action.y} click 3")
                 elif action_type == GUIActionType.MOVE:
                     await sandbox.process.exec(f"DISPLAY=:0 xdotool mousemove {action.x} {action.y}")
                 elif action_type == GUIActionType.DRAG:

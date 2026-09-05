@@ -29,6 +29,7 @@ interface WorklogFeedProps {
   currentAction?: string;
   loading: boolean;
   onSendPrompt: (prompt: string, mode: Mode) => Promise<void>;
+  onInterrupt?: () => Promise<void> | void;
   onSelectFile?: (filePath: string) => void;
   sessionName?: string;
   gitBranch?: string;
@@ -41,6 +42,7 @@ export function WorklogFeed({
   currentAction,
   loading,
   onSendPrompt,
+  onInterrupt,
   onSelectFile,
   sessionName = "",
   gitBranch = "",
@@ -323,12 +325,13 @@ export function WorklogFeed({
               </button>
 
               <button
-                type="submit"
-                disabled={loading && !promptText.trim()}
+                type={loading ? "button" : "submit"}
+                onClick={loading ? (e) => { e.preventDefault(); e.stopPropagation(); onInterrupt?.(); } : undefined}
+                disabled={!loading && !promptText.trim()}
                 className="w-7 h-7 rounded-full bg-white text-ink-950 hover:bg-slate-200 flex items-center justify-center transition disabled:opacity-40"
-                title={loading ? "Interrupt agent" : "Send instruction"}
+                title={loading ? "Pause / Interrupt agent" : "Send instruction"}
               >
-                {loading ? <Square className="w-3 h-3 fill-current" /> : <Send className="w-3.5 h-3.5 fill-current ml-0.5" />}
+                {loading ? <Square className="w-3 h-3 fill-current text-rose-600" /> : <Send className="w-3.5 h-3.5 fill-current ml-0.5" />}
               </button>
             </div>
           </div>

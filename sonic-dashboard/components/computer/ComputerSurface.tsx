@@ -31,6 +31,7 @@ interface ComputerSurfaceProps {
   onRunCommand: (cmd: string) => Promise<CommandResult | null>;
   commandLogs: string[];
   onProvision?: () => Promise<void>;
+  onInterrupt?: () => Promise<void> | void;
   sessionId?: string;
 }
 
@@ -39,6 +40,7 @@ export function ComputerSurface({
   onRunCommand,
   commandLogs,
   onProvision,
+  onInterrupt,
   sessionId = "default",
 }: ComputerSurfaceProps) {
   const [screenshotBase64, setScreenshotBase64] = useState<string | null>(null);
@@ -161,7 +163,7 @@ export function ComputerSurface({
         <div className="flex items-center gap-2">
           <Cloud className="w-3.5 h-3.5 text-secondary-400" />
           <span className="text-white font-semibold flex items-center gap-1.5 truncate text-[12px]">
-            <span>Daytona Linux Workstation</span>
+            <span>SONIC Cyber Workstation</span>
             {displayLabel && <span className="text-[10px] text-muted-dim font-normal">({displayLabel})</span>}
           </span>
           {isLive ? (
@@ -224,7 +226,7 @@ export function ComputerSurface({
             >
               <img
                 src={`data:image/png;base64,${screenshotBase64}`}
-                alt="Daytona Graphical Desktop"
+                alt="SONIC Cyber Workstation"
                 className="w-full h-full object-contain pointer-events-none select-none"
               />
 
@@ -291,7 +293,7 @@ export function ComputerSurface({
             <div className="space-y-1">
               <h3 className="text-sm font-semibold text-white font-mono">Connecting to live agent desktop…</h3>
               <p className="text-xs text-muted font-mono max-w-md">
-                Streaming real-time view from SONIC&apos;s Daytona workstation. The display will appear momentarily.
+                Streaming real-time view from SONIC Cyber Workstation. The display will appear momentarily.
               </p>
             </div>
           </div>
@@ -303,7 +305,7 @@ export function ComputerSurface({
             <div className="space-y-1">
               <h3 className="text-sm font-semibold text-white font-mono">No live display — sandbox disconnected</h3>
               <p className="text-xs text-muted font-mono max-w-md">
-                No tenant-owned Daytona workstation is attached to this session. Provision one to create a real remote desktop for SONIC to control.
+                No cyber workstation is attached to this session. Connect or launch sonic-desktop-workstation to stream the desktop.
               </p>
             </div>
             <div className="flex items-center gap-2">
@@ -312,7 +314,7 @@ export function ComputerSurface({
                   onClick={async (e) => { e.stopPropagation(); await onProvision(); }}
                   className="btn-secondary !px-3 !py-1.5 text-xs font-mono"
                 >
-                  Provision Daytona Desktop
+                  Connect Workstation
                 </button>
               )}
               <button

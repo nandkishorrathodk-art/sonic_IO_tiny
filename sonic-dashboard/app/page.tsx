@@ -182,6 +182,15 @@ export default function SonicDevinWorkstation() {
     }
   };
 
+  const handleInterrupt = async () => {
+    try {
+      await api.interruptSession(sessionId);
+      await fetchWorkstationData(sessionId);
+    } catch (err: any) {
+      console.error("Failed to interrupt session:", err);
+    }
+  };
+
   return (
     <div className="flex flex-col h-screen w-screen bg-ink-950 text-slate-200 overflow-hidden font-sans">
       {connectionStatus === "OFFLINE" && (
@@ -225,6 +234,7 @@ export default function SonicDevinWorkstation() {
                 }
                 loading={loading}
                 onSendPrompt={handleSendPrompt}
+                onInterrupt={handleInterrupt}
                 onSelectFile={fetchFile}
                 sessionName={workstationState?.mission_name || ""}
                 gitBranch={workstationState?.git_branch || ""}
@@ -272,6 +282,7 @@ export default function SonicDevinWorkstation() {
                       desktopState={workstationState?.desktop}
                       onRunCommand={handleRunCommand}
                       commandLogs={commandLogs}
+                      onInterrupt={handleInterrupt}
                       sessionId={sessionId}
                     />
                   )}

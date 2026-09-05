@@ -1475,3 +1475,45 @@ BugBountyClient existed but was referenced nowhere.
   installed; phase1 fails only under full-suite singleton/.env interference,
   passes alone — matches the known-pre-existing notes above). No regressions
   introduced.
+
+## Phase 22 — Native Docker Cyber Workstation, Visual Grounding & Autonomous Reasoning (DONE)
+### 1. Native Docker Cyber Workstation & Daytona Replacement
+- **Why Daytona was replaced**: Daytona Cloud Tier 1/2 restricted external network traffic (resetting outbound HTTPS connections), required cloud API keys, and suffered from network latency.
+- **Native `DockerComputerProvider` (`sonic/computer/docker_computer.py`)**:
+  - Implemented as the primary, first-class `ComputerProvider` for SONIC A-SEA.
+  - Controls the local `sonic-desktop-workstation` container directly via `docker exec`.
+  - Full graphical desktop: XFCE4, Xvfb on `:99` (1280x800x24), x11vnc on port `5900`, and noVNC on port `6080` (`http://localhost:6080/vnc.html`).
+  - Pre-installed applications: Google Chrome Stable (`google-chrome-stable v152`), `xfce4-terminal`, `thunar`, `nmap`, `net-tools`, `wmctrl`, `xdotool`, and image manipulation tools (`convert`, `import`).
+  - Full, unrestricted outbound internet access for real-world offensive security assessments.
+  - Backwards-compatible `get_computer()` and `get_daytona_computer()` route to `DockerComputerProvider` by default.
+  - Added duck-typed `DockerContainerSandbox` adapter (`sonic/computer/docker_sandbox.py`) for existing callers.
+
+### 2. Repository Integration & Purpose
+- **Role of `open-computer-use` (`e2b-dev/open-computer-use`)**:
+  - Acts as the visual perception reference library.
+  - Adapted its visual grounding algorithms into `sonic/computer_use/grounding.py`:
+    - `extract_bbox_midpoint()`: Extracts precise `(x, y)` coordinates from normalized model outputs (`[0, 1000]`, `[0.0, 1.0]`, or `<|box_start|>(x1,y1,x2,y2)<|box_end|>`), eliminating coordinate hallucination.
+    - `draw_action_marker()`: Renders interactive crosshairs and visual click targets onto screenshots for operator auditing in the dashboard.
+- **Role of Target Repositories (`nandkishorrathodk-art/sonic` or client audit targets)**:
+  - Repositories are mounted/cloned into `/root/workspace/` inside the Docker Workstation.
+  - SONIC uses its workstation terminal, python runtime, and code analysis tools (`CodeGraph`, AST, grep) to inspect source code, discover logic bugs, and run local test suites.
+  - When a vulnerability is discovered, the agent writes an engineering remediation patch, executes verification tests in the sandbox, and commits the fix to git.
+
+### 3. Goal-Oriented Autonomy & Independent Reasoning (A-SEA Identity)
+- Completely decoupled from rigid, script-chained scanner execution (`nmap -> nuclei -> ffuf`).
+- A-SEA operates from **First Principles**:
+  - Analyzes high-level objectives rather than executing fixed scanner commands.
+  - Maintains a structured epistemic ledger (`research/epistemic.py`) of Knowns, Unknowns, and Hypotheses.
+  - Dynamically decides between terminal execution, browser navigation, visual GUI interaction, and custom script authoring (Toolsmithing).
+  - Enforces empirical verification: every vulnerability must be reproduced in the sandbox before it is claimed as confirmed (zero success-by-decree).
+
+### 4. Control Plane Hardening, RBAC & Dashboard Modernization
+- Hardened `POST /workstation/session/interrupt` with `require_operator` RBAC.
+- Enforced strict tenant isolation in `_run_computer_dynamic`.
+- Modernized `sonic-dashboard/components/computer/ComputerSurface.tsx`: displays "SONIC Cyber Workstation", live feed indicator, and human takeover controls. All 21 Next.js routes compile cleanly (`npm run build`).
+
+### 5. Verification Test Matrix (17/17 Passed)
+- `sonic-core/tests/test_docker_computer_provider.py` (2 tests): lifecycle, status, terminal execution, screenshot, file read/write, application listing — **PASSED**.
+- `sonic-core/tests/test_docker_workstation_adapter.py` (3 tests): duck-typed sandbox adapter, VNC preview URL, terminal & screenshot — **PASSED**.
+- `sonic-core/tests/test_visual_grounding.py` (3 tests): bbox midpoint extraction (box tags, float normalized), action aim marker rendering — **PASSED**.
+- `sonic-core/tests/test_workstation_interrupt_and_resilience.py` (9 tests): interrupt flag, loop exit, RBAC authentication & rejection, tenant isolation, mission director coordination — **PASSED**.

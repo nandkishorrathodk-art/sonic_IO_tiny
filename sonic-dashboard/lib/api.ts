@@ -83,6 +83,11 @@ export const api = {
       method: "DELETE",
     }),
 
+  interruptSession: (sessionId = "default") =>
+    apiClient<any>(`/workstation/session/interrupt?session_id=${encodeURIComponent(sessionId)}`, {
+      method: "POST",
+    }),
+
   getDesktopStatus: (sessionId = "default") =>
     apiClient<any>(`/workstation/desktop/status?session_id=${encodeURIComponent(sessionId)}`),
 

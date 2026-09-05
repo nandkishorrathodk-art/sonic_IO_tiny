@@ -592,11 +592,15 @@ class EngagementManager:
             except Exception as e:
                 logger.debug("browser_wiring_skipped", error=str(e))
 
+            eng = self.active_engagements.get(engagement_id, {})
+            tenant_id = eng.get("tenant_id", "default")
+
             # Create the agent with all capabilities wired
             agent = ComputerUseAgent(
                 computer_provider=self.provider,
                 security_tools=security_tools,
                 browser=browser,
+                tenant_id=tenant_id,
                 **extra_agent_kwargs,
             )
 
@@ -618,29 +622,49 @@ class EngagementManager:
             )
 
             # Create a workspace and run the mission
-            ws_id = await self._workspace_for(engagement_id) or f"eng-{engagement_id[:12]}"
+            ws_id = await self._workspace_for(engagement_id, tenant_id=tenant_id) or f"eng-{engagement_id[:12]}"
 
             traces = await agent.run_mission(
                 workspace_id=ws_id,
                 goal=goal,
-                steps=10,
+                steps=getattr(agent, "max_actions", 25),
             )
 
-            # Extract findings from traces
+            # Extract findings from traces and persist to memory so Verifier can inspect them
             findings = []
             for trace in (traces or []):
-                if hasattr(trace, "observation") and trace.observation:
-                    obs = trace.observation
-                    if isinstance(obs, str) and any(kw in obs.lower() for kw in
-                        ["open", "vuln", "found", "critical", "high", "medium",
-                         "cve-", "exposed", "injection", "xss"]):
-                        findings.append({
-                            "title": f"Security finding from {getattr(trace, 'action_type', 'scan')}",
-                            "description": obs[:500],
-                            "severity": "medium",
-                            "source": "computer_dynamic",
-                            "target": target,
-                        })
+                obs = getattr(trace, "actual_observation", "") or getattr(trace, "observation", "")
+                if obs and isinstance(obs, str) and any(kw in obs.lower() for kw in
+                    ["open", "vuln", "found", "critical", "high", "medium",
+                     "cve-", "exposed", "injection", "xss"]):
+                    action_name = getattr(trace.action_type, "value", str(trace.action_type))
+                    target_res = getattr(trace, "target_resource", target) or target
+                    title = f"Security finding from {action_name}: {target_res}"
+                    desc = obs[:500]
+                    finding_dict = {
+                        "title": title,
+                        "description": desc,
+                        "severity": "medium",
+                        "vulnerability_class": "dynamic_scan",
+                        "source": "computer_dynamic",
+                        "target": target,
+                    }
+                    findings.append(finding_dict)
+                    if self.memory:
+                        try:
+                            from sonic.memory.schemas import FindingNode, FindingSeverity, FindingStatus
+                            await self.memory.create_finding(FindingNode(
+                                title=title,
+                                description=desc,
+                                vulnerability_class="dynamic_scan",
+                                severity=FindingSeverity.MEDIUM,
+                                status=FindingStatus.NEEDS_VERIFICATION,
+                                target_asset=target,
+                                engagement_id=engagement_id,
+                                found_by=getattr(agent, "agent_id", "computer_dynamic"),
+                            ))
+                        except Exception as mem_err:
+                            logger.debug("engagement_finding_persist_failed", error=str(mem_err))
 
             logger.info("computer_dynamic_complete",
                         engagement=engagement_id,

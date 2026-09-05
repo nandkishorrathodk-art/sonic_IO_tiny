@@ -87,6 +87,21 @@ services:
       - sonic-sandbox-net
     restart: unless-stopped
 
+  # ---- Interactive Graphical Linux Desktop Workstation (noVNC + X11 + Internet) ----
+  workstation:
+    image: sonic-workstation:latest
+    container_name: sonic-desktop-workstation
+    ports:
+      - "6080:6080"
+      - "5900:5900"
+    volumes:
+      - ./docker/entrypoint-workstation.sh:/entrypoint-workstation.sh:ro
+      - workstation_workspace:/workspace
+    entrypoint: ["/bin/bash", "/entrypoint-workstation.sh"]
+    networks:
+      - sonic-sandbox-net
+    restart: unless-stopped
+
 networks:
   sonic-control-net:
     driver: bridge
@@ -103,4 +118,6 @@ volumes:
   kali_workspace:
     driver: local
   debian_workspace:
+    driver: local
+  workstation_workspace:
     driver: local

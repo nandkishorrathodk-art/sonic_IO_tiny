@@ -66,3 +66,4 @@ sonic-core/sonic_data/
 *.db-wal
 sonic_data/
 .agents_tmp/
+open-computer-use/

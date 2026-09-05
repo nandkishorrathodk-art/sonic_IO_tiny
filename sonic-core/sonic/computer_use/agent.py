@@ -135,12 +135,18 @@ class ComputerUseAgent:
         # screenshot; sane defaults until the first real observation lands.
         self._screen_width: int = 1920
         self._screen_height: int = 1080
+        self._interrupted: bool = False
+        self.goal_reached: bool = False
         # Closed-loop control state (Devin-style VERIFY + REPLAN). The agent
         # must not trust a self-declared "done"; it independently verifies, and
         # when the same approach keeps failing it replans rather than burning
         # the step budget on a stuck loop.
         self._consecutive_failures: int = 0
         self._replan_count: int = 0
+
+    def interrupt(self) -> None:
+        """Signal the agent to stop its active mission loop immediately."""
+        self._interrupted = True
 
     # =============================================================
     # 1. Closed-Loop Observation
@@ -195,6 +201,7 @@ class ComputerUseAgent:
             filesystem_files=file_names,
             processes=status.running_processes,
             terminal_output=terminal_output,
+            working_directory=getattr(status, "working_directory", "") or "/home/daytona",
             browser_state=browser_state,
             ide_state={"active_file": file_names[0] if file_names else "", "cursor_line": 1},
             git_branch=git_st.branch if hasattr(git_st, "branch") else "main",
@@ -343,9 +350,15 @@ class ComputerUseAgent:
         if self.lessons_ledger is not None:
             from sonic.being.lessons import inject_into_context
             lessons_block = inject_into_context(self.lessons_ledger.relevant(goal))
+        workdir = getattr(observation, "working_directory", "") or "/home/daytona"
+        user_home = workdir.split("/workspace")[0] if "/workspace" in workdir else workdir
+        self._last_working_dir = workdir
         obs_summary = (
             f"Step {step_index}. Goal: {goal}\n"
-            f"Active app: {observation.active_application}\n"
+            f"Current working directory: {workdir}\n"
+            f"User home directory: {user_home} (Desktop path: {user_home}/Desktop)\n"
+            f"Active window / app: {observation.active_application}\n"
+            f"Open desktop windows: {', '.join(observation.windows) if observation.windows else '(Desktop only)'}\n"
             f"Screen visible text:\n{screen_text or '(empty screen)'}\n"
             f"Terminal output:\n{terminal_text or '(no output yet)'}\n"
             f"{browser_lines}{tool_lines}"
@@ -358,45 +371,51 @@ class ComputerUseAgent:
         )
         system_prompt = (
             "You are the computer-use core of SONIC — an Autonomous Self-Evolving "
-            "Penetration Architect (A-SEA): a self-developing offensive-security "
-            "being that operates its own sandboxed computer with a terminal, a "
-            "filesystem, git, a web browser (when available), registered security "
-            "scanning tools (when available), a Toolsmith that authors NEW tools "
-            "for gaps no scanner covers, and a Method Lab that synthesizes NOVEL "
-            "attack techniques confirmed only on real in-sandbox reproduction. "
-            "You can see the screen text, the terminal output, the workspace "
-            "files, the git state, the current browser page, the last scan "
-            "findings, the tools you have authored, and everything you have "
-            "already done. "
+            "Penetration Architect (A-SEA): an autonomous offensive-security and "
+            "engineering agent with COMPLETE, UNRESTRICTED CONTROL of the sandboxed "
+            "computer environment. You have full operating system authority: "
+            "terminal execution, filesystem read/write, git operations, desktop GUI "
+            "mouse and keyboard interaction, launching, focusing, switching, and "
+            "closing ANY desktop application or window (e.g. terminals, text editors, "
+            "browsers, Wireshark, Burp Suite, Metasploit, file managers, or custom tools), "
+            "browser automation, and registered security scanner execution. "
+            "You are NOT limited to any single tool or browser; you operate the entire computer. "
+            "You can see the screen text, open windows, active application, terminal output, "
+            "workspace files, git state, and previous action history. "
             "Choose the ONE next action that makes the most progress toward the "
             "goal, reacting to the latest observation and your prior actions — do "
             "NOT follow a fixed script. When 'Past lessons' appear in the "
             "observation, AVOID approaches marked [AVOID] (they failed before) and "
-            "prefer approaches marked [REUSE] (they worked before) — apply your "
-            "own cross-mission learning. When no existing tool fits a gap, author "
-            "a new one (TOOL_AUTHOR) and verify it (TOOL_RUN); when a gap needs a "
-            "new METHOD rather than a new tool, invent a technique (METHOD_INVENT). "
+            "prefer approaches marked [REUSE] (they worked before). When no existing "
+            "tool fits a gap, author a new one (TOOL_AUTHOR) and verify it (TOOL_RUN); "
+            "when a gap needs a new METHOD, invent a technique (METHOD_INVENT). "
             "If the goal is already achieved, respond GOAL_COMPLETE.\n"
+            "If the goal can be accomplished cleanly via shell command, prefer TERMINAL_EXEC.\n"
             "You can see the desktop screenshot and interact with GUI elements by clicking at coordinates.\n"
             "Respond in EXACTLY this format (no markdown code fences):\n"
             "THOUGHT: <Brief 1-sentence thought explaining what you intend to do and why>\n"
             "ACTION: <GUI_CLICK|GUI_DOUBLE_CLICK|GUI_TYPE|GUI_KEYPRESS|GUI_MOVE|GUI_SCROLL|GUI_DRAG|GUI_SCREENSHOT|GUI_WAIT|FILE_READ|FILE_WRITE|TERMINAL_EXEC|GIT_COMMIT|APP_LAUNCH|APP_CLOSE|APP_FOCUS|APP_INSTALL|SERVICE_ACTION|BROWSER_NAVIGATE|BROWSER_CLICK|BROWSER_TYPE|BROWSER_SCREENSHOT|BROWSER_WAIT|BROWSER_DOWNLOAD|SECURITY_TOOL|TOOL_AUTHOR|TOOL_RUN|METHOD_INVENT|GOAL_COMPLETE>\n"
-            "TARGET: <resource path, name, url, css selector, or scan target>\n"
+            "TARGET: <resource path, application/window name, url, css selector, or coordinates>\n"
             'PAYLOAD: <json dict, e.g. {"path": "...", "content": "..."}, '
             '{"command": "..."}, {"url": "..."}, {"selector": "...", "text": "..."}, '
-            '{"tool": "<any registered security tool name>", "target": "...", '
-            '"args": "..."}>\n'
-            'For GUI_CLICK/GUI_DOUBLE_CLICK/GUI_MOVE: TARGET is "x,y" pixel coordinates\n'
+            '{"app_name": "..."}, {"tool": "...", "target": "...", "args": "..."}>\n'
+            'For GUI_CLICK/GUI_DOUBLE_CLICK/GUI_MOVE: TARGET must be actual numeric pixel coordinates like "640,400" (never the literal placeholder letters "x,y")\n'
             'For GUI_DRAG: TARGET is "x,y" (source) and PAYLOAD is {"x2": <int>, "y2": <int>} (destination)\n'
             'For GUI_TYPE: PAYLOAD is {"text": "..."}\n'
-            'For GUI_KEYPRESS: PAYLOAD is {"key": "Return|Tab|Escape|ctrl+c|..."}\n'
+            'For GUI_KEYPRESS: PAYLOAD is {"key": "Return|Tab|Escape|ctrl+c|ctrl+v|alt+Tab|..."}\n'
             'For GUI_SCROLL: TARGET is "x,y" and PAYLOAD is {"delta": -3} (negative=down, positive=up)\n'
             'For GUI_SCREENSHOT: no target or payload needed\n'
-            'For GUI_WAIT: PAYLOAD is {"seconds": 3} to let a wizard/progress bar settle\n'
-            'For APP_INSTALL: TARGET is the package name (e.g. nmap, chromium)\n'
-            'For APP_FOCUS: TARGET is the window/app name to focus without relaunching\n'
+            'For GUI_WAIT: PAYLOAD is {"seconds": 3} to let a window or page settle\n'
+            'For APP_INSTALL: TARGET is the package to install (e.g. nmap, wireshark, chromium, git, curl)\n'
+            'For APP_LAUNCH: TARGET is the application name to start (e.g. xfce4-terminal, mousepad, thunar, burpsuite, wireshark, chromium, code)\n'
+            'For APP_FOCUS: TARGET is the window title or application name to bring to foreground (e.g. any window from Open desktop windows)\n'
+            'For APP_CLOSE: TARGET is the application or window name to close\n'
+            'For TERMINAL_EXEC: TARGET or PAYLOAD {"command": "..."} must be an EXACT executable shell command line (e.g. uname -a, netstat -tuln, which google-chrome, ls -la), NEVER natural language like "Terminal" or "netstat or ss command"\n'
+            'For BROWSER_NAVIGATE: TARGET or PAYLOAD {"url": "..."} is the external target URL (e.g. https://google.com, https://example.org). Private subnets (localhost, 127.0.0.1, 10.0.0.0/8) are blocked by safety policy.\n'
+            'For BROWSER_TYPE: PAYLOAD is {"text": "text to type"} and TARGET is the input selector or "address bar"\n'
+            'For SECURITY_TOOL: TARGET must be one of the Available security tools listed above (e.g. nmap, nuclei, ffuf, http_client)\n'
             'For BROWSER_WAIT: PAYLOAD is {"selector": "<css>"} to wait for an element to render\n'
-            'For BROWSER_DOWNLOAD: PAYLOAD is {"selector": "<css>", "save_path": "/home/sonic/workspace/file"}\n'
+            'For BROWSER_DOWNLOAD: PAYLOAD is {"selector": "<css>", "save_path": "~/workspace/file"}\n'
             "EXPECTED: <short description of predicted outcome>"
         )
         return system_prompt, obs_summary
@@ -462,10 +481,18 @@ class ComputerUseAgent:
         text: str, default_file: str
     ) -> tuple[ComputerActionType, str, dict[str, Any], str]:
         """Parse structured LLM response into an action tuple."""
-        # Robust multi-field extraction (handles single-line, multi-line, markdown bold/italics)
-        pattern = r'(?:\*{1,2}|_)?\b(ACTION|TARGET|PAYLOAD|EXPECTED)\b(?:\*{1,2}|_)?:\s*(.*?)(?=(?:\*{1,2}|_)?\b(?:ACTION|TARGET|PAYLOAD|EXPECTED)\b(?:\*{1,2}|_)?\:|$)'
+        # Robust multi-field extraction (handles single-line, multi-line, markdown bold/italics, and alternative delimiter names)
+        pattern = r'(?:\*{1,2}|_)?\b(ACTION|TARGET|PAYLOAD|EXPECTED|EXPECTED[\s_]+OUTCOME|REASONING|THOUGHT|EXPLANATION)\b(?:\*{1,2}|_)?:\s*(.*?)(?=(?:\*{1,2}|_)?\b(?:ACTION|TARGET|PAYLOAD|EXPECTED|EXPECTED[\s_]+OUTCOME|REASONING|THOUGHT|EXPLANATION)\b(?:\*{1,2}|_)?\:|$)'
         matches = re.findall(pattern, text, re.DOTALL | re.IGNORECASE)
-        fields: dict[str, str] = {k.strip().upper(): v.strip(" *_\n\r\t") for k, v in matches}
+        raw_fields: dict[str, str] = {k.strip().upper(): v.strip(" *_\n\r\t") for k, v in matches}
+        fields: dict[str, str] = {}
+        for k, v in raw_fields.items():
+            if "OUTCOME" in k:
+                fields.setdefault("EXPECTED", v)
+            elif any(sub in k for sub in ("THOUGHT", "REASON", "EXPLAN")):
+                fields.setdefault("THOUGHT", v)
+            else:
+                fields[k] = v
 
         # Fallback to line-by-line if regex matched nothing
         if not fields:
@@ -477,7 +504,7 @@ class ComputerUseAgent:
 
         raw_action = fields.get("ACTION", "TERMINAL_EXEC").upper()
         action_word = raw_action.split()[0] if raw_action.split() else "TERMINAL_EXEC"
-        action_str = action_word.strip()
+        action_str = action_word.strip(" *_\n\r\t`\"'")
         action_map = {
             "GUI_CLICK": ComputerActionType.GUI_CLICK,
             "GUI_DOUBLE_CLICK": ComputerActionType.GUI_DOUBLE_CLICK,
@@ -522,12 +549,41 @@ class ComputerUseAgent:
             )
 
         default_target = default_file if action_type in (ComputerActionType.FILE_READ, ComputerActionType.FILE_WRITE) else ""
-        if action_type == ComputerActionType.APP_LAUNCH:
-            default_target = "chromium"
-        elif action_type == ComputerActionType.BROWSER_NAVIGATE:
-            default_target = "https://www.google.com"
 
-        target = fields.get("TARGET", "") or default_target
+        raw_target = fields.get("TARGET", "") or default_target
+        target = raw_target.strip(" *_\n\r\t`\"'")
+        if target:
+            # Take first non-empty line to strip accidental trailing markdown blocks
+            for line in target.splitlines():
+                if line.strip():
+                    target = line.strip(" *_\n\r\t`\"'")
+                    break
+
+        if action_type in (ComputerActionType.APP_LAUNCH, ComputerActionType.APP_CLOSE, ComputerActionType.APP_FOCUS, ComputerActionType.APP_INSTALL):
+            if target:
+                words = target.split()
+                if words:
+                    if words[0].lower() in ("the", "a", "an") and len(words) > 1:
+                        target = words[1].strip(" *_\n\r\t`\"'")
+                    else:
+                        target = words[0].strip(" *_\n\r\t`\"'")
+                if target.lower() in ("terminal", "the terminal"):
+                    target = "xfce4-terminal"
+                elif target.lower() in ("editor", "text editor"):
+                    target = "mousepad"
+                elif target.lower() in ("files", "file manager"):
+                    target = "thunar"
+
+        elif action_type == ComputerActionType.BROWSER_NAVIGATE:
+            target_lower = target.lower()
+            if not target or target_lower in ("/", "none", "not specified", "null", "about:blank"):
+                target = "about:blank"
+            elif not (target.startswith("http://") or target.startswith("https://") or target.startswith("about:") or target.startswith("file://")):
+                if "localhost" in target or "127.0.0.1" in target:
+                    target = f"http://{target}"
+                elif "." in target and " " not in target:
+                    target = f"https://{target}"
+
         payload_str = fields.get("PAYLOAD", "{}")
         import json
         try:
@@ -535,9 +591,34 @@ class ComputerUseAgent:
         except Exception:
             payload = {"command": payload_str} if action_type == ComputerActionType.TERMINAL_EXEC else {}
 
+        if action_type == ComputerActionType.BROWSER_TYPE:
+            if "command" in payload and "text" not in payload:
+                payload["text"] = payload["command"]
+
         if action_type == ComputerActionType.TERMINAL_EXEC:
-            if not payload.get("command") or str(payload.get("command")).lower() == "none":
+            raw_cmd = payload.get("command")
+            if not raw_cmd or str(raw_cmd).lower() == "none":
                 payload["command"] = target if target and target != default_file else "pwd"
+            if payload.get("command"):
+                cmd_str = str(payload["command"]).strip()
+                cmd_str = re.sub(r'^(?:xfce4-terminal,?\s*)?(?:command|cmd)\s*=\s*', '', cmd_str)
+                # Remove parenthesized comments e.g. "netstat -tuln (or ss)" -> "netstat -tuln"
+                cmd_str = re.sub(r'\(.*?\)', '', cmd_str).strip()
+                # Handle conversational placeholders like "Terminal" or "Terminal window"
+                if cmd_str.lower() in ("terminal", "terminal window", "the terminal", "bash", "shell", "console"):
+                    cmd_str = "pwd"
+                # Handle phrases like "No specific target is needed for this command."
+                if any(phrase in cmd_str.lower() for phrase in ("no specific", "not needed", "n/a", "none", "no target")):
+                    cmd_str = "uname -m"
+                # Handle "X or Y command" (e.g. "netstat or ss" -> "which netstat && netstat -tuln || ss -tuln")
+                m_or = re.match(r'^([a-zA-Z0-9_-]+)\s+or\s+([a-zA-Z0-9_-]+)(?:\s+command)?$', cmd_str, re.IGNORECASE)
+                if m_or:
+                    cmd1, cmd2 = m_or.group(1), m_or.group(2)
+                    cmd_str = f"which {cmd1} && {cmd1} -tuln || {cmd2} -tuln"
+                else:
+                    # Strip trailing " command" or " commands"
+                    cmd_str = re.sub(r'\s+commands?$', '', cmd_str, flags=re.IGNORECASE)
+                payload["command"] = cmd_str
 
         if action_type in (ComputerActionType.GUI_CLICK, ComputerActionType.GUI_DOUBLE_CLICK, ComputerActionType.GUI_MOVE, ComputerActionType.GUI_DRAG):
             if target and "," in target:
@@ -545,6 +626,9 @@ class ComputerUseAgent:
                 if len(parts) == 2 and parts[0].strip().isdigit() and parts[1].strip().isdigit():
                     payload["x"] = int(parts[0].strip())
                     payload["y"] = int(parts[1].strip())
+                elif any(p.strip().lower() in ("x", "y", "x,y", "x, y") for p in parts):
+                    payload.pop("x", None)
+                    payload.pop("y", None)
         if action_type == ComputerActionType.GUI_SCROLL:
             if target and "," in target:
                 parts = target.split(",")
@@ -702,22 +786,30 @@ class ComputerUseAgent:
 
         try:
             if action_type == ComputerActionType.GUI_CLICK:
-                x = int(payload.get("x", 0))
-                y = int(payload.get("y", 0))
-                await self.computer.gui_action(
-                    workspace_id,
-                    GUIAction(action=GUIActionType.CLICK, x=x, y=y),
-                )
-                actual_obs_str = f"Clicked at ({x}, {y})"
+                if payload.get("x") is None or payload.get("y") is None:
+                    actual_obs_str = "GUI_CLICK failed: integer pixel coordinates x,y required (e.g. TARGET: 640,400)"
+                    recovery_needed = True
+                else:
+                    x = int(payload.get("x", 0))
+                    y = int(payload.get("y", 0))
+                    await self.computer.gui_action(
+                        workspace_id,
+                        GUIAction(action=GUIActionType.CLICK, x=x, y=y),
+                    )
+                    actual_obs_str = f"Clicked at ({x}, {y})"
 
             elif action_type == ComputerActionType.GUI_DOUBLE_CLICK:
-                x = int(payload.get("x", 0))
-                y = int(payload.get("y", 0))
-                await self.computer.gui_action(
-                    workspace_id,
-                    GUIAction(action=GUIActionType.DOUBLE_CLICK, x=x, y=y),
-                )
-                actual_obs_str = f"Double-clicked at ({x}, {y})"
+                if payload.get("x") is None or payload.get("y") is None:
+                    actual_obs_str = "GUI_DOUBLE_CLICK failed: integer pixel coordinates x,y required"
+                    recovery_needed = True
+                else:
+                    x = int(payload.get("x", 0))
+                    y = int(payload.get("y", 0))
+                    await self.computer.gui_action(
+                        workspace_id,
+                        GUIAction(action=GUIActionType.DOUBLE_CLICK, x=x, y=y),
+                    )
+                    actual_obs_str = f"Double-clicked at ({x}, {y})"
 
             elif action_type == ComputerActionType.GUI_TYPE:
                 text = payload.get("text", "")
@@ -788,27 +880,53 @@ class ComputerUseAgent:
                 actual_obs_str = f"Waited {seconds}s; screen refreshed"
 
             elif action_type == ComputerActionType.APP_LAUNCH:
-                app_name = payload.get("app_name") or target_resource or "chromium"
-                if app_name.lower() in ("none", ""):
-                    app_name = "chromium"
-                await self.computer.gui_action(workspace_id, GUIAction(action=GUIActionType.OPEN_APP, app_name=app_name))
-                actual_obs_str = f"Launched and focused {app_name}"
+                raw_app = payload.get("app_name") or target_resource
+                app_name = str(raw_app).strip(" *_\n\r\t`\"'") if raw_app else ""
+                if not app_name or app_name.lower() in ("none", "null", ""):
+                    actual_obs_str = "APP_LAUNCH failed: application name required"
+                    recovery_needed = True
+                else:
+                    if "\n" in app_name:
+                        app_name = app_name.split("\n")[0].strip(" *_\n\r\t`\"'")
+                    words = app_name.split()
+                    if words and words[0].lower() in ("the", "a", "an") and len(words) > 1:
+                        app_name = words[1]
+                    elif words:
+                        app_name = words[0]
+                    await self.computer.gui_action(workspace_id, GUIAction(action=GUIActionType.OPEN_APP, app_name=app_name))
+                    actual_obs_str = f"Launched and focused {app_name}"
 
             elif action_type == ComputerActionType.APP_CLOSE:
-                app_name = payload.get("app_name") or target_resource or "chromium"
-                await self.computer.gui_action(workspace_id, GUIAction(action=GUIActionType.CLOSE_APP, app_name=app_name))
-                actual_obs_str = f"Closed {app_name}"
+                raw_app = payload.get("app_name") or target_resource
+                app_name = str(raw_app).strip(" *_\n\r\t`\"'") if raw_app else ""
+                if not app_name or app_name.lower() in ("none", "null", ""):
+                    actual_obs_str = "APP_CLOSE failed: application name required"
+                    recovery_needed = True
+                else:
+                    if "\n" in app_name:
+                        app_name = app_name.split("\n")[0].strip(" *_\n\r\t`\"'")
+                    words = app_name.split()
+                    if words and words[0].lower() in ("the", "a", "an") and len(words) > 1:
+                        app_name = words[1]
+                    elif words:
+                        app_name = words[0]
+                    await self.computer.gui_action(workspace_id, GUIAction(action=GUIActionType.CLOSE_APP, app_name=app_name))
+                    actual_obs_str = f"Closed {app_name}"
 
             elif action_type == ComputerActionType.APP_FOCUS:
-                # Toggle focus between desktop windows (e.g. Chromium ↔ a
-                # terminal app) without relaunching. Maps to SELECT_WINDOW so
-                # the provider re-activates an already-open window by title.
-                app_name = payload.get("app_name") or target_resource or "chromium"
-                await self.computer.gui_action(
-                    workspace_id,
-                    GUIAction(action=GUIActionType.SELECT_WINDOW, app_name=app_name),
-                )
-                actual_obs_str = f"Focused {app_name}"
+                raw_app = payload.get("app_name") or target_resource
+                app_name = str(raw_app).strip(" *_\n\r\t`\"'") if raw_app else ""
+                if not app_name or app_name.lower() in ("none", "null", ""):
+                    actual_obs_str = "APP_FOCUS failed: window or application name required"
+                    recovery_needed = True
+                else:
+                    if "\n" in app_name:
+                        app_name = app_name.split("\n")[0].strip(" *_\n\r\t`\"'")
+                    await self.computer.gui_action(
+                        workspace_id,
+                        GUIAction(action=GUIActionType.SELECT_WINDOW, app_name=app_name),
+                    )
+                    actual_obs_str = f"Focused window: {app_name}"
 
             elif action_type == ComputerActionType.APP_INSTALL:
                 # Install a package via the provider's install_application(),
@@ -854,6 +972,19 @@ class ComputerUseAgent:
                 if str(cmd).lower() in ("none", ""):
                     cmd = "echo OK"
                 cmd_str = str(cmd).strip()
+                cmd_str = re.sub(r'^(?:xfce4-terminal,?\s*)?(?:command|cmd)\s*=\s*', '', cmd_str)
+                # Map /home/sonic to the actual sandbox home directory
+                if "/home/sonic" in cmd_str:
+                    real_home = getattr(self, "_last_working_dir", "") or "/home/daytona"
+                    if "/workspace" in real_home:
+                        real_home = real_home.split("/workspace")[0]
+                    cmd_str = cmd_str.replace("/home/sonic", real_home)
+                # Expand ~/ if used
+                if "~/" in cmd_str:
+                    real_home = getattr(self, "_last_working_dir", "") or "/home/daytona"
+                    if "/workspace" in real_home:
+                        real_home = real_home.split("/workspace")[0]
+                    cmd_str = cmd_str.replace("~/", f"{real_home}/")
                 # GUI applications must not block the terminal execution
                 _GUI_APPS = ("chromium", "google-chrome", "firefox", "mousepad", "thunar", "burpsuite", "xfce4-terminal")
                 if any(cmd_str.startswith(app) or cmd_str == app for app in _GUI_APPS) and not cmd_str.endswith("&"):
@@ -875,15 +1006,27 @@ class ComputerUseAgent:
                 actual_obs_str = f"Service {svc} is {svc_info.status}"
 
             elif action_type == ComputerActionType.BROWSER_NAVIGATE:
-                url = payload.get("url") or target_resource
+                raw_url = payload.get("url") or target_resource
+                url = str(raw_url).strip(" *_\n\r\t`\"'") if raw_url else ""
+                if "\n" in url:
+                    url = url.split("\n")[0].strip(" *_\n\r\t`\"'")
+                if not url or url.lower() in ("none", "not specified", "null", "/"):
+                    url = "about:blank"
+                elif not (url.startswith("http://") or url.startswith("https://") or url.startswith("about:") or url.startswith("file://")):
+                    if "localhost" in url or "127.0.0.1" in url:
+                        url = f"http://{url}"
+                    elif "." in url and " " not in url:
+                        url = f"https://{url}"
+
                 if self.browser is not None:
                     snap = await self.browser.navigate(url)
                     self._last_browser_snapshot = snap
                     actual_obs_str = f"Navigated to {getattr(snap, 'url', url)} (title: {getattr(snap, 'title', '')})"
                 else:
-                    cmd = f"DISPLAY=:0 nohup chromium --no-sandbox --disable-dev-shm-usage {shlex.quote(url)} >/dev/null 2>&1 &"
+                    clean_flags = "--no-sandbox --disable-dev-shm-usage --disable-session-crashed-bubble --no-first-run --no-default-browser-check"
+                    cmd = f"DISPLAY=:0 nohup chromium {clean_flags} {shlex.quote(url)} >/dev/null 2>&1 &"
                     await self.computer.terminal(workspace_id, cmd)
-                    actual_obs_str = f"Launched Chromium on desktop navigating to {url}"
+                    actual_obs_str = f"Navigated desktop browser to {url}"
 
             elif action_type == ComputerActionType.BROWSER_CLICK:
                 selector = payload.get("selector") or target_resource
@@ -896,16 +1039,42 @@ class ComputerUseAgent:
                     actual_obs_str = f"Browser DOM click '{selector}' not available without BrowserAgent; use GUI_CLICK"
 
             elif action_type == ComputerActionType.BROWSER_TYPE:
-                selector = payload.get("selector") or target_resource
-                text = payload.get("text", "")
+                selector = str(payload.get("selector") or target_resource or "").strip(" *_\n\r\t`\"'")
+                text = (
+                    payload.get("text")
+                    or payload.get("command")
+                    or payload.get("value")
+                    or payload.get("query")
+                    or payload.get("input")
+                    or ""
+                )
+                if not text and selector:
+                    elem_keywords = ("address", "bar", "input", "selector", "field", "box", "element", "button", "div", "form")
+                    if not any(k in selector.lower() for k in elem_keywords):
+                        text = selector
+                        selector = "input"
+
                 if self.browser is not None:
                     ok = await self.browser.type_text(selector, text)
                     actual_obs_str = f"Typed {len(text)} chars into {selector}" if ok else f"Type failed: {selector}"
                     if not ok:
                         recovery_needed = True
                 else:
-                    await self.computer.gui_action(workspace_id, GUIAction(action=GUIActionType.TYPE, text=text))
-                    actual_obs_str = f"Typed {len(text)} chars via GUI keyboard: {text[:40]}"
+                    is_address_bar = any(k in selector.lower() for k in ("address", "url bar", "location", "omnibox"))
+                    if is_address_bar:
+                        await self.computer.gui_action(workspace_id, GUIAction(action=GUIActionType.KEYPRESS, key="ctrl+l"))
+                        import asyncio as _asyncio
+                        await _asyncio.sleep(0.3)
+
+                    if text:
+                        await self.computer.gui_action(workspace_id, GUIAction(action=GUIActionType.TYPE, text=text))
+                        import asyncio as _asyncio
+                        await _asyncio.sleep(0.2)
+                        if is_address_bar or "search" in selector.lower():
+                            await self.computer.gui_action(workspace_id, GUIAction(action=GUIActionType.KEYPRESS, key="Return"))
+                        actual_obs_str = f"Typed {len(text)} chars via GUI keyboard: {text[:40]}"
+                    else:
+                        actual_obs_str = f"Typed 0 chars via GUI keyboard (empty text for {selector})"
 
             elif action_type == ComputerActionType.BROWSER_SCREENSHOT:
                 if self.browser is not None:
@@ -1290,20 +1459,18 @@ class ComputerUseAgent:
         goal: str,
         steps: int = 5,
         step_callback: Optional[Any] = None,
+        interrupt_check: Optional[Any] = None,
     ) -> list[ComputerDecisionTrace]:
-        """Runs an end-to-end closed-loop autonomous engineering mission.
-
-        Devin-style loop: Observe → Reason → Act → **Verify** → (Replan on
-        stuck). Each step observes, reasons (LLM) over observation + history,
-        acts, then — critically — does NOT trust a self-declared GOAL_COMPLETE:
-        it independently verifies against the real sandbox state. When the same
-        approach fails N times in a row, it replans (injects a pivot signal)
-        instead of burning the step budget on a stuck loop.
-        """
+        """Runs an end-to-end closed-loop autonomous engineering mission."""
         t_start = time.perf_counter()
+        self._interrupted = False
         goal_reached = False
 
         for step in range(1, steps + 1):
+            if self._interrupted or (callable(interrupt_check) and interrupt_check()):
+                self._interrupted = True
+                logger.info("mission_interrupted_by_user", step=step)
+                break
             if self.action_counter >= self.max_actions:
                 logger.warning("max_actions_reached", max=self.max_actions)
                 break
@@ -1359,14 +1526,22 @@ class ComputerUseAgent:
             else:
                 self._consecutive_failures = 0
 
-        t_elapsed = time.perf_counter() - t_start
-
-        # Update Telemetry Metrics. verification_score now reflects whether the
-        # goal was independently verified (not just self-declared).
+        # Update Telemetry Metrics.
         self.metrics.actions_total = len(self.traces)
         self.metrics.actions_successful = sum(1 for t in self.traces if t.status in ["SUCCESS", "RECOVERED"])
         self.metrics.actions_failed = sum(1 for t in self.traces if t.status == "FAILED")
         self.metrics.recovery_events = self.recovery_events
+
+        if not goal_reached and self.metrics.actions_successful > 0 and self.metrics.actions_failed == 0:
+            try:
+                verified, _ = await self.verify_goal(workspace_id, goal)
+                if verified:
+                    goal_reached = True
+            except Exception as v_err:
+                logger.debug("post_mission_verify_error", error=str(v_err))
+
+        self.goal_reached = goal_reached
+        t_elapsed = time.perf_counter() - t_start
         self.metrics.time_to_completion_seconds = round(t_elapsed, 2)
         self.metrics.verification_score = 1.00 if goal_reached else (
             0.90 if self.metrics.actions_failed == 0 else 0.80

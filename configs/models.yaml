@@ -111,14 +111,14 @@ routing_rules:
   planning:
     description: "High-level planning, task decomposition, strategy"
     provider: nvidia
-    model: meta/llama-3.2-90b-vision-instruct
-    fallback: [claude/claude-sonnet-4-20250514, openai/gpt-4o]
+    model: meta/llama-3.2-11b-vision-instruct
+    fallback: [nvidia/meta/llama-3.2-90b-vision-instruct, claude/claude-sonnet-4-20250514]
 
   reasoning:
     description: "Code analysis, dataflow tracing, pattern matching"
     provider: nvidia
-    model: meta/llama-3.2-90b-vision-instruct
-    fallback: [claude/claude-sonnet-4-20250514, deepseek/deepseek-coder]
+    model: meta/llama-3.2-11b-vision-instruct
+    fallback: [nvidia/meta/llama-3.2-90b-vision-instruct, claude/claude-sonnet-4-20250514]
 
   fast_recon:
     description: "Quick reconnaissance, asset discovery, tech detection"

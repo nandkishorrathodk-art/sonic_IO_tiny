@@ -45,6 +45,7 @@ from sonic.computer.models import (
     _new_id,
     _now,
 )
+from sonic.computer.docker_sandbox import DockerContainerSandbox
 from sonic.computer.provider import ComputerProvider
 from sonic.logger import get_logger
 from sonic.sandbox.provider import ExecResult
@@ -229,6 +230,15 @@ class DaytonaComputerProvider(ComputerProvider):
             if target_id in self._sandboxes:
                 return self._sandboxes[target_id]
 
+            # Docker desktop container fallback / direct resolution
+            if target_id in ("sonic-desktop-workstation", "docker-workstation") or target_id.startswith("docker:"):
+                cname = "sonic-desktop-workstation" if target_id in ("sonic-desktop-workstation", "docker-workstation") else target_id.split(":", 1)[1]
+                docker_sb = DockerContainerSandbox(cname)
+                self._sandboxes[target_id] = docker_sb
+                if workspace_id:
+                    self._sandboxes[workspace_id] = docker_sb
+                return docker_sb
+
             client = self._get_client()
             if client:
                 try:
@@ -258,8 +268,36 @@ class DaytonaComputerProvider(ComputerProvider):
                         return sandbox
                 except Exception as e:
                     logger.warning("daytona_resolve_sandbox_failed", target_id=target_id, error=str(e))
-                    # Auto-heal: If sandbox was deleted/expired on Daytona Cloud, auto-provision a fresh one
+                    # Auto-heal: If sandbox was deleted/expired on Daytona Cloud, check existing or auto-provision a fresh one
                     try:
+                        logger.info("daytona_auto_healing_checking_existing_sandboxes")
+                        found_sb = None
+                        try:
+                            async for existing_sb in client.list():
+                                found_sb = existing_sb
+                                break
+                        except Exception:
+                            pass
+
+                        if found_sb:
+                            logger.info("daytona_auto_healing_reusing_existing_sandbox", sandbox_id=found_sb.id)
+                            state_token = self._normalize_sandbox_state(getattr(found_sb, "state", None))
+                            if state_token in ("STOPPED", "ARCHIVED", "PAUSED"):
+                                try:
+                                    await client.start(found_sb)
+                                except Exception as start_err:
+                                    logger.warning("daytona_auto_heal_start_failed", error=str(start_err))
+                            if hasattr(found_sb, "computer_use"):
+                                try:
+                                    await found_sb.computer_use.start()
+                                except Exception:
+                                    pass
+                            self._sandboxes[found_sb.id] = found_sb
+                            if workspace_id:
+                                self._sandboxes[workspace_id] = found_sb
+                            os.environ["DAYTONA_SANDBOX_ID"] = found_sb.id
+                            return found_sb
+
                         logger.info("daytona_auto_healing_provisioning_fresh_sandbox")
                         sandbox = await client.create()
                         if sandbox:
@@ -501,9 +539,15 @@ class DaytonaComputerProvider(ComputerProvider):
         except Exception:
             pass
 
-        active_app = self._active_windows.get(workspace_id)
-        if not active_app or active_app == "None":
-            active_app = open_windows[0] if open_windows else "Desktop"
+        active_app = "Desktop"
+        try:
+            act_res = await self.terminal(workspace_id, "DISPLAY=:0 xdotool getactivewindow getwindowname 2>/dev/null")
+            if act_res.exit_code == 0 and act_res.stdout and act_res.stdout.strip():
+                active_app = act_res.stdout.strip()
+            else:
+                active_app = self._active_windows.get(workspace_id) or (open_windows[0] if open_windows else "Desktop")
+        except Exception:
+            active_app = self._active_windows.get(workspace_id) or (open_windows[0] if open_windows else "Desktop")
         # Derive real workspace status from the sandbox state.
         # Daytona returns a SandboxState enum whose str() includes the
         # enum name (e.g. "<SandboxState.STARTED: 'started'>"); normalize to
@@ -588,7 +632,15 @@ class DaytonaComputerProvider(ComputerProvider):
 
             if not b64:
                 try:
-                    scr_cmd = "DISPLAY=:0 import -window root /tmp/sonic_screen.png 2>/dev/null && base64 -w0 /tmp/sonic_screen.png"
+                    scr_cmd = (
+                        "DISPLAY=:0 import -window root /tmp/sonic_screen.png 2>/dev/null && "
+                        "(LOC=$(DISPLAY=:0 xdotool getmouselocation --shell 2>/dev/null); "
+                        "if [ $? -eq 0 ] && [ -n \"$LOC\" ]; then eval \"$LOC\"; "
+                        "DISPLAY=:0 convert /tmp/sonic_screen.png -stroke black -strokewidth 1 -fill '#00ffcc' "
+                        "-draw \"polygon $X,$Y $(($X+15)),$(($Y+12)) $(($X+9)),$(($Y+12)) $(($X+14)),$(($Y+22)) $(($X+10)),$(($Y+24)) $(($X+5)),$(($Y+14)) $(($X)),$(($Y+18))\" "
+                        "/tmp/sonic_screen.png 2>/dev/null || true; fi) && "
+                        "base64 -w0 /tmp/sonic_screen.png"
+                    )
                     res = await sandbox.process.exec(scr_cmd)
                     if res.exit_code == 0 and res.result and len(res.result.strip()) > 100:
                         b64 = res.result.strip()
@@ -778,21 +830,30 @@ class DaytonaComputerProvider(ComputerProvider):
                 await sandbox.process.exec(scroll_cmd)
 
             elif action_type == GUIActionType.OPEN_APP and action.app_name:
-                self._active_windows[workspace_id] = action.app_name
-                app_cmd = action.app_name.strip()
+                raw_name = action.app_name.strip(" *_\n\r\t`\"'")
+                if "\n" in raw_name:
+                    raw_name = raw_name.split("\n")[0].strip(" *_\n\r\t`\"'")
+                clean_app = raw_name.split()[0].lower() if raw_name else "chromium"
+                self._active_windows[workspace_id] = clean_app
                 try:
                     wm_check = await sandbox.process.exec("DISPLAY=:0 wmctrl -l")
-                    is_already_open = wm_check.result and app_cmd.lower() in wm_check.result.lower()
+                    is_already_open = wm_check.result and clean_app in wm_check.result.lower()
                     if is_already_open:
-                        await sandbox.process.exec(f"DISPLAY=:0 (wmctrl -a {shlex.quote(app_cmd)} 2>/dev/null || xdotool search --onlyvisible --class {shlex.quote(app_cmd)} windowactivate 2>/dev/null) || true")
+                        await sandbox.process.exec(f"DISPLAY=:0 (wmctrl -a {shlex.quote(clean_app)} 2>/dev/null || xdotool search --onlyvisible --class {shlex.quote(clean_app)} windowactivate 2>/dev/null) || true")
                     else:
-                        await sandbox.process.exec(f"DISPLAY=:0 {app_cmd} &")
+                        if clean_app == "chromium":
+                            spawn_cmd = "DISPLAY=:0 nohup chromium --no-sandbox --disable-dev-shm-usage --disable-session-crashed-bubble --no-first-run --no-default-browser-check >/dev/null 2>&1 &"
+                        else:
+                            spawn_cmd = f"DISPLAY=:0 {shlex.quote(clean_app)} &"
+                        await sandbox.process.exec(spawn_cmd)
                 except Exception:
-                    await sandbox.process.exec(f"DISPLAY=:0 {app_cmd} &")
+                    await sandbox.process.exec(f"DISPLAY=:0 {shlex.quote(clean_app)} &")
 
             elif action_type == GUIActionType.CLOSE_APP and action.app_name:
-                await sandbox.process.exec(f"pkill -f -- {shlex.quote(action.app_name)}")
-                if self._active_windows.get(workspace_id) == action.app_name:
+                raw_name = action.app_name.strip(" *_\n\r\t`\"'")
+                clean_app = raw_name.split()[0].lower() if raw_name else action.app_name
+                await sandbox.process.exec(f"pkill -f -- {shlex.quote(clean_app)}")
+                if self._active_windows.get(workspace_id) in (clean_app, action.app_name):
                     self._active_windows[workspace_id] = "XFCE Desktop"
 
             elif action_type == GUIActionType.SELECT_WINDOW:

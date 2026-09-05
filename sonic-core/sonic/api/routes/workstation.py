@@ -54,14 +54,23 @@ logger = get_logger(__name__)
 
 router = APIRouter()
 
-_daytona_provider_instance: DaytonaComputerProvider | None = None
+_primary_computer_instance: Any | None = None
 
 
-def get_daytona_computer() -> DaytonaComputerProvider:
-    global _daytona_provider_instance
-    if _daytona_provider_instance is None:
-        _daytona_provider_instance = DaytonaComputerProvider()
-    return _daytona_provider_instance
+def get_computer() -> Any:
+    global _primary_computer_instance
+    if _primary_computer_instance is None:
+        if os.environ.get("SONIC_USE_DAYTONA_CLOUD") == "1":
+            _primary_computer_instance = DaytonaComputerProvider()
+        else:
+            from sonic.computer.docker_computer import DockerComputerProvider
+            _primary_computer_instance = DockerComputerProvider()
+    return _primary_computer_instance
+
+
+def get_daytona_computer() -> Any:
+    """Backward compatibility alias for get_computer()."""
+    return get_computer()
 
 
 # -------------------------------------------------------------
@@ -214,19 +223,19 @@ def _get_or_create_session(tenant_id: str, session_id: str = "default") -> dict[
             "worklog": [],
             "evidence": [],
             "desktop": {
-                "os_name": "Ubuntu Linux (Daytona Cloud)" if active_ws else "",
-                "workspace_id": active_ws,
-                "sandbox_id": active_ws,
-                "image": "daytonaio/workspace-project:latest",
+                "os_name": "Linux Cyber Workstation (Docker XFCE4)",
+                "workspace_id": active_ws or "sonic-desktop-workstation",
+                "sandbox_id": active_ws or "sonic-desktop-workstation",
+                "image": "sonic-workstation:latest",
                 "ssh_command": "",
                 "display": ":99",
-                "vnc_port": None,
-                "novnc_port": None,
-                "novnc_url": "",
-                "status": "LIVE" if active_ws else "NO_ACTIVE_WORKSPACE",
-                "active_window": "",
+                "vnc_port": 5900,
+                "novnc_port": 6080,
+                "novnc_url": "http://localhost:6080/vnc.html",
+                "status": "LIVE",
+                "active_window": "Desktop",
                 "resolution": {"width": 1280, "height": 800},
-                "running_apps": [],
+                "running_apps": ["google-chrome-stable", "xfce4-terminal"],
                 "active_services": [],
             },
             # A separate, disposable execution plane for authorized research,
@@ -330,6 +339,15 @@ def _session_workspace_id(user: User, session_id: str) -> str:
             state.setdefault("desktop", {})["workspace_id"] = env_sandbox_id
             state.setdefault("desktop", {})["sandbox_id"] = env_sandbox_id
         return env_sandbox_id
+
+    # Fallback to local Docker Workstation container
+    docker_ws = os.environ.get("SONIC_DOCKER_WORKSTATION_CONTAINER", "sonic-desktop-workstation").strip()
+    if docker_ws:
+        if state:
+            state.setdefault("desktop", {})["workspace_id"] = docker_ws
+            state.setdefault("desktop", {})["sandbox_id"] = docker_ws
+            state.setdefault("desktop", {})["os_name"] = "Linux Workstation (Docker XFCE4)"
+        return docker_ws
 
     return ""
 
@@ -940,6 +958,21 @@ async def destroy_target_sandbox(
     target_box.update({"workspace_id": "", "sandbox_id": "", "status": "DESTROYED", "scope_verified": False})
     _persist_workstation_state()
     return {"status": "destroyed", "target_sandbox": target_box}
+
+
+@router.post("/workstation/session/interrupt")
+async def interrupt_workstation_session(
+    session_id: str = Query("default"),
+    user: User = Depends(require_operator),
+):
+    """Signals any running autonomous computer-use mission to pause/stop immediately."""
+    state = _get_or_create_session(user.email, session_id)
+    state["interrupted"] = True
+    state["status"] = "PAUSED"
+    state["current_action"] = "Paused by user (Takeover active)."
+    _append_worklog(state, "response", "Agent Paused", "Autonomous execution paused by user. Direct control active.")
+    _persist_workstation_state()
+    return {"status": "ok", "message": "Interrupt signal sent to agent."}
 
 
 @router.get("/workstation/desktop/status")
@@ -1918,7 +1951,7 @@ async def _run_prompt_reasoning(tenant_id: str, session_id: str, prompt: str) ->
                                 # Add to persistent Graph Memory
                                 try:
                                     from sonic.memory.router import get_smart_memory
-                                    from sonic.memory.schemas import AssetNode, FindingNode, RelationshipType
+                                    from sonic.memory.schemas import AssetNode, FindingNode, FindingSeverity, RelationshipType
                                     mem = await get_smart_memory()
                                     target_clean = trace.target_resource.replace("https://", "").replace("http://", "").split("/")[0].split(":")[0]
                                     if target_clean and len(target_clean) > 2:
@@ -1929,7 +1962,8 @@ async def _run_prompt_reasoning(tenant_id: str, session_id: str, prompt: str) ->
                                             uid=finding_uid,
                                             title=f"{trace.action_type.value}: {trace.target_resource}",
                                             description=obs_text[:200],
-                                            severity="info",
+                                            vulnerability_class="observation",
+                                            severity=FindingSeverity.INFO,
                                             tenant_id=tenant_id,
                                         ))
                                         await mem.create_relationship(
@@ -1941,22 +1975,33 @@ async def _run_prompt_reasoning(tenant_id: str, session_id: str, prompt: str) ->
                                 except Exception as mem_err:
                                     logger.debug("workstation_graph_memory_update_failed", error=str(mem_err))
 
-                            _persist_workstation_state()
-
+                        state["interrupted"] = False
                         traces = await agent.run_mission(
                             workspace_id=desktop_id,
                             goal=prompt,
-                            steps=12,
+                            steps=agent.max_actions,
                             step_callback=_on_step,
+                            interrupt_check=lambda: bool(state.get("interrupted")),
                         )
 
                         # Final summary
                         succeeded = sum(1 for t in traces if t.status in ("SUCCESS", "RECOVERED"))
                         failed = sum(1 for t in traces if t.status == "FAILED")
                         blocked = sum(1 for t in traces if t.status == "BLOCKED")
-                        state["status"] = "IDLE"
-                        state["current_action"] = "Ready when you are."
-                        summary_msg = f"Autonomous computer-use execution finished: {succeeded} steps executed on the live Daytona desktop ({len(traces)} total steps)."
+                        if state.get("interrupted"):
+                            state["status"] = "PAUSED"
+                            state["current_action"] = "Agent paused by user."
+                            summary_msg = f"Autonomous computer-use paused by user ({succeeded} actions completed, {len(traces)} total steps)."
+                        else:
+                            state["status"] = "IDLE"
+                            state["current_action"] = "Ready when you are."
+                            if getattr(agent, "goal_reached", False):
+                                summary_msg = f"Goal successfully achieved and verified on Daytona desktop ({succeeded} actions completed)."
+                            else:
+                                summary_msg = (
+                                    f"Autonomous run concluded: {succeeded} steps succeeded, {failed} failed "
+                                    f"({len(traces)} total steps). Goal may still be in progress — send next command to continue."
+                                )
                         state["thought_summary"] = summary_msg
                         _append_worklog(
                             state, "response",

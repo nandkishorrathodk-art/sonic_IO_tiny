@@ -49,10 +49,19 @@ class MissionDirector:
         resource_manager: MissionResourceManager | None = None,
         autonomy_level: ComputerAutonomyLevel = ComputerAutonomyLevel.L3_AUTONOMOUS,
         state_store: MissionStateStore | None = None,
+        model_router: Any | None = None,
     ):
         self.computer = computer_provider
         self.resource_mgr = resource_manager or MissionResourceManager()
         self.autonomy_level = autonomy_level
+        if model_router is not None:
+            self.model_router = model_router
+        else:
+            try:
+                from sonic.llm.router import ModelRouter
+                self.model_router = ModelRouter()
+            except Exception:
+                self.model_router = None
 
         # Active missions state cache (in-memory, persisted to store on mutation)
         self.missions: dict[str, MissionState] = {}
@@ -202,7 +211,13 @@ class MissionDirector:
         state.current_plan = plan
         state.open_questions = list(questions)
         state.active_tracks = list(tracks)
-        state.remaining_unknowns = ["Exact line number of vulnerability", "Impact on downstream APIs"]
+        state.remaining_unknowns = [
+            f"Verification of: {state.objective.goal[:60]}",
+            "Downstream impact and blast radius",
+        ] if state.objective and state.objective.goal else [
+            "Root cause analysis",
+            "Remediation verification",
+        ]
         state.status = MissionStatus.ACTIVE
 
         self._record_event(mission_id, "PlanDecomposed", {"version": 1, "milestones": len(milestones)})
@@ -279,20 +294,24 @@ class MissionDirector:
                 toolsmith=toolsmith,
                 method_lab=method_lab,
             )
+            mission_steps = getattr(self, "max_actions", getattr(agent, "max_actions", 25))
             traces = await agent.run_mission(
                 workspace_id=ws.id,
                 goal=state.objective.goal,
-                steps=5,
+                steps=mission_steps,
             )
             # Stash traces so get_knowledge_summary / re-finalize can derive
             # honest artifacts without re-running the agent.
             object.__setattr__(state, "_last_traces", traces)
 
-            # Record Resource Consumption
+            # Record Resource Consumption derived from actual execution
+            num_traces = len(traces)
+            est_tokens = sum(len(getattr(t, "actual_observation", "") or "") // 4 + 400 for t in traces) if traces else 250
+            est_dollars = round((est_tokens / 1_000_000.0) * 1.50, 4)
             self.resource_mgr.record_spend(
                 mission_id=mission_id,
-                dollars=0.45,
-                tokens=12500,
+                dollars=est_dollars,
+                tokens=est_tokens,
                 compute_seconds=round(time.perf_counter() - t_start, 2),
             )
 

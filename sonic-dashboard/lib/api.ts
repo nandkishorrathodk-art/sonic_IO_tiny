@@ -2,7 +2,7 @@
 
 import { getAuthToken, ensureAuthToken } from "./auth";
 
-export const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+export const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:12000";
 
 interface RequestOptions extends RequestInit {
   timeout?: number;

@@ -222,9 +222,11 @@ class DaytonaComputerProvider(ComputerProvider):
 
         env_id = os.environ.get("DAYTONA_SANDBOX_ID", "")
         # Persisted workspace IDs are Daytona sandbox IDs. Older in-memory
-        # records used a synthetic ws-* ID and can only resolve through the
-        # attached environment sandbox fallback.
-        target_id = workspace_id if (workspace_id and not workspace_id.startswith("ws-") and workspace_id != "default") else env_id
+        # records used a synthetic ws-* ID; prefer attached env sandbox if available.
+        if workspace_id and not workspace_id.startswith("ws-") and workspace_id != "default":
+            target_id = workspace_id
+        else:
+            target_id = env_id or workspace_id or ""
 
         if target_id:
             if target_id in self._sandboxes:

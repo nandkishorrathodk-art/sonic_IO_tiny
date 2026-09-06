@@ -2,7 +2,7 @@
 SONIC-REDA — Compute Provider Factory & Resolver
 ===================================================
 Instantiates and configures the appropriate ComputeProvider
-(Docker, Daytona, E2B, or LocalDev) based on environment configuration.
+(Docker or LocalDev) based on environment configuration.
 """
 
 from __future__ import annotations
@@ -13,7 +13,6 @@ import shutil
 from sonic.config import get_settings
 from sonic.logger import get_logger
 from sonic.sandbox.provider import ComputeProvider
-from sonic.sandbox.providers.daytona_provider import DaytonaProvider
 from sonic.sandbox.providers.docker_provider import DockerProvider
 from sonic.sandbox.providers.local_dev_provider import LocalDevProvider
 
@@ -26,9 +25,8 @@ def get_compute_provider(force_provider: str | None = None) -> ComputeProvider:
     """
     Get or initialize the global ComputeProvider.
     Preference Order:
-      1. Daytona (if DAYTONA_API_URL configured)
-      2. Docker (if Docker daemon available)
-      3. LocalDevProvider (safe offline fallback)
+      1. Docker (if Docker daemon available)
+      2. LocalDevProvider (safe offline fallback; host execution refused outside dev)
     """
     global _active_provider
     if _active_provider is not None and not force_provider:
@@ -36,13 +34,7 @@ def get_compute_provider(force_provider: str | None = None) -> ComputeProvider:
 
     provider_name = force_provider or os.environ.get("SONIC_COMPUTE_PROVIDER", "").lower()
 
-    if provider_name == "daytona" or (not provider_name and (os.environ.get("DAYTONA_API_KEY") or os.environ.get("DAYTONA_API_URL"))):
-        api_url = os.environ.get("DAYTONA_API_URL")
-        api_key = os.environ.get("DAYTONA_API_KEY", "")
-        _active_provider = DaytonaProvider(api_url=api_url, api_key=api_key)
-        logger.info("compute_provider_selected", provider="DaytonaProvider", has_api_key=bool(api_key))
-
-    elif provider_name == "docker" or (not provider_name and shutil.which("docker")):
+    if provider_name == "docker" or (not provider_name and shutil.which("docker")):
         _active_provider = DockerProvider()
         logger.info("compute_provider_selected", provider="DockerProvider")
     else:

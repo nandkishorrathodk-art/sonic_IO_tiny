@@ -18,6 +18,7 @@ import base64
 import os
 import shlex
 import shutil
+import subprocess
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -63,6 +64,7 @@ class DockerComputerProvider(ComputerProvider):
         self.workspaces: dict[str, ComputerWorkspace] = {}
         self._active_windows: dict[str, str] = {}
         self.audit_log: list[ComputerAuditEvent] = []
+        self._daemon_checked: bool | None = None
         self._default_workspace_id = self.container_name
 
     def _ensure_default_workspace(self, tenant_id: str = "default", engagement_id: str = "default") -> ComputerWorkspace:
@@ -84,6 +86,16 @@ class DockerComputerProvider(ComputerProvider):
         """Execute a bash command inside the docker container."""
         if not shutil.which("docker"):
             return 127, "", "docker binary not found on host"
+        if self._daemon_checked is None:
+            probe = subprocess.run(
+                ["docker", "info", "--format", "{{.ServerVersion}}"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=10,
+            )
+            self._daemon_checked = probe.returncode == 0
+        if not self._daemon_checked:
+            return 126, "", "docker daemon is unreachable; command execution failed-closed"
         try:
             exec_args = ["docker", "exec", self.container_name, "bash", "-c", cmd]
             proc = await asyncio.create_subprocess_exec(
@@ -102,7 +114,8 @@ class DockerComputerProvider(ComputerProvider):
         except asyncio.TimeoutError:
             return 124, "", f"Command timed out after {timeout} seconds"
         except Exception as e:
-            return 1, "", str(e)
+            # Infra failure (daemon down, exec error) is a fail-closed condition.
+            return 126, "", str(e)
 
     # -------------------------------------------------------------
     # Lifecycle

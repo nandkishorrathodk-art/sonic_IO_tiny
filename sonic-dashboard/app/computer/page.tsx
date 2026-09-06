@@ -32,7 +32,7 @@ export default function ComputerWorkspacePage() {
       await api.provisionDesktop();
       await fetchStatus();
     } catch (err: any) {
-      setError(err.message || "Failed to provision Daytona workstation.");
+      setError(err.message || "Failed to provision Docker workstation.");
       setLoading(false);
     }
   };
@@ -42,7 +42,7 @@ export default function ComputerWorkspacePage() {
   }, []);
 
   const handleRunCommand = async (cmd: string): Promise<CommandResult | null> => {
-    setCommandLogs((prev) => [...prev, `sonic@daytona:~$ ${cmd}`]);
+    setCommandLogs((prev) => [...prev, `sonic@sonic-desktop-workstation:~$ ${cmd}`]);
     try {
       const res = await api.executeCommand(cmd);
       if (res?.output) setCommandLogs((prev) => [...prev, res.output.trim()]);
@@ -63,7 +63,7 @@ export default function ComputerWorkspacePage() {
           </div>
           <div>
             <div className="flex items-center gap-2">
-              <h2 className="text-base font-bold text-white tracking-wide">DAYTONA GRAPHICAL WORKSTATION</h2>
+              <h2 className="text-base font-bold text-white tracking-wide">DOCKER GRAPHICAL WORKSTATION</h2>
               {desktopState?.vnc_url ? (
                 <span className="chip border border-success/40 bg-success/10 text-success">
                   <span className="w-1.5 h-1.5 rounded-full bg-success animate-pulse" /> LIVE DESKTOP
@@ -75,7 +75,7 @@ export default function ComputerWorkspacePage() {
               )}
             </div>
             <p className="text-xs text-muted mt-0.5 font-mono">
-              Real Cloud Sandbox Execution: X11 GUI Desktop, PTY Shell, Filesystem, and Native Computer Use.
+              Real Docker Sandbox Execution: X11 GUI Desktop, PTY Shell, Filesystem, and Native Computer Use.
             </p>
           </div>
         </div>

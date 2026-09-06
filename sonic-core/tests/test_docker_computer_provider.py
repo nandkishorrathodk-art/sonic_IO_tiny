@@ -4,8 +4,26 @@ Unit tests for DockerComputerProvider (Native Workstation Engine).
 
 import pytest
 import shutil
+import subprocess
 from sonic.computer.docker_computer import DockerComputerProvider
 from sonic.computer.models import GUIAction, GUIActionType
+
+
+def _docker_daemon_up() -> bool:
+    if not shutil.which("docker"):
+        return False
+    try:
+        return (
+            subprocess.run(
+                ["docker", "info", "--format", "{{.ServerVersion}}"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=10,
+            ).returncode
+            == 0
+        )
+    except Exception:
+        return False
 
 
 @pytest.mark.no_live_infra
@@ -19,7 +37,7 @@ async def test_docker_computer_provider_lifecycle():
     url = await provider.get_vnc_url(ws.id)
     assert "6080" in url
 
-    if shutil.which("docker"):
+    if _docker_daemon_up():
         status = await provider.status(ws.id)
         assert status.workspace_id == "sonic-desktop-workstation"
         assert len(status.running_processes) >= 0
@@ -46,7 +64,7 @@ async def test_docker_computer_provider_files_and_apps():
     provider = DockerComputerProvider(container_name="sonic-desktop-workstation")
     ws_id = "sonic-desktop-workstation"
 
-    if shutil.which("docker"):
+    if _docker_daemon_up():
         # Test write file
         test_content = "sonic_security_audit_test_file"
         test_path = "/tmp/sonic_test.txt"

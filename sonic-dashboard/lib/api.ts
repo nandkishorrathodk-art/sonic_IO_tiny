@@ -2,7 +2,18 @@
 
 import { getAuthToken, ensureAuthToken } from "./auth";
 
-export const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+function resolveApiBase(): string {
+  // Explicit env override wins: prod docker-compose passes http://sonic-core:8000;
+  // nginx/proxy deployments pass their API origin here too.
+  if (process.env.NEXT_PUBLIC_API_URL) return process.env.NEXT_PUBLIC_API_URL;
+
+  // Documented local topology (AI_AGENT_GUIDE.md): backend serves on 12000,
+  // frontend on 12001; CORS allowlists both origins. Same-origin only works
+  // behind an API-routing proxy, which is exactly what env override is for.
+  return "http://127.0.0.1:12000";
+}
+
+export const API_BASE = resolveApiBase();
 
 interface RequestOptions extends RequestInit {
   timeout?: number;

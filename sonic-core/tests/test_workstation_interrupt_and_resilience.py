@@ -279,23 +279,23 @@ async def test_mission_director_coordinate_end_to_end():
 # ===========================================================================
 
 @pytest.mark.asyncio
-async def test_daytona_resolve_sandbox_reuses_existing():
+async def test_daytona_resolve_sandbox_reuses_existing(monkeypatch):
     """Proves _resolve_sandbox reuses existing sandboxes from client.list() before creating a new one."""
     from sonic.computer.daytona_computer import DaytonaComputerProvider
     from sonic.computer.models import ComputerWorkspace
 
     provider = DaytonaComputerProvider(api_key="mock-key")
     ws = ComputerWorkspace(
-        id="ws-test-reuse",
+        id="sandbox-expired-1",
         tenant_id="tenant-reuse",
         engagement_id="eng-1",
     )
-    provider.workspaces["ws-test-reuse"] = ws
+    provider.workspaces["sandbox-expired-1"] = ws
 
     existing_box = MagicMock()
     existing_box.id = "daytona-sandbox-existing-123"
     existing_box.state = "started"
-    existing_box.labels = {"sonic_workspace": "ws-test-reuse"}
+    existing_box.labels = {"sonic_workspace": "sandbox-expired-1"}
 
     async def _mock_list():
         yield existing_box
@@ -307,7 +307,8 @@ async def test_daytona_resolve_sandbox_reuses_existing():
     mock_client.create = AsyncMock()
     provider._client = mock_client
 
-    resolved = await provider._resolve_sandbox("ws-test-reuse")
+    monkeypatch.delenv("DAYTONA_SANDBOX_ID", raising=False)
+    resolved = await provider._resolve_sandbox("sandbox-expired-1")
     assert resolved is existing_box
     # Verify client.create was NOT called since an existing sandbox was reused
     mock_client.create.assert_not_called()

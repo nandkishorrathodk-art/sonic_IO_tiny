@@ -31,7 +31,7 @@ const SCAN_LINES = [
   { tag: "recon", text: "Enumerating assets on target.acme.io — HTTP probe + header fingerprint", status: "ok" },
   { tag: "static", text: "Analyzing response patterns → 3 candidate injection sinks detected", status: "ok" },
   { tag: "hypothesis", text: "Formulating 5 attack vectors ranked by exploitability", status: "ok" },
-  { tag: "dynamic", text: "Executing PoC #3 in isolated Daytona sandbox — SSTI confirmed", status: "hit" },
+  { tag: "dynamic", text: "Executing PoC #3in isolated Docker sandbox — SSTI confirmed", status: "hit" },
   { tag: "verifier", text: "Reproducing → captured request + response evidence locked", status: "ok" },
   { tag: "codefix", text: "Generating regression test + patch diff for verified finding", status: "ok" },
 ];
@@ -78,7 +78,7 @@ export default function LandingPage() {
   const stats = [
     { label: "Autonomous Agents", value: "6", icon: Bot },
     { label: "Evidence-Secured Findings", value: "0", icon: FileCheck2 },
-    { label: "Sandbox Isolation", value: "3", icon: Cloud, sub: "Daytona · Docker · Local" },
+    { label: "Sandbox Isolation", value: "3", icon: Cloud, sub: "Docker · Local" },
     { label: "LLM Providers", value: "5", icon: Cpu, sub: "Multi-failover router" },
   ];
 
@@ -317,7 +317,7 @@ export default function LandingPage() {
             {
               icon: <Monitor className="w-5 h-5" />,
               accent: "secondary",
-              title: "Daytona Graphical Workstation",
+              title: "Docker Graphical Workstation",
               desc: "A real interactive Linux GUI powered by Xvfb, XFCE, and x11vnc — streamed live via noVNC directly into the dashboard, with full mouse & keyboard takeover.",
               tag: "Port 6080 WebSocket Stream",
             },

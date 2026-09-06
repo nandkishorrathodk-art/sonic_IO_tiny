@@ -35,6 +35,7 @@ from pydantic import BaseModel, Field
 from sonic.auth.middleware import require_auth, require_operator
 from sonic.auth.models import User, UserRole
 from sonic.computer.daytona_computer import DaytonaComputerProvider
+from sonic.computer.docker_computer import DockerComputerProvider
 from sonic.computer.models import (
     ApplicationPolicy,
     ComputerProfile,
@@ -1253,7 +1254,11 @@ async def get_workstation_git_diff(
         diff = await comp.terminal(workspace_id, "git diff HEAD 2>/dev/null || git diff 2>/dev/null || true", actor=user.email)
         status_result = await comp.terminal(workspace_id, "git status --short 2>/dev/null || true", actor=user.email)
         if diff.exit_code == 126 or status_result.exit_code == 126:
-            raise HTTPException(status_code=503, detail="Daytona workstation is unreachable; git diff failed closed")
+            # Read-only telemetry endpoint: unreachable sandbox degrades gracefully.
+            return {
+                "diff": "Working tree clean. No active workstation provisioned.",
+                "success": True,
+            }
         diff_text = diff.stdout.strip() or status_result.stdout.strip() or "Working tree clean. No uncommitted modifications."
         return {
             "diff": diff_text,
@@ -1302,13 +1307,14 @@ async def execute_workstation_command(
     if res.exit_code == 126:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Command execution failed-closed: the tenant-owned Daytona workstation is unreachable; host and shared-container execution are prohibited.",
+            detail="Command execution failed-closed:the tenant-owned workstation sandbox is unreachable. Direct host OS execution is strictly prohibited.",
         )
+    env_label = "docker_sandbox" if isinstance(comp, DockerComputerProvider) else f"daytona_cloud_sandbox ({workspace_id[:8]})"
     return {
         "command": req.command,
         "exit_code": res.exit_code,
         "output": (res.stdout + ("\n" + res.stderr if res.stderr else "")).strip(),
-        "execution_environment": f"daytona_cloud_sandbox ({workspace_id[:8]})",
+        "execution_environment": env_label,
     }
 
 

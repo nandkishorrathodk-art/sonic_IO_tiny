@@ -9,7 +9,7 @@ export default function SettingsPage() {
   const [llmBaseUrl, setLlmBaseUrl] = useState("https://api.openai.com/v1");
   const [llmApiKey, setLlmApiKey] = useState("");
   const [llmModel, setLlmModel] = useState("gpt-4o");
-  const [daytonaUrl, setDaytonaUrl] = useState("http://localhost:3986");
+  const [daytonaUrl, setDaytonaUrl] = useState("http://localhost:12000");
   const [burpUrl, setBurpUrl] = useState("http://localhost:1337");
   const [allowedDomains, setAllowedDomains] = useState("*.example.com, localhost, 127.0.0.1");
 
@@ -145,7 +145,7 @@ export default function SettingsPage() {
         </div>
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs font-mono">
           <div>
-            <label className="text-muted block mb-1">Daytona API URL</label>
+            <label className="text-muted block mb-1">Docker Workstation API URL</label>
             <input type="text" value={daytonaUrl} onChange={(e) => setDaytonaUrl(e.target.value)} className="input-field !text-xs" />
           </div>
           <div>

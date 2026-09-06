@@ -95,7 +95,7 @@ export default function LoginPage() {
               Autonomous Workstation Login
             </h1>
             <p className="text-xs text-muted font-mono">
-              Authenticate tenant identity to load isolated missions &amp; Daytona sandbox.
+              Authenticate tenant identity to load isolated missions &amp; Docker sandbox.
             </p>
           </div>
 

@@ -352,7 +352,7 @@ export function ComputerSurface({
                 <div className="text-muted-dim">No commands run yet. Execute a command below.</div>
               ) : (
                 commandLogs.map((line, i) => {
-                  const isPrompt = line.startsWith("sonic@sonic-desktop-workstation");
+                  const isPrompt = line.startsWith("sonic@workstation") || line.startsWith("sonic@sonic-desktop-workstation") || line.startsWith("sonic@daytona");
                   const isFail = line.startsWith("[FAIL-CLOSED REJECTED]");
                   return (
                     <div
@@ -368,7 +368,7 @@ export function ComputerSurface({
               )}
             </div>
             <form onSubmit={runCommand} className="flex items-center gap-2">
-              <span className="text-[11px] font-mono text-secondary-400 shrink-0">sonic@sonic-desktop-workstation:~$</span>
+              <span className="text-[11px] font-mono text-secondary-400 shrink-0">sonic@workstation:~$</span>
               <input
                 type="text"
                 value={cmdInput}

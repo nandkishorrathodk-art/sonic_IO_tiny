@@ -1,5 +1,5 @@
 """
-SONIC-REDA — Autonomous Computer-Using Engineer Models (Phase 14)
+SONIC — Autonomous Computer-Using Engineer Models (Phase 14)
 ===================================================================
 Data models for closed-loop computer world observations, action plans,
 autonomy levels, engineering mission modes, decision traces, and metrics.
@@ -46,6 +46,7 @@ class EngineeringMissionMode(StrEnum):
 class ComputerActionType(StrEnum):
     GUI_CLICK = "GUI_CLICK"
     GUI_DOUBLE_CLICK = "GUI_DOUBLE_CLICK"
+    GUI_RIGHT_CLICK = "GUI_RIGHT_CLICK"
     GUI_TYPE = "GUI_TYPE"
     GUI_KEYPRESS = "GUI_KEYPRESS"
     GUI_MOVE = "GUI_MOVE"

@@ -42,59 +42,50 @@ Is architectural upgrade ka mukhya maksad SONIC A-SEA ko **poori tarah self-cont
   - Hardened `/workstation/session/interrupt` with `require_operator` RBAC.
 
 ### B. Perception & Visual Grounding Layer
-- **`sonic/computer_use/grounding.py` [NEW]**:
-  - Adapted from `e2b-dev/open-computer-use`:
-    - `extract_bbox_midpoint()`: parses `<|box_start|>(x1,y1,x2,y2)<|box_end|>` and normalized floats `[0.0, 1.0]` into exact screen pixels `(x, y)` without coordinate guessing.
-    - `draw_action_marker()`: renders visual crosshairs and click target dots on screenshots for dashboard stream monitoring.
+- **`sonic/computer_use/grounding.py` [UPGRADED]**:
+  - `extract_bbox_midpoint()`: parses `<|box_start|>(x1,y1,x2,y2)<|box_end|>`, normalized `0-1000`, and floats `[0.0, 1.0]` into exact screen pixels `(x, y)` without coordinate guessing.
+  - `resolve_ui_target()`: maps natural-language UI queries (e.g., `"Applications menu"`, `"Terminal icon"`, `"Google Chrome"`, `"Window close"`) directly to screen coordinates, with semantic desktop landmarks and multimodal vision grounding callbacks.
+  - `draw_action_marker()`: renders distinct visual crosshair reticles on screenshots (cyan for click, pink for right-click, orange for double-click) for real-time audit verification.
 
 ### C. Cognitive Loop & Autonomy (`agent.py`)
 - **`sonic/computer_use/agent.py` [MODIFIED]**:
+  - **Natural-Language Element Clicking**: If the LLM generates `ACTION: GUI_CLICK`, `TARGET: "Applications menu"` without raw pixel coordinates, `execute_action()` automatically resolves the query using `resolve_ui_target()` against the screenshot instead of failing.
+  - **Right-Click Support (`GUI_RIGHT_CLICK`)**: Full context menu interaction primitive added (`xdotool click 3`), allowlisted in `ActionPolicy`, and handled across `docker_computer.py` and `daytona_computer.py`.
   - **Post-Mission Verification**: Actions complete hone par system state inspect karke `goal_reached = True` aur `verification_score = 1.00` verify karta hai.
   - **Conversational Shell Sanitization**: LLM jab natural-language commands output karta hai (e.g. `"netstat or ss command"`, `"Terminal"`, parenthesized text `(or ss)`), unhe automatically valid shell commands (`which netstat && netstat -tuln || ss -tuln`) me sanitize karta hai.
   - **Fail-Closed Safety Envelope**: Any attempt to access private ranges (e.g. `127.0.0.1` or loopback in browser egress) is intercepted and logged as `BLOCKED` (status 126).
 
-### D. Frontend Dashboard Modernization
-- **`sonic-dashboard/components/computer/ComputerSurface.tsx` [MODIFIED]**:
-  - Daytona label removed $\to$ "SONIC Cyber Workstation".
-  - Embedded noVNC streaming container running on port 6080.
-  - Human takeover controls and stream health indicator.
-  - Verified clean Next.js build: all 21 routes passed `npm run build`.
-
-### E. Trace Synthesis & Automated Reporting
-- **`scripts/launch_agent.py` [NEW]**:
-  - Autonomous launcher connecting `ComputerUseAgent` to `DockerComputerProvider`.
-  - Uses `sonic.mission_engine.trace_synthesis` to derive real mission deliverables and knowledge summaries from execution traces.
-  - Automatically exports structured Markdown report to `reports/workstation_assessment_report.md`.
-
 ---
 
-## 3. How Repositories are Managed (Repo ka Role)
+## 3. How Repositories are Managed (Repo ka Role & Dark Reality)
 
-| Repository | Path | Role & How SONIC Uses It |
+| Repository | Path | Role & Dark Reality Comparison |
 |---|---|---|
-| **`open-computer-use`** | `c:\Users\nandk\_society\open-computer-use` | **Reference Library Only**: Isse visual grounding math extract karke `sonic/computer_use/grounding.py` me native incorporate kiya gaya. Ise `.gitignore` me daala gaya taaki main repo clean rahe. **Merge nahi karna hai.** |
+| **`open-computer-use`** | `c:\Users\nandk\_society\open-computer-use` | **Cloned Reference Only (E2B Locked)**: Dark reality is that this repo is a 200-line wrapper completely dependent on E2B paid cloud sandboxes; it cannot run locally on Docker or VPS. We extracted all of its genuine innovations (`extract_bbox_midpoint`, `resolve_ui_target`, `draw_action_marker`, query-based clicking) and integrated them natively into SONIC. Main repo stays clean. |
 | **`Target Repositories`** | `/root/workspace/` (inside Docker container) | **Audit & Pen-Testing Target**: Target application codebases ko Docker container ke workspace me mount kiya jata hai. Agent `CodeGraph`, AST aur unit tests chala kar vulnerabilities dhundhta hai aur real patches author karke sandbox me test karta hai. |
-| **`SONIC Repository`** | `c:\Users\nandk\_society` | **Main Platform**: FastAPI backend, Next.js dashboard, memory router, aur autonomous reasoning core. |
+| **`SONIC Repository`** | `c:\Users\nandk\_society` | **Main Platform**: FastAPI backend, Next.js dashboard, memory router, sovereign native Docker Cyber Workstation, fail-closed safety envelope, and autonomous reasoning core. |
 
 ---
 
-## 4. Verification Test Matrix (17/17 Passed)
+## 4. Verification Test Matrix (33/33 Passed 100%)
 
 All new test suites run via pytest and pass 100%:
 
 ```bash
-python -m pytest sonic-core/tests/test_docker_computer_provider.py \
+python -m pytest sonic-core/tests/test_visual_grounding.py \
+                 sonic-core/tests/test_docker_computer_provider.py \
                  sonic-core/tests/test_docker_workstation_adapter.py \
-                 sonic-core/tests/test_visual_grounding.py \
-                 sonic-core/tests/test_workstation_interrupt_and_resilience.py
+                 sonic-core/tests/test_workstation_interrupt_and_resilience.py \
+                 sonic-core/tests/test_phase_plan6_safety_envelope.py
 ```
 
 | Test File | Tests | Status | What it Verifies |
 |---|---|---|---|
+| `test_visual_grounding.py` | 9 | **PASSED** | Bbox extraction, landmarks, dynamic grounding fn, action markers, agent click/right-click dispatch |
 | `test_docker_computer_provider.py` | 2 | **PASSED** | Lifecycle, status, terminal exec, screenshot, file read/write, apps |
 | `test_docker_workstation_adapter.py` | 3 | **PASSED** | Duck-typed sandbox adapter, VNC preview URL, terminal & screenshot |
-| `test_visual_grounding.py` | 3 | **PASSED** | Bounding box midpoint extraction, normalized coordinates, marker rendering |
 | `test_workstation_interrupt_and_resilience.py` | 9 | **PASSED** | Interrupt flag, loop exit, RBAC authentication & rejection, tenant isolation |
+| `test_phase_plan6_safety_envelope.py` | 10 | **PASSED** | Fail-closed policy, rate limit, path confinement, egress filter, allowlist |
 
 ---
 

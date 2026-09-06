@@ -66,6 +66,9 @@ class DockerComputerProvider(ComputerProvider):
         self.audit_log: list[ComputerAuditEvent] = []
         self._daemon_checked: bool | None = None
         self._default_workspace_id = self.container_name
+        self._exec_lock = asyncio.Lock()
+        self._last_screenshot: ScreenObservation | None = None
+        self._last_screenshot_time: float = 0.0
 
     def _ensure_default_workspace(self, tenant_id: str = "default", engagement_id: str = "default") -> ComputerWorkspace:
         if self._default_workspace_id not in self.workspaces:
@@ -96,26 +99,36 @@ class DockerComputerProvider(ComputerProvider):
             self._daemon_checked = probe.returncode == 0
         if not self._daemon_checked:
             return 126, "", "docker daemon is unreachable; command execution failed-closed"
-        try:
-            exec_args = ["docker", "exec", self.container_name, "bash", "-c", cmd]
-            proc = await asyncio.create_subprocess_exec(
-                *exec_args,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            stdout_data, stderr_data = await asyncio.wait_for(
-                proc.communicate(),
-                timeout=timeout if timeout > 0 else 60,
-            )
-            exit_code = proc.returncode if proc.returncode is not None else 0
-            stdout_str = stdout_data.decode("utf-8", errors="replace")
-            stderr_str = stderr_data.decode("utf-8", errors="replace")
-            return exit_code, stdout_str, stderr_str
-        except asyncio.TimeoutError:
-            return 124, "", f"Command timed out after {timeout} seconds"
-        except Exception as e:
-            # Infra failure (daemon down, exec error) is a fail-closed condition.
-            return 126, "", str(e)
+        async with self._exec_lock:
+            try:
+                exec_args = ["docker", "exec", self.container_name, "bash", "-c", cmd]
+                proc = await asyncio.create_subprocess_exec(
+                    *exec_args,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+                stdout_data, stderr_data = await asyncio.wait_for(
+                    proc.communicate(),
+                    timeout=timeout if timeout > 0 else 60,
+                )
+                exit_code = proc.returncode if proc.returncode is not None else 0
+                stdout_str = stdout_data.decode("utf-8", errors="replace")
+                stderr_str = stderr_data.decode("utf-8", errors="replace")
+                return exit_code, stdout_str, stderr_str
+            except asyncio.TimeoutError:
+                try:
+                    proc.kill()
+                    await asyncio.sleep(0.05)
+                except Exception:
+                    pass
+                return 124, "", f"Command timed out after {timeout} seconds"
+            except Exception as e:
+                try:
+                    proc.kill()
+                    await asyncio.sleep(0.05)
+                except Exception:
+                    pass
+                return 126, "", str(e)
 
     # -------------------------------------------------------------
     # Lifecycle
@@ -195,6 +208,10 @@ class DockerComputerProvider(ComputerProvider):
     # -------------------------------------------------------------
 
     async def screenshot(self, workspace_id: str) -> ScreenObservation:
+        now = asyncio.get_event_loop().time()
+        if self._last_screenshot is not None and (now - self._last_screenshot_time) < 2.0:
+            return self._last_screenshot
+
         scr_cmd = (
             "DISPLAY=:99 import -window root /tmp/sonic_screen.png 2>/dev/null && "
             "(LOC=$(DISPLAY=:99 xdotool getmouselocation --shell 2>/dev/null); "
@@ -202,28 +219,36 @@ class DockerComputerProvider(ComputerProvider):
             "DISPLAY=:99 convert /tmp/sonic_screen.png -stroke black -strokewidth 1 -fill '#00ffcc' "
             "-draw \"polygon $X,$Y $(($X+15)),$(($Y+12)) $(($X+9)),$(($Y+12)) $(($X+14)),$(($Y+22)) $(($X+10)),$(($Y+24)) $(($X+5)),$(($Y+14)) $X,$(($Y+18))\" "
             "/tmp/sonic_screen.png 2>/dev/null || true; fi) && "
-            "base64 -w0 /tmp/sonic_screen.png"
+            "base64 -w0 /tmp/sonic_screen.png && "
+            "echo '___ACTIVE_WINDOW___' && "
+            "DISPLAY=:99 xdotool getactivewindow getwindowname 2>/dev/null || true"
         )
-        code, out, _ = await self._docker_exec(scr_cmd, timeout=10)
-        b64 = out.strip() if code == 0 else ""
+        code, out, _ = await self._docker_exec(scr_cmd, timeout=8)
+        b64 = ""
+        active_win = "Desktop"
+        if code == 0 and out:
+            if "___ACTIVE_WINDOW___" in out:
+                parts = out.split("___ACTIVE_WINDOW___", 1)
+                b64 = parts[0].strip()
+                active_win = parts[1].strip() or "Desktop"
+            else:
+                b64 = out.strip()
 
-        # Extract visible text from active window
-        visible_text = ""
-        code, txt_out, _ = await self._docker_exec(
-            "DISPLAY=:99 xdotool getactivewindow getwindowname 2>/dev/null", timeout=5
-        )
-        if code == 0 and txt_out.strip():
-            visible_text = f"Active Window: {txt_out.strip()}"
-
-        return ScreenObservation(
+        obs = ScreenObservation(
             screenshot_base64=b64,
             width=1280,
             height=800,
-            active_window=txt_out.strip() if code == 0 and txt_out.strip() else "Desktop",
-            visible_text=visible_text,
+            active_window=active_win,
+            visible_text=f"Active Window: {active_win}" if active_win != "Desktop" else "",
             detected_controls=[],
             desktop_state="INTERACTIVE" if b64 else "NO_DISPLAY",
         )
+        if b64:
+            self._last_screenshot = obs
+            self._last_screenshot_time = now
+        elif self._last_screenshot is not None:
+            return self._last_screenshot
+        return obs
 
     # -------------------------------------------------------------
     # Graphical Actions (Human Takeover & Agent GUI Actions)
@@ -243,6 +268,12 @@ class DockerComputerProvider(ComputerProvider):
                 await self._docker_exec(f"DISPLAY=:99 xdotool mousemove {action.x} {action.y} click --repeat {repeat} 1")
             else:
                 await self._docker_exec(f"DISPLAY=:99 xdotool click --repeat {repeat} 1")
+
+        elif atype == GUIActionType.RIGHT_CLICK:
+            if action.x is not None and action.y is not None:
+                await self._docker_exec(f"DISPLAY=:99 xdotool mousemove {action.x} {action.y} click 3")
+            else:
+                await self._docker_exec("DISPLAY=:99 xdotool click 3")
 
         elif atype == GUIActionType.MOVE and action.x is not None and action.y is not None:
             await self._docker_exec(f"DISPLAY=:99 xdotool mousemove {action.x} {action.y}")

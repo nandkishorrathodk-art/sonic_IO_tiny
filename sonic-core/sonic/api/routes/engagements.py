@@ -1,5 +1,5 @@
 """
-SONIC-REDA — Multi-Tenant Engagement API Routes
+SONIC — Multi-Tenant Engagement API Routes
 ===================================================
 Full engagement management endpoints strictly partitioned by tenant_id.
 """

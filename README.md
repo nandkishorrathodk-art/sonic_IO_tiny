@@ -6,10 +6,6 @@
 
 > **Codename:** SONIC A-SEA (Autonomous Self-Evolving Penetration Architect)  
 > **Status:** Phase 22 — Native Docker Cyber Workstation & Autonomous Reasoning  
-> 
-> 🤖 **If you are an AI Coding Agent working on this repository, please read [AI_AGENT_GUIDE.md](AI_AGENT_GUIDE.md) and [BLUEPRINT.md](BLUEPRINT.md) first!**
-
----
 
 ## What is SONIC-REDA?
 
@@ -78,12 +74,6 @@ docker start sonic-desktop-workstation
 # Stream live XFCE4 desktop at: http://localhost:6080/vnc.html
 
 # 7. Launch Autonomous Agent Mission
-python scripts/launch_agent.py
-```
-
-## Project Structure
-
-```
 sonic/
 ├── sonic-core/          # 🧠 Core Python backend (FastAPI)
 │   └── sonic/

@@ -34,7 +34,7 @@ const TECH_STACK = [
   { layer: "API / Backend", tech: "FastAPI · Pydantic · JWT Auth", icon: Server, color: "primary" },
   { layer: "Agent Core", tech: "ReAct Engine · Tool-calling · Replanner", icon: Brain, color: "accent" },
   { layer: "Memory", tech: "Neo4j · SQLite fallback · Graph schemas", icon: Database, color: "success" },
-  { layer: "Sandbox", tech: "Docker Desktop · Local subprocess", icon: Cloud, color: "warning" },
+  { layer: "Sandbox", tech: "Docker Cyber Workstation · Kali · Local sandbox", icon: Cloud, color: "warning" },
   { layer: "LLM Router", tech: "NVIDIA NIM · Anthropic · OpenAI · xAI", icon: Cpu, color: "secondary" },
 ];
 

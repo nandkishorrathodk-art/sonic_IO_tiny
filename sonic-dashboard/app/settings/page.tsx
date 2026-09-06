@@ -145,7 +145,7 @@ export default function SettingsPage() {
         </div>
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs font-mono">
           <div>
-            <label className="text-muted block mb-1">Docker Workstation API URL</label>
+            <label className="text-muted block mb-1">Workstation Compute URL</label>
             <input type="text" value={daytonaUrl} onChange={(e) => setDaytonaUrl(e.target.value)} className="input-field !text-xs" />
           </div>
           <div>

@@ -1520,3 +1520,18 @@ BugBountyClient existed but was referenced nowhere.
 - `sonic-core/tests/test_docker_workstation_adapter.py` (3 tests): duck-typed sandbox adapter, VNC preview URL, terminal & screenshot — **PASSED**.
 - `sonic-core/tests/test_workstation_interrupt_and_resilience.py` (9 tests): interrupt flag, loop exit, RBAC authentication & rejection, tenant isolation, mission director coordination — **PASSED**.
 - `sonic-core/tests/test_phase_plan6_safety_envelope.py` (10 tests): fail-closed policy, rate limit, path confinement, egress filter, allowlist — **PASSED**.
+
+## 2026-09-05 Full Audit — verified findings (for future sessions)
+- Cloned into `/workspace/project/sonic`; venv `.venv`; tests: 627P/37S/4F (4 Docker-environment failures, not code. AGENTS.md's "known failures" list matches.
+- Verified STRONG: path-auth (only health + login/dev-token/google endpoint unauth; terminal WS token-gated), tenant isolation via user.email/tenant_id scoping on every engagement/workstation manager call, path traversal confined to /home/sonic/workspace, target egress filter (169.254 metadata, loopback, RFC1918, v4-mapped, NAT64 blocked), `SealedActionPolicy` sealed+tamper-verified in being loop,, no hardcoded secrets in source/history, evidence SHA-256 custody+independent verifier ( self-verify blocked, experiment safety boundary blocks self-modifying safety/auth files, config prod guards (weak-secret hard-fail,, deny-by-default allowlist.
+- KEY GAPS FOUND:
+
+  1. **Toolsmith/MethodLab executeth arbitrary LLM-authored Python in egress-unrestricted container** — `TOOL_RUN`/`METHOD_INVENT` pass no egress target check (ActionPolicy gates only SECURITY_TOOL/BROWSER_NAVIGATE target URLs; only pre-filter is 4-regex lint (`rm -rf /`, shutdown, mkfs, dd. LLM auth'd tool can `socket`/`requests` to ANY external host, or read `/etc/`/env/secrets inside kali container (root. The ADP `AuthoredToolAdapter.build_command` single-quote target with `target.replace("'","")` is insufficient (`; id; #` injection) — but same-container blast radius.
+  2. **`kill_switch` config-declared but NEVER runtime-enforced** — only `ScopeChecker.kill_switch_enabled` property exists; nothing in executor/agent/policy consults it.
+  3. **`docker-compose.prod.yml` mounts `/var/run/docker.sock:ro` into API container** — read-only mount still grants full Docker API (container create/exec) = host-root-equivalent if API compromised. Also prod service lacks `resource limits` on sonic-core+dashboard.
+
+
+
+  4. **On-Prem CSS/UX**: dashboard stores JWT in localStorage; `ensureAuthToken` auto-hits dev-token endpoint (production 404,, Google OAuth state param is sent-only-if-provided and not verified on callback (login-CSRF,, mild.
+  5. **Code quality**: 141 ruff errors core+1 cli — CI lint job would fail. Mostly E402(36,, F401 unused imports(17,, E741(13,, N806(5,, I001(9,W293(5,SIM/S103/B007 etc;; no F821 undefined names. Largest: workstation.py~2300 lines,, engagement.py~900 lines (need split.. Dead code noted: unused imports,, `blocked` var unused in workstation mission summary (minor UX,, `class jwt` fallback in google_auth.py (N801,but isolated fallback only w/o jose/pyjwt.
+- Docker socket note:: this host sandbox has no docker images;; those 4 failures remain — do not mark source as broken on that basis.

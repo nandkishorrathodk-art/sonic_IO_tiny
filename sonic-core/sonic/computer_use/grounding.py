@@ -39,18 +39,31 @@ def extract_bbox_midpoint(bbox_response: Any, width: int = 1280, height: int = 8
     if not bbox_response:
         return None
 
-    if isinstance(bbox_response, (tuple, list)) and len(bbox_response) >= 2:
+    if isinstance(bbox_response, (tuple, list)):
         try:
-            x, y = float(bbox_response[0]), float(bbox_response[1])
-            if max(x, y) <= 1.0:
-                px = int(x * width)
-                py = int(y * height)
-            elif max(x, y) <= 1000 and width > 1000:
-                px = int((x / 1000.0) * width)
-                py = int((y / 1000.0) * height)
-            else:
-                px, py = int(x), int(y)
-            return min(max(0, px), width), min(max(0, py), height)
+            if len(bbox_response) >= 4:
+                x1, y1, x2, y2 = float(bbox_response[0]), float(bbox_response[1]), float(bbox_response[2]), float(bbox_response[3])
+                if max(x1, y1, x2, y2) <= 1.0:
+                    mid_x = int(((x1 + x2) / 2.0) * width)
+                    mid_y = int(((y1 + y2) / 2.0) * height)
+                elif max(x1, y1, x2, y2) > width or max(x1, y1, x2, y2) > height:
+                    mid_x = int(((x1 + x2) / 2.0 / 1000.0) * width)
+                    mid_y = int(((y1 + y2) / 2.0 / 1000.0) * height)
+                else:
+                    mid_x = int((x1 + x2) / 2.0)
+                    mid_y = int((y1 + y2) / 2.0)
+                return min(max(0, mid_x), width), min(max(0, mid_y), height)
+            elif len(bbox_response) >= 2:
+                x, y = float(bbox_response[0]), float(bbox_response[1])
+                if max(x, y) <= 1.0:
+                    px = int(x * width)
+                    py = int(y * height)
+                elif x > width or y > height:
+                    px = int((x / 1000.0) * width)
+                    py = int((y / 1000.0) * height)
+                else:
+                    px, py = int(x), int(y)
+                return min(max(0, px), width), min(max(0, py), height)
         except (ValueError, TypeError):
             pass
 
@@ -70,12 +83,10 @@ def extract_bbox_midpoint(bbox_response: Any, width: int = 1280, height: int = 8
             mid_x = int(((x1 + x2) / 2.0) * width)
             mid_y = int(((y1 + y2) / 2.0) * height)
         elif match is not None and max(x1, y1, x2, y2) <= 1000:
+            # Model grounding bounding box tags always use [0, 1000] scale
             mid_x = int(((x1 + x2) / 2.0 / 1000.0) * width)
             mid_y = int(((y1 + y2) / 2.0 / 1000.0) * height)
-        elif x2 <= width and y2 <= height:
-            mid_x = int((x1 + x2) / 2.0)
-            mid_y = int((y1 + y2) / 2.0)
-        elif max(x1, y1, x2, y2) <= 1000:
+        elif max(x1, y1, x2, y2) > width or max(x1, y1, x2, y2) > height:
             mid_x = int(((x1 + x2) / 2.0 / 1000.0) * width)
             mid_y = int(((y1 + y2) / 2.0 / 1000.0) * height)
         else:
@@ -88,10 +99,10 @@ def extract_bbox_midpoint(bbox_response: Any, width: int = 1280, height: int = 8
         if max(x, y) <= 1.0:
             px = int(x * width)
             py = int(y * height)
-        elif x <= width and y <= height:
-            px = int(x)
-            py = int(y)
-        elif max(x, y) <= 1000:
+        elif match is not None and max(x, y) <= 1000:
+            px = int((x / 1000.0) * width)
+            py = int((y / 1000.0) * height)
+        elif x > width or y > height:
             px = int((x / 1000.0) * width)
             py = int((y / 1000.0) * height)
         else:
@@ -326,12 +337,17 @@ def resolve_ui_target(
         except Exception as exc:
             logger.warning("grounding_fn_resolution_failed", query=query, error=str(exc))
 
-    # 3. Landmark & Semantic Matching
+    # 3. Landmark & Semantic Matching (Exact first, then whole-word boundary)
     for key, (norm_x, norm_y) in _COMMON_UI_LANDMARKS.items():
-        if key == clean_query or key in clean_query or clean_query in key:
-            px = int(norm_x * width)
-            py = int(norm_y * height)
-            return px, py
+        if key == clean_query:
+            return int(norm_x * width), int(norm_y * height)
+
+    for key, (norm_x, norm_y) in _COMMON_UI_LANDMARKS.items():
+        if len(key) >= 4 and (
+            re.search(r'\b' + re.escape(key) + r'\b', clean_query)
+            or re.search(r'\b' + re.escape(clean_query) + r'\b', key)
+        ):
+            return int(norm_x * width), int(norm_y * height)
 
     return None
 
@@ -373,12 +389,17 @@ async def resolve_ui_target_async(
         except Exception as exc:
             logger.warning("grounding_fn_async_resolution_failed", query=query, error=str(exc))
 
-    # 3. Landmark & Semantic Matching
+    # 3. Landmark & Semantic Matching (Exact first, then whole-word boundary)
     for key, (norm_x, norm_y) in _COMMON_UI_LANDMARKS.items():
-        if key == clean_query or key in clean_query or clean_query in key:
-            px = int(norm_x * width)
-            py = int(norm_y * height)
-            return px, py
+        if key == clean_query:
+            return int(norm_x * width), int(norm_y * height)
+
+    for key, (norm_x, norm_y) in _COMMON_UI_LANDMARKS.items():
+        if len(key) >= 4 and (
+            re.search(r'\b' + re.escape(key) + r'\b', clean_query)
+            or re.search(r'\b' + re.escape(clean_query) + r'\b', key)
+        ):
+            return int(norm_x * width), int(norm_y * height)
 
     return None
 

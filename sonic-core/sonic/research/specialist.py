@@ -462,15 +462,50 @@ class WebSpecialist(SpecialistAgent):
 
         self.budget.record_action()
 
-        # Discovered endpoints from context or standard discovery
-        endpoints = context.get(
-            "endpoints",
-            [
-                {"url": f"{target}/", "method": "GET", "params": []},
-                {"url": f"{target}/login", "method": "GET", "params": ["username", "password"]},
-                {"url": f"{target}/api/v1/user", "method": "GET", "params": ["id"], "auth_required": True},
-            ],
-        )
+        # Discovered endpoints from real tools, provider probes, or context
+        endpoints = []
+        tools = context.get("tools") or context.get("security_tools") or {}
+        http_tool = tools.get("http_client") if isinstance(tools, dict) else None
+
+        if http_tool:
+            try:
+                from sonic.tools.base import ToolRequest
+                req = ToolRequest(tool_name="http_client", action="probe", target=target)
+                res = await http_tool.execute(req)
+                if res and getattr(res, "findings", None):
+                    for finding in res.findings:
+                        raw = getattr(finding, "raw", finding) if not isinstance(finding, dict) else finding
+                        endpoints.append({
+                            "url": target,
+                            "method": "GET",
+                            "status_code": raw.get("status_code", 200),
+                            "params": [],
+                        })
+            except Exception as e:
+                logger.debug("web_specialist_http_probe_failed", error=str(e))
+
+        provider = context.get("provider") or context.get("computer")
+        if not endpoints and provider and hasattr(provider, "http_probe"):
+            try:
+                probe_res = await provider.http_probe(target)
+                endpoints.append({
+                    "url": target,
+                    "method": "GET",
+                    "status_code": probe_res.get("status_code", 200),
+                    "params": [],
+                })
+            except Exception as e:
+                logger.debug("web_specialist_provider_probe_failed", error=str(e))
+
+        if not endpoints:
+            endpoints = context.get(
+                "endpoints",
+                [
+                    {"url": f"{target}/", "method": "GET", "params": []},
+                    {"url": f"{target}/login", "method": "GET", "params": ["username", "password"]},
+                    {"url": f"{target}/api/v1/user", "method": "GET", "params": ["id"], "auth_required": True},
+                ],
+            )
 
         for ep in endpoints:
             self.budget.check_limits()
@@ -698,14 +733,45 @@ class NetworkSpecialist(SpecialistAgent):
 
         self.budget.record_action()
 
-        ports = context.get(
-            "open_ports",
-            [
-                {"port": 80, "service": "http", "banner": "nginx/1.24.0"},
-                {"port": 8080, "service": "http-alt", "banner": "uvicorn/0.32.0"},
-                {"port": 22, "service": "ssh", "banner": "OpenSSH_9.2p1"},
-            ],
-        )
+        ports = []
+        tools = context.get("tools") or context.get("security_tools") or {}
+        nmap_tool = tools.get("nmap") if isinstance(tools, dict) else None
+
+        if nmap_tool:
+            try:
+                from sonic.tools.base import ToolRequest
+                req = ToolRequest(tool_name="nmap", action="scan", target=target, options=context.get("nmap_options", {}))
+                res = await nmap_tool.execute(req)
+                if res and getattr(res, "findings", None):
+                    for finding in res.findings:
+                        raw = getattr(finding, "raw", finding) if not isinstance(finding, dict) else finding
+                        ports.append({
+                            "port": raw.get("port"),
+                            "service": raw.get("service", "unknown"),
+                            "banner": raw.get("version", ""),
+                        })
+            except Exception as e:
+                logger.debug("network_specialist_nmap_failed", error=str(e))
+
+        provider = context.get("provider") or context.get("computer")
+        if not ports and provider and hasattr(provider, "scan_ports"):
+            try:
+                probed = await provider.scan_ports(target, [80, 443, 8080, 22, 3000, 5000, 8000])
+                for p in probed:
+                    if p.get("state") == "open":
+                        ports.append(p)
+            except Exception as e:
+                logger.debug("network_specialist_scan_ports_failed", error=str(e))
+
+        if not ports:
+            ports = context.get(
+                "open_ports",
+                [
+                    {"port": 80, "service": "http", "banner": "nginx/1.24.0"},
+                    {"port": 8080, "service": "http-alt", "banner": "uvicorn/0.32.0"},
+                    {"port": 22, "service": "ssh", "banner": "OpenSSH_9.2p1"},
+                ],
+            )
 
         for p in ports:
             self.budget.check_limits()

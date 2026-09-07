@@ -2090,12 +2090,22 @@ async def _run_parallel_research_swarm(
             logged_starts.add(name)
             _append_worklog(state, "action", "CloudSpecialist", "[CloudSpecialist] Evaluating cloud metadata...")
 
+    # Resolve execution provider and security tools via CapabilityRouter
+    from sonic.execution.capability_router import CapabilityRouter
+    from sonic.tools.registry import build_security_tools
+    daytona_comp = get_daytona_computer()
+    resolved_comp = CapabilityRouter.resolve_provider(daytona_comp, "research")
+    tools = build_security_tools(resolved_comp)
+
     # Run all specialists concurrently
     initial_context = {
         "target": target_host,
         "target_url": target_url,
         "target_host": target_host,
         "delay": 0.05,
+        "tools": tools,
+        "security_tools": tools,
+        "provider": resolved_comp,
     }
     result = await orchestrator.run(
         initial_specialists=specialists,
@@ -2210,6 +2220,8 @@ async def _run_prompt_reasoning(tenant_id: str, session_id: str, prompt: str) ->
                             default_model=model_to_use,
                         )
 
+                        from sonic.execution.capability_router import CapabilityRouter
+                        computer = CapabilityRouter.resolve_provider(computer, "agent")
                         from sonic.tools.registry import build_security_tools
                         tools_dict = build_security_tools(computer)
 

@@ -86,6 +86,78 @@ class FailureRecord(BaseModel):
     raw_error: str = ""
 
 
+class SubGoalStatus(StrEnum):
+    PENDING = "PENDING"
+    IN_PROGRESS = "IN_PROGRESS"
+    COMPLETED = "COMPLETED"
+    FAILED = "FAILED"
+    SKIPPED = "SKIPPED"
+
+
+class SubGoal(BaseModel):
+    """Discrete, verifiable sequential milestone within a top-level mission."""
+    id: str = Field(default_factory=lambda: f"sg-{uuid.uuid4().hex[:6]}")
+    description: str
+    verification_criteria: str = ""
+    status: SubGoalStatus = SubGoalStatus.PENDING
+    evidence: str = ""
+    attempt_count: int = 0
+
+
+class SubGoalChecklist(BaseModel):
+    """Structured progression checklist tracking active vs completed mission sub-goals."""
+    top_level_goal: str
+    sub_goals: list[SubGoal] = Field(default_factory=list)
+    active_index: int = 0
+
+    def active_sub_goal(self) -> SubGoal | None:
+        if 0 <= self.active_index < len(self.sub_goals):
+            return self.sub_goals[self.active_index]
+        return None
+
+    def advance(self) -> bool:
+        if self.active_index < len(self.sub_goals) - 1:
+            self.active_index += 1
+            if self.sub_goals[self.active_index].status == SubGoalStatus.PENDING:
+                self.sub_goals[self.active_index].status = SubGoalStatus.IN_PROGRESS
+            return True
+        return False
+
+    def mark_active_completed(self, evidence: str = "") -> bool:
+        sg = self.active_sub_goal()
+        if sg:
+            sg.status = SubGoalStatus.COMPLETED
+            if evidence:
+                sg.evidence = evidence
+            self.advance()
+            return True
+        return False
+
+    def is_all_completed(self) -> bool:
+        if not self.sub_goals:
+            return False
+        return all(sg.status in (SubGoalStatus.COMPLETED, SubGoalStatus.SKIPPED) for sg in self.sub_goals)
+
+    def render_prompt_markdown(self) -> str:
+        if not self.sub_goals:
+            return "(no decomposed sub-goals)"
+        lines = ["Execution Checklist:"]
+        for i, sg in enumerate(self.sub_goals):
+            if sg.status == SubGoalStatus.COMPLETED:
+                mark = "[x]"
+            elif i == self.active_index:
+                mark = "[>]"
+            elif sg.status == SubGoalStatus.FAILED:
+                mark = "[!]"
+            else:
+                mark = "[ ]"
+            status_str = f" ({sg.status.value})" if sg.status != SubGoalStatus.PENDING else ""
+            lines.append(f"  {mark} Sub-Goal {i+1}: {sg.description}{status_str}")
+            if sg.evidence:
+                lines.append(f"      Evidence: {sg.evidence[:80]}")
+        return "\n".join(lines)
+
+
 class ComputerAutonomyLevel(StrEnum):
     L0_MANUAL = "L0_MANUAL"                          # Human executes
     L1_ASSISTED = "L1_ASSISTED"                      # SONIC recommends actions
@@ -204,6 +276,10 @@ class ComputerDecisionTrace(BaseModel):
     thought: str = ""
     status: ActionExecutionStatus | str = ActionExecutionStatus.COMPLETED
     timestamp: str = Field(default_factory=_now)
+
+    @property
+    def observation(self) -> str:
+        return self.actual_observation
 
 
 class ComputerUseMetrics(BaseModel):

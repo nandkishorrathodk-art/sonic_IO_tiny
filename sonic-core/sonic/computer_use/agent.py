@@ -41,6 +41,9 @@ from sonic.computer_use.models import (
     FailureClassification,
     FailureRecord,
     StrategyState,
+    SubGoal,
+    SubGoalChecklist,
+    SubGoalStatus,
 )
 from sonic.research.failure_budget import FailureBudgetTracker
 from sonic.research.failure_classifier import classify_failure
@@ -164,18 +167,68 @@ class ComputerUseAgent:
         self._screen_height: int = 1080
         self._interrupted: bool = False
         self.goal_reached: bool = False
-        # Closed-loop control state (Devin-style VERIFY + REPLAN). The agent
-        # must not trust a self-declared "done"; it independently verifies, and
-        # when the same approach keeps failing it replans rather than burning
-        # the step budget on a stuck loop.
         self._consecutive_failures: int = 0
         self._replan_count: int = 0
         self._last_navigated_url: str = ""
         self._recent_action_signatures: list[tuple[str, str, str]] = []
+        self.checklist: SubGoalChecklist | None = None
 
     def interrupt(self) -> None:
         """Signal the agent to stop its active mission loop immediately."""
         self._interrupted = True
+
+    async def decompose_goal(self, goal: str) -> SubGoalChecklist:
+        """Decompose a top-level mission into sequential, verifiable sub-goals."""
+        sub_goals: list[SubGoal] = []
+
+        # 1. Check for explicit numbered/bulleted steps in user prompt
+        lines = [line.strip() for line in goal.splitlines() if line.strip()]
+        if len(lines) <= 1:
+            lines = [line.strip() for line in re.split(r'(?<=\w\w)\.\s+(?=[0-9]\.|\b[A-Z])', goal) if line.strip()]
+        numbered_items = []
+        for l in lines:
+            m = re.match(r'^(?:\d+[\.\)]|\-|\*)\s*(.*)', l)
+            if m and len(m.group(1).strip()) > 3:
+                numbered_items.append(m.group(1).strip())
+
+        if len(numbered_items) >= 2:
+            for item in numbered_items[:6]:
+                sub_goals.append(SubGoal(description=item))
+            return SubGoalChecklist(top_level_goal=goal, sub_goals=sub_goals, active_index=0)
+
+        # 2. Intent-based heuristic decomposition
+        g_lower = goal.lower()
+        if any(w in g_lower for w in ("http://", "https://", ".com", ".org", "browse", "opensea", "web", "site")):
+            target_url = ""
+            for part in goal.split():
+                if part.startswith(("http://", "https://")):
+                    target_url = part
+                    break
+            sub_goals = [
+                SubGoal(description=f"Navigate to {target_url or 'target web page'} and confirm page loaded"),
+                SubGoal(description="Locate interactive search or input controls and execute query"),
+                SubGoal(description="Read observation results and verify data extracted"),
+            ]
+        elif any(w in g_lower for w in ("scan", "port", "nmap", "recon", "network")):
+            sub_goals = [
+                SubGoal(description="Perform initial network reconnaissance and service discovery"),
+                SubGoal(description="Analyze open ports and inspect service banners"),
+                SubGoal(description="Compile security findings and verify evidence"),
+            ]
+        elif any(w in g_lower for w in ("test", "pytest", "unit test", "bug", "fix")):
+            sub_goals = [
+                SubGoal(description="Inspect test files and reproduce initial state"),
+                SubGoal(description="Implement fix or diagnostic patch"),
+                SubGoal(description="Run test suite and confirm verification passes"),
+            ]
+        else:
+            sub_goals = [
+                SubGoal(description=f"Inspect environment and orient on primary resource for: {goal[:50]}"),
+                SubGoal(description="Execute core operation and collect output"),
+                SubGoal(description="Verify outcome matches expectation and complete goal"),
+            ]
+
+        return SubGoalChecklist(top_level_goal=goal, sub_goals=sub_goals, active_index=0)
 
     # =============================================================
     # 1. Closed-Loop Observation
@@ -475,6 +528,10 @@ class ComputerUseAgent:
             not_known_facts.append("Terminal output for last command")
         what_do_i_not_know = "; ".join(not_known_facts) if not_known_facts else "UNKNOWN"
 
+        active_sg = self.checklist.active_sub_goal() if getattr(self, "checklist", None) else None
+        active_sg_desc = active_sg.description if active_sg else goal
+        checklist_str = self.checklist.render_prompt_markdown() if getattr(self, "checklist", None) else f"  Mission Goal: {goal}"
+
         if self.failure_budget.records:
             last_fail = self.failure_budget.records[-1]
             what_failed = f"{last_fail.tool} on {last_fail.provider} ({last_fail.error_class.value})"
@@ -488,7 +545,10 @@ class ComputerUseAgent:
             what_failed = "NONE"
             why_did_it_fail = "NONE"
             what_hypothesis = f"Supports hypothesis that target can be tested via primary plan toward: {goal}."
-            highest_info_action = f"Execute primary diagnostic or inspection action against {primary_file_str}."
+            if active_sg:
+                highest_info_action = f"Advance active sub-goal: '{active_sg.description}'."
+            else:
+                highest_info_action = f"Execute primary diagnostic or inspection action against {primary_file_str}."
 
         if self.failure_budget.substrate_outage:
             highest_info_action = "Execute substrate diagnostic probe to resolve infrastructure outage."
@@ -504,7 +564,11 @@ class ComputerUseAgent:
         )
 
         obs_summary = (
-            f"Step {step_index}. Goal: {goal}\n"
+            f"Screen resolution: {self._screen_width}x{self._screen_height}\n"
+            f"Step {step_index} of {self.max_actions}. Overall Mission: {goal}\n"
+            f"CURRENT ACTIVE SUB-GOAL: {active_sg_desc}\n"
+            f"{checklist_str}\n"
+            f"INSTRUCTION: Focus your next action strictly on advancing the CURRENT ACTIVE SUB-GOAL above.\n"
             f"Current working directory: {workdir}\n"
             f"User home directory: {user_home} (Desktop path: {user_home}/Desktop)\n"
             f"Active window / app: {active_app}\n"
@@ -545,6 +609,9 @@ class ComputerUseAgent:
             "If the goal is already achieved, respond GOAL_COMPLETE.\n"
             "If the goal can be accomplished cleanly via shell command, prefer TERMINAL_EXEC.\n"
             "You can see the desktop screenshot and interact with GUI elements by clicking at coordinates.\n"
+            "CRITICAL SUB-GOAL ADVANCEMENT RULES:\n"
+            "1. Focus strictly on executing the CURRENT ACTIVE SUB-GOAL shown in the Execution Checklist.\n"
+            "2. Once an active sub-goal is accomplished (e.g. page loaded, element clicked, command executed), advance to the next sub-goal. Do NOT repeat completed sub-goals.\n"
             "CRITICAL ANTI-LOOPING AND PROGRESSION RULES:\n"
             "1. NEVER navigate repeatedly to the same URL. If a webpage is already open, interact with its elements on screen (GUI_CLICK on search bar, buttons, links, or GUI_TYPE).\n"
             "2. NEVER repeat the exact same action and target consecutively without state progression.\n"
@@ -1137,14 +1204,21 @@ class ComputerUseAgent:
                         self._last_screenshot_b64 = draw_action_marker(
                             self._last_screenshot_b64, (x, y), label="CLICK", color="#00ffcc"
                         )
-                    await self.computer.gui_action(
+                    pre_screen_b64 = getattr(self, "_last_screenshot_b64", "")
+                    obs_after = await self.computer.gui_action(
                         workspace_id,
                         GUIAction(action=GUIActionType.CLICK, x=x, y=y),
                     )
+                    post_screen_b64 = getattr(obs_after, "screenshot_base64", "") if obs_after else ""
+                    if post_screen_b64:
+                        self._last_screenshot_b64 = post_screen_b64
+                        self._update_screen_dims(obs_after)
                     if resolved_via_grounding:
                         actual_obs_str = f"Visual grounding resolved '{target_resource}' to ({x}, {y}) and clicked"
                     else:
                         actual_obs_str = f"Clicked at ({x}, {y})"
+                    if pre_screen_b64 and post_screen_b64 and pre_screen_b64 == post_screen_b64:
+                        actual_obs_str = f"{actual_obs_str} | [VISUAL VERIFICATION]: Screen state unchanged after click — target element may be occluded, missing, or page is loading."
 
             elif action_type == ComputerActionType.GUI_DOUBLE_CLICK:
                 if payload.get("x") is None or payload.get("y") is None:
@@ -1158,14 +1232,21 @@ class ComputerUseAgent:
                         self._last_screenshot_b64 = draw_action_marker(
                             self._last_screenshot_b64, (x, y), label="DOUBLE_CLICK", color="#ffaa00"
                         )
-                    await self.computer.gui_action(
+                    pre_screen_b64 = getattr(self, "_last_screenshot_b64", "")
+                    obs_after = await self.computer.gui_action(
                         workspace_id,
                         GUIAction(action=GUIActionType.DOUBLE_CLICK, x=x, y=y),
                     )
+                    post_screen_b64 = getattr(obs_after, "screenshot_base64", "") if obs_after else ""
+                    if post_screen_b64:
+                        self._last_screenshot_b64 = post_screen_b64
+                        self._update_screen_dims(obs_after)
                     if resolved_via_grounding:
                         actual_obs_str = f"Visual grounding resolved '{target_resource}' to ({x}, {y}) and double-clicked"
                     else:
                         actual_obs_str = f"Double-clicked at ({x}, {y})"
+                    if pre_screen_b64 and post_screen_b64 and pre_screen_b64 == post_screen_b64:
+                        actual_obs_str = f"{actual_obs_str} | [VISUAL VERIFICATION]: Screen state unchanged after double-click."
 
             elif action_type == ComputerActionType.GUI_RIGHT_CLICK:
                 if payload.get("x") is None or payload.get("y") is None:
@@ -1179,10 +1260,15 @@ class ComputerUseAgent:
                         self._last_screenshot_b64 = draw_action_marker(
                             self._last_screenshot_b64, (x, y), label="RIGHT_CLICK", color="#ff3366"
                         )
-                    await self.computer.gui_action(
+                    pre_screen_b64 = getattr(self, "_last_screenshot_b64", "")
+                    obs_after = await self.computer.gui_action(
                         workspace_id,
                         GUIAction(action=GUIActionType.RIGHT_CLICK, x=x, y=y),
                     )
+                    post_screen_b64 = getattr(obs_after, "screenshot_base64", "") if obs_after else ""
+                    if post_screen_b64:
+                        self._last_screenshot_b64 = post_screen_b64
+                        self._update_screen_dims(obs_after)
                     if resolved_via_grounding:
                         actual_obs_str = f"Visual grounding resolved '{target_resource}' to ({x}, {y}) and right-clicked"
                     else:
@@ -1190,10 +1276,15 @@ class ComputerUseAgent:
 
             elif action_type == ComputerActionType.GUI_TYPE:
                 text = payload.get("text", "")
-                await self.computer.gui_action(
+                pre_screen_b64 = getattr(self, "_last_screenshot_b64", "")
+                obs_after = await self.computer.gui_action(
                     workspace_id,
                     GUIAction(action=GUIActionType.TYPE, text=text),
                 )
+                post_screen_b64 = getattr(obs_after, "screenshot_base64", "") if obs_after else ""
+                if post_screen_b64:
+                    self._last_screenshot_b64 = post_screen_b64
+                    self._update_screen_dims(obs_after)
                 actual_obs_str = f"Typed {len(text)} chars: {text[:50]}"
 
             elif action_type == ComputerActionType.GUI_KEYPRESS:
@@ -1931,6 +2022,13 @@ class ComputerUseAgent:
         """
         self._replan_count += 1
         self._consecutive_failures = 0
+        if getattr(self, "checklist", None) is not None:
+            active_sg = self.checklist.active_sub_goal()
+            if active_sg:
+                active_sg.status = SubGoalStatus.FAILED
+                active_sg.evidence = "Failed repeatedly during execution — pivoting strategy."
+                self.checklist.advance()
+
         replan_note = (
             f"REPLAN #{self._replan_count}: the last approach failed repeatedly. "
             f"Goal remains: {goal}. Re-assess from the current observation and "
@@ -1955,6 +2053,9 @@ class ComputerUseAgent:
         t_start = time.perf_counter()
         self._interrupted = False
         goal_reached = False
+
+        if getattr(self, "checklist", None) is None or self.checklist.top_level_goal != goal:
+            self.checklist = await self.decompose_goal(goal)
 
         for step in range(1, steps + 1):
             if self._interrupted or (callable(interrupt_check) and interrupt_check()):
@@ -1982,6 +2083,11 @@ class ComputerUseAgent:
                         actions_taken=self.action_counter,
                         evidence=evidence[:200],
                     )
+                    if getattr(self, "checklist", None) is not None:
+                        for sg in self.checklist.sub_goals:
+                            if sg.status != SubGoalStatus.COMPLETED:
+                                sg.status = SubGoalStatus.COMPLETED
+                                sg.evidence = evidence[:100]
                     goal_reached = True
                     break
                 # Self-declared done but independent verification FAILED: the
@@ -1992,6 +2098,10 @@ class ComputerUseAgent:
                     "result": f"VERIFICATION FAILED: {evidence[:200]}. Goal NOT achieved — continue.",
                 })
                 self._consecutive_failures += 1
+                if getattr(self, "checklist", None) is not None:
+                    active_sg = self.checklist.active_sub_goal()
+                    if active_sg:
+                        active_sg.attempt_count += 1
                 if self._consecutive_failures >= self._STUCK_THRESHOLD:
                     self._inject_replan(goal)
                 continue
@@ -2009,12 +2119,42 @@ class ComputerUseAgent:
                     logger.warning("run_mission_step_callback_failed", error=str(cb_err))
 
             # Track consecutive failures for stuck/replan detection.
-            if trace.status == "FAILED":
+            is_failed_status = trace.status in (
+                ActionExecutionStatus.FAILED,
+                ActionExecutionStatus.TIMED_OUT,
+                ActionExecutionStatus.BLOCKED,
+                ActionExecutionStatus.CANCELLED,
+                "FAILED",
+                "TIMED_OUT",
+                "BLOCKED",
+                "CANCELLED",
+            )
+            if is_failed_status or trace.recovery_attempted:
                 self._consecutive_failures += 1
+                if getattr(self, "checklist", None) is not None:
+                    active_sg = self.checklist.active_sub_goal()
+                    if active_sg:
+                        active_sg.attempt_count += 1
                 if self._consecutive_failures >= self._STUCK_THRESHOLD:
                     self._inject_replan(goal)
-            else:
+            elif trace.status in (
+                ActionExecutionStatus.COMPLETED,
+                ActionExecutionStatus.SUCCESS,
+                ActionExecutionStatus.VERIFIED,
+                "COMPLETED",
+                "SUCCESS",
+                "VERIFIED",
+            ):
                 self._consecutive_failures = 0
+                if getattr(self, "checklist", None) is not None:
+                    active_sg = self.checklist.active_sub_goal()
+                    if active_sg:
+                        active_sg.attempt_count += 1
+                        obs_txt = str(getattr(trace, "actual_observation", "") or "")
+                        if "[VISUAL VERIFICATION]: Screen state unchanged" not in obs_txt:
+                            self.checklist.mark_active_completed(
+                                evidence=f"{action_type} succeeded: {obs_txt[:100]}"
+                            )
 
         # Update Telemetry Metrics.
         self.metrics.actions_total = len(self.traces)

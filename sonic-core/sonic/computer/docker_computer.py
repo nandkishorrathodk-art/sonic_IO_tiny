@@ -421,9 +421,17 @@ class DockerComputerProvider(ComputerProvider):
         elif atype == GUIActionType.CLOSE_APP and action.app_name:
             await self._docker_exec(f"pkill -f -- {shlex.quote(action.app_name)}")
 
-        elif atype == GUIActionType.SELECT_WINDOW and action.window_id:
-            await self._docker_exec(f"DISPLAY=:99 wmctrl -i -a {shlex.quote(action.window_id)}")
+        elif atype == GUIActionType.SELECT_WINDOW:
+            target = action.window_id or action.app_name
+            if target:
+                await self._docker_exec(
+                    f"DISPLAY=:99 (wmctrl -i -a {shlex.quote(target)} 2>/dev/null || "
+                    f"wmctrl -a {shlex.quote(target)} 2>/dev/null || "
+                    f"xdotool search --name {shlex.quote(target)} windowactivate 2>/dev/null) || true"
+                )
 
+        # Invalidate 2-second cache so fresh post-action screen is captured
+        self._last_screenshot_time = 0.0
         await asyncio.sleep(0.3)
         return await self.screenshot(workspace_id)
 

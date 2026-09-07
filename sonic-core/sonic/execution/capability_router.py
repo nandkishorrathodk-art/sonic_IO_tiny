@@ -130,7 +130,8 @@ class CapabilityRouter:
                 return False
         return getattr(provider, "_client", None) is not None
 
-    def is_provider_available(self, provider: Any) -> bool:
+    @classmethod
+    def is_provider_available(cls, provider: Any) -> bool:
         """Determine if a preferred provider is operational."""
         if provider is None:
             return False
@@ -139,17 +140,18 @@ class CapabilityRouter:
 
         p_name = provider.__class__.__name__.lower()
         if "docker" in p_name:
-            return self.is_docker_available(provider)
+            return cls.is_docker_available(provider)
         if "daytona" in p_name:
-            return self.is_daytona_available(provider)
+            return cls.is_daytona_available(provider)
 
         return True
 
     # -------------------------------------------------------------
     # 3. Provider Resolution & Fallback
     # -------------------------------------------------------------
+    @classmethod
     def resolve_provider(
-        self,
+        cls,
         preferred_provider: Any = None,
         task_type: str = "",
     ) -> Any:
@@ -165,22 +167,22 @@ class CapabilityRouter:
             "HTTP_PROBE",
             "RECON",
         }:
-            return self.headless_provider
+            return HeadlessComputeProvider()
 
         if preferred_provider is None:
-            return self.headless_provider
+            return HeadlessComputeProvider()
 
         if isinstance(preferred_provider, HeadlessComputeProvider):
             return preferred_provider
 
         # Check provider availability
-        if not self.is_provider_available(preferred_provider):
+        if not cls.is_provider_available(preferred_provider):
             logger.warning(
                 "provider_unavailable_falling_back_to_headless",
                 preferred=preferred_provider.__class__.__name__,
                 task_type=task_type,
             )
-            return self.headless_provider
+            return HeadlessComputeProvider()
 
         return preferred_provider
 

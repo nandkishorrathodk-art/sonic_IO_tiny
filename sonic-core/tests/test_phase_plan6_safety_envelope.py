@@ -301,3 +301,61 @@ def test_rate_limit_denies_beyond_cap():
     assert any("rate limit" in t.actual_observation.lower() for t in traces)
     # Only the first two writes actually executed.
     assert len(comp.written) <= 2
+
+
+# ---------------------------------------------------------------------------
+# [x] Hardened Egress: Link-local, CGNAT, Multicast, Numeric/Hex IPs, DNS fail-closed
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("target", [
+    "169.254.10.20",          # IPv4 link-local (169.254.0.0/16)
+    "100.64.0.1",             # RFC 6598 Carrier-Grade NAT (100.64.0.0/10)
+    "fe80::1",                # IPv6 link-local (fe80::/10)
+    "224.0.0.1",              # IPv4 multicast (224.0.0.0/4)
+    "ff02::1",                # IPv6 multicast (ff00::/8)
+    "2130706433",             # Decimal dword for 127.0.0.1
+    "0x7f000001",             # Hex for 127.0.0.1
+    "http://2130706433:8080/foo",
+    "2130706433:80",
+])
+def test_hardened_egress_blocks_forbidden_ranges(target):
+    policy = _policy()
+    verdict = policy.evaluate("SECURITY_TOOL", target, {"tool": "nmap", "target": target})
+    assert verdict.allowed is False
+    assert "egress denied" in verdict.reason or "blocked" in verdict.reason.lower()
+
+
+def test_dns_resolution_fails_closed_on_unresolvable_domain():
+    policy = _policy()
+    target = "invalid-test-domain-does-not-exist.invalid"
+    verdict = policy.evaluate("SECURITY_TOOL", target, {"tool": "nmap", "target": target})
+    assert verdict.allowed is False
+    assert "DNS resolution failed" in verdict.reason
+
+
+def test_security_tool_targets_allowlist_enforced():
+    policy = _policy(allow_security_tool_targets={"93.184.216.34"})
+    # Allowed target in allowlist passes
+    v_allowed = policy.evaluate("SECURITY_TOOL", "93.184.216.34", {"target": "93.184.216.34"})
+    assert v_allowed.allowed is True
+
+    # Target not in allowlist is denied
+    v_denied = policy.evaluate("SECURITY_TOOL", "93.184.216.35", {"target": "93.184.216.35"})
+    assert v_denied.allowed is False
+    assert "target not in allowlist" in v_denied.reason
+
+
+def test_scope_checker_active_rules_enforced():
+    from sonic.safety.scope import ScopeChecker
+    scope = ScopeChecker(scope_config={"targets": {"domains": [], "ips": ["93.184.216.34"]}})
+    policy = _policy(scope_checker=scope)
+
+    # In scope target passes
+    v_in = policy.evaluate("SECURITY_TOOL", "93.184.216.34", {"target": "93.184.216.34"})
+    assert v_in.allowed is True
+
+    # Out of scope target is denied
+    v_out = policy.evaluate("SECURITY_TOOL", "93.184.216.35", {"target": "93.184.216.35"})
+    assert v_out.allowed is False
+    assert "target out of engagement scope" in v_out.reason
+

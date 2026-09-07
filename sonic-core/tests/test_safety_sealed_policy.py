@@ -74,10 +74,13 @@ def test_seal_default_is_sealed():
     ("max_actions_per_minute", 99999),
     ("require_approval_for_intrusive", False),
     ("workspace_root", "/etc"),
+    ("_sealed", False),
+    ("_seal_hash", "tampered_hash"),
+    ("_blocked_networks_snapshot", ()),
 ])
 def test_sealed_fields_are_immutable(field, value):
     p = seal_default("/ws")
-    with pytest.raises(AttributeError, match="immutable"):
+    with pytest.raises(AttributeError, match="sealed policy is immutable after seal()"):
         setattr(p, field, value)
 
 

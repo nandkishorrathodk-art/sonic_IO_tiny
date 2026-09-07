@@ -5,43 +5,106 @@
 # The Model Router uses this to pick the best model for each job.
 # ============================================
 
-# Default provider when no task-specific rule matches
+# Default provider and model when no task-specific rule matches
 default_provider: nvidia
-default_model: meta/llama-3.2-11b-vision-instruct
+default_model: nvidia/nemotron-3.5-lightning-30b-a3b
 
 # ---- Provider Definitions ----
 providers:
+  openrouter:
+    name: OpenRouter (All Flagship Models)
+    api_key_env: OPENROUTER_API_KEY
+    base_url_env: OPENROUTER_BASE_URL
+    base_url: https://openrouter.ai/api/v1
+    models:
+      - id: deepseek/deepseek-r1
+        speed_tier: medium
+        cost_per_1k_input: 0.0008
+        cost_per_1k_output: 0.0024
+        capabilities: [reasoning, coding, planning, tool_use]
+      - id: anthropic/claude-3.5-sonnet
+        speed_tier: medium
+        cost_per_1k_input: 0.003
+        cost_per_1k_output: 0.015
+        capabilities: [reasoning, coding, planning, tool_use]
+      - id: meta-llama/llama-3.3-70b-instruct
+        speed_tier: fast
+        cost_per_1k_input: 0.0004
+        cost_per_1k_output: 0.0008
+        capabilities: [reasoning, coding, planning]
+      - id: openai/gpt-4o
+        speed_tier: medium
+        cost_per_1k_input: 0.0025
+        cost_per_1k_output: 0.01
+        capabilities: [reasoning, coding, verification]
+
+  deepseek:
+    name: DeepSeek Native (V3 & R1 671B)
+    api_key_env: DEEPSEEK_API_KEY
+    base_url_env: DEEPSEEK_BASE_URL
+    base_url: https://api.deepseek.com
+    models:
+      - id: deepseek-chat
+        speed_tier: fast
+        cost_per_1k_input: 0.00027
+        cost_per_1k_output: 0.0011
+        capabilities: [reasoning, coding, planning, tool_use]
+      - id: deepseek-reasoner
+        speed_tier: medium
+        cost_per_1k_input: 0.00055
+        cost_per_1k_output: 0.00219
+        capabilities: [reasoning, coding, static_analysis]
+
+  groq:
+    name: Groq Ultra-Fast Inference
+    api_key_env: GROQ_API_KEY
+    base_url_env: GROQ_BASE_URL
+    base_url: https://api.groq.com/openai/v1
+    models:
+      - id: llama-3.3-70b-versatile
+        speed_tier: fast
+        cost_per_1k_input: 0.00059
+        cost_per_1k_output: 0.00079
+        capabilities: [reasoning, coding, planning, tool_use]
+      - id: deepseek-r1-distill-llama-70b
+        speed_tier: fast
+        cost_per_1k_input: 0.00059
+        cost_per_1k_output: 0.00079
+        capabilities: [reasoning, coding]
+
   nvidia:
     name: NVIDIA NIM API
     api_key_env: NVIDIA_API_KEY
     base_url_env: NVIDIA_BASE_URL
     base_url: https://integrate.api.nvidia.com/v1
     models:
+      - id: nvidia/nemotron-3.5-lightning-30b-a3b
+        speed_tier: fast
+        cost_per_1k_input: 0.0005
+        cost_per_1k_output: 0.001
+        capabilities: [reasoning, coding, planning, tool_use, general]
+      - id: nvidia/nemotron-3-nano-omni-30b-a3b-reasoning
+        speed_tier: medium
+        cost_per_1k_input: 0.0005
+        cost_per_1k_output: 0.001
+        capabilities: [reasoning, coding, architecture]
       - id: meta/llama-3.2-11b-vision-instruct
         speed_tier: fast
         cost_per_1k_input: 0.0003
         cost_per_1k_output: 0.0006
-        capabilities: [reasoning, coding, planning, tool_use, vision, general]
-      - id: meta/llama-3.2-90b-vision-instruct
-        speed_tier: medium
-        cost_per_1k_input: 0.0009
-        cost_per_1k_output: 0.0018
-        capabilities: [reasoning, coding, architecture, vision]
-      # NOTE: meta/codellama-70b was removed — it is EOL/404 on NVIDIA NIM.
-      # Coding/fix-generation now routes to deepseek-coder (fallback) or the
-      # 90b llama model, both live on NIM.
-      - id: deepseek-ai/deepseek-r1
-        speed_tier: medium
-        cost_per_1k_input: 0.0014
-        cost_per_1k_output: 0.0028
-        capabilities: [coding, static_analysis, fix_generation, reasoning]
+        capabilities: [vision, fast_tasks]
 
   claude:
     name: Anthropic Claude
     api_key_env: ANTHROPIC_API_KEY
     base_url: https://api.anthropic.com
     models:
-      - id: claude-sonnet-4-20250514
+      - id: claude-3-5-sonnet-20241022
+        speed_tier: medium
+        cost_per_1k_input: 0.003
+        cost_per_1k_output: 0.015
+        capabilities: [reasoning, coding, planning, tool_use]
+      - id: claude-3-7-sonnet-20250219
         speed_tier: medium
         cost_per_1k_input: 0.003
         cost_per_1k_output: 0.015
@@ -59,8 +122,8 @@ providers:
     models:
       - id: gpt-4o
         speed_tier: medium
-        cost_per_1k_input: 0.005
-        cost_per_1k_output: 0.015
+        cost_per_1k_input: 0.0025
+        cost_per_1k_output: 0.01
         capabilities: [reasoning, coding, verification]
       - id: gpt-4o-mini
         speed_tier: fast
@@ -79,22 +142,6 @@ providers:
         cost_per_1k_output: 0.015
         capabilities: [reasoning, fast_recon, tool_use]
 
-  deepseek:
-    name: DeepSeek
-    api_key_env: DEEPSEEK_API_KEY
-    base_url: https://api.deepseek.com
-    models:
-      - id: deepseek-coder
-        speed_tier: medium
-        cost_per_1k_input: 0.0014
-        cost_per_1k_output: 0.0028
-        capabilities: [coding, static_analysis, reasoning]
-      - id: deepseek-chat
-        speed_tier: fast
-        cost_per_1k_input: 0.0007
-        cost_per_1k_output: 0.0014
-        capabilities: [fast_tasks, reasoning]
-
   local:
     name: Local (Ollama / vLLM)
     base_url_env: LOCAL_LLM_URL
@@ -109,55 +156,56 @@ providers:
 # Maps agent task types to preferred provider + model
 routing_rules:
   planning:
-    description: "High-level planning, task decomposition, strategy"
+    description: 'High-level planning, task decomposition, strategy'
     provider: nvidia
-    model: meta/llama-3.2-11b-vision-instruct
-    fallback: [nvidia/meta/llama-3.2-90b-vision-instruct, claude/claude-sonnet-4-20250514]
+    model: nvidia/nemotron-3.5-lightning-30b-a3b
+    fallback: [openrouter/deepseek/deepseek-r1, deepseek/deepseek-reasoner, claude/claude-3-5-sonnet-20241022]
 
   reasoning:
-    description: "Code analysis, dataflow tracing, pattern matching"
+    description: 'Code analysis, dataflow tracing, pattern matching'
     provider: nvidia
-    model: meta/llama-3.2-11b-vision-instruct
-    fallback: [nvidia/meta/llama-3.2-90b-vision-instruct, claude/claude-sonnet-4-20250514]
+    model: nvidia/nemotron-3.5-lightning-30b-a3b
+    fallback: [openrouter/deepseek/deepseek-r1, deepseek/deepseek-chat, claude/claude-3-5-sonnet-20241022]
 
   fast_recon:
-    description: "Quick reconnaissance, asset discovery, tech detection"
+    description: 'Quick reconnaissance, asset discovery, tech detection'
     provider: nvidia
-    model: meta/llama-3.2-11b-vision-instruct
-    fallback: [openai/gpt-4o-mini, grok/grok-3]
+    model: nvidia/nemotron-3.5-lightning-30b-a3b
+    fallback: [groq/llama-3.3-70b-versatile, openai/gpt-4o-mini, grok/grok-3]
 
   coding:
-    description: "Code generation, fix generation, test writing"
+    description: 'Code generation, fix generation, test writing'
     provider: nvidia
-    model: deepseek-ai/deepseek-r1
-    fallback: [claude/claude-sonnet-4-20250514, deepseek/deepseek-coder]
+    model: nvidia/nemotron-3.5-lightning-30b-a3b
+    fallback: [deepseek/deepseek-reasoner, openrouter/deepseek/deepseek-r1, claude/claude-3-5-sonnet-20241022]
 
   verification:
-    description: "Evidence checking, confidence scoring, FP filtering"
+    description: 'Evidence checking, confidence scoring, FP filtering'
     provider: nvidia
-    model: meta/llama-3.2-11b-vision-instruct
-    fallback: [openai/gpt-4o, claude/claude-sonnet-4-20250514]
+    model: nvidia/nemotron-3.5-lightning-30b-a3b
+    fallback: [openai/gpt-4o, claude/claude-3-5-sonnet-20241022]
 
   hypothesis:
-    description: "Novel bug class ideation, creative reasoning"
+    description: 'Novel bug class ideation, creative reasoning'
     provider: nvidia
-    model: meta/llama-3.2-90b-vision-instruct
-    fallback: [claude/claude-sonnet-4-20250514]
+    model: nvidia/nemotron-3-nano-omni-30b-a3b-reasoning
+    fallback: [openrouter/deepseek/deepseek-r1, deepseek/deepseek-reasoner, claude/claude-3-5-sonnet-20241022]
 
   classification:
-    description: "Quick labeling, triage, categorization"
+    description: 'Quick labeling, triage, categorization'
     provider: nvidia
-    model: meta/llama-3.2-11b-vision-instruct
-    fallback: [openai/gpt-4o-mini]
+    model: nvidia/nemotron-3.5-lightning-30b-a3b
+    fallback: [groq/llama-3.3-70b-versatile, openai/gpt-4o-mini]
 
 # ---- Global Fallback Chain ----
 # If the preferred provider for a task fails, try these in order
 global_fallback_chain:
-  - nvidia
+  - openrouter
+  - deepseek
+  - groq
   - claude
   - openai
-  - deepseek
-  - grok
+  - nvidia
   - local
 
 # ---- Cost Controls ----

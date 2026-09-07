@@ -14,8 +14,10 @@ Features:
 
 from __future__ import annotations
 
+import contextlib
 import json
 import math
+import operator
 import os
 import re
 import zlib
@@ -23,6 +25,17 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from sonic.logger import get_logger
+
+try:
+    import numpy as np
+
+    _NUMPY_AVAILABLE = True
+except ImportError:
+    np = None  # type: ignore[assignment]
+    _NUMPY_AVAILABLE = False
+
+_TOKEN_RE = re.compile(r"\w+")
+_OPERATOR_MUL = operator.mul
 
 logger = get_logger(__name__)
 
@@ -40,40 +53,109 @@ class DenseVectorizer:
     """
     Lightweight, deterministic character/word n-gram vectorizer
     providing zero-dependency semantic vector representations.
+    Accelerated with buffer slicing, fast dot products, and SIMD operations.
     """
 
     def __init__(self, dim: int = 128):
         self.dim = dim
 
-    def vectorize(self, text: str) -> list[float]:
-        """Convert text into a normalized fixed-dimension dense vector."""
-        vec = [0.0] * self.dim
-        tokens = re.findall(r"\w+", text.lower())
+    def encode(self, text: str) -> list[float]:
+        """Convert text into a normalized fixed-dimension dense vector (accelerated)."""
+        dim = self.dim
+        vec = [0.0] * dim
+        text_lower = text.lower()
+        tokens = _TOKEN_RE.findall(text_lower)
         if not tokens:
             return vec
 
         for token in tokens:
-            h = (zlib.crc32(token.encode("utf-8")) & 0xFFFFFFFF) % self.dim
+            h = (zlib.crc32(token.encode("utf-8")) & 0xFFFFFFFF) % dim
             vec[h] += 1.0
 
-        # Also hash 3-grams for substring matching
-        for i in range(len(text) - 2):
-            trigram = text[i : i + 3].lower()
-            h = (zlib.crc32(trigram.encode("utf-8")) & 0xFFFFFFFF) % self.dim
+        # Memoryview buffer slice on pre-encoded utf-8 bytes avoids hundreds of substring allocations
+        b_text = memoryview(text_lower.encode("utf-8"))
+        n_trigrams = len(b_text) - 2
+        for i in range(n_trigrams):
+            h = (zlib.crc32(b_text[i : i + 3]) & 0xFFFFFFFF) % dim
             vec[h] += 0.5
 
-        # L2 Normalize
+        # L2 Normalize using reciprocal multiplication
         norm = math.sqrt(sum(x * x for x in vec))
         if norm > 0:
-            vec = [x / norm for x in vec]
+            inv_norm = 1.0 / norm
+            vec = [x * inv_norm for x in vec]
         return vec
 
+    def vectorize(self, text: str) -> list[float]:
+        """Backward-compatible alias for encode."""
+        return self.encode(text)
+
+    def encode_array(self, text: str, dtype: Any = None) -> np.ndarray:
+        """Encode text directly into a NumPy float32 array for SIMD/BLAS operations."""
+        vec = self.encode(text)
+        if _NUMPY_AVAILABLE:
+            return np.asarray(vec, dtype=dtype or np.float32)
+        return vec  # type: ignore[return-value]
+
     @staticmethod
-    def cosine_similarity(v1: list[float], v2: list[float]) -> float:
-        """Compute cosine similarity between two normalized vectors."""
+    def dot_product(v1: list[float] | Any, v2: list[float] | Any) -> float:
+        """
+        Compute accelerated dot product between two vectors.
+        Leverages NumPy C/SIMD BLAS when inputs are NumPy arrays, with fast
+        math.fsum/operator.mul loop fallback for Python lists.
+        """
+        if v1 is None or v2 is None:
+            return 0.0
+        n1 = len(v1)
+        n2 = len(v2)
+        if n1 == 0 or n1 != n2:
+            return 0.0
+
+        if _NUMPY_AVAILABLE and isinstance(v1, np.ndarray) and isinstance(v2, np.ndarray):
+            return float(np.dot(v1, v2))
+
+        return float(math.fsum(map(_OPERATOR_MUL, v1, v2)))
+
+    @staticmethod
+    def cosine_similarity(v1: list[float] | Any, v2: list[float] | Any) -> float:
+        """Compute cosine similarity between two normalized vectors (accelerated)."""
+        if v1 is None or v2 is None:
+            return 0.0
+        n1 = len(v1)
+        n2 = len(v2)
+        if n1 == 0 or n1 != n2:
+            return 0.0
+
+        d = DenseVectorizer.dot_product(v1, v2)
+        if d < 0.0:
+            return 0.0
+        if d > 1.0:
+            return 1.0
+        return d
+
+    @staticmethod
+    def _unaccelerated_cosine_similarity(v1: list[float], v2: list[float]) -> float:
+        """Reference unaccelerated cosine similarity for benchmarking and verification."""
         if not v1 or not v2 or len(v1) != len(v2):
             return 0.0
         return max(0.0, min(1.0, sum(a * b for a, b in zip(v1, v2, strict=False))))
+
+    @staticmethod
+    def batch_cosine_similarity(
+        query_vec: list[float] | Any,
+        doc_matrix: list[list[float]] | Any,
+    ) -> list[float] | np.ndarray:
+        """
+        Compute cosine similarities against a batch/matrix of documents.
+        Utilizes vectorized matrix-vector BLAS when NumPy is available.
+        """
+        if _NUMPY_AVAILABLE and isinstance(doc_matrix, np.ndarray):
+            q = np.asarray(query_vec, dtype=np.float32) if not isinstance(query_vec, np.ndarray) else query_vec
+            scores = np.dot(doc_matrix, q)
+            return np.clip(scores, 0.0, 1.0)
+
+        return [DenseVectorizer.cosine_similarity(query_vec, doc) for doc in doc_matrix]
+
 
 
 class VectorMemory:
@@ -197,9 +279,8 @@ def reset_vector_memory_singleton() -> None:
     global _vector_memory
     if _vector_memory is not None:
         if getattr(_vector_memory, "_db", None) is not None:
-            try:
+            with contextlib.suppress(Exception):
                 _vector_memory._db.close()
-            except Exception:
-                pass
         _vector_memory = None
+
 

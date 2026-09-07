@@ -124,33 +124,111 @@ _COMMON_UI_LANDMARKS: dict[str, tuple[float, float]] = {
     "app menu": (0.016, 0.015),
     "whisker menu": (0.016, 0.015),
     "start menu": (0.016, 0.015),
+
     # Quick launcher icons on top panel
     "terminal launcher": (0.038, 0.015),
     "terminal icon": (0.038, 0.015),
     "terminal": (0.038, 0.015),
+    "xfce4-terminal": (0.038, 0.015),
     "browser launcher": (0.060, 0.015),
     "chrome icon": (0.060, 0.015),
     "chrome": (0.060, 0.015),
     "google chrome": (0.060, 0.015),
+    "chromium": (0.060, 0.015),
+    "firefox": (0.060, 0.015),
     "file manager launcher": (0.082, 0.015),
     "file manager": (0.082, 0.015),
     "thunar": (0.082, 0.015),
+    "text editor launcher": (0.104, 0.015),
+    "mousepad": (0.104, 0.015),
+    "editor": (0.104, 0.015),
+
     # Desktop shortcuts / icons (left column)
     "home desktop icon": (0.030, 0.080),
+    "home folder": (0.030, 0.080),
+    "user home": (0.030, 0.080),
     "trash": (0.030, 0.200),
+    "trash desktop icon": (0.030, 0.200),
+    "recycle bin": (0.030, 0.200),
     "filesystem": (0.030, 0.320),
+    "filesystem desktop icon": (0.030, 0.320),
+    "root filesystem": (0.030, 0.320),
+    "chrome desktop icon": (0.030, 0.440),
+    "terminal desktop icon": (0.030, 0.560),
+
     # Window controls (standard top-right of active maximized window)
     "close button": (0.985, 0.015),
     "close window": (0.985, 0.015),
     "window close": (0.985, 0.015),
+    "exit window": (0.985, 0.015),
     "minimize button": (0.950, 0.015),
     "minimize window": (0.950, 0.015),
+    "window minimize": (0.950, 0.015),
     "maximize button": (0.968, 0.015),
     "maximize window": (0.968, 0.015),
+    "window maximize": (0.968, 0.015),
+
+    # System Tray / Notification Area (top right panel)
+    "clock": (0.910, 0.015),
+    "time": (0.910, 0.015),
+    "clock applet": (0.910, 0.015),
+    "notification area": (0.875, 0.015),
+    "notifications": (0.875, 0.015),
+    "network status": (0.850, 0.015),
+    "network icon": (0.850, 0.015),
+    "wifi icon": (0.850, 0.015),
+    "audio status": (0.825, 0.015),
+    "volume icon": (0.825, 0.015),
+
+    # Browser Navigation & Controls (Chrome / Chromium / Web)
+    "browser back": (0.015, 0.075),
+    "back button": (0.015, 0.075),
+    "browser forward": (0.035, 0.075),
+    "forward button": (0.035, 0.075),
+    "browser reload": (0.055, 0.075),
+    "reload button": (0.055, 0.075),
+    "refresh page": (0.055, 0.075),
+    "refresh button": (0.055, 0.075),
+    "browser address bar": (0.450, 0.075),
+    "address bar": (0.450, 0.075),
+    "url bar": (0.450, 0.075),
+    "location bar": (0.450, 0.075),
+    "omnibox": (0.450, 0.075),
+    "browser new tab": (0.240, 0.040),
+    "new tab button": (0.240, 0.040),
+    "new tab": (0.240, 0.040),
+    "browser close tab": (0.210, 0.040),
+    "close tab": (0.210, 0.040),
+    "browser devtools": (0.980, 0.075),
+    "developer tools": (0.980, 0.075),
+    "browser menu": (0.988, 0.075),
+    "chrome menu": (0.988, 0.075),
+    "three dots menu": (0.988, 0.075),
+    "browser search bar": (0.500, 0.380),
+    "google search input": (0.500, 0.380),
+
+    # Terminal window active regions
+    "terminal prompt": (0.200, 0.200),
+    "terminal input": (0.200, 0.200),
+    "terminal window": (0.500, 0.500),
+
+    # Common dialog & web buttons
+    "submit button": (0.500, 0.600),
+    "submit": (0.500, 0.600),
+    "login button": (0.500, 0.580),
+    "login": (0.500, 0.580),
+    "sign in button": (0.500, 0.580),
+    "ok button": (0.550, 0.550),
+    "ok": (0.550, 0.550),
+    "cancel button": (0.450, 0.550),
+    "cancel": (0.450, 0.550),
+    "save button": (0.520, 0.550),
+    "save": (0.520, 0.550),
+    "search button": (0.620, 0.380),
+
     # Common screen regions
     "screen center": (0.500, 0.500),
     "center": (0.500, 0.500),
-    "address bar": (0.500, 0.100),
     "search bar": (0.500, 0.500),
     "search box": (0.500, 0.500),
 }
@@ -185,9 +263,10 @@ def resolve_ui_target(
     if grounding_fn and screenshot_b64:
         try:
             grounding_output = grounding_fn(query, screenshot_b64)
-            coords = extract_bbox_midpoint(grounding_output, width, height)
-            if coords:
-                return coords
+            if grounding_output:
+                coords = extract_bbox_midpoint(grounding_output, width, height)
+                if coords:
+                    return coords
         except Exception as exc:
             logger.warning("grounding_fn_resolution_failed", query=query, error=str(exc))
 
@@ -199,4 +278,50 @@ def resolve_ui_target(
             return px, py
 
     return None
+
+
+async def resolve_ui_target_async(
+    query: str,
+    screenshot_b64: Optional[str] = None,
+    width: int = 1280,
+    height: int = 800,
+    grounding_fn: Optional[Any] = None,
+) -> Optional[Tuple[int, int]]:
+    """Asynchronous variant of resolve_ui_target supporting coroutine grounding functions."""
+    if not query:
+        return None
+
+    clean_query = query.strip().lower()
+
+    # 1. Direct numeric coordinates
+    if "," in clean_query:
+        parts = clean_query.split(",")
+        if len(parts) == 2 and parts[0].strip().isdigit() and parts[1].strip().isdigit():
+            return int(parts[0].strip()), int(parts[1].strip())
+
+    # 2. Dynamic Grounding function (sync or async)
+    if grounding_fn and screenshot_b64:
+        try:
+            import inspect
+            res = grounding_fn(query, screenshot_b64)
+            if inspect.isawaitable(res):
+                grounding_output = await res
+            else:
+                grounding_output = res
+            if grounding_output:
+                coords = extract_bbox_midpoint(grounding_output, width, height)
+                if coords:
+                    return coords
+        except Exception as exc:
+            logger.warning("grounding_fn_async_resolution_failed", query=query, error=str(exc))
+
+    # 3. Landmark & Semantic Matching
+    for key, (norm_x, norm_y) in _COMMON_UI_LANDMARKS.items():
+        if key == clean_query or key in clean_query or clean_query in key:
+            px = int(norm_x * width)
+            py = int(norm_y * height)
+            return px, py
+
+    return None
+
 

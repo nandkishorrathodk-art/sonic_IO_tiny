@@ -29,6 +29,29 @@ def _new_id(prefix: str = "trace") -> str:
 # Enums
 # ============================================
 
+class ActionExecutionStatus(StrEnum):
+    RUNNING = "RUNNING"
+    COMPLETED = "COMPLETED"
+    SUCCESS = "SUCCESS"  # alias for COMPLETED
+    FAILED = "FAILED"
+    TIMED_OUT = "TIMED_OUT"
+    BLOCKED = "BLOCKED"
+    CANCELLED = "CANCELLED"
+    RECOVERED = "RECOVERED"
+    VERIFIED = "VERIFIED"
+
+    def __eq__(self, other: object) -> bool:
+        if super().__eq__(other):
+            return True
+        if self.value == "COMPLETED" and (other == "SUCCESS" or getattr(other, "value", None) == "SUCCESS"):
+            return True
+        if self.value == "SUCCESS" and (other == "COMPLETED" or getattr(other, "value", None) == "COMPLETED"):
+            return True
+        return False
+
+    __hash__ = StrEnum.__hash__
+
+
 class ComputerAutonomyLevel(StrEnum):
     L0_MANUAL = "L0_MANUAL"                          # Human executes
     L1_ASSISTED = "L1_ASSISTED"                      # SONIC recommends actions
@@ -145,7 +168,7 @@ class ComputerDecisionTrace(BaseModel):
     info_gain: float = 1.0
     recovery_attempted: bool = False
     thought: str = ""
-    status: str = "SUCCESS"  # "SUCCESS", "RECOVERED", "FAILED", "BLOCKED"
+    status: ActionExecutionStatus | str = ActionExecutionStatus.COMPLETED
     timestamp: str = Field(default_factory=_now)
 
 

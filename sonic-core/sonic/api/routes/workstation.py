@@ -56,16 +56,18 @@ logger = get_logger(__name__)
 router = APIRouter()
 
 _primary_computer_instance: Any | None = None
+_daytona_provider_instance: Any | None = None
 
 
 def get_computer() -> Any:
-    global _primary_computer_instance
+    global _primary_computer_instance, _daytona_provider_instance
     if _primary_computer_instance is None:
         if os.environ.get("SONIC_USE_DAYTONA_CLOUD") == "1":
             _primary_computer_instance = DaytonaComputerProvider()
         else:
             from sonic.computer.docker_computer import DockerComputerProvider
             _primary_computer_instance = DockerComputerProvider()
+        _daytona_provider_instance = _primary_computer_instance
     return _primary_computer_instance
 
 
@@ -1845,6 +1847,268 @@ async def _run_autonomous_desktop_loop(
     return observations, None, False
 
 
+def _is_research_prompt(prompt: str) -> bool:
+    """Detect if prompt requests autonomous research, security assessment, or scanning."""
+    p_lower = prompt.strip().lower()
+    keywords = ["scan", "port", "research", "recon", "audit", "pentest", "test", "vulnerability"]
+    return any(kw in p_lower for kw in keywords)
+
+
+async def _run_parallel_research_swarm(
+    state: dict[str, Any],
+    tenant_id: str,
+    session_id: str,
+    prompt: str,
+) -> None:
+    """
+    Executes the 6+1 Parallel Specialists Swarm via AsyncResearchOrchestrator:
+      - NetworkSpecialist
+      - WebSpecialist
+      - ApiSpecialist
+      - AuthSpecialist
+      - BusinessLogicSpecialist
+      - CloudSpecialist
+      - FalsificationSpecialist
+    Live streams entries into state["worklog"] with exact prefixes.
+    Updates state["graph"] with AttackGraph nodes & transitions.
+    Records execution metrics: parallel_wall_time, sum_of_task_times, parallelism_factor.
+    """
+    from sonic.research.attack_graph import AttackGraph, AttackNodeType
+    from sonic.research.event_bus import (
+        AnomalyDetectedEvent,
+        EndpointDiscoveredEvent,
+        HypothesisFalsifiedEvent,
+        HypothesisProposedEvent,
+        ResearchEventBus,
+        ResearchStateChangedEvent,
+        TargetDiscoveredEvent,
+        VulnerabilityVerifiedEvent,
+    )
+    from sonic.research.orchestrator import (
+        AsyncResearchOrchestrator,
+        ResearchBlackboard,
+    )
+    from sonic.research.specialist import (
+        ApiSpecialist,
+        AuthSpecialist,
+        BusinessLogicSpecialist,
+        CloudSpecialist,
+        FalsificationSpecialist,
+        NetworkSpecialist,
+        WebSpecialist,
+    )
+
+    state["status"] = "RESEARCHING"
+    state["current_action"] = "Parallel Research Swarm Active (6+1 Specialists)"
+    _append_worklog(
+        state,
+        "action",
+        "Parallel Swarm Activated",
+        f"Initializing 6+1 Parallel Specialists swarm for: {prompt[:120]}",
+    )
+
+    # Extract target if present
+    target_match = re.search(
+        r'(https?://[^\s]+|(?:[a-zA-Z0-9-]+\.)+[a-zA-Z]{2,}|(?:\d{1,3}\.){3}\d{1,3})',
+        prompt,
+    )
+    target_raw = target_match.group(1).rstrip("/;,.") if target_match else "127.0.0.1"
+    target_url = target_raw if target_raw.startswith("http") else f"http://{target_raw}"
+    target_host = target_raw.replace("https://", "").replace("http://", "").split("/")[0].split(":")[0]
+
+    event_bus = ResearchEventBus()
+    blackboard = ResearchBlackboard()
+    attack_graph = AttackGraph()
+
+    def _sync_graph() -> None:
+        state["graph"] = {
+            "nodes": [n.model_dump() for n in attack_graph.nodes.values()],
+            "edges": [e.model_dump() for e in attack_graph.edges],
+            "mermaid": attack_graph.to_mermaid(),
+        }
+
+    _sync_graph()
+
+    # Track logged agent starts to ensure live streaming entries
+    logged_starts: set[str] = set()
+
+    async def _on_state_change(event: ResearchStateChangedEvent) -> None:
+        if event.new_state == "researching":
+            name = event.agent_name
+            if name == "NetworkSpecialist" and name not in logged_starts:
+                logged_starts.add(name)
+                _append_worklog(state, "action", "NetworkSpecialist", "[NetworkSpecialist] Scanning ports...")
+            elif name == "WebSpecialist" and name not in logged_starts:
+                logged_starts.add(name)
+                _append_worklog(state, "action", "WebSpecialist", "[WebSpecialist] Crawling endpoints...")
+            elif name == "ApiSpecialist" and name not in logged_starts:
+                logged_starts.add(name)
+                _append_worklog(state, "action", "ApiSpecialist", "[ApiSpecialist] Analyzing parameters...")
+            elif name == "AuthSpecialist" and name not in logged_starts:
+                logged_starts.add(name)
+                _append_worklog(state, "action", "AuthSpecialist", "[AuthSpecialist] Inspecting tokens...")
+            elif name == "FalsificationSpecialist" and name not in logged_starts:
+                logged_starts.add(name)
+                _append_worklog(state, "action", "FalsificationSpecialist", "[FalsificationSpecialist] Testing hypothesis...")
+            elif name == "BusinessLogicSpecialist" and name not in logged_starts:
+                logged_starts.add(name)
+                _append_worklog(state, "action", "BusinessLogicSpecialist", "[BusinessLogicSpecialist] Analyzing business workflows...")
+            elif name == "CloudSpecialist" and name not in logged_starts:
+                logged_starts.add(name)
+                _append_worklog(state, "action", "CloudSpecialist", "[CloudSpecialist] Evaluating cloud metadata...")
+            _persist_workstation_state()
+
+    async def _on_target_discovered(event: TargetDiscoveredEvent) -> None:
+        node_id = f"target-{event.target}-{event.port or 'host'}"
+        label = f"{event.target}:{event.port}" if event.port else event.target
+        ntype = AttackNodeType.ENTRY_POINT if event.port in (80, 443, 8080) else AttackNodeType.ASSET
+        if node_id not in attack_graph.nodes:
+            attack_graph.add_node(node_id, label, ntype, severity="info", metadata=event.metadata)
+        _sync_graph()
+        _append_worklog(state, "discovery", f"Target: {label}", f"Discovered service {event.service or 'service'} on {label}")
+        _persist_workstation_state()
+
+    async def _on_endpoint_discovered(event: EndpointDiscoveredEvent) -> None:
+        ep_hash = hashlib.sha256(f"{event.method}:{event.url}".encode()).hexdigest()[:8]
+        node_id = f"ep-{ep_hash}"
+        if node_id not in attack_graph.nodes:
+            attack_graph.add_node(node_id, f"{event.method} {event.url}", AttackNodeType.ENTRY_POINT, severity="low")
+            for t_node in list(attack_graph.nodes.values()):
+                if t_node.id.startswith("target-") and t_node.id != node_id:
+                    try:
+                        attack_graph.add_edge(t_node.id, node_id, "Exposes route", confidence=1.0)
+                        break
+                    except Exception:
+                        pass
+        _sync_graph()
+        _append_worklog(state, "discovery", f"Endpoint: {event.url}", f"{event.method} {event.url} (params: {event.params})")
+        _persist_workstation_state()
+
+    async def _on_hypothesis_proposed(event: HypothesisProposedEvent) -> None:
+        node_id = f"hypo-{event.hypothesis_id}"
+        if node_id not in attack_graph.nodes:
+            attack_graph.add_node(node_id, event.statement, AttackNodeType.VULNERABILITY, severity="medium")
+            for ep_node in list(attack_graph.nodes.values()):
+                if ep_node.id.startswith("ep-"):
+                    try:
+                        attack_graph.add_edge(ep_node.id, node_id, "Candidate vulnerability hypothesis", confidence=event.confidence)
+                        break
+                    except Exception:
+                        pass
+        _sync_graph()
+        _append_worklog(state, "hypothesis", f"Hypothesis: {event.vulnerability_class or 'Vulnerability'}", event.statement)
+        _persist_workstation_state()
+
+    async def _on_vuln_verified(event: VulnerabilityVerifiedEvent) -> None:
+        node_id = f"vuln-{event.vulnerability_id}"
+        if node_id not in attack_graph.nodes:
+            ntype = AttackNodeType.OBJECTIVE if event.severity in ("critical", "high") else AttackNodeType.VULNERABILITY
+            attack_graph.add_node(node_id, event.title or event.vulnerability_class, ntype, severity=event.severity)
+            for h_node in list(attack_graph.nodes.values()):
+                if h_node.id.startswith("hypo-"):
+                    try:
+                        attack_graph.add_edge(h_node.id, node_id, "Verified with proof", confidence=1.0)
+                        break
+                    except Exception:
+                        pass
+        _sync_graph()
+        _append_worklog(state, "vulnerability", f"Verified Vulnerability: {event.title or event.vulnerability_class}", f"Severity: {event.severity} | Target: {event.target}")
+        _persist_workstation_state()
+
+    # Wire event subscriptions
+    event_bus.subscribe(ResearchStateChangedEvent, _on_state_change)
+    event_bus.subscribe(TargetDiscoveredEvent, _on_target_discovered)
+    event_bus.subscribe(EndpointDiscoveredEvent, _on_endpoint_discovered)
+    event_bus.subscribe(HypothesisProposedEvent, _on_hypothesis_proposed)
+    event_bus.subscribe(VulnerabilityVerifiedEvent, _on_vuln_verified)
+
+    # Initialize the 6+1 Specialists
+    specialists = [
+        NetworkSpecialist(name="NetworkSpecialist", target=target_host, objective=f"Scanning ports and services on {target_host}"),
+        WebSpecialist(name="WebSpecialist", target_url=target_url, objective=f"Crawling endpoints and attack surface on {target_url}"),
+        ApiSpecialist(name="ApiSpecialist", target_url=f"{target_url}/api", objective=f"Analyzing parameters and schemas on {target_url}"),
+        AuthSpecialist(name="AuthSpecialist", target_url=f"{target_url}/auth", objective=f"Inspecting tokens and authentication boundaries on {target_url}"),
+        BusinessLogicSpecialist(name="BusinessLogicSpecialist", target_url=target_url, objective=f"Analyzing workflow state machines on {target_url}"),
+        CloudSpecialist(name="CloudSpecialist", target_host=target_host, objective=f"Evaluating cloud metadata and storage for {target_host}"),
+        FalsificationSpecialist(name="FalsificationSpecialist", objective="Testing hypotheses and adversarial falsification"),
+    ]
+
+    orchestrator = AsyncResearchOrchestrator(
+        event_bus=event_bus,
+        blackboard=blackboard,
+        max_concurrent_specialists=10,
+    )
+
+    # Pre-seed initial streaming entries into state["worklog"]
+    for spec in specialists:
+        name = spec.name
+        if name == "NetworkSpecialist" and name not in logged_starts:
+            logged_starts.add(name)
+            _append_worklog(state, "action", "NetworkSpecialist", "[NetworkSpecialist] Scanning ports...")
+        elif name == "WebSpecialist" and name not in logged_starts:
+            logged_starts.add(name)
+            _append_worklog(state, "action", "WebSpecialist", "[WebSpecialist] Crawling endpoints...")
+        elif name == "ApiSpecialist" and name not in logged_starts:
+            logged_starts.add(name)
+            _append_worklog(state, "action", "ApiSpecialist", "[ApiSpecialist] Analyzing parameters...")
+        elif name == "AuthSpecialist" and name not in logged_starts:
+            logged_starts.add(name)
+            _append_worklog(state, "action", "AuthSpecialist", "[AuthSpecialist] Inspecting tokens...")
+        elif name == "FalsificationSpecialist" and name not in logged_starts:
+            logged_starts.add(name)
+            _append_worklog(state, "action", "FalsificationSpecialist", "[FalsificationSpecialist] Testing hypothesis...")
+        elif name == "BusinessLogicSpecialist" and name not in logged_starts:
+            logged_starts.add(name)
+            _append_worklog(state, "action", "BusinessLogicSpecialist", "[BusinessLogicSpecialist] Analyzing business workflows...")
+        elif name == "CloudSpecialist" and name not in logged_starts:
+            logged_starts.add(name)
+            _append_worklog(state, "action", "CloudSpecialist", "[CloudSpecialist] Evaluating cloud metadata...")
+
+    # Run all specialists concurrently
+    initial_context = {
+        "target": target_host,
+        "target_url": target_url,
+        "target_host": target_host,
+        "delay": 0.05,
+    }
+    result = await orchestrator.run(
+        initial_specialists=specialists,
+        initial_context=initial_context,
+        timeout_seconds=30.0,
+    )
+
+    # Concurrently record execution metrics
+    parallel_wall_time = result.parallel_wall_time
+    sum_of_task_times = result.sum_of_task_times
+    parallelism_factor = result.parallelism_factor
+
+    state["parallel_wall_time"] = parallel_wall_time
+    state["sum_of_task_times"] = sum_of_task_times
+    state["parallelism_factor"] = parallelism_factor
+    state["metrics"] = {
+        "parallel_wall_time": parallel_wall_time,
+        "sum_of_task_times": sum_of_task_times,
+        "parallelism_factor": parallelism_factor,
+        "completed_specialists": result.completed_specialists,
+        "total_specialists": result.total_specialists,
+    }
+
+    _sync_graph()
+    state["status"] = "IDLE"
+    state["current_action"] = "Ready when you are."
+
+    summary = (
+        f"Autonomous research completed via 6+1 Parallel Specialists swarm in {parallel_wall_time:.2f}s "
+        f"(Sum of tasks: {sum_of_task_times:.2f}s, Concurrency Factor: {parallelism_factor}x). "
+        f"Specialists: {result.completed_specialists}/{result.total_specialists} completed. "
+        f"Attack Graph: {len(attack_graph.nodes)} nodes, {len(attack_graph.edges)} transitions. "
+        f"Verified vulnerabilities: {result.verified_vulnerabilities_count}, Falsified: {result.falsified_hypotheses_count}."
+    )
+    state["thought_summary"] = summary
+    _append_worklog(state, "response", "SONIC Swarm Intelligence", summary)
+    _persist_workstation_state()
+
+
 async def _run_prompt_reasoning(tenant_id: str, session_id: str, prompt: str) -> None:
     """Resolve an objective asynchronously so a slow provider cannot block the UI request."""
     state = _get_or_create_session(tenant_id, session_id)
@@ -1852,6 +2116,11 @@ async def _run_prompt_reasoning(tenant_id: str, session_id: str, prompt: str) ->
     action_observations: list[str] = []
     desktop_context = "No tenant-owned desktop observation is available for this session."
     try:
+        # Check if prompt requests autonomous research, security assessment, scanning, or pentest
+        if _is_research_prompt(prompt):
+            await _run_parallel_research_swarm(state, tenant_id, session_id, prompt)
+            return
+
         from sonic.llm.providers.custom import CustomLLMProvider
         from sonic.llm.schemas import LLMRequest, Message, MessageRole
 
@@ -1932,7 +2201,7 @@ async def _run_prompt_reasoning(tenant_id: str, session_id: str, prompt: str) ->
                             f"Starting autonomous visual computer use for: {prompt[:100]}")
 
                         async def _on_step(trace):
-                            step_type = "action" if trace.status in ("SUCCESS", "RECOVERED") else "error"
+                            step_type = "action" if trace.status in ("COMPLETED", "SUCCESS", "RECOVERED", "VERIFIED") else "error"
                             state["current_action"] = f"Step {trace.step_index}: {trace.action_type.value} on {trace.target_resource}"
                             thought_info = f"Thought: {trace.thought}\n" if getattr(trace, "thought", "") else ""
                             _append_worklog(
@@ -1947,7 +2216,11 @@ async def _run_prompt_reasoning(tenant_id: str, session_id: str, prompt: str) ->
                             # Auto-synthesize Evidence and Graph Memory nodes from discoveries
                             obs_text = trace.actual_observation or ""
                             has_discovery = any(k in obs_text.lower() for k in ("open", "http", "200 ok", "discovered", "vulnerability", "port", "https://"))
-                            if has_discovery and trace.target_resource:
+                            is_valid_success = (
+                                trace.status in ("COMPLETED", "SUCCESS", "RECOVERED", "VERIFIED")
+                                and not any(k in obs_text.lower() for k in ("exit 125", "exit 126", "exit 1", "blocked fail-closed", "command blocked"))
+                            )
+                            if has_discovery and trace.target_resource and is_valid_success:
                                 import hashlib
                                 ev_id = f"ev-{uuid.uuid4().hex[:8]}"
                                 sha256_hash = hashlib.sha256(obs_text.encode("utf-8")).hexdigest()

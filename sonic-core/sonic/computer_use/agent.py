@@ -26,6 +26,7 @@ from sonic.computer.models import (
 from sonic.computer.provider import ComputerProvider
 from sonic.computer_use.grounding import draw_action_marker, resolve_ui_target
 from sonic.computer_use.models import (
+    ActionExecutionStatus,
     ComputerActionType,
     ComputerAutonomyLevel,
     ComputerDecisionTrace,
@@ -725,7 +726,7 @@ class ComputerUseAgent:
         self.action_counter += 1
         time.perf_counter()
         actual_obs_str = ""
-        status = "SUCCESS"
+        status = ActionExecutionStatus.COMPLETED
         recovery_needed = False
 
         # ----- PLAN Phase 6: fail-closed safety envelope -----
@@ -737,7 +738,7 @@ class ComputerUseAgent:
             verdict = self.safety.evaluate(action_type.value, target_resource, payload)
             if not verdict.allowed:
                 actual_obs_str = f"Safety blocked: {verdict.reason}"
-                status = "BLOCKED"
+                status = ActionExecutionStatus.BLOCKED
                 logger.warning("action_blocked_by_policy",
                                action=action_type.value, reason=verdict.reason)
                 trace = ComputerDecisionTrace(
@@ -794,7 +795,7 @@ class ComputerUseAgent:
         coord_err = self._validate_coordinates(action_type, payload)
         if coord_err is not None:
             actual_obs_str = f"Coordinate out of bounds: {coord_err}"
-            status = "BLOCKED"
+            status = ActionExecutionStatus.BLOCKED
             logger.warning("action_blocked_out_of_bounds",
                            action=action_type.value, reason=coord_err,
                            screen=f"{self._screen_width}x{self._screen_height}")
@@ -819,6 +820,7 @@ class ComputerUseAgent:
                 if payload.get("x") is None or payload.get("y") is None:
                     actual_obs_str = f"GUI_CLICK failed: integer pixel coordinates x,y required or visual target '{target_resource}' could not be resolved"
                     recovery_needed = True
+                    status = ActionExecutionStatus.FAILED
                 else:
                     x = int(payload.get("x", 0))
                     y = int(payload.get("y", 0))
@@ -839,6 +841,7 @@ class ComputerUseAgent:
                 if payload.get("x") is None or payload.get("y") is None:
                     actual_obs_str = f"GUI_DOUBLE_CLICK failed: integer pixel coordinates x,y required or visual target '{target_resource}' could not be resolved"
                     recovery_needed = True
+                    status = ActionExecutionStatus.FAILED
                 else:
                     x = int(payload.get("x", 0))
                     y = int(payload.get("y", 0))
@@ -859,6 +862,7 @@ class ComputerUseAgent:
                 if payload.get("x") is None or payload.get("y") is None:
                     actual_obs_str = f"GUI_RIGHT_CLICK failed: integer pixel coordinates x,y required or visual target '{target_resource}' could not be resolved"
                     recovery_needed = True
+                    status = ActionExecutionStatus.FAILED
                 else:
                     x = int(payload.get("x", 0))
                     y = int(payload.get("y", 0))
@@ -895,6 +899,7 @@ class ComputerUseAgent:
                 if payload.get("x") is None or payload.get("y") is None:
                     actual_obs_str = f"GUI_MOVE failed: coordinates required or visual target '{target_resource}' could not be resolved"
                     recovery_needed = True
+                    status = ActionExecutionStatus.FAILED
                 else:
                     x = int(payload.get("x", 0))
                     y = int(payload.get("y", 0))
@@ -956,6 +961,7 @@ class ComputerUseAgent:
                 if not app_name or app_name.lower() in ("none", "null", ""):
                     actual_obs_str = "APP_LAUNCH failed: application name required"
                     recovery_needed = True
+                    status = ActionExecutionStatus.FAILED
                 else:
                     if "\n" in app_name:
                         app_name = app_name.split("\n")[0].strip(" *_\n\r\t`\"'")
@@ -973,6 +979,7 @@ class ComputerUseAgent:
                 if not app_name or app_name.lower() in ("none", "null", ""):
                     actual_obs_str = "APP_CLOSE failed: application name required"
                     recovery_needed = True
+                    status = ActionExecutionStatus.FAILED
                 else:
                     if "\n" in app_name:
                         app_name = app_name.split("\n")[0].strip(" *_\n\r\t`\"'")
@@ -990,6 +997,7 @@ class ComputerUseAgent:
                 if not app_name or app_name.lower() in ("none", "null", ""):
                     actual_obs_str = "APP_FOCUS failed: window or application name required"
                     recovery_needed = True
+                    status = ActionExecutionStatus.FAILED
                 else:
                     if "\n" in app_name:
                         app_name = app_name.split("\n")[0].strip(" *_\n\r\t`\"'")
@@ -1008,11 +1016,13 @@ class ComputerUseAgent:
                 if not hasattr(self.computer, "install_application"):
                     actual_obs_str = "Install not supported by this computer provider"
                     recovery_needed = True
+                    status = ActionExecutionStatus.FAILED
                 else:
                     package = payload.get("package") or payload.get("app_name") or target_resource
                     if not package:
                         actual_obs_str = "APP_INSTALL requires a package name"
                         recovery_needed = True
+                        status = ActionExecutionStatus.FAILED
                     else:
                         ok, output = await self.computer.install_application(
                             workspace_id, package,
@@ -1026,6 +1036,9 @@ class ComputerUseAgent:
                             # correctly; the agent should pick a different tool.
                             if "prohibited" not in (output or "").lower():
                                 recovery_needed = True
+                                status = ActionExecutionStatus.FAILED
+                            else:
+                                status = ActionExecutionStatus.BLOCKED
 
             elif action_type == ComputerActionType.FILE_READ:
                 path = payload.get("path", "/home/sonic/workspace/README.md")
@@ -1062,7 +1075,14 @@ class ComputerUseAgent:
                     cmd_str = f"DISPLAY=:0 {cmd_str} &"
                 res = await self.computer.terminal(workspace_id, cmd_str)
                 actual_obs_str = res.stdout.strip() or f"Exit {res.exit_code}"
-                if res.exit_code != 0 and "FAIL-CLOSED" not in res.stderr:
+                if res.exit_code == 124:
+                    status = ActionExecutionStatus.TIMED_OUT
+                    recovery_needed = True
+                elif res.exit_code in (125, 126):
+                    status = ActionExecutionStatus.BLOCKED
+                    recovery_needed = False
+                elif res.exit_code != 0:
+                    status = ActionExecutionStatus.FAILED
                     recovery_needed = True
 
             elif action_type == ComputerActionType.GIT_COMMIT:
@@ -1318,13 +1338,17 @@ class ComputerUseAgent:
         except Exception as e:
             actual_obs_str = f"Error: {str(e)}"
             recovery_needed = True
-            status = "FAILED"
+            status = ActionExecutionStatus.FAILED
 
         # Adaptive Closed-Loop Recovery if needed
-        if recovery_needed and self.recovery_events < self.max_recovery_attempts:
-            rec_trace = await self.recover(workspace_id, action_type, actual_obs_str)
-            actual_obs_str = f"{actual_obs_str} | Recovered: {rec_trace}"
-            status = "RECOVERED"
+        if recovery_needed:
+            if self.recovery_events < self.max_recovery_attempts:
+                rec_trace = await self.recover(workspace_id, action_type, actual_obs_str)
+                actual_obs_str = f"{actual_obs_str} | Recovered: {rec_trace}"
+                status = ActionExecutionStatus.RECOVERED
+            else:
+                if status in (ActionExecutionStatus.COMPLETED, ActionExecutionStatus.SUCCESS):
+                    status = ActionExecutionStatus.FAILED
 
         trace = ComputerDecisionTrace(
             step_index=self.action_counter,
@@ -1599,8 +1623,30 @@ class ComputerUseAgent:
 
         # Update Telemetry Metrics.
         self.metrics.actions_total = len(self.traces)
-        self.metrics.actions_successful = sum(1 for t in self.traces if t.status in ["SUCCESS", "RECOVERED"])
-        self.metrics.actions_failed = sum(1 for t in self.traces if t.status == "FAILED")
+        self.metrics.actions_successful = sum(
+            1 for t in self.traces if t.status in (
+                ActionExecutionStatus.COMPLETED,
+                ActionExecutionStatus.SUCCESS,
+                ActionExecutionStatus.RECOVERED,
+                ActionExecutionStatus.VERIFIED,
+                "COMPLETED",
+                "SUCCESS",
+                "RECOVERED",
+                "VERIFIED",
+            )
+        )
+        self.metrics.actions_failed = sum(
+            1 for t in self.traces if t.status in (
+                ActionExecutionStatus.FAILED,
+                ActionExecutionStatus.TIMED_OUT,
+                ActionExecutionStatus.BLOCKED,
+                ActionExecutionStatus.CANCELLED,
+                "FAILED",
+                "TIMED_OUT",
+                "BLOCKED",
+                "CANCELLED",
+            )
+        )
         self.metrics.recovery_events = self.recovery_events
 
         if not goal_reached and self.metrics.actions_successful > 0 and self.metrics.actions_failed == 0:

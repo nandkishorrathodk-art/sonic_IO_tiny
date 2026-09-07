@@ -660,3 +660,13 @@ class UnifiedComputerProvider(ComputerProvider):
             risk_level=risk_level,
         )
         self.audit_log.append(event)
+
+
+# Lazy export to avoid circular import between provider.py and headless.py
+def __getattr__(name: str) -> Any:
+    if name == "HeadlessComputeProvider":
+        from sonic.computer.headless import HeadlessComputeProvider
+        return HeadlessComputeProvider
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+

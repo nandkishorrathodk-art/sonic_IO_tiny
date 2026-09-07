@@ -121,7 +121,11 @@ class ModelRouter:
             config = yaml.safe_load(f)
 
         router = cls()
-        router.default_provider = config.get("default_provider", "")
+        router.default_provider = (
+            env.get("DEFAULT_PROVIDER")
+            or env.get("LLM_PROVIDER")
+            or config.get("default_provider", "")
+        )
         router.fallback_chain = config.get("global_fallback_chain", [])
 
         # Load cost limits
@@ -153,11 +157,18 @@ class ModelRouter:
             fallback_model_ids = [m["id"] for m in models[1:]]
             speed_map = {"fast": SpeedTier.FAST, "medium": SpeedTier.MEDIUM, "slow": SpeedTier.SLOW}
 
+            # Check if default model for this provider is overridden in env
+            env_override_model = (
+                env.get(f"{provider_name.upper()}_MODEL")
+                or (env.get("DEFAULT_MODEL") or env.get("LLM_MODEL") if router.default_provider == provider_name else None)
+            )
+            model_id = env_override_model or first_model["id"]
+
             router.add_provider_from_config(
                 name=provider_name,
                 base_url=base_url,
                 api_key=api_key,
-                default_model=first_model["id"],
+                default_model=model_id,
                 cost_per_1k_input=first_model.get("cost_per_1k_input", 0.0),
                 cost_per_1k_output=first_model.get("cost_per_1k_output", 0.0),
                 speed_tier=speed_map.get(first_model.get("speed_tier", "medium"), SpeedTier.MEDIUM),
@@ -186,6 +197,15 @@ class ModelRouter:
     # Routing Logic
     # ============================================
 
+    def _is_provider_ready(self, provider_name: str) -> bool:
+        """Check if a provider is configured and ready to receive requests."""
+        if provider_name not in self.providers:
+            return False
+        p = self.providers[provider_name]
+        if p.name == "local":
+            return True
+        return bool(p.api_key)
+
     def _resolve_provider(
         self,
         provider_name: str | None = None,
@@ -201,19 +221,35 @@ class ModelRouter:
         if provider_name and provider_name in self.providers:
             return self.providers[provider_name], None
 
+        # If user explicitly configured a default provider (e.g. DEFAULT_PROVIDER=deepseek or openrouter),
+        # prioritize it over the static routing rules if it is ready.
+        if (
+            self.default_provider
+            and self._is_provider_ready(self.default_provider)
+            and self.default_provider != "nvidia"
+        ):
+            target_model = None
+            if task_type and task_type in self.routing_rules:
+                rule = self.routing_rules[task_type]
+                for fb in [rule.get("provider")] + rule.get("fallback", []):
+                    if fb and fb.startswith(f"{self.default_provider}/"):
+                        target_model = fb.split("/", 1)[1]
+                        break
+            return self.providers[self.default_provider], target_model
+
         # Route by task type
         if task_type and task_type in self.routing_rules:
             rule = self.routing_rules[task_type]
             target_provider = rule["provider"]
             target_model = rule.get("model")
 
-            if target_provider in self.providers:
+            if self._is_provider_ready(target_provider):
                 return self.providers[target_provider], target_model
 
             # Try fallbacks from the rule
             for fallback in rule.get("fallback", []):
                 fb_provider = fallback.split("/")[0] if "/" in fallback else fallback
-                if fb_provider in self.providers:
+                if self._is_provider_ready(fb_provider):
                     fb_model = fallback.split("/")[1] if "/" in fallback else None
                     logger.info(
                         "routing_fallback",
@@ -223,9 +259,19 @@ class ModelRouter:
                     )
                     return self.providers[fb_provider], fb_model
 
-        # Use default provider
-        if self.default_provider in self.providers:
+        # Use default provider if ready
+        if self._is_provider_ready(self.default_provider):
             return self.providers[self.default_provider], None
+
+        # Try global fallback chain
+        for fb_provider in self.fallback_chain:
+            if self._is_provider_ready(fb_provider):
+                return self.providers[fb_provider], None
+
+        # Try any ready provider
+        for name, p in self.providers.items():
+            if self._is_provider_ready(name):
+                return p, None
 
         # Last resort: use first available provider
         if self.providers:

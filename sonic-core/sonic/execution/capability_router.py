@@ -1,0 +1,226 @@
+"""
+SONIC — Capability Router (Dual Execution Architecture)
+========================================================
+Routes actions and tasks to the optimal execution substrate:
+    - COMPUTER: Graphical desktop, full browser, native desktop apps (Daytona / Docker Workstation)
+    - HEADLESS: Fast, container-free terminal commands, file I/O, security scanning, direct HTTP probing
+
+Also provides automatic fallback from unavailable or failing container providers
+(e.g., Docker daemon down, missing Daytona API key, exit code 125) to HeadlessComputeProvider.
+"""
+
+from __future__ import annotations
+
+import shutil
+import subprocess
+from enum import StrEnum
+from typing import Any
+
+from sonic.computer.headless import HeadlessComputeProvider
+from sonic.computer_use.models import ComputerActionType
+from sonic.logger import get_logger
+from sonic.sandbox.provider import ComputeProvider, ExecResult
+
+logger = get_logger(__name__)
+
+
+class ExecutionSubstrate(StrEnum):
+    HEADLESS = "HEADLESS"
+    COMPUTER = "COMPUTER"
+
+
+class CapabilityRouter:
+    """
+    Substrate router and provider fallback resolver for SONIC A-SEA execution plane.
+    """
+
+    def __init__(self, headless_provider: HeadlessComputeProvider | None = None):
+        self._headless_provider = headless_provider
+
+    @property
+    def headless_provider(self) -> HeadlessComputeProvider:
+        if self._headless_provider is None:
+            self._headless_provider = HeadlessComputeProvider()
+        return self._headless_provider
+
+    # -------------------------------------------------------------
+    # 1. Action Routing
+    # -------------------------------------------------------------
+    @classmethod
+    def route_action(
+        cls,
+        action_type: ComputerActionType | str,
+        payload: dict[str, Any] | None = None,
+    ) -> ExecutionSubstrate:
+        """
+        Classifies an action into either COMPUTER (GUI/Workstation) or HEADLESS substrate.
+
+        Rules:
+            - GUI_*, APP_*, BROWSER_CLICK, BROWSER_TYPE -> COMPUTER
+            - TERMINAL_EXEC, FILE_*, SECURITY_TOOL -> HEADLESS
+            - BROWSER_NAVIGATE -> HEADLESS if static/fetch-only, COMPUTER if interactive/GUI requested
+        """
+        val = action_type.value if hasattr(action_type, "value") else str(action_type)
+        payload = payload or {}
+
+        # Graphical desktop actions
+        if val.startswith("GUI_"):
+            return ExecutionSubstrate.COMPUTER
+
+        # Application window / desktop lifecycle actions
+        if val.startswith("APP_"):
+            return ExecutionSubstrate.COMPUTER
+
+        # Interactive browser interactions requiring a real DOM / display
+        if val in ("BROWSER_CLICK", "BROWSER_TYPE", "BROWSER_SCREENSHOT", "BROWSER_WAIT", "BROWSER_DOWNLOAD"):
+            return ExecutionSubstrate.COMPUTER
+
+        # Navigation: headless fetch suffices unless full GUI/interactive is explicitly requested
+        if val == "BROWSER_NAVIGATE":
+            if payload.get("interactive") or payload.get("requires_gui") or payload.get("render_js") or payload.get("browser"):
+                return ExecutionSubstrate.COMPUTER
+            return ExecutionSubstrate.HEADLESS
+
+        # Terminal commands, file operations, security scanning, tool synthesis, etc.
+        if (
+            val == "TERMINAL_EXEC"
+            or val.startswith("FILE_")
+            or val == "SECURITY_TOOL"
+            or val in ("TOOL_AUTHOR", "TOOL_RUN", "METHOD_INVENT", "GIT_BRANCH", "GIT_COMMIT", "SERVICE_ACTION")
+        ):
+            return ExecutionSubstrate.HEADLESS
+
+        # Default fallback
+        return ExecutionSubstrate.HEADLESS
+
+    # -------------------------------------------------------------
+    # 2. Provider Availability Checks
+    # -------------------------------------------------------------
+    @staticmethod
+    def is_docker_available(provider: Any = None) -> bool:
+        """Check if Docker CLI and daemon are operational."""
+        if not shutil.which("docker"):
+            return False
+        if provider is not None and hasattr(provider, "_daemon_checked") and provider._daemon_checked is False:
+            return False
+        try:
+            probe = subprocess.run(
+                ["docker", "info", "--format", "{{.ServerVersion}}"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=1.5,
+            )
+            return probe.returncode == 0
+        except Exception:
+            return False
+
+    @staticmethod
+    def is_daytona_available(provider: Any = None) -> bool:
+        """Check if Daytona client is configured and initialized."""
+        if provider is None:
+            return False
+        api_key = getattr(provider, "api_key", None)
+        if not api_key:
+            return False
+        if hasattr(provider, "_get_client"):
+            try:
+                client = provider._get_client()
+                return client is not None
+            except Exception:
+                return False
+        return getattr(provider, "_client", None) is not None
+
+    def is_provider_available(self, provider: Any) -> bool:
+        """Determine if a preferred provider is operational."""
+        if provider is None:
+            return False
+        if isinstance(provider, HeadlessComputeProvider):
+            return True
+
+        p_name = provider.__class__.__name__.lower()
+        if "docker" in p_name:
+            return self.is_docker_available(provider)
+        if "daytona" in p_name:
+            return self.is_daytona_available(provider)
+
+        return True
+
+    # -------------------------------------------------------------
+    # 3. Provider Resolution & Fallback
+    # -------------------------------------------------------------
+    def resolve_provider(
+        self,
+        preferred_provider: Any = None,
+        task_type: str = "",
+    ) -> Any:
+        """
+        Resolve the execution provider. If the preferred provider (Docker/Daytona)
+        is unavailable or misconfigured, automatically falls back to HeadlessComputeProvider.
+        """
+        # Explicit headless task requests
+        if task_type and task_type.upper() in {
+            "HEADLESS",
+            "TERMINAL_ONLY",
+            "PORT_SCAN",
+            "HTTP_PROBE",
+            "RECON",
+        }:
+            return self.headless_provider
+
+        if preferred_provider is None:
+            return self.headless_provider
+
+        if isinstance(preferred_provider, HeadlessComputeProvider):
+            return preferred_provider
+
+        # Check provider availability
+        if not self.is_provider_available(preferred_provider):
+            logger.warning(
+                "provider_unavailable_falling_back_to_headless",
+                preferred=preferred_provider.__class__.__name__,
+                task_type=task_type,
+            )
+            return self.headless_provider
+
+        return preferred_provider
+
+    @staticmethod
+    def should_fallback_on_exit(exit_code: int) -> bool:
+        """Exit code 125 indicates container runtime failure (Docker/container down)."""
+        return exit_code == 125
+
+    async def execute_with_fallback(
+        self,
+        provider: Any,
+        workspace_id: str,
+        command: str | list[str],
+        timeout: int = 60,
+        actor: str = "operator",
+    ) -> ExecResult:
+        """
+        Execute command on resolved provider. If the container provider returns exit code 125
+        (container not running / docker unreachable), automatically fallback to HeadlessComputeProvider.
+        """
+        resolved = self.resolve_provider(provider)
+
+        # Primary execution attempt
+        if hasattr(resolved, "terminal"):
+            res = await resolved.terminal(workspace_id, command, timeout=timeout, actor=actor)
+        elif hasattr(resolved, "execute"):
+            res = await resolved.execute(workspace_id, command, timeout=timeout)
+        else:
+            raise TypeError(f"Provider {resolved} does not support command execution")
+
+        # Container exit 125 fallback
+        if self.should_fallback_on_exit(res.exit_code) and not isinstance(resolved, HeadlessComputeProvider):
+            logger.warning(
+                "provider_returned_exit_125_falling_back_to_headless",
+                failing_provider=resolved.__class__.__name__,
+                command=str(command)[:60],
+            )
+            fallback = self.headless_provider
+            if hasattr(fallback, "terminal"):
+                return await fallback.terminal(workspace_id, command, timeout=timeout, actor=actor)
+            return await fallback.execute(workspace_id, command, timeout=timeout)
+
+        return res

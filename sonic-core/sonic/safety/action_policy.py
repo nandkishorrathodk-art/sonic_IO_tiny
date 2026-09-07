@@ -94,6 +94,7 @@ class ActionPolicy:
         max_actions_per_minute: int = 60,
         require_approval_for_intrusive: bool = True,
         scope_checker: ScopeChecker | None = None,
+        scope_config: dict | None = None,
     ):
         self.workspace_root = Path(workspace_root).resolve()
         self.allowed_types = frozenset(allowed_action_types or self.DEFAULT_ALLOWED_TYPES)
@@ -103,6 +104,7 @@ class ActionPolicy:
         self.max_actions_per_minute = max_actions_per_minute
         self.require_approval_for_intrusive = require_approval_for_intrusive
         self.scope_checker = scope_checker or ScopeChecker()
+        self.scope_config = scope_config
         # The scope checker's check_action is fail-closed only when rules are
         # loaded; for the command-risk classifier we don't need rules loaded.
         self._rate = _RateWindow()
@@ -192,12 +194,46 @@ class ActionPolicy:
             )
         return PolicyVerdict(True, "command risk acceptable")
 
-    def _check_egress(self, target: str, label: str) -> PolicyVerdict:
+    def _check_target_and_scope(self, target: str, label: str) -> PolicyVerdict | None:
+        host = self._host_of(target)
         # Extra target allowlist (if configured) takes precedence.
         if self.security_tool_targets:
-            host = self._host_of(target)
-            if host and host not in self.security_tool_targets:
-                return PolicyVerdict(False, f"{label} target not in allowlist: {host}")
+            if not host or (host not in self.security_tool_targets and target not in self.security_tool_targets):
+                return PolicyVerdict(False, f"{label} target not in allowlist: {host or target}")
+
+        # Scope enforcement if scope_checker has active scope rules configured
+        scope_cfg = self._get_active_scope_config()
+        if scope_cfg is not None and getattr(self, "scope_checker", None):
+            target_to_check = host or target
+            if not self.scope_checker.is_target_in_scope(target_to_check, scope_cfg):
+                return PolicyVerdict(False, f"{label} target out of engagement scope: {target_to_check}")
+
+        return None
+
+    def _get_active_scope_config(self) -> dict | None:
+        checker = getattr(self, "scope_checker", None)
+        cfg = getattr(self, "scope_config", None) or (getattr(checker, "scope_config", None) if checker else None)
+        if not cfg and checker and hasattr(checker, "_rules") and isinstance(checker._rules, dict):
+            if "targets" in checker._rules or "exclusions" in checker._rules:
+                cfg = checker._rules
+
+        if not cfg or not isinstance(cfg, dict):
+            return None
+
+        targets = cfg.get("targets", {}) if isinstance(cfg.get("targets"), dict) else {}
+        exclusions = cfg.get("exclusions", {}) if isinstance(cfg.get("exclusions"), dict) else {}
+        has_rules = bool(
+            targets.get("domains")
+            or targets.get("ips")
+            or exclusions.get("domains")
+            or exclusions.get("ips")
+        )
+        return cfg if has_rules else None
+
+    def _check_egress(self, target: str, label: str) -> PolicyVerdict:
+        verdict = self._check_target_and_scope(target, label)
+        if verdict is not None:
+            return verdict
         try:
             ok, reason = egress.is_target_allowed(target)
         except Exception as e:
@@ -209,11 +245,14 @@ class ActionPolicy:
     @staticmethod
     def _host_of(target: str) -> str:
         # Strip scheme/path for url-like targets; leave bare hosts as-is.
-        t = target
+        t = target.strip()
         if "://" in t:
             t = t.split("://", 1)[1]
         t = t.split("/", 1)[0]
-        return t.split("@")[-1].split(":")[0]
+        t = t.split("@")[-1]
+        if t.startswith("[") and "]" in t:
+            return t[1:t.index("]")]
+        return t.split(":")[0]
 
 
 # A minimal in-process verdict the agent can short-circuit on.

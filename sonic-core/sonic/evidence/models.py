@@ -13,7 +13,7 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 def _new_id(prefix: str = "ev") -> str:
@@ -191,6 +191,8 @@ class EvidenceQualityScore(BaseModel):
 
 class ReproductionPlan(BaseModel):
     """Structured plan for isolated sandbox reproduction."""
+    model_config = ConfigDict(extra="allow")
+
     finding_id: str
     target: str
     prerequisites: list[str] = Field(default_factory=list)
@@ -204,6 +206,8 @@ class ReproductionPlan(BaseModel):
 
 class VerificationResult(BaseModel):
     """Record of an independent or adversarial verification pass."""
+    model_config = ConfigDict(extra="allow")
+
     verifier_id: str                        # Verifier Agent / Sandbox ID
     verifier_type: str = "independent"      # "independent", "adversarial", "automated_reproduction"
     status: str = "verified"                # "verified", "rejected", "conflict"
@@ -223,6 +227,8 @@ class ProvenancedFinding(BaseModel):
     A trustworthy security finding with complete cryptographic evidence,
     separated severity and confidence, and full verification lineage.
     """
+    model_config = ConfigDict(extra="allow")
+
     id: str = Field(default_factory=lambda: _new_id("find"))
     tenant_id: str                          # Multi-tenant boundary
     engagement_id: str                      # Engagement scope
@@ -248,6 +254,9 @@ class ProvenancedFinding(BaseModel):
 
     # Evidence & Verification Attachments
     poc: str = ""                           # Reproducible PoC
+    expected_if_vulnerable: str = ""        # Expected oracle or vulnerability indicator
+    verification_flags: list[str] = Field(default_factory=list)
+    assertions: list[str] = Field(default_factory=list)
     evidence_items: list[EvidenceItem] = Field(default_factory=list)
     reproduction_plan: ReproductionPlan | None = None
     verification_history: list[VerificationResult] = Field(default_factory=list)

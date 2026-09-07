@@ -53,11 +53,11 @@ _ACTION_DELIVERABLE: dict[str, DeliverableType] = {
     "BROWSER_NAVIGATE": DeliverableType.EVIDENCE_PACKAGE,
 }
 
-_SUCCESS_STATES = {"SUCCESS", "RECOVERED"}
+_SUCCESS_STATES = {"SUCCESS", "COMPLETED", "RECOVERED", "VERIFIED"}
 
 
 def _is_success(trace: ComputerDecisionTrace) -> bool:
-    return trace.status in _SUCCESS_STATES
+    return str(getattr(trace.status, "value", trace.status)) in _SUCCESS_STATES or trace.status in _SUCCESS_STATES
 
 
 def synthesize_deliverables(

@@ -104,6 +104,8 @@ async def _maybe_start_being_life_loop(settings):
         method_lab = MethodLab(
             llm=router, vector_memory=get_vector_memory(), toolsmith=toolsmith,
         )
+        from sonic.being.lessons import LessonsLedger
+        lessons_ledger = LessonsLedger(tenant_id=tenant_id, agent_id=being.being_id)
         agent = ComputerUseAgent(
             computer_provider=provider, llm_router=router,
             safety=safety, self_host=True, tenant_id=tenant_id, agent_id=being.being_id,
@@ -117,6 +119,8 @@ async def _maybe_start_being_life_loop(settings):
             toolsmith=toolsmith,
             # Wire the method lab so the being can invent new techniques.
             method_lab=method_lab,
+            # Wire the lessons ledger so cross-mission lessons compound across sessions.
+            lessons_ledger=lessons_ledger,
         )
         curiosity = CuriosityLoop(llm_router=router, vector_memory=get_vector_memory(), max_cycles=1)
         tick_interval = float(os.environ.get("SONIC_BEING_TICK_INTERVAL", "60"))

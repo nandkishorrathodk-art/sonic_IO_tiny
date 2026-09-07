@@ -58,6 +58,11 @@ _SEALED_FIELDS = (
     "max_actions_per_minute",
     "require_approval_for_intrusive",
     "workspace_root",
+    "scope_checker",
+    "scope_config",
+    "_sealed",
+    "_seal_hash",
+    "_blocked_networks_snapshot",
 )
 
 
@@ -77,6 +82,7 @@ class SealedActionPolicy(ActionPolicy):
         max_actions_per_minute: int = 60,
         require_approval_for_intrusive: bool = True,
         scope_checker: ScopeChecker | None = None,
+        scope_config: dict | None = None,
     ):
         super().__init__(
             workspace_root=workspace_root,
@@ -85,6 +91,7 @@ class SealedActionPolicy(ActionPolicy):
             max_actions_per_minute=max_actions_per_minute,
             require_approval_for_intrusive=require_approval_for_intrusive,
             scope_checker=scope_checker,
+            scope_config=scope_config,
         )
         # Freeze the mutable target set into a frozenset immediately.
         self.security_tool_targets = frozenset(self.security_tool_targets)
@@ -127,6 +134,8 @@ class SealedActionPolicy(ActionPolicy):
             "workspace_root": str(self.workspace_root),
             "blocked_networks": [str(n) for n in self._blocked_networks_snapshot],
         }
+        if getattr(self, "scope_config", None):
+            payload["scope_config"] = self.scope_config
         return hashlib.sha256(
             json.dumps(payload, sort_keys=True).encode()
         ).hexdigest()
@@ -139,12 +148,12 @@ class SealedActionPolicy(ActionPolicy):
         if name in ("_rate",):
             object.__setattr__(self, name, value)
             return
-        # After sealing, refuse mutation of safety-relevant fields.
-        if getattr(self, "_sealed", False) and name in _SEALED_FIELDS:
+        # After sealing, refuse mutation of safety-relevant fields or seal state.
+        if getattr(self, "_sealed", False) and (
+            name in _SEALED_FIELDS or name in ("_sealed", "_seal_hash", "_blocked_networks_snapshot")
+        ):
             logger.warning("safety_policy_mutation_blocked", field=name)
-            raise AttributeError(
-                f"sealed policy field '{name}' is immutable after seal()"
-            )
+            raise AttributeError("sealed policy is immutable after seal()")
         # Always keep the target set frozen.
         if name == "security_tool_targets" and not isinstance(value, frozenset):
             value = frozenset(value)
@@ -170,10 +179,9 @@ class SealedActionPolicy(ActionPolicy):
     # Egress uses the FROZEN blocked-networks snapshot, not the live module list.
     # ------------------------------------------------------------------
     def _check_egress(self, target: str, label: str) -> PolicyVerdict:
-        if self.security_tool_targets:
-            host = self._host_of(target)
-            if host and host not in self.security_tool_targets:
-                return PolicyVerdict(False, f"{label} target not in allowlist: {host}")
+        verdict = self._check_target_and_scope(target, label)
+        if verdict is not None:
+            return verdict
         try:
             ok, reason = egress.is_target_allowed(
                 target,

@@ -7,6 +7,7 @@ Unified exports for Phase 14 Autonomous Computer-Using Engineer.
 from sonic.computer_use.agent import ComputerUseAgent
 from sonic.computer_use.benchmark import MultiTrialBenchmarkSuite, MultiTrialResult
 from sonic.computer_use.models import (
+    ActionExecutionStatus,
     ComputerActionPlan,
     ComputerActionType,
     ComputerAutonomyLevel,
@@ -17,6 +18,7 @@ from sonic.computer_use.models import (
 )
 
 __all__ = [
+    "ActionExecutionStatus",
     "ComputerWorldObservation",
     "ComputerActionPlan",
     "ComputerDecisionTrace",

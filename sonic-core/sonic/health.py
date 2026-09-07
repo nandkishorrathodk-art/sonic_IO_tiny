@@ -178,14 +178,18 @@ class HealthChecker:
         has_openai = bool(os.environ.get("OPENAI_API_KEY"))
         has_anthropic = bool(os.environ.get("ANTHROPIC_API_KEY"))
         has_deepseek = bool(os.environ.get("DEEPSEEK_API_KEY"))
+        has_openrouter = bool(os.environ.get("OPENROUTER_API_KEY"))
+        has_groq = bool(os.environ.get("GROQ_API_KEY"))
 
-        if has_nvidia or has_gemini or has_openai or has_anthropic or has_deepseek:
+        if has_nvidia or has_gemini or has_openai or has_anthropic or has_deepseek or has_openrouter or has_groq:
             active = []
-            if has_nvidia: active.append("NVIDIA NIM")
-            if has_gemini: active.append("Gemini")
-            if has_openai: active.append("OpenAI")
-            if has_anthropic: active.append("Anthropic")
+            if has_openrouter: active.append("OpenRouter")
             if has_deepseek: active.append("DeepSeek")
+            if has_anthropic: active.append("Anthropic")
+            if has_openai: active.append("OpenAI")
+            if has_groq: active.append("Groq")
+            if has_gemini: active.append("Gemini")
+            if has_nvidia: active.append("NVIDIA NIM")
             return ComponentHealth(
                 name="llm_router",
                 status=HealthStatus.HEALTHY,

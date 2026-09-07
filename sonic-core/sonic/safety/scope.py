@@ -53,11 +53,29 @@ class ScopeChecker:
     Cannot be modified by any agent or process at runtime.
     """
 
-    def __init__(self):
+    def __init__(self, scope_config: dict | None = None):
         self._rules: dict = {}
         self._forbidden_patterns: list[re.Pattern] = []
         self._allowed_egress: list[str] = []
         self._loaded = False
+        self.scope_config: dict = scope_config or {}
+
+    def has_active_scope_rules(self, scope_config: dict | None = None) -> bool:
+        """Check whether there are active scope rules configured (targets or exclusions)."""
+        cfg = scope_config if scope_config is not None else getattr(self, "scope_config", {})
+        if not cfg and isinstance(getattr(self, "_rules", None), dict):
+            if "targets" in self._rules or "exclusions" in self._rules:
+                cfg = self._rules
+        if not cfg or not isinstance(cfg, dict):
+            return False
+        targets = cfg.get("targets", {}) if isinstance(cfg.get("targets"), dict) else {}
+        exclusions = cfg.get("exclusions", {}) if isinstance(cfg.get("exclusions"), dict) else {}
+        return bool(
+            targets.get("domains")
+            or targets.get("ips")
+            or exclusions.get("domains")
+            or exclusions.get("ips")
+        )
 
     def load_rules(self, rules_path: str | Path | None = None) -> None:
         """

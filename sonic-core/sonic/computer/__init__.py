@@ -25,6 +25,7 @@ from sonic.computer.models import (
     ScreenObservation,
     ServiceInfo,
 )
+from sonic.computer.headless import HeadlessComputeProvider
 from sonic.computer.provider import ComputerProvider, UnifiedComputerProvider
 
 __all__ = [
@@ -45,8 +46,10 @@ __all__ = [
     "GitStatusInfo",
     "GUIAction",
     "GUIActionType",
+    "HeadlessComputeProvider",
     "ProcessInfo",
     "ScreenObservation",
     "ServiceInfo",
     "UnifiedComputerProvider",
 ]
+

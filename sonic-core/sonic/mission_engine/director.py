@@ -285,6 +285,9 @@ class MissionDirector:
                 vector_memory=get_vector_memory(),
                 toolsmith=toolsmith,
             )
+            from sonic.being.lessons import LessonsLedger
+            obj_tenant = getattr(state.objective, "tenant_id", "default") if hasattr(state, "objective") else "default"
+            lessons_ledger = LessonsLedger(tenant_id=obj_tenant, agent_id="computer-use-agent")
             agent = ComputerUseAgent(
                 computer_provider=self.computer,
                 autonomy_level=self.autonomy_level,
@@ -293,6 +296,7 @@ class MissionDirector:
                 browser=browser,
                 toolsmith=toolsmith,
                 method_lab=method_lab,
+                lessons_ledger=lessons_ledger,
             )
             mission_steps = getattr(self, "max_actions", getattr(agent, "max_actions", 25))
             traces = await agent.run_mission(

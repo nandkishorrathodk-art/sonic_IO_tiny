@@ -333,13 +333,14 @@ class HTTPProbe:
         if not host:
             return "unparseable URL"
 
+        if self.scope is not None and self.scope_config:
+            if not self.scope.is_target_in_scope(host, self.scope_config):
+                return f"out of scope: {host}"
+
         allowed, reason = is_target_allowed(url)
         if not allowed:
             return f"egress denied: {reason}"
 
-        if self.scope is not None and self.scope_config:
-            if not self.scope.is_target_in_scope(host, self.scope_config):
-                return f"out of scope: {host}"
         return None
 
     # --------------------------------------------

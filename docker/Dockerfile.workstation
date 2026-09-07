@@ -26,9 +26,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     procps \
     iproute2 \
     iptables \
+    net-tools \
     python3 \
     python3-pip \
     python3-venv \
+    openjdk-17-jre-headless \
+    libnss3-tools \
+    nmap \
+    ffuf \
     xvfb \
     x11vnc \
     xfce4 \
@@ -65,6 +70,17 @@ RUN mkdir -p /root/Desktop \
     && printf '[Desktop Entry]\nVersion=1.0\nType=Application\nName=Terminal\nComment=Use the command line\nExec=xfce4-terminal\nIcon=utilities-terminal\nPath=/root\nTerminal=false\nStartupNotify=true\nCategories=System;TerminalEmulator;\n' > /root/Desktop/xfce4-terminal.desktop \
     && printf '[Desktop Entry]\nVersion=1.0\nType=Application\nName=File Manager\nComment=Browse the file system\nExec=thunar\nIcon=system-file-manager\nPath=/root\nTerminal=false\nStartupNotify=true\nCategories=System;FileManager;\n' > /root/Desktop/thunar.desktop \
     && chmod +x /root/Desktop/*.desktop
+
+# Ensure python symlink exists for scripts expecting `python`
+RUN ln -sf /usr/bin/python3 /usr/local/bin/python
+
+# Pre-initialize Chromium NSS certificate store
+RUN mkdir -p /root/.pki/nssdb \
+    && certutil -d sql:/root/.pki/nssdb -N --empty-password 2>/dev/null || true
+
+# Pre-configure Burp Suite user options to listen on 127.0.0.1:8080 without setup wizard
+RUN mkdir -p /root/.BurpSuite \
+    && printf '{\n  "proxy": {\n    "request_listeners": [\n      {\n        "certificate_mode": "per_host",\n        "listen_mode": "loopback_only",\n        "listener_port": 8080,\n        "running": true\n      }\n    ]\n  }\n}\n' > /root/.BurpSuite/user_options.json
 
 WORKDIR /root
 CMD ["tail", "-f", "/dev/null"]

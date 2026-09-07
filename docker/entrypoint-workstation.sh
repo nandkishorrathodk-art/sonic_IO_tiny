@@ -26,6 +26,10 @@ chmod +x /usr/local/bin/chrome
 ln -sf /usr/local/bin/chrome /usr/local/bin/chromium 2>/dev/null || true
 ln -sf /usr/local/bin/chrome /usr/local/bin/chromium-browser 2>/dev/null || true
 
+# Ensure python symlink & NSS DB exist
+ln -sf /usr/bin/python3 /usr/local/bin/python 2>/dev/null || true
+mkdir -p /root/.pki/nssdb && certutil -d sql:/root/.pki/nssdb -N --empty-password 2>/dev/null || true
+
 # Patch Google Chrome system launcher if not already patched
 if [ -f /opt/google/chrome/google-chrome ] && ! grep -q -- '--no-sandbox' /opt/google/chrome/google-chrome; then
     sed -i 's|exec -a "\$0" "\$HERE/chrome" "\$@"|exec -a "\$0" "\$HERE/chrome" --no-sandbox --disable-dev-shm-usage "\$@"|' /opt/google/chrome/google-chrome

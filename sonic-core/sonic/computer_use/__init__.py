@@ -16,6 +16,9 @@ from sonic.computer_use.models import (
     ComputerWorldObservation,
     EngineeringMissionMode,
 )
+from sonic.computer_use.motor import MotorReflexes
+from sonic.computer_use.scratchpad import HackerScratchpad
+from sonic.computer_use.wire_telemetry import WireTelemetryEngine
 
 __all__ = [
     "ActionExecutionStatus",
@@ -29,4 +32,8 @@ __all__ = [
     "ComputerUseAgent",
     "MultiTrialBenchmarkSuite",
     "MultiTrialResult",
+    "MotorReflexes",
+    "HackerScratchpad",
+    "WireTelemetryEngine",
 ]
+

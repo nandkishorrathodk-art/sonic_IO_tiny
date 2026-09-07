@@ -141,6 +141,19 @@ class ComputerProvider(ABC):
         """Execute Git version control operations."""
         pass
 
+    async def tile_workstation(self, workspace_id: str) -> bool:
+        """Tile workstation windows side-by-side (optional capability)."""
+        return False
+
+    async def settle_screen(
+        self,
+        workspace_id: str,
+        max_wait: float = 2.0,
+        interval: float = 0.3,
+    ) -> ScreenObservation:
+        """Capture settled screen observation (default: screenshot)."""
+        return await self.screenshot(workspace_id)
+
 
 # =============================================================
 # Concrete Unified ComputerProvider Implementation

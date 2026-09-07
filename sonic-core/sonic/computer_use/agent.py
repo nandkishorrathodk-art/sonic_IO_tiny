@@ -45,6 +45,9 @@ from sonic.computer_use.models import (
     SubGoalChecklist,
     SubGoalStatus,
 )
+from sonic.computer_use.motor import MotorReflexes
+from sonic.computer_use.scratchpad import HackerScratchpad
+from sonic.computer_use.wire_telemetry import WireTelemetryEngine
 from sonic.research.failure_budget import FailureBudgetTracker
 from sonic.research.failure_classifier import classify_failure
 
@@ -90,6 +93,10 @@ class ComputerUseAgent:
         agent_id: str = "computer-use-agent",
         enable_llm_verification: bool = False,
         failure_budget: FailureBudgetTracker | None = None,
+        scratchpad: HackerScratchpad | None = None,
+        motor: MotorReflexes | None = None,
+        wire_telemetry: WireTelemetryEngine | None = None,
+        burp_client: Any | None = None,
     ):
         self.computer = computer_provider
         self.autonomy_level = autonomy_level
@@ -132,6 +139,14 @@ class ComputerUseAgent:
         self.agent_id = agent_id
         self.enable_llm_verification = enable_llm_verification
         self.failure_budget = failure_budget if failure_budget is not None else FailureBudgetTracker()
+        self.scratchpad = scratchpad if scratchpad is not None else HackerScratchpad()
+        self.motor = motor if motor is not None else MotorReflexes(self.computer)
+        self.burp_client = burp_client
+        self.wire_telemetry = (
+            wire_telemetry
+            if wire_telemetry is not None
+            else WireTelemetryEngine(burp_client)
+        )
         self.strategies: dict[str, dict[str, Any]] = {
             "Strategy A": {
                 "name": "Direct Primary Execution",
@@ -563,12 +578,27 @@ class ComputerUseAgent:
             f"  WHAT IS THE HIGHEST-INFORMATION NEXT ACTION?: {highest_info_action}\n"
         )
 
+        scratchpad_hud = ""
+        if hasattr(self, "scratchpad") and self.scratchpad and not self.scratchpad.is_empty():
+            hud_text = self.scratchpad.render_hud_markdown()
+            if hud_text:
+                scratchpad_hud = f"{hud_text}\n"
+
+        wire_summary = ""
+        if hasattr(self, "wire_telemetry") and self.wire_telemetry:
+            events = self.wire_telemetry.fetch_latest_wire_events_sync(limit=3)
+            w_text = self.wire_telemetry.format_wire_summary(events)
+            if w_text:
+                wire_summary = f"{w_text}\n"
+
         obs_summary = (
             f"Screen resolution: {self._screen_width}x{self._screen_height}\n"
             f"Step {step_index} of {self.max_actions}. Overall Mission: {goal}\n"
             f"CURRENT ACTIVE SUB-GOAL: {active_sg_desc}\n"
             f"{checklist_str}\n"
             f"INSTRUCTION: Focus your next action strictly on advancing the CURRENT ACTIVE SUB-GOAL above.\n"
+            f"{scratchpad_hud}"
+            f"{wire_summary}"
             f"Current working directory: {workdir}\n"
             f"User home directory: {user_home} (Desktop path: {user_home}/Desktop)\n"
             f"Active window / app: {active_app}\n"
@@ -1277,10 +1307,19 @@ class ComputerUseAgent:
             elif action_type == ComputerActionType.GUI_TYPE:
                 text = payload.get("text", "")
                 pre_screen_b64 = getattr(self, "_last_screenshot_b64", "")
-                obs_after = await self.computer.gui_action(
-                    workspace_id,
-                    GUIAction(action=GUIActionType.TYPE, text=text),
-                )
+                obs_after = None
+                if hasattr(self, "motor") and self.motor:
+                    await self.motor.human_type(workspace_id, text, delay_ms=payload.get("delay_ms", 25))
+                else:
+                    obs_after = await self.computer.gui_action(
+                        workspace_id,
+                        GUIAction(action=GUIActionType.TYPE, text=text),
+                    )
+                if hasattr(self.computer, "screenshot") and not obs_after:
+                    try:
+                        obs_after = await self.computer.screenshot(workspace_id)
+                    except Exception:
+                        pass
                 post_screen_b64 = getattr(obs_after, "screenshot_base64", "") if obs_after else ""
                 if post_screen_b64:
                     self._last_screenshot_b64 = post_screen_b64
@@ -1505,6 +1544,30 @@ class ComputerUseAgent:
                 else:
                     self.failure_budget.record_success(tool=tool_name, provider=provider_name)
 
+                if hasattr(self, "scratchpad") and self.scratchpad:
+                    self.scratchpad.extract_from_text(res.stdout, source="terminal")
+                    if getattr(res, "stderr", ""):
+                        self.scratchpad.extract_from_text(res.stderr, source="terminal_err")
+
+                if hasattr(self, "wire_telemetry") and self.wire_telemetry:
+                    if "curl " in cmd_str or "http " in cmd_str:
+                        url_m = re.search(r'https?://[^\s"\']+', cmd_str)
+                        target_url = url_m.group(0) if url_m else "http://target"
+                        method = "POST" if ("-X POST" in cmd_str or "-d " in cmd_str or "--data" in cmd_str) else "GET"
+                        status_code = 200 if res.exit_code == 0 else 500
+                        status_m = re.search(r'\b([1-5]\d{2})\b', res.stdout[:50])
+                        if status_m:
+                            try:
+                                status_code = int(status_m.group(1))
+                            except Exception:
+                                pass
+                        self.wire_telemetry.record_wire_event(
+                            method=method,
+                            url=target_url,
+                            status_code=status_code,
+                            response_body=res.stdout[:300],
+                        )
+
             elif action_type == ComputerActionType.GIT_COMMIT:
                 msg = payload.get("message", "feat: automated patch")
                 await self.computer.git_action(workspace_id, "commit", message=msg)
@@ -1556,12 +1619,24 @@ class ComputerUseAgent:
                                 f"key --clearmodifiers ctrl+l sleep 0.1 type --delay 15 {shlex.quote(url)} key Return 2>/dev/null || true"
                             )
                             await self.computer.terminal(workspace_id, nav_cmd)
+                            if hasattr(self, "motor") and self.motor:
+                                await self.motor.enforce_tab_budget(workspace_id, max_tabs=3)
                             actual_obs_str = f"Navigated active browser tab to {url} (tab reused via address bar)"
                         else:
                             clean_flags = "--no-sandbox --disable-dev-shm-usage --disable-session-crashed-bubble --no-first-run --no-default-browser-check"
                             cmd = f"DISPLAY=:0 nohup chromium {clean_flags} {shlex.quote(url)} >/dev/null 2>&1 &"
                             await self.computer.terminal(workspace_id, cmd)
                             actual_obs_str = f"Launched browser and navigated to {url}"
+
+                if hasattr(self, "scratchpad") and self.scratchpad:
+                    self.scratchpad.extract_from_text(url, source="url")
+                if hasattr(self, "wire_telemetry") and self.wire_telemetry and url.startswith("http"):
+                    self.wire_telemetry.record_wire_event(
+                        method="GET",
+                        url=url,
+                        status_code=200,
+                        response_body="HTML DOM Rendered",
+                    )
 
             elif action_type == ComputerActionType.BROWSER_CLICK:
                 selector = payload.get("selector") or target_resource
@@ -1835,6 +1910,17 @@ class ComputerUseAgent:
             else:
                 if status in (ActionExecutionStatus.COMPLETED, ActionExecutionStatus.SUCCESS):
                     status = ActionExecutionStatus.FAILED
+
+        # Automatic Hacker Scratchpad loot/token extraction
+        if hasattr(self, "scratchpad") and self.scratchpad:
+            self.scratchpad.extract_from_text(actual_obs_str, source=action_type.value.lower())
+
+        # Reflexive backtracking on blocking modal overlays
+        if hasattr(self, "motor") and self.motor:
+            lower_obs = actual_obs_str.lower()
+            if any(term in lower_obs for term in ("modal_blocked", "blocked by modal", "overlay detected", "dismiss modal")):
+                await self.motor.backtrack(workspace_id, reason="modal_blocked")
+                actual_obs_str = f"{actual_obs_str} | Reflexive backtrack: dismissed blocking modal"
 
         trace = ComputerDecisionTrace(
             step_index=self.action_counter,

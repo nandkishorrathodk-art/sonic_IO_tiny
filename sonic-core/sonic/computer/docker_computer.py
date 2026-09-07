@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import hashlib
 import os
 import shlex
 import shutil
@@ -395,7 +396,7 @@ class DockerComputerProvider(ComputerProvider):
 
         elif atype == GUIActionType.TYPE and action.text:
             safe_text = shlex.quote(action.text)
-            await self._docker_exec(f"DISPLAY=:99 xdotool type --clearmodifiers {safe_text}")
+            await self._docker_exec(f"DISPLAY=:99 xdotool type --delay 25 --clearmodifiers {safe_text}")
 
         elif atype == GUIActionType.KEYPRESS and action.key:
             safe_key = shlex.quote(action.key)
@@ -434,6 +435,51 @@ class DockerComputerProvider(ComputerProvider):
         self._last_screenshot_time = 0.0
         await asyncio.sleep(0.3)
         return await self.screenshot(workspace_id)
+
+    async def tile_workstation(self, workspace_id: str) -> bool:
+        """
+        Executes wmctrl commands to tile windows side-by-side:
+        - Google Chrome: left half 0, 0, 640, 800 (wmctrl -r "Google Chrome" -e 0,0,0,640,800)
+        - Terminal: right half 640, 0, 640, 800 (wmctrl -r "Terminal" -e 0,640,0,640,800)
+        """
+        code1, _, _ = await self._docker_exec('DISPLAY=:99 wmctrl -r "Google Chrome" -e 0,0,0,640,800')
+        if code1 != 0:
+            code1, _, _ = await self._docker_exec('DISPLAY=:99 wmctrl -r "Chromium" -e 0,0,0,640,800')
+        code2, _, _ = await self._docker_exec('DISPLAY=:99 wmctrl -r "Terminal" -e 0,640,0,640,800')
+        if code2 != 0:
+            code2, _, _ = await self._docker_exec('DISPLAY=:99 wmctrl -r "xfce4-terminal" -e 0,640,0,640,800')
+        return code1 == 0 or code2 == 0
+
+    async def settle_screen(
+        self,
+        workspace_id: str,
+        max_wait: float = 2.0,
+        interval: float = 0.3,
+    ) -> ScreenObservation:
+        """
+        Captures screenshots with interval. When two consecutive screenshot
+        hashes match (screen is static / loaded), returns the settled observation.
+        """
+        def _calc_hash(obs: ScreenObservation) -> str:
+            payload = (obs.screenshot_base64 or f"{obs.active_window}:{obs.visible_text}" or "empty").encode("utf-8")
+            return hashlib.md5(payload).hexdigest()
+
+        start = asyncio.get_event_loop().time()
+        self._last_screenshot_time = 0.0
+        last_obs = await self.screenshot(workspace_id)
+        last_hash = _calc_hash(last_obs)
+
+        while (asyncio.get_event_loop().time() - start) < max_wait:
+            await asyncio.sleep(interval)
+            self._last_screenshot_time = 0.0
+            curr_obs = await self.screenshot(workspace_id)
+            curr_hash = _calc_hash(curr_obs)
+            if curr_hash == last_hash:
+                return curr_obs
+            last_obs = curr_obs
+            last_hash = curr_hash
+
+        return last_obs
 
     # -------------------------------------------------------------
     # Terminal PTY Execution

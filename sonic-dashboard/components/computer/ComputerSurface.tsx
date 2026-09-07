@@ -55,8 +55,11 @@ export function ComputerSurface({
   const [cmdRunning, setCmdRunning] = useState(false);
   const canvasRef = useRef<HTMLDivElement>(null);
   const cmdLogRef = useRef<HTMLDivElement>(null);
+  const isFetchingScreenshot = useRef(false);
 
   const fetchScreenshot = async () => {
+    if (isFetchingScreenshot.current) return;
+    isFetchingScreenshot.current = true;
     try {
       setLoadingScreen(true);
       const data = await api.getDesktopScreenshot(sessionId);
@@ -69,6 +72,7 @@ export function ComputerSurface({
       // ignore
     } finally {
       setLoadingScreen(false);
+      isFetchingScreenshot.current = false;
     }
   };
 
@@ -143,7 +147,7 @@ export function ComputerSurface({
   };
 
   const hasScreenshot = Boolean(screenshotBase64 && screenshotBase64.length > 100);
-  const isLive = Boolean(desktopState?.workspace_id || desktopState?.sandbox_id || hasScreenshot);
+  const isLive = Boolean(hasScreenshot || desktopState?.status === "RUNNING" || desktopState?.status === "LIVE");
   const resolution = desktopState?.resolution;
   const displayLabel = [
     desktopState?.display,

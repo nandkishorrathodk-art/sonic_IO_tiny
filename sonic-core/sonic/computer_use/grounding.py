@@ -9,6 +9,7 @@ on the active desktop screen, avoiding coordinate guessing or hallucination.
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import io
 import re
@@ -46,14 +47,18 @@ def extract_bbox_midpoint(bbox_response: str, width: int = 1280, height: int = 8
 
     if len(numbers) >= 4:
         x1, y1, x2, y2 = numbers[0], numbers[1], numbers[2], numbers[3]
-        # If coordinates are normalized in 0-1000 range
-        if max(x1, y1, x2, y2) <= 1000 and max(x1, y1, x2, y2) > 1:
-            mid_x = int(((x1 + x2) / 2.0 / 1000.0) * width)
-            mid_y = int(((y1 + y2) / 2.0 / 1000.0) * height)
-        # If coordinates are normalized in 0.0-1.0 range
-        elif max(x1, y1, x2, y2) <= 1.0:
+        if max(x1, y1, x2, y2) <= 1.0:
             mid_x = int(((x1 + x2) / 2.0) * width)
             mid_y = int(((y1 + y2) / 2.0) * height)
+        elif match is not None and max(x1, y1, x2, y2) <= 1000:
+            mid_x = int(((x1 + x2) / 2.0 / 1000.0) * width)
+            mid_y = int(((y1 + y2) / 2.0 / 1000.0) * height)
+        elif x2 <= width and y2 <= height:
+            mid_x = int((x1 + x2) / 2.0)
+            mid_y = int((y1 + y2) / 2.0)
+        elif max(x1, y1, x2, y2) <= 1000:
+            mid_x = int(((x1 + x2) / 2.0 / 1000.0) * width)
+            mid_y = int(((y1 + y2) / 2.0 / 1000.0) * height)
         else:
             mid_x = int((x1 + x2) / 2.0)
             mid_y = int((y1 + y2) / 2.0)
@@ -61,12 +66,15 @@ def extract_bbox_midpoint(bbox_response: str, width: int = 1280, height: int = 8
 
     elif len(numbers) >= 2:
         x, y = numbers[0], numbers[1]
-        if max(x, y) <= 1000 and max(x, y) > 1:
-            px = int((x / 1000.0) * width)
-            py = int((y / 1000.0) * height)
-        elif max(x, y) <= 1.0:
+        if max(x, y) <= 1.0:
             px = int(x * width)
             py = int(y * height)
+        elif x <= width and y <= height:
+            px = int(x)
+            py = int(y)
+        elif max(x, y) <= 1000:
+            px = int((x / 1000.0) * width)
+            py = int((y / 1000.0) * height)
         else:
             px = int(x)
             py = int(y)
@@ -226,6 +234,33 @@ _COMMON_UI_LANDMARKS: dict[str, tuple[float, float]] = {
     "save": (0.520, 0.550),
     "search button": (0.620, 0.380),
 
+    # Web Applications, Marketplaces & Navigation (e.g. OpenSea, Web3, dApps)
+    "web search bar": (0.350, 0.160),
+    "search opensea": (0.350, 0.160),
+    "opensea search": (0.350, 0.160),
+    "opensea search bar": (0.350, 0.160),
+    "search input": (0.350, 0.160),
+    "opensea logo": (0.120, 0.160),
+    "connect wallet": (0.880, 0.160),
+    "wallet": (0.880, 0.160),
+    "connect": (0.880, 0.160),
+    "explore": (0.220, 0.160),
+    "profile": (0.930, 0.160),
+    "profile icon": (0.930, 0.160),
+    "cart": (0.965, 0.160),
+    "featured banner": (0.500, 0.450),
+    "first item": (0.250, 0.450),
+    "second item": (0.500, 0.450),
+    "third item": (0.750, 0.450),
+    "trending": (0.150, 0.280),
+    "top items": (0.220, 0.280),
+    "page content": (0.500, 0.500),
+    "web content": (0.500, 0.500),
+    "browser content": (0.500, 0.500),
+    "close popup": (0.850, 0.200),
+    "dismiss": (0.850, 0.200),
+    "accept cookies": (0.500, 0.850),
+
     # Common screen regions
     "screen center": (0.500, 0.500),
     "center": (0.500, 0.500),
@@ -323,5 +358,41 @@ async def resolve_ui_target_async(
             return px, py
 
     return None
+
+
+async def query_multimodal_grounding(
+    llm_router: Any,
+    query: str,
+    screenshot_b64: str,
+    width: int = 1280,
+    height: int = 800,
+) -> Optional[Tuple[int, int]]:
+    """Ground a visual UI query using the configured multimodal vision model (e.g. moonshotai/kimi-k3)."""
+    if not llm_router or not screenshot_b64:
+        return None
+    from sonic.llm.schemas import ImageContent, LLMRequest, Message, MessageRole
+
+    raw_b64 = screenshot_b64.split(",", 1)[-1] if "," in screenshot_b64 else screenshot_b64
+    images = [ImageContent(base64=raw_b64, media_type="image/png")]
+    prompt = (
+        f"Analyze this desktop screenshot ({width}x{height} resolution). "
+        f"Locate the UI element: '{query}'. "
+        f"Return ONLY the exact pixel coordinates or bounding box in format: "
+        f"<|box_start|>(x1, y1, x2, y2)<|box_end|> or [x, y]. Do not output extra text."
+    )
+    req = LLMRequest(
+        messages=[
+            Message(role=MessageRole.USER, content=prompt, images=images)
+        ],
+        task_type="vision",
+        max_tokens=64,
+        temperature=0.1,
+    )
+    try:
+        res = await asyncio.wait_for(llm_router.complete(req), timeout=8.0)
+        return extract_bbox_midpoint(res.content, width=width, height=height)
+    except Exception as exc:
+        logger.warning("multimodal_grounding_model_query_failed", query=query, error=str(exc))
+        return None
 
 

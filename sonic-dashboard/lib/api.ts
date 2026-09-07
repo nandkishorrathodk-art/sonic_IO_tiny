@@ -20,7 +20,7 @@ interface RequestOptions extends RequestInit {
 }
 
 export async function apiClient<T>(endpoint: string, options: RequestOptions = {}): Promise<T> {
-  const { timeout = 15000, headers = {}, ...rest } = options;
+  const { timeout = 45000, headers = {}, ...rest } = options;
 
   // Ensure an authenticated token exists
   let token = getAuthToken();

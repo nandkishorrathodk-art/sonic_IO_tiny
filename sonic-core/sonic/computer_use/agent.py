@@ -24,7 +24,12 @@ from sonic.computer.models import (
     GUIActionType,
 )
 from sonic.computer.provider import ComputerProvider
-from sonic.computer_use.grounding import draw_action_marker, resolve_ui_target
+from sonic.computer_use.grounding import (
+    draw_action_marker,
+    query_multimodal_grounding,
+    resolve_ui_target,
+    resolve_ui_target_async,
+)
 from sonic.computer_use.models import (
     ActionExecutionStatus,
     ComputerActionType,
@@ -991,11 +996,20 @@ class ComputerUseAgent:
             ComputerActionType.GUI_RIGHT_CLICK,
             ComputerActionType.GUI_MOVE,
         ) and (payload.get("x") is None or payload.get("y") is None):
-            res_coords = resolve_ui_target(
+            grounding_fn = None
+            if self.llm_router and self._last_screenshot_b64:
+                async def _ground(q, s):
+                    return await query_multimodal_grounding(
+                        self.llm_router, q, s, width=self._screen_width, height=self._screen_height
+                    )
+                grounding_fn = _ground
+
+            res_coords = await resolve_ui_target_async(
                 query=target_resource,
                 screenshot_b64=self._last_screenshot_b64,
                 width=self._screen_width,
                 height=self._screen_height,
+                grounding_fn=grounding_fn,
             )
             if res_coords is not None:
                 payload["x"], payload["y"] = res_coords

@@ -22,6 +22,7 @@ import os
 import posixpath
 import re
 import shlex
+import time
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
@@ -567,6 +568,9 @@ async def _run_mission_preflight(tenant_id: str, session_id: str, mission_id: st
 # Workstation Endpoints (Tenant-Scoped & Authenticated)
 # -------------------------------------------------------------
 
+_workstation_state_cache: dict[str, tuple[float, dict[str, Any]]] = {}
+
+
 @router.get("/workstation/state")
 async def get_workstation_state(
     session_id: str = Query("default"),
@@ -575,13 +579,31 @@ async def get_workstation_state(
     """Returns the live, tenant-scoped workstation mission state."""
     state = _get_or_create_session(user.email, session_id)
     workspace_id = _session_workspace_id(user, session_id)
+
+    # 3.0s cache key per user and session to avoid overwhelming sandbox execution with rapid polls
+    cache_key = f"{user.email}:{session_id}"
+    now = time.time()
+    cached = _workstation_state_cache.get(cache_key)
+
+    if cached and (now - cached[0] < 3.0):
+        # Merge cached container telemetry into state
+        cached_data = cached[1]
+        state["git_branch"] = cached_data.get("git_branch", state.get("git_branch", ""))
+        state["desktop"].update(cached_data.get("desktop", {}))
+        return state
+
+    telemetry: dict[str, Any] = {"desktop": {}}
+
     if workspace_id:
         comp = get_daytona_computer()
         try:
             branch = await comp.terminal(workspace_id, "git branch --show-current 2>/dev/null", actor=user.email)
-            state["git_branch"] = branch.stdout.strip() if branch.exit_code == 0 else ""
+            branch_name = branch.stdout.strip() if branch.exit_code == 0 else ""
+            state["git_branch"] = branch_name
+            telemetry["git_branch"] = branch_name
         except Exception:
             state["git_branch"] = ""
+            telemetry["git_branch"] = ""
 
     # Ensure desktop status reflects the real computer provider state — not
     # a persisted/stale string. status() is fail-closed on both providers:
@@ -592,26 +614,30 @@ async def get_workstation_state(
         if target_id:
             cstate = await comp.status(target_id)
             desktop_state = cstate.status.value if hasattr(cstate.status, "value") else str(cstate.status)
-            state["desktop"]["status"] = desktop_state
-            state["desktop"]["active_window"] = cstate.active_window or ""
-            state["desktop"]["running_apps"] = [p.name for p in (cstate.running_processes or [])]
+            desktop_telemetry = {
+                "status": desktop_state,
+                "active_window": cstate.active_window or "",
+                "running_apps": [p.name for p in (cstate.running_processes or [])],
+                "vnc_url": "",
+                "novnc_url": "",
+            }
             if desktop_state == ComputerWorkspaceStatus.RUNNING.value:
                 vnc_url = await comp.get_vnc_url(target_id)
                 if vnc_url:
-                    state["desktop"]["vnc_url"] = vnc_url
-                    state["desktop"]["novnc_url"] = vnc_url
-                    state["desktop"]["status"] = "LIVE"
+                    desktop_telemetry["vnc_url"] = vnc_url
+                    desktop_telemetry["novnc_url"] = vnc_url
+                    desktop_telemetry["status"] = "LIVE"
                 else:
-                    state["desktop"]["vnc_url"] = ""
-                    state["desktop"]["novnc_url"] = ""
-                    state["desktop"]["status"] = "ACTIVE_NO_DISPLAY"
-            else:
-                state["desktop"]["vnc_url"] = ""
-                state["desktop"]["novnc_url"] = ""
+                    desktop_telemetry["status"] = "ACTIVE_NO_DISPLAY"
+            state["desktop"].update(desktop_telemetry)
+            telemetry["desktop"] = desktop_telemetry
         elif not target_id:
             state["desktop"]["status"] = "NO_ACTIVE_WORKSPACE"
+            telemetry["desktop"]["status"] = "NO_ACTIVE_WORKSPACE"
     except Exception:
         pass
+
+    _workstation_state_cache[cache_key] = (now, telemetry)
     return state
 
 

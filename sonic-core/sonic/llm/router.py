@@ -304,6 +304,13 @@ class ModelRouter:
         """
         # Use request's task_type if not explicitly provided
         effective_task = task_type or request.task_type
+
+        # Multimodal Vision Routing: if the request carries images, route to vision-capable model
+        has_images = any(getattr(msg, "has_images", False) for msg in request.messages)
+        if has_images and (not effective_task or effective_task in ("reasoning", "general", "default", "classification")):
+            if "vision" in self.routing_rules or "computer_use" in self.routing_rules:
+                effective_task = "vision" if "vision" in self.routing_rules else "computer_use"
+
         provider, model_override = self._resolve_provider(provider_name, effective_task)
 
         # Override model if routing rule specifies one

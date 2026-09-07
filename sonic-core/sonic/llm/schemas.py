@@ -44,6 +44,8 @@ class ProviderName(StrEnum):
     OPENAI = "openai"
     GROK = "grok"
     DEEPSEEK = "deepseek"
+    NVIDIA = "nvidia"
+    OPENROUTER = "openrouter"
     LOCAL = "local"
 
 

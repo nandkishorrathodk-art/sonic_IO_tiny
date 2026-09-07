@@ -26,10 +26,11 @@ from sonic.logger import get_logger
 logger = get_logger(__name__)
 
 
-def extract_bbox_midpoint(bbox_response: str, width: int = 1280, height: int = 800) -> Optional[Tuple[int, int]]:
+def extract_bbox_midpoint(bbox_response: Any, width: int = 1280, height: int = 800) -> Optional[Tuple[int, int]]:
     """Extract (x, y) pixel midpoint from multimodal model grounding output.
     
     Supports:
+    - Direct (x, y) tuple or list of numbers
     - Box tags: <|box_start|>(x1, y1, x2, y2)<|box_end|>
     - Normalized coordinates [0, 1000] (standard UI grounding format)
     - Normalized floats [0.0, 1.0]
@@ -37,6 +38,24 @@ def extract_bbox_midpoint(bbox_response: str, width: int = 1280, height: int = 8
     """
     if not bbox_response:
         return None
+
+    if isinstance(bbox_response, (tuple, list)) and len(bbox_response) >= 2:
+        try:
+            x, y = float(bbox_response[0]), float(bbox_response[1])
+            if max(x, y) <= 1.0:
+                px = int(x * width)
+                py = int(y * height)
+            elif max(x, y) <= 1000 and width > 1000:
+                px = int((x / 1000.0) * width)
+                py = int((y / 1000.0) * height)
+            else:
+                px, py = int(x), int(y)
+            return min(max(0, px), width), min(max(0, py), height)
+        except (ValueError, TypeError):
+            pass
+
+    if not isinstance(bbox_response, str):
+        bbox_response = str(bbox_response)
 
     match = re.search(r"<\|box_start\|>(.*?)<\|box_end\|>", bbox_response, re.DOTALL)
     inner_text = match.group(1) if match else bbox_response
@@ -299,6 +318,8 @@ def resolve_ui_target(
         try:
             grounding_output = grounding_fn(query, screenshot_b64)
             if grounding_output:
+                if isinstance(grounding_output, (tuple, list)) and len(grounding_output) >= 2:
+                    return int(grounding_output[0]), int(grounding_output[1])
                 coords = extract_bbox_midpoint(grounding_output, width, height)
                 if coords:
                     return coords
@@ -344,6 +365,8 @@ async def resolve_ui_target_async(
             else:
                 grounding_output = res
             if grounding_output:
+                if isinstance(grounding_output, (tuple, list)) and len(grounding_output) >= 2:
+                    return int(grounding_output[0]), int(grounding_output[1])
                 coords = extract_bbox_midpoint(grounding_output, width, height)
                 if coords:
                     return coords

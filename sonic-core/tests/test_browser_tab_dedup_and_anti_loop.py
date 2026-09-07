@@ -198,3 +198,4 @@ async def test_anti_loop_banner_in_reasoning_prompt():
     assert "ANTI-LOOP PROGRESSION RULE: Do NOT emit BROWSER_NAVIGATE" in user_prompt
     assert "Browser active URL: https://opensea.io" in user_prompt
     assert "CRITICAL ANTI-LOOPING AND PROGRESSION RULES:" in sys_prompt
+

@@ -1,6 +1,12 @@
 # ==============================================================================
 # SONIC-REDA — Isolated Kali Linux Sandbox (Security Tool Plane)
 # ==============================================================================
+# Build:  docker build -t sonic-kali-linux:v1.3.0 -f docker/Dockerfile.kali-sandbox .
+#
+# The control plane requests `sonic-kali-linux:v1.3.0` for KALI_SECURITY
+# profiles (see sonic/computer/provider.py); build with THIS tag so
+# provisioning actually succeeds instead of `docker pull access denied`.
+
 
 FROM kalilinux/kali-rolling
 
@@ -19,6 +25,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     python3-pip \
     iproute2 \
     iptables \
+    procps \
     && rm -rf /var/lib/apt/lists/*
 
 # Create non-root sonic operator user

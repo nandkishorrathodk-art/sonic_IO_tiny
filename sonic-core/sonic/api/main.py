@@ -187,12 +187,13 @@ async def lifespan(app: FastAPI):
             await life_loop_task.stop()
         except Exception as e:
             logger.warning("being_life_loop_stop_failed", error=str(e))
-    # Release the shared Daytona SDK client (aiohttp session) if one was created.
-    from sonic.api.routes.workstation import _daytona_provider_instance
-
-    if _daytona_provider_instance is not None:
+    # Release the shared computer provider client (aiohttp session) if one was created.
+    # Name is `_primary_computer_instance` in workstation.py (was `_daytona_provider_instance`
+    # during the Daytona era; the stale name crashed clean shutdowns with ImportError).
+    from sonic.api.routes.workstation import _primary_computer_instance
+    if _primary_computer_instance is not None:
         try:
-            await _daytona_provider_instance.close()
+            await _primary_computer_instance.close()
         except Exception as e:
             logger.warning("daytona_provider_close_failed", error=str(e))
     await graph.disconnect()

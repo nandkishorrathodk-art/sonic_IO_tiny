@@ -53,7 +53,10 @@ services:
 
   # ---- Isolated Kali Linux Security Sandbox ----
   sandbox-kali:
-    image: kalilinux/kali-rolling
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.kali-sandbox
+    image: sonic-kali-linux:v1.3.0
     container_name: sonic-sandbox-kali
     command: ["tail", "-f", "/dev/null"]
     security_opt:
@@ -89,6 +92,9 @@ services:
 
   # ---- Interactive Graphical Linux Desktop Workstation (noVNC + X11 + Internet) ----
   workstation:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.workstation
     image: sonic-workstation:latest
     container_name: sonic-desktop-workstation
     ports:

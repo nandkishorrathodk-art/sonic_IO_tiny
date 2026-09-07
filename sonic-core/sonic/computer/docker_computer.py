@@ -65,6 +65,8 @@ class DockerComputerProvider(ComputerProvider):
         self._active_windows: dict[str, str] = {}
         self.audit_log: list[ComputerAuditEvent] = []
         self._daemon_checked: bool | None = None
+        self._container_running_cache: bool = False
+        self._container_checked_at: float | None = None
         self._default_workspace_id = self.container_name
         self._exec_lock = asyncio.Lock()
         self._last_screenshot: ScreenObservation | None = None
@@ -85,10 +87,71 @@ class DockerComputerProvider(ComputerProvider):
             self.workspaces[self._default_workspace_id] = ws
         return self.workspaces[self._default_workspace_id]
 
+    async def _container_is_running(self) -> bool:
+        """Probe the real Docker container state (fail-closed, short TTL cache)."""
+        if not shutil.which("docker"):
+            return False
+        now = asyncio.get_event_loop().time()
+        if self._container_checked_at is not None and (now - self._container_checked_at) < 1.5:
+            return self._container_running_cache
+        try:
+            probe = subprocess.run(
+                ["docker", "inspect", "-f", "{{.State.Running}}", self.container_name],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                timeout=5,
+            )
+            running = probe.stdout.decode("utf-8", errors="ignore").strip() == "true"
+        except Exception:
+            running = False
+        self._container_running_cache = running
+        self._container_checked_at = now
+        return running
+
+    async def _provision_workstation(self) -> bool:
+        """Try to bring up the workstation container from repo compose files.
+
+        Gated bye SONIC_AUTO_PROVISION_WORKSTATION (default off) — a full
+        XFCE desktop image build can take minutes and should never silently
+        trigger from a polling/status code path.
+        """
+        if os.environ.get("SONIC_AUTO_PROVISION_WORKSTATION", "0").strip() != "1":
+            return False
+        if not shutil.which("docker"):
+            return False
+
+        candidates = [
+            Path.cwd() / "docker-compose.yml",
+            Path.cwd() / "docker-compose.prod.yml",
+            Path.cwd().parent / "docker-compose.yml",
+            Path(__file__).resolve().parents[3] / "docker-compose.yml",
+        ]
+        compose_file = next((p for p in candidates if p.exists()), None)
+        if compose_file is None:
+            logger.error("workstation_auto_provision_no_compose_file")
+            return False
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "docker", "compose", "-f", str(compose_file), "up", "-d", "workstation",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            _, stderr = await asyncio.wait_for(proc.communicate(), timeout=600)
+            if proc.returncode == 0:
+                logger.info("workstation_auto_provisioned", container=self.container_name)
+                return True
+            logger.error("workstation_auto_provision_failed", error=stderr.decode("utf-8", errors="replace").strip()[:400])
+            return False
+        except Exception as e:
+            logger.error("workstation_auto_provision_exception", error=str(e))
+            return False
+
     async def _docker_exec(self, cmd: str, timeout: int = 60) -> tuple[int, str, str]:
         """Execute a bash command inside the docker container."""
         if not shutil.which("docker"):
             return 127, "", "docker binary not found on host"
+        if not await self._container_is_running():
+            return 125, "", f"container {self.container_name} is not running; command blocked fail-closed"
         if self._daemon_checked is None:
             probe = subprocess.run(
                 ["docker", "info", "--format", "{{.ServerVersion}}"],
@@ -144,6 +207,15 @@ class DockerComputerProvider(ComputerProvider):
         ws = self._ensure_default_workspace(tenant_id)
         ws.tenant_id = tenant_id
         ws.engagement_id = engagement_id
+        if not await self._container_is_running():
+            provisioned = await self._provision_workstation()
+            if not provisioned:
+                # Fail-closed: never report a desktop that was not actually provisioned.
+                ws.status = ComputerWorkspaceStatus.STOPPED if shutil.which("docker") else ComputerWorkspaceStatus.FAILED
+                return ws
+            self._container_running_cache = True
+            self._container_checked_at = asyncio.get_event_loop().time()
+        ws.status = ComputerWorkspaceStatus.RUNNING
         return ws
 
     async def destroy(self, workspace_id: str) -> bool:
@@ -151,9 +223,24 @@ class DockerComputerProvider(ComputerProvider):
             del self.workspaces[workspace_id]
         return True
 
+    async def close(self) -> None:
+        """Release provider resources (no-op for statelessdocker CLI wrapper)."""
+
+        return None
+
     async def get_vnc_url(self, workspace_id: str) -> str | None:
+        # Fail-closed: a stream URL is only real when the container actually
+        # runs and a VNC/noVNC listener is reachable on the configured port.
+        if not await self._container_is_running():
+            return None
         port = os.environ.get("SONIC_WORKSTATION_VNC_PORT", "6080")
-        return f"http://localhost:{port}/vnc.html"
+        code, out, _ = await self._docker_exec(
+            f"if (exec 3<>/dev/tcp/127.0.0.1/{port}) 2>/dev/null; then echo 0; else echo 1; fi",
+            timeout=8,
+        )
+        if code == 0 and out.strip() == "0":
+            return f"http://localhost:{port}/vnc.html"
+        return None
 
     async def get_stream_url(self, workspace_id: str) -> str | None:
         return await self.get_vnc_url(workspace_id)
@@ -164,6 +251,27 @@ class DockerComputerProvider(ComputerProvider):
 
     async def status(self, workspace_id: str) -> ComputerState:
         ws = self._ensure_default_workspace()
+        if not await self._container_is_running():
+            # Fail-closed: no synthetic RUNNING/apps/windows when the container
+            # does not actually exist. Report DEGRADED and empty telemetry.
+
+            ws.status = ComputerWorkspaceStatus.DEGRADED
+            return ComputerState(
+                workspace_id=workspace_id or self.container_name,
+                tenant_id=ws.tenant_id,
+                status=ComputerWorkspaceStatus.DEGRADED,
+                active_application="",
+                open_applications=[],
+                active_window="",
+                working_directory="/root",
+                running_processes=[],
+                installed_applications=[],
+                current_project="",
+                git_branch="",
+                resource_usage={},
+            )
+
+        ws.status = ComputerWorkspaceStatus.RUNNING
         active_window = "Desktop"
         open_windows: list[str] = ["Desktop", "Terminal"]
 
@@ -187,6 +295,7 @@ class DockerComputerProvider(ComputerProvider):
         # Check running processes
         procs = await self.process_list(workspace_id)
         proc_names = [p.name for p in procs]
+        installed = await self.application_list(workspace_id)
 
         return ComputerState(
             workspace_id=workspace_id or self.container_name,
@@ -197,7 +306,7 @@ class DockerComputerProvider(ComputerProvider):
             active_window=active_window,
             working_directory="/root",
             running_processes=proc_names,
-            installed_applications=["google-chrome-stable", "xfce4-terminal", "thunar", "nmap", "xdotool", "wmctrl"],
+            installed_applications=installed,
             current_project="sonic-repo",
             git_branch="main",
             resource_usage={"cpu_pct": 5.0, "memory_mb": 512.0},
@@ -425,7 +534,7 @@ class DockerComputerProvider(ComputerProvider):
         return code == 0
 
     async def application_list(self, workspace_id: str) -> list[str]:
-        code, out, _ = await self._docker_exec("which google-chrome-stable xfce4-terminal thunar nmap xdotool wmctrl python3 bash git 2>/dev/null", timeout=10)
+        code, out, _ = await self._docker_exec("for b in google-chrome-stable chromium chromium-browser xfce4-terminal thunar nmap xdotool wmctrl python3 bash git; do command -v \"$b\" 2>/dev/null; done", timeout=10)
         apps = []
         if code == 0 and out.strip():
             for line in out.splitlines():
@@ -434,7 +543,7 @@ class DockerComputerProvider(ComputerProvider):
                     app = line.split("/")[-1]
                     if app and app not in apps:
                         apps.append(app)
-        return apps or ["google-chrome-stable", "xfce4-terminal", "thunar", "nmap", "python3", "bash"]
+        return apps
 
     async def launch_application(self, workspace_id: str, app_name: str, actor: str = "operator") -> bool:
         action = GUIAction(action=GUIActionType.OPEN_APP, app_name=app_name)

@@ -41,8 +41,22 @@ class DockerProvider(ComputeProvider):
 
     def __init__(self, default_network: str = "sonic-sandbox-net"):
         self.default_network = default_network
+        self._network_ok: bool | None = None
         self._workspaces: dict[str, WorkspaceConfig] = {}
         self._states: dict[str, WorkspaceState] = {}
+
+    async def _resolve_network(self) -> str:
+        """Return the designated sandbox network iff it actually exists, else the
+        default bridge (fail-closed: never invent a network; never bind to host)."""
+        if self._network_ok is None:
+            probe = await asyncio.create_subprocess_exec(
+                "docker", "network", "inspect", self.default_network,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            _, _ = await asyncio.wait_for(probe.communicate(), timeout=10)
+            self._network_ok = probe.returncode == 0
+        return self.default_network if self._network_ok else "bridge"
 
     async def create_workspace(self, config: WorkspaceConfig) -> bool:
         """Create and start a new container workspace."""
@@ -64,8 +78,8 @@ class DockerProvider(ComputeProvider):
             "--label", f"workspace_type={config.workspace_type.value}",
         ]
 
-        if config.network_isolated:
-            cmd.extend(["--network", self.default_network])
+        net = "bridge" if not config.network_isolated else await self._resolve_network()
+        cmd.extend(["--network", net])
 
         for k, v in config.env_vars.items():
             cmd.extend(["-e", f"{k}={v}"])

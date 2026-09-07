@@ -211,7 +211,21 @@ class UnifiedComputerProvider(ComputerProvider):
             status=ComputerWorkspaceStatus.READY,
         )
         self.workspaces[ws.id] = ws
-        self._running_apps[ws.id] = set()
+        # Seed the open-app set with apps actually detected inside the fresh
+        # workspace (plus a "Desktop" marker iff a GUI/display session is live).
+        # Real probe — never a fabricated app list — so status() reflects actual
+        # workspace contents the moment it is provisioned.
+        detected = await self.application_list(ws.id)
+        if workspace_type == ComputerWorkspaceType.MISSION_COMPUTER:
+
+            has_display = await self.compute.execute(
+                ws.id,
+                "test -n \"${DISPLAY:-}\" -o -n \"${WAYLAND_DISPLAY:-}\" -o -d /tmp/.X11-unix/X99 2>/dev/null; echo $?",
+                timeout=10,
+            )
+            if detected or (has_display.exit_code == 0 and has_display.stdout.strip() == "0"):
+                detected.append("Desktop")
+        self._running_apps[ws.id] = set(detected)
         self._active_window[ws.id] = ""
         self._installed_apps[ws.id] = set()
         self._services[ws.id] = {}

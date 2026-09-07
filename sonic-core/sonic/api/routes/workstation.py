@@ -202,7 +202,7 @@ def _get_or_create_session(tenant_id: str, session_id: str = "default") -> dict[
     if tenant_id not in _tenant_workstations:
         _tenant_workstations[tenant_id] = {}
 
-    env_sandbox_id = os.environ.get("DAYTONA_SANDBOX_ID", "").strip()
+    env_sandbox_id = os.environ.get("SONIC_DEFAULT_WORKSPACE_ID", os.environ.get("DAYTONA_SANDBOX_ID", "")).strip()
     active_ws = env_sandbox_id
     if tenant_id in _tenant_workstations and "default" in _tenant_workstations[tenant_id]:
         def_desk = _tenant_workstations[tenant_id]["default"].get("desktop", {})
@@ -232,11 +232,11 @@ def _get_or_create_session(tenant_id: str, session_id: str = "default") -> dict[
                 "display": ":99",
                 "vnc_port": 5900,
                 "novnc_port": 6080,
-                "novnc_url": "http://localhost:6080/vnc.html",
-                "status": "LIVE",
-                "active_window": "Desktop",
+                "novnc_url": """,
+                "status": "UNKNOWN",
+                "active_window": """,
                 "resolution": {"width": 1280, "height": 800},
-                "running_apps": ["google-chrome-stable", "xfce4-terminal"],
+                "running_apps": [],
                 "active_services": [],
             },
             # A separate, disposable execution plane for authorized research,
@@ -334,7 +334,7 @@ def _session_workspace_id(user: User, session_id: str) -> str:
             state.setdefault("desktop", {})["sandbox_id"] = default_ws
         return default_ws
 
-    env_sandbox_id = os.environ.get("DAYTONA_SANDBOX_ID", "").strip()
+    env_sandbox_id = os.environ.get("SONIC_DEFAULT_WORKSPACE_ID", os.environ.get("DAYTONA_SANDBOX_ID", "")).strip()
     if env_sandbox_id:
         if state:
             state.setdefault("desktop", {})["workspace_id"] = env_sandbox_id
@@ -581,29 +581,35 @@ async def get_workstation_state(
         except Exception:
             state["git_branch"] = ""
 
-    # Ensure desktop status reflects live Daytona / X11 stream. Preview links
-    # carry a private auth token and are single-session URLs; refreshing one on
-    # every five-second state poll invalidates the iframe's in-flight callback.
-    # Keep the current URL stable and let the explicit stream/sync action obtain
-    # a fresh link when the operator asks for it.
+    # Ensure desktop status reflects the real computer provider state — not
+    # a persisted/stale string. status() is fail-closed on both providers:
+    # DEGRADED/STOPPED with empty telemetry when no real container/VM is up.
     try:
         comp = get_daytona_computer()
         target_id = _session_workspace_id(user, session_id)
-        if target_id and not state["desktop"].get("vnc_url"):
-            vnc_url = await comp.get_vnc_url(target_id)
-            if vnc_url:
-                state["desktop"]["vnc_url"] = vnc_url
-                state["desktop"]["novnc_url"] = vnc_url
-                state["desktop"]["status"] = "LIVE"
+        if target_id:
+            cstate = await comp.status(target_id)
+            desktop_state = cstate.status.value if hasattr(cstate.status, "value") else str(cstate.status)
+            state["desktop"]["status"] = desktop_state
+            state["desktop"]["active_window"] = cstate.active_window or ""
+            state["desktop"]["running_apps"] = [p.name for p in (cstate.running_processes or [])]
+            if desktop_state == ComputerWorkspaceStatus.RUNNING.value:
+                vnc_url = await comp.get_vnc_url(target_id)
+                if vnc_url:
+                    state["desktop"]["vnc_url"] = vnc_url
+                    state["desktop"]["novnc_url"] = vnc_url
+                    state["desktop"]["status"] = "LIVE"
+                else:
+                    state["desktop"]["vnc_url"] = ""
+                    state["desktop"]["novnc_url"] = ""
+                    state["desktop"]["status"] = "ACTIVE_NO_DISPLAY"
             else:
-                state["desktop"]["status"] = "ACTIVE_NO_DISPLAY"
-        elif target_id and state["desktop"].get("vnc_url"):
-            state["desktop"]["status"] = "LIVE"
+                state["desktop"]["vnc_url"] = ""
+                state["desktop"]["novnc_url"] = ""
         elif not target_id:
             state["desktop"]["status"] = "NO_ACTIVE_WORKSPACE"
     except Exception:
         pass
-
     return state
 
 
@@ -981,37 +987,43 @@ async def get_desktop_status(
     session_id: str = Query("default"),
     user: User = Depends(require_auth),
 ):
-    """Returns the authenticated Graphical Desktop / Daytona Sandbox status with real VNC URL."""
+    """Returns the authenticated Graphical Desktop status with a real VNC URL.
+
+
+    The liveness signal comes from the computer provider's actual status(),
+    not from a persisted string: if the container/VM is missing the status
+    reflects that (DEGRADED/STOPPED and empty apps/URLs).
+    """
     state = _get_or_create_session(user.email, session_id)
     desktop = state["desktop"]
-
-    # Attempt to get the real noVNC URL from the computer provider. Keep an
-    # existing token stable; callers can use /desktop/stream to explicitly
-    # rotate the preview session.
     comp = get_daytona_computer()
-    vnc_url = desktop.get("vnc_url") or None
     running_processes = []
     target_id = _session_workspace_id(user, session_id)
 
-    if target_id:
-        if not vnc_url:
-            try:
-                vnc_url = await comp.get_vnc_url(target_id)
-            except Exception:
-                pass
-        try:
-            procs = await comp.process_list(target_id)
-            running_processes = [p.name for p in procs]
-        except Exception:
-            pass
+    desktop["status"] = "NO_ACTIVE_WORKSPACE"
+    desktop["vnc_url"] = None
+    desktop["novnc_url"] = None
 
-    desktop["novnc_url"] = vnc_url or ""
-    desktop["vnc_url"] = vnc_url or ""
-    desktop["running_processes"] = running_processes
-    if not target_id:
-        desktop["status"] = "NO_ACTIVE_WORKSPACE"
-    else:
-        desktop["status"] = "LIVE" if vnc_url else "ACTIVE_NO_DISPLAY"
+    if target_id:
+        try:
+            cstate = await comp.status(target_id)
+            desktop_state = cstate.status.value if hasattr(cstate.status, "value") else str(cstate.status)
+            desktop["status"] = desktop_state
+            running_processes = [p.name for p in (cstate.running_processes or [])]
+            desktop["running_processes"] = running_processes
+            desktop["active_window"] = cstate.active_window or ""
+            if desktop_state == ComputerWorkspaceStatus.RUNNING.value:
+
+                vnc_url = await comp.get_vnc_url(target_id)
+                if vnc_url:
+                    desktop["vnc_url"] = vnc_url
+                    desktop["novnc_url"] = vnc_url
+                    desktop["status"] = "LIVE"
+                else:
+                    desktop["status"] = "ACTIVE_NO_DISPLAY"
+        except Exception:
+            desktop["status"] = "ERROR_PROBING_COMPUTER"
+
     return desktop
 
 
@@ -1186,7 +1198,7 @@ async def get_workstation_tree(
 
 @router.get("/workstation/file")
 async def get_workstation_file(
-    path: str = Query("sonic-core/sonic/production_gate/scenario_matrix.py"),
+    path: str = Query("README.md"),
     session_id: str = Query("default"),
     user: User = Depends(require_auth),
 ):

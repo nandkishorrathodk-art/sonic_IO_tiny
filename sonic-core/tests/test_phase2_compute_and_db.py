@@ -18,9 +18,9 @@ from sonic.sandbox.provider import (
     WorkspaceState,
     WorkspaceType,
 )
-from sonic.sandbox.providers.daytona_provider import DaytonaProvider
 from sonic.sandbox.providers.docker_provider import DockerProvider
 from sonic.sandbox.providers.local_dev_provider import LocalDevProvider
+from sonic.computer.daytona_computer import DaytonaComputerProvider
 
 
 # ==========================================================
@@ -54,8 +54,8 @@ def test_docker_provider_fail_closed_when_container_not_running():
 
 
 def test_daytona_provider_properties():
-    """Verify DaytonaProvider interface and configuration."""
-    provider = DaytonaProvider(api_url="http://localhost:3986", api_key="secret-key")
+    """Verify DaytonaComputerProvider interface and configuration (env-gated, no network)."""
+    provider = DaytonaComputerProvider(api_url="http://localhost:3986", api_key="secret-key")
     assert provider.api_url == "http://localhost:3986"
     assert provider.api_key == "secret-key"
 

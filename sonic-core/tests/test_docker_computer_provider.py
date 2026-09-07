@@ -35,7 +35,11 @@ async def test_docker_computer_provider_lifecycle():
     assert ws.tenant_id == "tenant-1"
 
     url = await provider.get_vnc_url(ws.id)
-    assert "6080" in url
+    # A real noVNC listener only exists when the daemon + workstation container
+    # are actually up. Fail-closed returns None otherwise — assert accordingly.
+    if _docker_daemon_up():
+        assert url is not None
+        assert "6080" in url
 
     if _docker_daemon_up():
         status = await provider.status(ws.id)

@@ -126,7 +126,7 @@ class HealthChecker:
             return ComponentHealth(
                 name="daytona_cloud",
                 status=HealthStatus.DEGRADED,
-                message="DAYTONA_API_KEY not set. Docker sandbox fallback will be used.",
+                message="DAYTONA_API_KEY not set. Daytona cloud is inactive; local Docker workstation fallback will be used.",
                 is_critical=False,
             )
         return ComponentHealth(

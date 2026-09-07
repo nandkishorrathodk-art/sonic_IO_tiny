@@ -47,10 +47,16 @@ from sonic.research.specialist import (
     FalsificationSpecialist,
     NetworkSpecialist,
     SpecialistAgent,
+    SpecialistBlockedError,
     SpecialistBudget,
     SpecialistState,
+    SpecialistTimeoutError,
     WebSpecialist,
+    classify_specialist_failure,
 )
+from sonic.research.failure_classifier import classify_failure
+from sonic.research.failure_budget import FailureBudgetTracker
+
 
 __all__ = [
     # Event Bus & Typed Events
@@ -68,6 +74,9 @@ __all__ = [
     "SpecialistState",
     "SpecialistBudget",
     "BudgetExhaustedError",
+    "SpecialistBlockedError",
+    "SpecialistTimeoutError",
+    "classify_specialist_failure",
     "WebSpecialist",
     "ApiSpecialist",
     "AuthSpecialist",
@@ -88,4 +97,7 @@ __all__ = [
     "AttackEdge",
     "AttackPath",
     "AttackGraph",
+    # Failure Engine & Classification
+    "classify_failure",
+    "FailureBudgetTracker",
 ]

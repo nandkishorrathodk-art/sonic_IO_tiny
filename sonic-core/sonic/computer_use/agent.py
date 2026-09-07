@@ -33,7 +33,13 @@ from sonic.computer_use.models import (
     ComputerUseMetrics,
     ComputerWorldObservation,
     EngineeringMissionMode,
+    FailureClassification,
+    FailureRecord,
+    StrategyState,
 )
+from sonic.research.failure_budget import FailureBudgetTracker
+from sonic.research.failure_classifier import classify_failure
+
 from sonic.logger import get_logger
 
 logger = get_logger(__name__)
@@ -75,6 +81,7 @@ class ComputerUseAgent:
         engagement_id: str = "default",
         agent_id: str = "computer-use-agent",
         enable_llm_verification: bool = False,
+        failure_budget: FailureBudgetTracker | None = None,
     ):
         self.computer = computer_provider
         self.autonomy_level = autonomy_level
@@ -116,6 +123,19 @@ class ComputerUseAgent:
         self.engagement_id = engagement_id
         self.agent_id = agent_id
         self.enable_llm_verification = enable_llm_verification
+        self.failure_budget = failure_budget if failure_budget is not None else FailureBudgetTracker()
+        self.strategies: dict[str, dict[str, Any]] = {
+            "Strategy A": {
+                "name": "Direct Primary Execution",
+                "description": "Primary probe / targeted execution",
+                "state": StrategyState.ACTIVE,
+            },
+            "Strategy B": {
+                "name": "Alternative Instrumentation",
+                "description": "Secondary inspection / fallback tool",
+                "state": StrategyState.ACTIVE,
+            },
+        }
 
         self.traces: list[ComputerDecisionTrace] = []
         self.recovery_events: int = 0
@@ -314,10 +334,30 @@ class ComputerUseAgent:
         action/result history, so the model's decision is a function of the
         current world state and what it has already done, not a step counter.
         """
+        if not hasattr(self, "failure_budget"):
+            self.failure_budget = FailureBudgetTracker()
+        if not hasattr(self, "strategies"):
+            self.strategies = {
+                "Strategy A": {"name": "Direct Primary Execution", "description": "Primary probe / targeted execution", "state": StrategyState.ACTIVE},
+                "Strategy B": {"name": "Alternative Instrumentation", "description": "Secondary inspection / fallback tool", "state": StrategyState.ACTIVE},
+            }
+
         history_text = self._format_history()
 
-        screen_text = (observation.visible_text or "").strip()
-        terminal_text = (observation.terminal_output or "").strip()
+        # Truthful observations: output UNKNOWN when missing or unavailable (no fake observations)
+        screen_text = (observation.visible_text or "").strip() or "UNKNOWN"
+        terminal_text = (observation.terminal_output or "").strip() or "UNKNOWN"
+        workdir = getattr(observation, "working_directory", "") or "UNKNOWN"
+        user_home = workdir.split("/workspace")[0] if ("/workspace" in workdir and workdir != "UNKNOWN") else workdir
+        self._last_working_dir = workdir
+        active_app = observation.active_application or "UNKNOWN"
+        windows_str = ", ".join(observation.windows) if observation.windows else "UNKNOWN"
+        files_str = str(observation.filesystem_files) if (observation.filesystem_files is not None and len(observation.filesystem_files) > 0) else "UNKNOWN"
+        git_branch_str = observation.git_branch or "UNKNOWN"
+        primary_file_str = primary_file or "UNKNOWN"
+        test_file_str = test_file or "UNKNOWN"
+        available_tools = ", ".join(sorted(self.security_tools.keys())) if self.security_tools else "UNKNOWN"
+
         bs = observation.browser_state or {}
         browser_lines = ""
         if self.browser is not None:
@@ -331,6 +371,7 @@ class ComputerUseAgent:
                 f"title={bs.get('title', '')}\n"
                 f"Interactive elements: {el_summary}\n"
             )
+
         tool_lines = ""
         if self._last_tool_result is not None:
             tr = self._last_tool_result
@@ -343,32 +384,101 @@ class ComputerUseAgent:
                 f"findings_count={len(findings)}\n"
                 f"Findings excerpt: {findings_excerpt}\n"
             )
-        available_tools = ", ".join(sorted(self.security_tools.keys())) if self.security_tools else "(none)"
-        # Cross-mission lessons: the learn→apply loop. If a LessonsLedger is
-        # wired in, inject the top-K lessons relevant to THIS goal so the LLM
-        # sees what it learned before (failed approaches to avoid, successful
-        # ones to reuse) — instead of starting every mission with amnesia.
+
+        # Cross-mission lessons
         lessons_block = ""
         if self.lessons_ledger is not None:
             from sonic.being.lessons import inject_into_context
             lessons_block = inject_into_context(self.lessons_ledger.relevant(goal))
-        workdir = getattr(observation, "working_directory", "") or "/home/daytona"
-        user_home = workdir.split("/workspace")[0] if "/workspace" in workdir else workdir
-        self._last_working_dir = workdir
+
+        # Explicit strategy tracking
+        curr_tool = primary_file_str if primary_file_str != "UNKNOWN" else "terminal"
+        provider_name = self._get_provider_name()
+        strat_a = self.strategies.get("Strategy A", {})
+        strat_b = self.strategies.get("Strategy B", {})
+        strat_a_state = strat_a.get("state", StrategyState.ACTIVE)
+        strat_b_state = strat_b.get("state", StrategyState.ACTIVE)
+
+        if self.failure_budget.is_strategy_exhausted(curr_tool, provider_name):
+            strat_a_state = StrategyState.EXHAUSTED
+            strat_a["state"] = StrategyState.EXHAUSTED
+        if self.failure_budget.substrate_outage:
+            strat_a_state = StrategyState.EXHAUSTED
+            strat_b_state = StrategyState.DEGRADED
+            strat_a["state"] = StrategyState.EXHAUSTED
+            strat_b["state"] = StrategyState.DEGRADED
+
+        strategy_tracking_block = (
+            "Strategy Tracking:\n"
+            f"  Strategy A: {strat_a.get('name', 'Direct Primary Execution')} (Status: {getattr(strat_a_state, 'value', str(strat_a_state))})\n"
+            f"  Strategy B: {strat_b.get('name', 'Alternative Instrumentation')} (Status: {getattr(strat_b_state, 'value', str(strat_b_state))})\n"
+        )
+
+        # Cognitive Reasoning Fields (truthful and epistemic)
+        known_facts: list[str] = []
+        if files_str != "UNKNOWN":
+            known_facts.append(f"Workspace files: {files_str}")
+        if active_app != "UNKNOWN":
+            known_facts.append(f"Active application: {active_app}")
+        if git_branch_str != "UNKNOWN":
+            known_facts.append(f"Git branch: {git_branch_str} (clean={observation.git_clean})")
+        if terminal_text != "UNKNOWN":
+            known_facts.append(f"Terminal output: {terminal_text[:120]}")
+        what_do_i_know = "; ".join(known_facts) if known_facts else "UNKNOWN"
+
+        not_known_facts: list[str] = []
+        if not self.traces:
+            not_known_facts.append("Target service response, vulnerability profile, and runtime state")
+        else:
+            not_known_facts.append("Unverified edge conditions and outcomes of unexecuted alternate strategies")
+        if terminal_text == "UNKNOWN":
+            not_known_facts.append("Terminal output for last command")
+        what_do_i_not_know = "; ".join(not_known_facts) if not_known_facts else "UNKNOWN"
+
+        if self.failure_budget.records:
+            last_fail = self.failure_budget.records[-1]
+            what_failed = f"{last_fail.tool} on {last_fail.provider} ({last_fail.error_class.value})"
+            why_did_it_fail = last_fail.raw_error or f"Classified as {last_fail.error_class.value}"
+            what_hypothesis = f"Disproves direct success of {last_fail.tool}; supports hypothesis that alternative approach is required."
+            if strat_a_state == StrategyState.EXHAUSTED:
+                highest_info_action = "Pivot to Strategy B (alternative instrumentation) since Strategy A is exhausted."
+            else:
+                highest_info_action = f"Retry or inspect error cause for {last_fail.tool} with diagnostic probe."
+        else:
+            what_failed = "NONE"
+            why_did_it_fail = "NONE"
+            what_hypothesis = f"Supports hypothesis that target can be tested via primary plan toward: {goal}."
+            highest_info_action = f"Execute primary diagnostic or inspection action against {primary_file_str}."
+
+        if self.failure_budget.substrate_outage:
+            highest_info_action = "Execute substrate diagnostic probe to resolve infrastructure outage."
+
+        cognitive_block = (
+            "Cognitive Reasoning Assessment:\n"
+            f"  WHAT DO I KNOW?: {what_do_i_know}\n"
+            f"  WHAT DO I NOT KNOW?: {what_do_i_not_know}\n"
+            f"  WHAT FAILED?: {what_failed}\n"
+            f"  WHY DID IT FAIL?: {why_did_it_fail}\n"
+            f"  WHAT HYPOTHESIS DOES THIS SUPPORT/DISPROVE?: {what_hypothesis}\n"
+            f"  WHAT IS THE HIGHEST-INFORMATION NEXT ACTION?: {highest_info_action}\n"
+        )
+
         obs_summary = (
             f"Step {step_index}. Goal: {goal}\n"
             f"Current working directory: {workdir}\n"
             f"User home directory: {user_home} (Desktop path: {user_home}/Desktop)\n"
-            f"Active window / app: {observation.active_application}\n"
-            f"Open desktop windows: {', '.join(observation.windows) if observation.windows else '(Desktop only)'}\n"
-            f"Screen visible text:\n{screen_text or '(empty screen)'}\n"
-            f"Terminal output:\n{terminal_text or '(no output yet)'}\n"
+            f"Active window / app: {active_app}\n"
+            f"Open desktop windows: {windows_str}\n"
+            f"Screen visible text:\n{screen_text}\n"
+            f"Terminal output:\n{terminal_text}\n"
             f"{browser_lines}{tool_lines}"
-            f"Files in workspace: {observation.filesystem_files}\n"
-            f"Git branch: {observation.git_branch}, clean: {observation.git_clean}\n"
-            f"Primary file: {primary_file}, Test file: {test_file}\n"
+            f"Files in workspace: {files_str}\n"
+            f"Git branch: {git_branch_str}, clean: {observation.git_clean}\n"
+            f"Primary file: {primary_file_str}, Test file: {test_file_str}\n"
             f"Available security tools: {available_tools}\n"
             f"{lessons_block}"
+            f"{strategy_tracking_block}"
+            f"{cognitive_block}"
             f"Actions taken so far:\n{history_text or '(none — this is the first action)'}\n"
         )
         system_prompt = (
@@ -394,7 +504,20 @@ class ComputerUseAgent:
             "If the goal is already achieved, respond GOAL_COMPLETE.\n"
             "If the goal can be accomplished cleanly via shell command, prefer TERMINAL_EXEC.\n"
             "You can see the desktop screenshot and interact with GUI elements by clicking at coordinates.\n"
+            "Before choosing an action, reason through these mandatory cognitive fields:\n"
+            "WHAT DO I KNOW?: <Facts established by verified observation, or UNKNOWN>\n"
+            "WHAT DO I NOT KNOW?: <Unverified assumptions, missing data, or UNKNOWN>\n"
+            "WHAT FAILED?: <Previous failure if any, or NONE>\n"
+            "WHY DID IT FAIL?: <Root cause classification and explanation, or NONE>\n"
+            "WHAT HYPOTHESIS DOES THIS SUPPORT/DISPROVE?: <Epistemic hypothesis update>\n"
+            "WHAT IS THE HIGHEST-INFORMATION NEXT ACTION?: <Strategic justification for the action chosen>\n"
             "Respond in EXACTLY this format (no markdown code fences):\n"
+            "WHAT DO I KNOW?: ...\n"
+            "WHAT DO I NOT KNOW?: ...\n"
+            "WHAT FAILED?: ...\n"
+            "WHY DID IT FAIL?: ...\n"
+            "WHAT HYPOTHESIS DOES THIS SUPPORT/DISPROVE?: ...\n"
+            "WHAT IS THE HIGHEST-INFORMATION NEXT ACTION?: ...\n"
             "THOUGHT: <Brief 1-sentence thought explaining what you intend to do and why>\n"
             "ACTION: <GUI_CLICK|GUI_DOUBLE_CLICK|GUI_RIGHT_CLICK|GUI_TYPE|GUI_KEYPRESS|GUI_MOVE|GUI_SCROLL|GUI_DRAG|GUI_SCREENSHOT|GUI_WAIT|FILE_READ|FILE_WRITE|TERMINAL_EXEC|GIT_COMMIT|APP_LAUNCH|APP_CLOSE|APP_FOCUS|APP_INSTALL|SERVICE_ACTION|BROWSER_NAVIGATE|BROWSER_CLICK|BROWSER_TYPE|BROWSER_SCREENSHOT|BROWSER_WAIT|BROWSER_DOWNLOAD|SECURITY_TOOL|TOOL_AUTHOR|TOOL_RUN|METHOD_INVENT|GOAL_COMPLETE>\n"
             "TARGET: <resource path, application/window name, url, css selector, coordinates, or UI element query>\n"
@@ -714,6 +837,33 @@ class ComputerUseAgent:
         if h > 0:
             self._screen_height = h
 
+    def _get_provider_name(self) -> str:
+        """Return human-readable identifier for computer provider."""
+        if hasattr(self.computer, "name"):
+            return str(self.computer.name)
+        if hasattr(self.computer, "compute_provider") and hasattr(self.computer.compute_provider, "__class__"):
+            return self.computer.compute_provider.__class__.__name__
+        if hasattr(self.computer, "__class__"):
+            return self.computer.__class__.__name__
+        return "sandbox"
+
+    def _extract_tool_name(
+        self,
+        action_type: ComputerActionType,
+        target_resource: str,
+        payload: dict[str, Any],
+    ) -> str:
+        """Extract tool or binary name for failure budget tracking."""
+        if action_type == ComputerActionType.TERMINAL_EXEC:
+            cmd = payload.get("command") or target_resource or "terminal"
+            parts = str(cmd).strip().split()
+            return parts[0] if parts else "terminal"
+        if action_type == ComputerActionType.SECURITY_TOOL:
+            return str(payload.get("tool") or target_resource or "security_tool")
+        if action_type == ComputerActionType.APP_INSTALL:
+            return str(payload.get("package") or payload.get("app_name") or target_resource or "installer")
+        return action_type.value
+
     async def execute_action(
         self,
         workspace_id: str,
@@ -728,6 +878,17 @@ class ComputerUseAgent:
         actual_obs_str = ""
         status = ActionExecutionStatus.COMPLETED
         recovery_needed = False
+
+        if not hasattr(self, "failure_budget"):
+            self.failure_budget = FailureBudgetTracker()
+        if not hasattr(self, "strategies"):
+            self.strategies = {
+                "Strategy A": {"name": "Direct Primary Execution", "description": "Primary probe / targeted execution", "state": StrategyState.ACTIVE},
+                "Strategy B": {"name": "Alternative Instrumentation", "description": "Secondary inspection / fallback tool", "state": StrategyState.ACTIVE},
+            }
+
+        provider_name = self._get_provider_name()
+        tool_name = self._extract_tool_name(action_type, target_resource, payload)
 
         # ----- PLAN Phase 6: fail-closed safety envelope -----
         # Every action — operator-issued OR self-directed (curiosity) — must pass
@@ -756,6 +917,68 @@ class ComputerUseAgent:
                 self.traces.append(trace)
                 self.history.append({"action": action_type.value, "result": actual_obs_str})
                 return trace
+
+        # ----- Substrate Outage Detection (Failure Budget) -----
+        # If 3 consecutive provider errors occurred, STOP target actions and switch to substrate diagnostic action.
+        if self.failure_budget.substrate_outage:
+            diag_info = self.failure_budget.diagnose_substrate_health()
+            actual_obs_str = (
+                f"SUBSTRATE_OUTAGE_DETECTED: Consecutive provider/sandbox failures reached threshold. "
+                f"Target actions stopped; switched to substrate diagnostic: {diag_info}"
+            )
+            status = ActionExecutionStatus.BLOCKED
+            logger.error(
+                "substrate_outage_target_halted",
+                provider=provider_name,
+                tool=tool_name,
+                status=self.failure_budget.diagnostic_status,
+            )
+            trace = ComputerDecisionTrace(
+                step_index=self.action_counter,
+                action_type=action_type,
+                target_resource=target_resource,
+                payload=str(payload),
+                predicted_outcome=predicted_outcome,
+                actual_observation=actual_obs_str,
+                expected_observation=predicted_outcome,
+                info_gain=0.0,
+                recovery_attempted=False,
+                status=status,
+            )
+            self.traces.append(trace)
+            self.history.append({"action": f"{action_type.value} {target_resource}", "result": actual_obs_str})
+            return trace
+
+        # ----- Strategy Exhaustion Check -----
+        # If strategy for this tool/provider is exhausted, DO NOT retry the same command/tool!
+        # Record strategy exhausted and set status = ActionExecutionStatus.FAILED.
+        if self.failure_budget.is_strategy_exhausted(tool=tool_name, provider=provider_name):
+            actual_obs_str = (
+                f"Strategy exhausted for tool '{tool_name}' on provider '{provider_name}'. "
+                f"Failure budget exceeded; retry blocked."
+            )
+            status = ActionExecutionStatus.FAILED
+            logger.warning(
+                "strategy_exhausted_execution_blocked",
+                tool=tool_name,
+                provider=provider_name,
+            )
+            trace = ComputerDecisionTrace(
+                step_index=self.action_counter,
+                action_type=action_type,
+                target_resource=target_resource,
+                payload=str(payload),
+                predicted_outcome=predicted_outcome,
+                actual_observation=actual_obs_str,
+                expected_observation=predicted_outcome,
+                info_gain=0.0,
+                recovery_attempted=False,
+                status=status,
+            )
+            self.traces.append(trace)
+            self.history.append({"action": f"{action_type.value} {target_resource}", "result": actual_obs_str})
+            return trace
+
 
         # ----- Visual Grounding Target Resolution -----
         # If numeric coordinates were not provided for a GUI action, attempt to
@@ -1075,15 +1298,35 @@ class ComputerUseAgent:
                     cmd_str = f"DISPLAY=:0 {cmd_str} &"
                 res = await self.computer.terminal(workspace_id, cmd_str)
                 actual_obs_str = res.stdout.strip() or f"Exit {res.exit_code}"
-                if res.exit_code == 124:
-                    status = ActionExecutionStatus.TIMED_OUT
-                    recovery_needed = True
-                elif res.exit_code in (125, 126):
-                    status = ActionExecutionStatus.BLOCKED
-                    recovery_needed = False
-                elif res.exit_code != 0:
-                    status = ActionExecutionStatus.FAILED
-                    recovery_needed = True
+                if res.exit_code != 0:
+                    err_class, err_reason = classify_failure(
+                        exit_code=res.exit_code,
+                        stdout=getattr(res, "stdout", "") or "",
+                        stderr=getattr(res, "stderr", "") or "",
+                        provider=provider_name,
+                        tool=tool_name,
+                    )
+                    fail_rec = self.failure_budget.record_failure(
+                        tool=tool_name,
+                        provider=provider_name,
+                        error_class=err_class,
+                        raw_error=getattr(res, "stderr", "") or getattr(res, "stdout", "") or f"Exit {res.exit_code}",
+                    )
+                    if self.failure_budget.is_strategy_exhausted(tool=tool_name, provider=provider_name):
+                        actual_obs_str = f"{actual_obs_str} | Strategy exhausted ({fail_rec.count} failures). Retrying is blocked."
+                        status = ActionExecutionStatus.FAILED
+                        recovery_needed = False
+                    elif res.exit_code == 124:
+                        status = ActionExecutionStatus.TIMED_OUT
+                        recovery_needed = True
+                    elif res.exit_code in (125, 126):
+                        status = ActionExecutionStatus.BLOCKED
+                        recovery_needed = False
+                    else:
+                        status = ActionExecutionStatus.FAILED
+                        recovery_needed = True
+                else:
+                    self.failure_budget.record_success(tool=tool_name, provider=provider_name)
 
             elif action_type == ComputerActionType.GIT_COMMIT:
                 msg = payload.get("message", "feat: automated patch")
@@ -1239,9 +1482,38 @@ class ComputerUseAgent:
                         f"findings={len(findings)}"
                     )
                     # Fail-closed: a blocked/failed tool is a recovery trigger.
-                    status_val = str(getattr(result, "status", ""))
+                    status_val = str(getattr(result, "status", "")).lower()
                     if status_val in ("blocked", "failed", "timed_out"):
-                        recovery_needed = True
+                        raw_err = getattr(result, "raw_output", "") or getattr(result, "error", "")
+                        exit_c = 126 if status_val == "blocked" else (124 if status_val == "timed_out" else 1)
+                        err_class, _ = classify_failure(
+                            exit_code=exit_c,
+                            stdout="",
+                            stderr=str(raw_err),
+                            provider=provider_name,
+                            tool=tool_name,
+                        )
+                        fail_rec = self.failure_budget.record_failure(
+                            tool=tool_name,
+                            provider=provider_name,
+                            error_class=err_class,
+                            raw_error=str(raw_err),
+                        )
+                        if self.failure_budget.is_strategy_exhausted(tool=tool_name, provider=provider_name):
+                            actual_obs_str = f"{actual_obs_str} | Strategy exhausted ({fail_rec.count} failures). Retrying is blocked."
+                            status = ActionExecutionStatus.FAILED
+                            recovery_needed = False
+                        elif status_val == "blocked":
+                            status = ActionExecutionStatus.BLOCKED
+                            recovery_needed = True
+                        elif status_val == "timed_out":
+                            status = ActionExecutionStatus.TIMED_OUT
+                            recovery_needed = True
+                        else:
+                            status = ActionExecutionStatus.FAILED
+                            recovery_needed = True
+                    else:
+                        self.failure_budget.record_success(tool=tool_name, provider=provider_name)
 
             elif action_type == ComputerActionType.TOOL_AUTHOR:
                 # Toolsmith (Phase A, AIOSR): the being authors a NEW tool for an
@@ -1339,6 +1611,19 @@ class ComputerUseAgent:
             actual_obs_str = f"Error: {str(e)}"
             recovery_needed = True
             status = ActionExecutionStatus.FAILED
+            err_class, _ = classify_failure(
+                exit_code=1,
+                stderr=str(e),
+                provider=provider_name,
+                tool=tool_name,
+            )
+            if hasattr(self, "failure_budget"):
+                self.failure_budget.record_failure(
+                    tool=tool_name,
+                    provider=provider_name,
+                    error_class=err_class,
+                    raw_error=str(e),
+                )
 
         # Adaptive Closed-Loop Recovery if needed
         if recovery_needed:

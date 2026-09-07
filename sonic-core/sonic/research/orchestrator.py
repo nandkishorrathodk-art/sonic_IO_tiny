@@ -44,8 +44,12 @@ from sonic.research.specialist import (
     FalsificationSpecialist,
     NetworkSpecialist,
     SpecialistAgent,
+    SpecialistBlockedError,
+    SpecialistBudget,
     SpecialistState,
+    SpecialistTimeoutError,
     WebSpecialist,
+    classify_specialist_failure,
 )
 
 logger = get_logger(__name__)
@@ -134,6 +138,10 @@ class ResearchBlackboard:
         self.custom_data: dict[str, Any] = {}
         self.observations: dict[str, list[ObservationClaim]] = {}
         self.conflicts: list[ConflictRecord] = []
+        self.active_workers: set[str] = set()
+        self.failed_workers: set[str] = set()
+        self.worker_failures: dict[str, list[dict[str, Any]]] = {}
+        self.attack_graph: Any = None
         self._orchestrator: AsyncResearchOrchestrator | None = None
         self._event_bus: ResearchEventBus | None = None
         self._lock = asyncio.Lock()
@@ -294,6 +302,176 @@ class ResearchBlackboard:
     def get_unresolved_conflicts(self) -> list[ConflictRecord]:
         return [c for c in self.conflicts if c.status != "resolved"]
 
+    def record_worker_start(self, worker_name: str) -> None:
+        """Record that a worker has begun execution."""
+        self.active_workers.add(worker_name)
+        self.failed_workers.discard(worker_name)
+        self.agent_states[worker_name] = SpecialistState.RESEARCHING.value
+
+    def record_worker_completion(
+        self,
+        worker_name: str,
+        state: SpecialistState | str = SpecialistState.COMPLETED,
+    ) -> None:
+        """Record normal or terminal completion of a worker."""
+        self.active_workers.discard(worker_name)
+        st_val = state.value if isinstance(state, SpecialistState) else str(state)
+        self.agent_states[worker_name] = st_val
+
+    def record_worker_failure(
+        self,
+        worker_name: str,
+        error: Any = "",
+        reason: str = "",
+        diagnostic: Any = None,
+        substrate_issue: str = "",
+        tool_issue: str = "",
+        state: SpecialistState | str = SpecialistState.FAILED,
+        context: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """
+        Record that a worker has failed, timed out, or been blocked.
+        Provides diagnostic breakdown for the central brain.
+        """
+        self.active_workers.discard(worker_name)
+        self.failed_workers.add(worker_name)
+        st_val = state.value if isinstance(state, SpecialistState) else str(state)
+        self.agent_states[worker_name] = st_val
+
+        err_str = str(error)
+        sub_issue = substrate_issue
+        t_issue = tool_issue
+        err_upper = err_str.upper()
+        reason_upper = reason.upper()
+
+        if not sub_issue:
+            if any(
+                k in err_upper or k in reason_upper
+                for k in (
+                    "PROVIDER_FAILURE",
+                    "PROVIDER",
+                    "SANDBOX",
+                    "CONTAINER",
+                    "DAEMON",
+                    "EXIT 125",
+                )
+            ):
+                sub_issue = "provider_failure"
+            elif any(k in err_upper or k in reason_upper for k in ("TIMEOUT", "DEADLINE")):
+                sub_issue = "timeout"
+            elif any(
+                k in err_upper or k in reason_upper
+                for k in ("PERMISSION", "DENIED", "BLOCKED", "EGRESS", "EXIT 126")
+            ):
+                sub_issue = "permission_denied"
+            else:
+                sub_issue = "substrate_unknown"
+
+        if not t_issue:
+            if "tool" in err_str.lower():
+                t_issue = "tool_execution_error"
+            elif "network" in err_str.lower() or "connection" in err_str.lower() or "port" in err_str.lower():
+                t_issue = "network_connection_error"
+            elif "timeout" in err_str.lower() or "timeout" in reason.lower():
+                t_issue = "tool_timeout"
+            else:
+                t_issue = "execution_error"
+
+        clean_reason = reason or ("PROVIDER_FAILURE" if st_val == "blocked" else "EXECUTION_FAILURE")
+        if ":" in clean_reason:
+            prefix = clean_reason.split(":", 1)[0].strip()
+            if prefix in (
+                "TIMEOUT",
+                "PROVIDER_FAILURE",
+                "BLOCKED",
+                "BUDGET_EXHAUSTED",
+                "FAILED",
+                "EXECUTION_FAILURE",
+                "PERMISSION_FAILURE",
+                "POLICY_BLOCK",
+            ):
+                clean_reason = prefix
+
+        record = {
+            "worker": worker_name,
+            "specialist": worker_name,
+            "agent_name": worker_name,
+            "error": err_str,
+            "error_type": type(error).__name__ if isinstance(error, BaseException) else "Exception",
+            "reason": clean_reason,
+            "substrate_issue": sub_issue,
+            "tool_issue": t_issue,
+            "diagnostic": diagnostic or err_str or reason,
+            "state": st_val,
+            "timestamp": time.time(),
+            "context": context or {},
+        }
+        self.worker_failures.setdefault(worker_name, []).append(record)
+        return record
+
+    def get_active_workers(self) -> set[str]:
+        """Return the set of currently active workers."""
+        return set(self.active_workers)
+
+    def get_failed_workers(self) -> set[str]:
+        """Return the set of workers that failed or were blocked."""
+        return set(self.failed_workers)
+
+    def get_worker_failures(
+        self, worker_name: str | None = None
+    ) -> list[dict[str, Any]] | dict[str, list[dict[str, Any]]]:
+        """Return failures for a specific worker or all workers."""
+        if worker_name is not None:
+            return list(self.worker_failures.get(worker_name, []))
+        return {k: list(v) for k, v in self.worker_failures.items()}
+
+    def diagnose_failure(self, worker_name: str) -> dict[str, Any] | None:
+        """
+        Diagnose the failure of a worker for central brain inspection.
+        Returns failure reason, substrate/tool issues, and state.
+        """
+        records = self.worker_failures.get(worker_name, [])
+        if not records:
+            if worker_name in self.failed_workers:
+                return {
+                    "worker": worker_name,
+                    "specialist": worker_name,
+                    "agent_name": worker_name,
+                    "state": self.agent_states.get(worker_name, "failed"),
+                    "reason": "UNKNOWN_FAILURE",
+                    "substrate_issue": "unknown",
+                    "tool_issue": "unknown",
+                    "diagnostic": "No diagnostic details recorded",
+                    "can_resume": True,
+                }
+            return None
+        latest = records[-1]
+        return {
+            "worker": worker_name,
+            "specialist": worker_name,
+            "agent_name": worker_name,
+            "state": latest.get("state"),
+            "reason": latest.get("reason"),
+            "error": latest.get("error"),
+            "substrate_issue": latest.get("substrate_issue"),
+            "tool_issue": latest.get("tool_issue"),
+            "diagnostic": latest.get("diagnostic"),
+            "can_resume": True,
+            "timestamp": latest.get("timestamp"),
+        }
+
+    def clear_worker_failure(self, worker_name: str) -> None:
+        """Clear failure status when resuming a specialist."""
+        self.failed_workers.discard(worker_name)
+
+    def attach_attack_graph(self, attack_graph: Any) -> None:
+        """Attach attack graph to blackboard to preserve DAG structure across specialist lifecycle."""
+        self.attack_graph = attack_graph
+
+    def get_attack_graph(self) -> Any:
+        """Return attached attack graph if available."""
+        return self.attack_graph
+
     async def record_event(self, event: ResearchEvent) -> None:
         """Categorize and store events into the blackboard."""
         async with self._lock:
@@ -318,6 +496,22 @@ class ResearchBlackboard:
             elif isinstance(event, ResearchStateChangedEvent):
                 self.agent_states[event.agent_name] = event.new_state
                 self.state_history.append(event)
+                if event.new_state == SpecialistState.RESEARCHING.value:
+                    self.active_workers.add(event.agent_name)
+                    self.failed_workers.discard(event.agent_name)
+                elif event.new_state in (SpecialistState.FAILED.value, SpecialistState.BLOCKED.value):
+                    self.active_workers.discard(event.agent_name)
+                    self.failed_workers.add(event.agent_name)
+                    if event.agent_name not in self.worker_failures:
+                        self.record_worker_failure(
+                            worker_name=event.agent_name,
+                            error=event.reason,
+                            reason="PROVIDER_FAILURE" if event.new_state == SpecialistState.BLOCKED.value else (event.reason or "FAILED"),
+                            diagnostic=event.reason,
+                            state=event.new_state,
+                        )
+                elif event.new_state == SpecialistState.COMPLETED.value:
+                    self.active_workers.discard(event.agent_name)
 
     def get_endpoints(self) -> list[EndpointDiscoveredEvent]:
         return list(self.endpoints)
@@ -348,6 +542,9 @@ class ResearchBlackboard:
             "conflicts_count": len(self.conflicts),
             "unresolved_conflicts_count": len(self.get_unresolved_conflicts()),
             "agent_states": dict(self.agent_states),
+            "active_workers": list(self.active_workers),
+            "failed_workers": list(self.failed_workers),
+            "worker_failures": {k: list(v) for k, v in self.worker_failures.items()},
         }
 
 
@@ -771,6 +968,79 @@ class AsyncResearchOrchestrator:
             return True
         return False
 
+    def resume_specialist(
+        self,
+        specialist_name_or_agent: str | SpecialistAgent,
+        context: dict[str, Any] | None = None,
+        reset_budget: bool = True,
+        priority: int | None = None,
+        investigation_fn: Callable[..., Any] | None = None,
+    ) -> SpecialistAgent:
+        """
+        Restart or resume a failed/blocked specialist using preserved research state on blackboard.
+        Preserves all previous findings, discoveries, attack graph nodes, and active tasks.
+        """
+        if isinstance(specialist_name_or_agent, SpecialistAgent):
+            specialist = specialist_name_or_agent
+            name = specialist.name
+        else:
+            name = str(specialist_name_or_agent)
+            specialist = self._all_specialists.get(name)
+            if specialist is None:
+                for s_name, s_agent in self._all_specialists.items():
+                    if s_name == name or s_agent.__class__.__name__ == name or s_name.startswith(name):
+                        specialist = s_agent
+                        name = s_name
+                        break
+            if specialist is None:
+                raise ValueError(f"Specialist '{name}' not found in orchestrator specialists registry.")
+
+        # 1. Reset lifecycle state and cancellation flags
+        specialist.state = SpecialistState.IDLE
+        specialist._cancelled = False
+        specialist._cancel_event.clear()
+        specialist.last_error = None
+        specialist.failure_reason = None
+        specialist.failure_diagnostic = None
+        specialist.state_reason = ""
+        if investigation_fn is not None:
+            specialist._investigation_fn = investigation_fn
+
+        if reset_budget:
+            specialist.budget.actions_used = 0
+            specialist.budget.tokens_used = 0
+            specialist.budget.start_time = None
+
+        # 2. Update blackboard state
+        self.blackboard.clear_worker_failure(name)
+        self.blackboard.agent_states[name] = SpecialistState.IDLE.value
+
+        # 3. Cleanly clear any previous active task reference
+        existing_task = self._active_tasks.pop(name, None)
+        if existing_task and not existing_task.done():
+            existing_task.cancel()
+        self._active_specialists.pop(name, None)
+
+        # 4. Prepare preserved context enriched with accumulated blackboard state
+        resumed_context: dict[str, Any] = {
+            "targets": self.blackboard.get_targets(),
+            "endpoints": [ep.model_dump() for ep in self.blackboard.endpoints],
+            "active_hypotheses": [h.model_dump() for h in self.blackboard.get_active_hypotheses()],
+            "resumed": True,
+        }
+        if context:
+            resumed_context.update(context)
+
+        # 5. Enqueue into priority queue and notify orchestrator loop
+        self.schedule_specialist(
+            specialist,
+            context=resumed_context,
+            priority=priority if priority is not None else specialist.priority,
+        )
+
+        logger.info("specialist_resumed", specialist=name, priority=priority)
+        return specialist
+
     def formulate_unknowns(self) -> list[Unknown]:
         """
         Formulate 'What is still unknown?' by analyzing current blackboard state:
@@ -1129,15 +1399,41 @@ class AsyncResearchOrchestrator:
         self._task_counter += 1
         task_id = f"task-{self._task_counter:03d}-{specialist.agent_id}"
         t_start = time.time()
+        self.blackboard.record_worker_start(specialist.name)
         async with self._semaphore:
             try:
-                return await specialist.run(context, self.event_bus)
+                res = await specialist.run(context, self.event_bus)
+                if specialist.state == SpecialistState.COMPLETED:
+                    self.blackboard.record_worker_completion(specialist.name, specialist.state)
+                elif specialist.state in (SpecialistState.FAILED, SpecialistState.BLOCKED):
+                    self.blackboard.record_worker_failure(
+                        worker_name=specialist.name,
+                        error=specialist.last_error or specialist.state_reason,
+                        reason=specialist.failure_reason or specialist.state_reason,
+                        diagnostic=specialist.failure_diagnostic or specialist.state_reason,
+                        state=specialist.state,
+                        context=context,
+                    )
+                return res
             except asyncio.CancelledError:
-                pass
+                self.blackboard.record_worker_completion(specialist.name, SpecialistState.COMPLETED)
             except Exception as ex:
                 logger.warning(
                     "specialist_execution_exception", agent=specialist.name, error=str(ex)
                 )
+                target_state, reason, err_type, diag = classify_specialist_failure(ex)
+                if specialist.state not in (SpecialistState.FAILED, SpecialistState.BLOCKED):
+                    with contextlib.suppress(Exception):
+                        await specialist.transition_to(target_state, f"{reason}: {diag}", self.event_bus)
+                self.blackboard.record_worker_failure(
+                    worker_name=specialist.name,
+                    error=str(ex),
+                    reason=reason,
+                    diagnostic=diag,
+                    state=specialist.state,
+                    context=context,
+                )
+                return None
             finally:
                 t_end = time.time()
                 t_duration = round(t_end - t_start, 4)

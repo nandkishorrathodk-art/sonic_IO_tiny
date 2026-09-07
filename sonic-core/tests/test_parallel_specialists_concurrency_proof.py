@@ -42,6 +42,8 @@ from sonic.research.specialist import (
     CloudSpecialist,
     FalsificationSpecialist,
     NetworkSpecialist,
+    SpecialistAgent,
+    SpecialistBlockedError,
     SpecialistState,
     WebSpecialist,
 )
@@ -339,3 +341,120 @@ async def test_workstation_prompt_triggers_parallel_swarm_and_records_metrics():
     assert "metrics" in state
     assert state["metrics"]["completed_specialists"] >= 7
     assert state["metrics"]["parallelism_factor"] == state["parallelism_factor"]
+
+
+# =====================================================================
+# 5. Parallel Swarm Failure Isolation & State Resumption Proof
+# =====================================================================
+
+@pytest.mark.asyncio
+async def test_parallel_swarm_failure_isolation_and_resumption():
+    """
+    Section 8-11: In a 7-specialist swarm where one worker fails with PROVIDER_FAILURE:
+      1. Failed specialist transitions to BLOCKED, recorded on blackboard.
+      2. The remaining 6 specialists execute concurrently without interruption.
+      3. True parallelism holds (parallelism_factor > 1.5).
+      4. Central brain resumes the failed specialist upon environment restoration.
+      5. Resumed specialist succeeds and all findings/graph state are preserved and augmented.
+    """
+    bus = ResearchEventBus()
+    blackboard = ResearchBlackboard()
+    orchestrator = AsyncResearchOrchestrator(
+        event_bus=bus,
+        blackboard=blackboard,
+        max_concurrent_specialists=10,
+        decomposition_rules=[],
+    )
+
+    provider_online = False
+
+    async def flaky_network_scan(agent: SpecialistAgent, ctx: dict[str, Any], eb: ResearchEventBus):
+        nonlocal provider_online
+        if not provider_online:
+            await asyncio.sleep(0.02)
+            raise SpecialistBlockedError(
+                "Sandbox provider unreachable: docker daemon reset (exit 125)",
+                reason="PROVIDER_FAILURE",
+                diagnostic="Substrate container exit 125",
+            )
+        await asyncio.sleep(0.10)
+        await eb.publish(TargetDiscoveredEvent(source=agent.name, target="mock.corp.internal", port=443, service="https"))
+        return {"ports": [443]}
+
+    task_delay = 0.15
+    network_spec = NetworkSpecialist(
+        name="NetworkSpecialist",
+        target="mock.corp.internal",
+        investigation_fn=flaky_network_scan,
+    )
+    specialists = [
+        network_spec,
+        WebSpecialist(name="WebSpecialist", target_url="https://mock.corp.internal"),
+        ApiSpecialist(name="ApiSpecialist", target_url="https://mock.corp.internal/api"),
+        AuthSpecialist(name="AuthSpecialist", target_url="https://mock.corp.internal/auth"),
+        BusinessLogicSpecialist(name="BusinessLogicSpecialist", target_url="https://mock.corp.internal"),
+        CloudSpecialist(name="CloudSpecialist", target_host="mock.corp.internal"),
+        FalsificationSpecialist(name="FalsificationSpecialist"),
+    ]
+
+    context = {
+        "target": "mock.corp.internal",
+        "target_url": "https://mock.corp.internal",
+        "target_host": "mock.corp.internal",
+        "delay": task_delay,
+    }
+
+    result_p1: ResearchResult = await orchestrator.run(
+        initial_specialists=specialists,
+        initial_context=context,
+        timeout_seconds=5.0,
+    )
+
+    # 1. Failure isolation verification
+    assert network_spec.state == SpecialistState.BLOCKED
+    assert "NetworkSpecialist" in result_p1.specialists_blocked
+    assert "NetworkSpecialist" not in result_p1.specialists_succeeded
+
+    # 2. Remaining 6 specialists continued and succeeded
+    remaining_names = [
+        "WebSpecialist",
+        "ApiSpecialist",
+        "AuthSpecialist",
+        "BusinessLogicSpecialist",
+        "CloudSpecialist",
+        "FalsificationSpecialist",
+    ]
+    for s_name in remaining_names:
+        assert s_name in result_p1.specialists_succeeded
+        agent = orchestrator._all_specialists[s_name]
+        assert agent.state == SpecialistState.COMPLETED
+
+    assert result_p1.completed_specialists >= 6
+    assert result_p1.total_specialists >= 7
+
+    # 3. Concurrency holds across active workers
+    assert result_p1.parallelism_factor > 1.5, (
+        f"Expected parallelism_factor > 1.5 with 6 concurrent workers, got {result_p1.parallelism_factor}"
+    )
+
+    # 4. Blackboard diagnostics
+    assert "NetworkSpecialist" in blackboard.failed_workers
+    diag = blackboard.diagnose_failure("NetworkSpecialist")
+    assert diag is not None
+    assert diag["reason"] == "PROVIDER_FAILURE"
+    assert diag["substrate_issue"] == "provider_failure"
+    assert "exit 125" in str(diag["diagnostic"])
+
+    # 5. Environment restored: resume NetworkSpecialist
+    provider_online = True
+    resumed = orchestrator.resume_specialist("NetworkSpecialist", context={"restored": True, "delay": 0.05})
+    assert resumed.state == SpecialistState.IDLE
+    assert "NetworkSpecialist" not in blackboard.failed_workers
+
+    result_p2: ResearchResult = await orchestrator.run(timeout_seconds=5.0)
+    assert resumed.state == SpecialistState.COMPLETED
+    assert "NetworkSpecialist" in result_p2.specialists_succeeded
+    assert "NetworkSpecialist" not in result_p2.specialists_failed
+    assert "NetworkSpecialist" not in result_p2.specialists_blocked
+    assert any(t.port == 443 for t in blackboard.targets.values())
+

@@ -31,25 +31,59 @@ def _new_id(prefix: str = "trace") -> str:
 
 class ActionExecutionStatus(StrEnum):
     RUNNING = "RUNNING"
-    COMPLETED = "COMPLETED"
-    SUCCESS = "SUCCESS"  # alias for COMPLETED
+    SUCCEEDED = "SUCCEEDED"
+    COMPLETED = "COMPLETED"  # alias/eq with SUCCEEDED / SUCCESS
+    SUCCESS = "SUCCESS"  # alias/eq with SUCCEEDED / COMPLETED
     FAILED = "FAILED"
     TIMED_OUT = "TIMED_OUT"
     BLOCKED = "BLOCKED"
     CANCELLED = "CANCELLED"
     RECOVERED = "RECOVERED"
     VERIFIED = "VERIFIED"
+    UNVERIFIED = "UNVERIFIED"
 
     def __eq__(self, other: object) -> bool:
         if super().__eq__(other):
             return True
-        if self.value == "COMPLETED" and (other == "SUCCESS" or getattr(other, "value", None) == "SUCCESS"):
-            return True
-        if self.value == "SUCCESS" and (other == "COMPLETED" or getattr(other, "value", None) == "COMPLETED"):
+        aliases = {"COMPLETED", "SUCCESS", "SUCCEEDED"}
+        self_val = getattr(self, "value", str(self))
+        other_val = getattr(other, "value", str(other)) if (hasattr(other, "value") or isinstance(other, str)) else None
+        if self_val in aliases and other_val in aliases:
             return True
         return False
 
     __hash__ = StrEnum.__hash__
+
+
+class FailureClassification(StrEnum):
+    TARGET_FAILURE = "TARGET_FAILURE"
+    TOOL_FAILURE = "TOOL_FAILURE"
+    PROVIDER_FAILURE = "PROVIDER_FAILURE"
+    SANDBOX_FAILURE = "SANDBOX_FAILURE"
+    NETWORK_FAILURE = "NETWORK_FAILURE"
+    PERMISSION_FAILURE = "PERMISSION_FAILURE"
+    POLICY_BLOCK = "POLICY_BLOCK"
+    TIMEOUT = "TIMEOUT"
+    INVALID_COMMAND = "INVALID_COMMAND"
+    UNKNOWN_FAILURE = "UNKNOWN_FAILURE"
+
+
+class StrategyState(StrEnum):
+    ACTIVE = "ACTIVE"
+    DEGRADED = "DEGRADED"
+    EXHAUSTED = "EXHAUSTED"
+    ABANDONED = "ABANDONED"
+
+
+class FailureRecord(BaseModel):
+    """Record of an individual tool, provider, or environment failure."""
+    tool: str
+    provider: str
+    error_class: FailureClassification
+    environment: str = "sandbox"
+    timestamp: str = Field(default_factory=_now)
+    count: int = 1
+    raw_error: str = ""
 
 
 class ComputerAutonomyLevel(StrEnum):

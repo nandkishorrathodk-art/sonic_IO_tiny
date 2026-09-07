@@ -24,14 +24,19 @@ from sonic.research.event_bus import (
 )
 from sonic.research.orchestrator import (
     AsyncResearchOrchestrator,
+    ResearchBlackboard,
     ResearchResult,
 )
 from sonic.research.specialist import (
+    ApiSpecialist,
+    AuthSpecialist,
     FalsificationSpecialist,
     NetworkSpecialist,
     SpecialistAgent,
+    SpecialistBlockedError,
     SpecialistBudget,
     SpecialistState,
+    SpecialistTimeoutError,
     WebSpecialist,
 )
 
@@ -364,4 +369,296 @@ async def test_orchestrator_cancellation_and_priority_queue():
         initial_context={"delay": 2.0},
     )
     assert cancel_result.status == "cancelled"
+
+
+# =====================================================================
+# 7. Worker Failure Isolation, Diagnosis & Resumption (Sections 8, 9, 10, 11)
+# =====================================================================
+
+@pytest.mark.asyncio
+async def test_worker_failure_isolation_in_parallelism():
+    """
+    Section 8: When multiple specialists are running in parallel:
+    If Specialist A (NetworkSpecialist) fails/gets BLOCKED due to PROVIDER_FAILURE:
+      - Specialist A transitions to SpecialistState.BLOCKED
+      - Diagnostic details and failure are recorded on ResearchBlackboard
+      - CRITICAL: Specialists B (WebSpecialist), C (ApiSpecialist), D (FalsificationSpecialist)
+        MUST CONTINUE running independently without interruption!
+    """
+    bus = ResearchEventBus()
+    blackboard = ResearchBlackboard()
+    orchestrator = AsyncResearchOrchestrator(
+        event_bus=bus,
+        blackboard=blackboard,
+        max_concurrent_specialists=10,
+        decomposition_rules=[],
+    )
+
+    # Specialist A: Fails immediately with PROVIDER_FAILURE (exit 125 / sandbox dropped)
+    async def failing_network(agent: SpecialistAgent, ctx: dict, eb: ResearchEventBus):
+        await asyncio.sleep(0.02)
+        raise SpecialistBlockedError(
+            "Docker daemon unreachable: container terminated unexpectedly",
+            reason="PROVIDER_FAILURE",
+            diagnostic="Container runtime exit 125: dockerd connection reset",
+        )
+
+    network_spec = NetworkSpecialist(
+        name="NetworkSpecialist",
+        target="10.0.0.1",
+        investigation_fn=failing_network,
+    )
+
+    # Specialist B: WebSpecialist runs concurrently and succeeds after 0.08s
+    web_spec = WebSpecialist(name="WebSpecialist", target_url="http://10.0.0.1")
+
+    # Specialist C: ApiSpecialist runs concurrently and succeeds after 0.08s
+    api_spec = ApiSpecialist(name="ApiSpecialist", target_url="http://10.0.0.1/api")
+
+    # Specialist D: FalsificationSpecialist runs concurrently and succeeds
+    falsifier = FalsificationSpecialist(name="FalsificationSpecialist")
+
+    specialists = [network_spec, web_spec, api_spec, falsifier]
+    context = {"delay": 0.08, "target": "10.0.0.1"}
+
+    result: ResearchResult = await orchestrator.run(
+        initial_specialists=specialists,
+        initial_context=context,
+        timeout_seconds=5.0,
+    )
+
+    # 1. Specialist A is BLOCKED
+    assert network_spec.state == SpecialistState.BLOCKED
+    assert "NetworkSpecialist" in result.specialists_blocked
+    assert "NetworkSpecialist" not in result.specialists_succeeded
+
+    # 2. Specialists B, C, D continued without interruption and SUCCEEDED
+    assert web_spec.state == SpecialistState.COMPLETED
+    assert api_spec.state == SpecialistState.COMPLETED
+    assert falsifier.state == SpecialistState.COMPLETED
+
+    assert "WebSpecialist" in result.specialists_succeeded
+    assert "ApiSpecialist" in result.specialists_succeeded
+    assert "FalsificationSpecialist" in result.specialists_succeeded
+    assert result.completed_specialists >= 3
+    assert result.total_specialists >= 4
+    assert result.status == "completed"
+
+    # 3. Blackboard state verification
+    assert "NetworkSpecialist" in blackboard.failed_workers
+    assert "WebSpecialist" not in blackboard.failed_workers
+    assert "ApiSpecialist" not in blackboard.failed_workers
+    assert len(blackboard.active_workers) == 0
+
+    # 4. Diagnostic details on blackboard
+    assert "NetworkSpecialist" in blackboard.worker_failures
+    failures = blackboard.worker_failures["NetworkSpecialist"]
+    assert len(failures) >= 1
+    f_diag = failures[-1]
+    assert f_diag["reason"] == "PROVIDER_FAILURE"
+    assert f_diag["substrate_issue"] == "provider_failure"
+    assert "Docker daemon unreachable" in f_diag["error"]
+    assert "exit 125" in str(f_diag["diagnostic"])
+
+
+@pytest.mark.asyncio
+async def test_worker_timeout_failure_isolation():
+    """
+    Section 8: Specialist A times out (TIMEOUT), but Specialist B continues running.
+    """
+    bus = ResearchEventBus()
+    blackboard = ResearchBlackboard()
+    orchestrator = AsyncResearchOrchestrator(
+        event_bus=bus,
+        blackboard=blackboard,
+        max_concurrent_specialists=5,
+        decomposition_rules=[],
+    )
+
+    async def timing_out_worker(agent: SpecialistAgent, ctx: dict, eb: ResearchEventBus):
+        await asyncio.sleep(0.02)
+        raise SpecialistTimeoutError(
+            "Service probe timed out after 30s deadline",
+            reason="TIMEOUT",
+            diagnostic="Probe deadline exceeded against 192.168.1.50:80",
+        )
+
+    timed_spec = NetworkSpecialist(
+        name="TimedNetwork",
+        target="192.168.1.50",
+        investigation_fn=timing_out_worker,
+    )
+    web_spec = WebSpecialist(name="NormalWeb", target_url="http://192.168.1.50")
+
+    result = await orchestrator.run(
+        initial_specialists=[timed_spec, web_spec],
+        initial_context={"delay": 0.05},
+        timeout_seconds=5.0,
+    )
+
+    assert timed_spec.state in (SpecialistState.FAILED, SpecialistState.BLOCKED)
+    assert web_spec.state == SpecialistState.COMPLETED
+    assert "TimedNetwork" in blackboard.failed_workers
+    assert "NormalWeb" not in blackboard.failed_workers
+    assert "TimedNetwork" in blackboard.worker_failures
+    f_entry = blackboard.worker_failures["TimedNetwork"][-1]
+    assert f_entry["reason"] == "TIMEOUT"
+    assert f_entry["substrate_issue"] == "timeout"
+
+
+@pytest.mark.asyncio
+async def test_central_brain_failure_diagnosis_on_blackboard():
+    """
+    Section 9: Central brain inspects ResearchBlackboard and recognizes:
+      - active_workers, failed_workers, worker_failures
+      - Which specialist failed
+      - Why it failed (reason)
+      - What substrate or tool issue occurred (substrate_issue, tool_issue)
+      - FalsificationSpecialist operates normally
+    """
+    bus = ResearchEventBus()
+    blackboard = ResearchBlackboard()
+    orchestrator = AsyncResearchOrchestrator(
+        event_bus=bus,
+        blackboard=blackboard,
+        max_concurrent_specialists=10,
+        decomposition_rules=[],
+    )
+
+    # 1. Simulate failure of NetworkSpecialist with exit 126 / permission denied
+    async def permission_fail(agent: SpecialistAgent, ctx: dict, eb: ResearchEventBus):
+        raise SpecialistBlockedError(
+            "bash: ./nmap: Permission denied (exit 126)",
+            reason="BLOCKED",
+            diagnostic="Substrate security policy blocked execution",
+        )
+
+    net_spec = NetworkSpecialist(name="NetPermFail", investigation_fn=permission_fail)
+    auth_spec = AuthSpecialist(name="AuthWorking", target_url="http://target/auth")
+    falsifier = FalsificationSpecialist(name="TruthChecker")
+
+    await orchestrator.run(
+        initial_specialists=[net_spec, auth_spec, falsifier],
+        initial_context={"delay": 0.04, "verified": True},
+        timeout_seconds=5.0,
+    )
+
+    # 2. Central brain queries the blackboard
+    failed = blackboard.get_failed_workers()
+    assert "NetPermFail" in failed
+    assert "AuthWorking" not in failed
+    assert "TruthChecker" not in failed
+
+    diag = blackboard.diagnose_failure("NetPermFail")
+    assert diag is not None
+    assert diag["worker"] == "NetPermFail"
+    assert diag["state"] == "blocked"
+    assert diag["reason"] in ("BLOCKED", "PROVIDER_FAILURE")
+    assert diag["substrate_issue"] == "permission_denied"
+    assert "Permission denied" in diag["error"]
+    assert diag["can_resume"] is True
+
+    # 3. Snapshot includes worker tracking
+    snap = blackboard.snapshot()
+    assert "active_workers" in snap
+    assert "failed_workers" in snap
+    assert "worker_failures" in snap
+    assert "NetPermFail" in snap["failed_workers"]
+    assert "NetPermFail" in snap["worker_failures"]
+
+    # 4. FalsificationSpecialist continued and verified findings
+    assert falsifier.state == SpecialistState.COMPLETED
+    assert len(blackboard.verified_vulnerabilities) > 0
+
+
+@pytest.mark.asyncio
+async def test_state_resumption_preserving_findings_and_attack_graph():
+    """
+    Section 10 & 11: State Resumption:
+    When a failed/blocked specialist's environment is restored or recovered:
+    orchestrator.resume_specialist(specialist_name, ...) can restart or resume
+    that specialist using the preserved research state on the blackboard without
+    losing any previous findings, attack graph nodes, or active tasks.
+    """
+    from sonic.research.attack_graph import AttackGraph, AttackNodeType
+
+    bus = ResearchEventBus()
+    blackboard = ResearchBlackboard()
+    attack_graph = AttackGraph()
+    blackboard.attach_attack_graph(attack_graph)
+
+    # Seed attack graph node and blackboard endpoint from previous research
+    attack_graph.add_node("target-web", "Target Web (:80)", AttackNodeType.ENTRY_POINT)
+    await bus.publish(TargetDiscoveredEvent(target="10.10.10.1", port=80, service="http"))
+    await bus.publish(EndpointDiscoveredEvent(url="http://10.10.10.1/api/v1", method="GET"))
+    await blackboard.record_event(TargetDiscoveredEvent(target="10.10.10.1", port=80, service="http"))
+    await blackboard.record_event(EndpointDiscoveredEvent(url="http://10.10.10.1/api/v1", method="GET"))
+
+    orchestrator = AsyncResearchOrchestrator(
+        event_bus=bus,
+        blackboard=blackboard,
+        max_concurrent_specialists=5,
+        decomposition_rules=[],
+    )
+
+    # Phase 1: NetworkSpecialist fails due to temporary PROVIDER_FAILURE
+    provider_online = False
+
+    async def flaky_recon(agent: SpecialistAgent, ctx: dict, eb: ResearchEventBus):
+        nonlocal provider_online
+        if not provider_online:
+            raise SpecialistBlockedError(
+                "Substrate connection refused: sandbox agent down",
+                reason="PROVIDER_FAILURE",
+            )
+        # Once restored: discover port 8080 and publish
+        await eb.publish(
+            TargetDiscoveredEvent(
+                source=agent.name,
+                target="10.10.10.1",
+                port=8080,
+                service="http-alt",
+            )
+        )
+        return {"ports_found": [8080]}
+
+    recon_spec = NetworkSpecialist(
+        name="FlakyRecon",
+        target="10.10.10.1",
+        investigation_fn=flaky_recon,
+    )
+
+    result_p1 = await orchestrator.run(initial_specialists=[recon_spec], timeout_seconds=5.0)
+    assert recon_spec.state == SpecialistState.BLOCKED
+    assert "FlakyRecon" in blackboard.failed_workers
+    assert "FlakyRecon" in result_p1.specialists_blocked
+
+    # Verify previous findings on blackboard and attack graph were preserved
+    assert len(blackboard.endpoints) >= 1
+    assert len(attack_graph.nodes) == 1
+    assert "target-web" in attack_graph.nodes
+
+    # Phase 2: Environment restored. Central brain resumes the specialist!
+    provider_online = True
+
+    # Test both sync return and state reset
+    resumed = orchestrator.resume_specialist("FlakyRecon", context={"environment": "restored"})
+    assert resumed.name == "FlakyRecon"
+    assert resumed.state == SpecialistState.IDLE
+    assert "FlakyRecon" not in blackboard.failed_workers
+    # Failure history is still preserved for auditing
+    assert "FlakyRecon" in blackboard.worker_failures
+
+    # Run orchestrator to execute the resumed specialist
+    result_p2 = await orchestrator.run(timeout_seconds=5.0)
+    assert resumed.state == SpecialistState.COMPLETED
+    assert "FlakyRecon" in result_p2.specialists_succeeded
+    assert "FlakyRecon" not in result_p2.specialists_failed
+    assert "FlakyRecon" not in result_p2.specialists_blocked
+
+    # Verify all previous findings and attack graph nodes were preserved AND augmented
+    assert len(blackboard.endpoints) >= 1
+    assert any(t.port == 8080 for t in blackboard.targets.values())
+    assert "target-web" in attack_graph.nodes
+
 

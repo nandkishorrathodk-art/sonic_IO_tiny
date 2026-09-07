@@ -54,6 +54,91 @@ class BudgetExhaustedError(Exception):
     """Raised when an agent exhausts its action, token, or time budget."""
 
 
+class SpecialistBlockedError(Exception):
+    """Raised when a substrate, sandbox, provider, or security envelope blocks specialist execution."""
+
+    def __init__(
+        self,
+        message: str = "Specialist execution blocked by substrate or provider",
+        reason: str = "PROVIDER_FAILURE",
+        diagnostic: str = "",
+        details: Any = None,
+    ) -> None:
+        super().__init__(message)
+        self.message = message
+        self.reason = reason
+        self.diagnostic = diagnostic or message
+        self.details = details or {}
+
+
+class SpecialistTimeoutError(Exception):
+    """Raised when a specialist times out during investigation."""
+
+    def __init__(
+        self,
+        message: str = "Specialist execution timed out",
+        reason: str = "TIMEOUT",
+        diagnostic: str = "",
+        details: Any = None,
+    ) -> None:
+        super().__init__(message)
+        self.message = message
+        self.reason = reason
+        self.diagnostic = diagnostic or message
+        self.details = details or {}
+
+
+def classify_specialist_failure(
+    ex: BaseException,
+) -> tuple[SpecialistState, str, str, str]:
+    """
+    Classify an exception into (target_state, reason, error_type, diagnostic).
+    Distinguishes BLOCKED (e.g. PROVIDER_FAILURE, exit 125/126, sandbox container errors)
+    from FAILED (e.g. TIMEOUT, budget exhaustion, or generic runtime errors).
+    """
+    error_type = type(ex).__name__
+    ex_str = str(ex)
+    ex_upper = ex_str.upper()
+
+    if isinstance(ex, SpecialistBlockedError):
+        reason = ex.reason or "PROVIDER_FAILURE"
+        diag = ex.diagnostic or ex_str
+        return SpecialistState.BLOCKED, reason, error_type, diag
+
+    if isinstance(ex, SpecialistTimeoutError):
+        reason = ex.reason or "TIMEOUT"
+        diag = ex.diagnostic or ex_str
+        state = SpecialistState.BLOCKED if "BLOCKED" in ex_upper else SpecialistState.FAILED
+        return state, reason, error_type, diag
+
+    if isinstance(ex, (TimeoutError, asyncio.TimeoutError)):
+        return SpecialistState.FAILED, "TIMEOUT", error_type, f"Operation timed out: {ex_str or 'timeout exceeded'}"
+
+    if isinstance(ex, BudgetExhaustedError):
+        return SpecialistState.FAILED, "BUDGET_EXHAUSTED", error_type, f"Budget exhausted: {ex_str}"
+
+    if any(
+        k in ex_upper
+        for k in (
+            "PROVIDER_FAILURE",
+            "BLOCKED",
+            "EXIT 125",
+            "EXIT 126",
+            "SANDBOX_ERROR",
+            "CONTAINER IS NOT RUNNING",
+            "PERMISSION DENIED",
+        )
+    ):
+        reason = "PROVIDER_FAILURE" if "PROVIDER" in ex_upper else "BLOCKED"
+        return SpecialistState.BLOCKED, reason, error_type, ex_str
+
+    if "TIMEOUT" in ex_upper:
+        state = SpecialistState.BLOCKED if "BLOCKED" in ex_upper else SpecialistState.FAILED
+        return state, "TIMEOUT", error_type, ex_str
+
+    return SpecialistState.FAILED, "EXECUTION_FAILURE", error_type, ex_str
+
+
 class SpecialistBudget(BaseModel):
     """Execution budget limits for a specialist agent."""
     max_actions: int = 50
@@ -130,6 +215,17 @@ class SpecialistAgent(ABC):
         self._investigation_fn = investigation_fn
         self._cancelled = False
         self._cancel_event = asyncio.Event()
+        self._event_bus: ResearchEventBus | None = None
+        self.last_error: str | None = None
+        self.failure_reason: str | None = None
+        self.failure_diagnostic: dict[str, Any] | str | None = None
+        self.state_reason: str = ""
+
+    def __await__(self):
+        """Allow both synchronous and awaited specialist references (e.g. resume_specialist)."""
+        async def _identity() -> SpecialistAgent:
+            return self
+        return _identity().__await__()
 
     async def transition_to(
         self,
@@ -140,8 +236,13 @@ class SpecialistAgent(ABC):
         """Update specialist lifecycle state and announce via event bus."""
         old_state = self.state.value
         self.state = new_state
-        if event_bus is not None:
-            await event_bus.publish(
+        self.state_reason = reason
+        if new_state in (SpecialistState.FAILED, SpecialistState.BLOCKED) and not self.failure_reason:
+            clean = reason.split(":", 1)[0].strip() if ":" in reason else reason
+            self.failure_reason = clean or ("PROVIDER_FAILURE" if new_state == SpecialistState.BLOCKED else "FAILED")
+        target_bus = event_bus or self._event_bus
+        if target_bus is not None:
+            await target_bus.publish(
                 ResearchStateChangedEvent(
                     agent_name=self.name,
                     old_state=old_state,
@@ -257,7 +358,9 @@ class SpecialistAgent(ABC):
           - Enforces budget timers and action limits
           - Handles cooperative cancellation
           - Emits lifecycle state transitions
+          - Isolates worker failures (BLOCKED / FAILED) with rich diagnostics
         """
+        self._event_bus = event_bus
         if self._cancelled:
             await self.transition_to(SpecialistState.COMPLETED, "Cancelled before start", event_bus)
             return None
@@ -285,6 +388,9 @@ class SpecialistAgent(ABC):
 
         except BudgetExhaustedError as be:
             logger.info("specialist_budget_exhausted", agent=self.name, error=str(be))
+            self.last_error = str(be)
+            self.failure_reason = "BUDGET_EXHAUSTED"
+            self.failure_diagnostic = f"Execution budget limit reached: {be}"
             await self.transition_to(SpecialistState.FAILED, f"Budget exhausted: {be}", event_bus)
             return None
 
@@ -295,9 +401,20 @@ class SpecialistAgent(ABC):
             raise
 
         except Exception as ex:
-            logger.error("specialist_execution_failed", agent=self.name, error=str(ex))
-            await self.transition_to(SpecialistState.FAILED, f"Failed: {ex}", event_bus)
-            raise
+            target_state, reason, err_type, diag = classify_specialist_failure(ex)
+            self.last_error = str(ex)
+            self.failure_reason = reason
+            self.failure_diagnostic = diag
+            logger.error(
+                "specialist_execution_failed",
+                agent=self.name,
+                error=str(ex),
+                target_state=target_state.value,
+                reason=reason,
+                diagnostic=diag,
+            )
+            await self.transition_to(target_state, f"{reason}: {diag}", event_bus)
+            return None
 
     @abstractmethod
     async def _execute(

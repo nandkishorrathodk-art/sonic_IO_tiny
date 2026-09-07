@@ -170,6 +170,8 @@ class ComputerUseAgent:
         # the step budget on a stuck loop.
         self._consecutive_failures: int = 0
         self._replan_count: int = 0
+        self._last_navigated_url: str = ""
+        self._recent_action_signatures: list[tuple[str, str, str]] = []
 
     def interrupt(self) -> None:
         """Signal the agent to stop its active mission loop immediately."""
@@ -212,7 +214,16 @@ class ComputerUseAgent:
         except Exception:
             terminal_output = f"Terminal Ready ({len(status.running_processes)} procs)"
 
-        browser_state = {"url": "about:blank", "title": "New Tab", "interactive_elements": []}
+        if not hasattr(self, "_last_navigated_url"):
+            self._last_navigated_url = ""
+        if not hasattr(self, "_recent_action_signatures"):
+            self._recent_action_signatures = []
+
+        browser_state = {
+            "url": self._last_navigated_url or "about:blank",
+            "title": "Desktop Browser" if self._last_navigated_url else "New Tab",
+            "interactive_elements": [],
+        }
         if self.browser is not None:
             try:
                 browser_state = await self._observe_browser()
@@ -365,6 +376,7 @@ class ComputerUseAgent:
 
         bs = observation.browser_state or {}
         browser_lines = ""
+        active_url = bs.get("url") if (self.browser and bs.get("url") and bs.get("url") != "about:blank") else getattr(self, "_last_navigated_url", "")
         if self.browser is not None:
             elements = bs.get("interactive_elements", [])
             el_summary = ", ".join(
@@ -376,6 +388,27 @@ class ComputerUseAgent:
                 f"title={bs.get('title', '')}\n"
                 f"Interactive elements: {el_summary}\n"
             )
+        elif active_url:
+            browser_lines = f"Desktop browser page: url={active_url}\n"
+
+        anti_loop_banner = ""
+        if active_url:
+            anti_loop_banner = (
+                f"ACTIVE BROWSER PAGE: '{active_url}' is ALREADY loaded in the active desktop browser tab.\n"
+                f"ANTI-LOOP PROGRESSION RULE: Do NOT emit BROWSER_NAVIGATE to '{active_url}' again! "
+                "The page is already open on screen. You MUST interact directly with the visible page: "
+                "use GUI_CLICK on buttons, input fields, links, or search bars (using coordinates or element names like 'search bar', 'explore', 'connect wallet'), "
+                "or use GUI_TYPE, GUI_SCROLL, or TERMINAL_EXEC to make forward progress.\n"
+            )
+
+        recent_sigs = getattr(self, "_recent_action_signatures", [])
+        if len(recent_sigs) >= 2:
+            last_sig = recent_sigs[-1]
+            if all(s == last_sig for s in recent_sigs[-2:]):
+                anti_loop_banner += (
+                    f"ANTI-REPETITION ALERT: You have already executed '{last_sig[0]}' with target '{last_sig[1]}'. "
+                    "DO NOT repeat this action! Choose a different action to advance state.\n"
+                )
 
         tool_lines = ""
         if self._last_tool_result is not None:
@@ -421,6 +454,8 @@ class ComputerUseAgent:
 
         # Cognitive Reasoning Fields (truthful and epistemic)
         known_facts: list[str] = []
+        if active_url:
+            known_facts.append(f"Browser active URL: {active_url}")
         if files_str != "UNKNOWN":
             known_facts.append(f"Workspace files: {files_str}")
         if active_app != "UNKNOWN":
@@ -477,6 +512,7 @@ class ComputerUseAgent:
             f"Screen visible text:\n{screen_text}\n"
             f"Terminal output:\n{terminal_text}\n"
             f"{browser_lines}{tool_lines}"
+            f"{anti_loop_banner}"
             f"Files in workspace: {files_str}\n"
             f"Git branch: {git_branch_str}, clean: {observation.git_clean}\n"
             f"Primary file: {primary_file_str}, Test file: {test_file_str}\n"
@@ -509,6 +545,10 @@ class ComputerUseAgent:
             "If the goal is already achieved, respond GOAL_COMPLETE.\n"
             "If the goal can be accomplished cleanly via shell command, prefer TERMINAL_EXEC.\n"
             "You can see the desktop screenshot and interact with GUI elements by clicking at coordinates.\n"
+            "CRITICAL ANTI-LOOPING AND PROGRESSION RULES:\n"
+            "1. NEVER navigate repeatedly to the same URL. If a webpage is already open, interact with its elements on screen (GUI_CLICK on search bar, buttons, links, or GUI_TYPE).\n"
+            "2. NEVER repeat the exact same action and target consecutively without state progression.\n"
+            "3. Look closely at the screen screenshot / screen visible text to identify buttons, input boxes, menus, and links. Use GUI_CLICK with coordinates or landmark query (e.g. 'search bar', 'connect wallet', 'explore') to interact with them.\n"
             "Before choosing an action, reason through these mandatory cognitive fields:\n"
             "WHAT DO I KNOW?: <Facts established by verified observation, or UNKNOWN>\n"
             "WHAT DO I NOT KNOW?: <Unverified assumptions, missing data, or UNKNOWN>\n"
@@ -982,8 +1022,40 @@ class ComputerUseAgent:
             )
             self.traces.append(trace)
             self.history.append({"action": f"{action_type.value} {target_resource}", "result": actual_obs_str})
+        # ----- Consecutive Action Loop Detector & Circuit Breaker -----
+        # Detect if the agent is repeating the exact same action signature consecutively.
+        action_sig = (action_type.value, str(target_resource).strip().lower(), str(payload).strip())
+        self._recent_action_signatures.append(action_sig)
+        if len(self._recent_action_signatures) >= 3 and all(
+            s == action_sig for s in self._recent_action_signatures[-3:]
+        ):
+            actual_obs_str = (
+                f"[ACTION LOOP DETECTED]: You have repeated '{action_type.value}' on '{target_resource}' "
+                "3 times consecutively without state progression. "
+                "This action is BLOCKED. Advance to a different action (e.g. GUI_CLICK on elements, GUI_TYPE, scroll, or conclude)."
+            )
+            status = ActionExecutionStatus.BLOCKED
+            logger.warning(
+                "action_loop_breaker_triggered",
+                action=action_type.value,
+                target=target_resource,
+                consecutive_count=3,
+            )
+            trace = ComputerDecisionTrace(
+                step_index=self.action_counter,
+                action_type=action_type,
+                target_resource=target_resource,
+                payload=str(payload),
+                predicted_outcome=predicted_outcome,
+                actual_observation=actual_obs_str,
+                expected_observation=predicted_outcome,
+                info_gain=0.0,
+                recovery_attempted=False,
+                status=status,
+            )
+            self.traces.append(trace)
+            self.history.append({"action": f"{action_type.value} {target_resource}", "result": actual_obs_str})
             return trace
-
 
         # ----- Visual Grounding Target Resolution -----
         # If numeric coordinates were not provided for a GUI action, attempt to
@@ -1369,12 +1441,36 @@ class ComputerUseAgent:
                 if self.browser is not None:
                     snap = await self.browser.navigate(url)
                     self._last_browser_snapshot = snap
+                    self._last_navigated_url = url
                     actual_obs_str = f"Navigated to {getattr(snap, 'url', url)} (title: {getattr(snap, 'title', '')})"
                 else:
-                    clean_flags = "--no-sandbox --disable-dev-shm-usage --disable-session-crashed-bubble --no-first-run --no-default-browser-check"
-                    cmd = f"DISPLAY=:0 nohup chromium {clean_flags} {shlex.quote(url)} >/dev/null 2>&1 &"
-                    await self.computer.terminal(workspace_id, cmd)
-                    actual_obs_str = f"Navigated desktop browser to {url}"
+                    is_same_url = getattr(self, "_last_navigated_url", "") == url
+                    self._last_navigated_url = url
+                    if is_same_url:
+                        # Re-focus existing browser without spawning duplicate tabs
+                        focus_cmd = "DISPLAY=:0 xdotool search --onlyvisible --class chromium windowactivate 2>/dev/null || true"
+                        await self.computer.terminal(workspace_id, focus_cmd)
+                        actual_obs_str = (
+                            f"Browser is already active on {url}. Existing tab focused (duplicate tab prevented). "
+                            "Proceed to interact with the webpage via GUI_CLICK on buttons, search bar, or scroll."
+                        )
+                    else:
+                        # Check if Chromium is already running in the desktop session
+                        chk = await self.computer.terminal(workspace_id, "pgrep -i chromium || pgrep -i chrome 2>/dev/null || true")
+                        chrome_running = bool(chk.stdout.strip())
+                        if chrome_running:
+                            # Reuse existing Chromium window: focus, focus address bar via ctrl+l, type URL and press Return
+                            nav_cmd = (
+                                f"DISPLAY=:0 xdotool search --onlyvisible --class chromium windowactivate --sync "
+                                f"key --clearmodifiers ctrl+l sleep 0.1 type --delay 15 {shlex.quote(url)} key Return 2>/dev/null || true"
+                            )
+                            await self.computer.terminal(workspace_id, nav_cmd)
+                            actual_obs_str = f"Navigated active browser tab to {url} (tab reused via address bar)"
+                        else:
+                            clean_flags = "--no-sandbox --disable-dev-shm-usage --disable-session-crashed-bubble --no-first-run --no-default-browser-check"
+                            cmd = f"DISPLAY=:0 nohup chromium {clean_flags} {shlex.quote(url)} >/dev/null 2>&1 &"
+                            await self.computer.terminal(workspace_id, cmd)
+                            actual_obs_str = f"Launched browser and navigated to {url}"
 
             elif action_type == ComputerActionType.BROWSER_CLICK:
                 selector = payload.get("selector") or target_resource

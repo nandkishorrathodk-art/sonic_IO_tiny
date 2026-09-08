@@ -555,7 +555,7 @@ class ComputerUseAgent:
             if strat_a_state == StrategyState.EXHAUSTED:
                 highest_info_action = "Pivot to Strategy B (alternative instrumentation) since Strategy A is exhausted."
             else:
-                highest_info_action = f"Retry or inspect error cause for {last_fail.tool} with diagnostic probe."
+                highest_info_action = f"Inspect error cause for '{last_fail.tool}' using shell or inspection commands."
         else:
             what_failed = "NONE"
             why_did_it_fail = "NONE"
@@ -997,6 +997,49 @@ class ComputerUseAgent:
             return self.computer.__class__.__name__
         return "sandbox"
 
+    @staticmethod
+    def _clean_terminal_command(raw: Any) -> str:
+        if raw is None:
+            return "echo OK"
+        s = str(raw).strip()
+        if not s or s.lower() in ("none", "null", "echo ok"):
+            return "echo OK"
+
+        # If model hallucinated placeholder phrases like "diagnostic probe" or "address"
+        if s.lower() in ("diagnostic probe", "diagnostic.sh", "diagnostic probe.", "address"):
+            return "pwd"
+
+        # 1. Unpack JSON or dict embedded anywhere in text
+        cmd_match = re.search(r'["\']command["\']\s*:\s*["\']([^"\']+)["\']', s)
+        if cmd_match:
+            s = cmd_match.group(1).strip()
+        elif s.startswith("{"):
+            try:
+                import json
+                p = json.loads(s)
+                if isinstance(p, dict) and "command" in p:
+                    s = str(p["command"]).strip()
+            except Exception:
+                try:
+                    import ast
+                    p = ast.literal_eval(s)
+                    if isinstance(p, dict) and "command" in p:
+                        s = str(p["command"]).strip()
+                except Exception:
+                    pass
+
+        # 2. Strip bash/terminal wrapper prefixes & markdown fences
+        s = re.sub(r'^(?:xfce4-terminal,?\s*)?(?:command|cmd)\s*=\s*', '', s)
+        s = re.sub(r'^```(?:bash|sh)?\s*', '', s)
+        s = re.sub(r'\s*```$', '', s)
+        s = s.strip(" \t\n\r`")
+
+        # 3. If it is still a JSON object like {"diagnostic": ...} without command, don't execute raw JSON in bash
+        if s.startswith("{") and s.endswith("}"):
+            return "pwd"
+
+        return s or "echo OK"
+
     def _extract_tool_name(
         self,
         action_type: ComputerActionType,
@@ -1005,9 +1048,12 @@ class ComputerUseAgent:
     ) -> str:
         """Extract tool or binary name for failure budget tracking."""
         if action_type == ComputerActionType.TERMINAL_EXEC:
-            cmd = payload.get("command") or target_resource or "terminal"
-            parts = str(cmd).strip().split()
-            return parts[0] if parts else "terminal"
+            raw_cmd = payload.get("command") or target_resource or "terminal"
+            clean_cmd = self._clean_terminal_command(raw_cmd)
+            parts = [p for p in clean_cmd.split() if not ("=" in p and not p.startswith("-"))]
+            tool_candidate = parts[0] if parts else (clean_cmd.split()[0] if clean_cmd.split() else "terminal")
+            tool_candidate = re.sub(r'[^a-zA-Z0-9_.-]', '', tool_candidate)
+            return tool_candidate or "terminal"
         if action_type == ComputerActionType.SECURITY_TOOL:
             return str(payload.get("tool") or target_resource or "security_tool")
         if action_type == ComputerActionType.APP_INSTALL:
@@ -1517,25 +1563,8 @@ class ComputerUseAgent:
                 actual_obs_str = f"Wrote patch ({len(content)} bytes) to {path}"
 
             elif action_type == ComputerActionType.TERMINAL_EXEC:
-                cmd = payload.get("command") or target_resource or "echo OK"
-                if str(cmd).lower() in ("none", ""):
-                    cmd = "echo OK"
-                cmd_str = str(cmd).strip()
-                if cmd_str.startswith("{"):
-                    try:
-                        import json
-                        p = json.loads(cmd_str)
-                        if isinstance(p, dict) and "command" in p:
-                            cmd_str = str(p["command"]).strip()
-                    except Exception:
-                        try:
-                            import ast
-                            p = ast.literal_eval(cmd_str)
-                            if isinstance(p, dict) and "command" in p:
-                                cmd_str = str(p["command"]).strip()
-                        except Exception:
-                            pass
-                cmd_str = re.sub(r'^(?:xfce4-terminal,?\s*)?(?:command|cmd)\s*=\s*', '', cmd_str)
+                raw_cmd = payload.get("command") or target_resource or "echo OK"
+                cmd_str = self._clean_terminal_command(raw_cmd)
                 # Map /home/sonic to the actual sandbox home directory
                 if "/home/sonic" in cmd_str:
                     real_home = getattr(self, "_last_working_dir", "") or "/home/daytona"
@@ -1550,8 +1579,11 @@ class ComputerUseAgent:
                     cmd_str = cmd_str.replace("~/", f"{real_home}/")
                 # GUI applications must not block the terminal execution
                 _GUI_APPS = ("chromium", "google-chrome", "firefox", "mousepad", "thunar", "burpsuite", "xfce4-terminal")
-                if any(cmd_str.startswith(app) or cmd_str == app for app in _GUI_APPS) and not cmd_str.endswith("&"):
-                    cmd_str = f"DISPLAY=:99 {cmd_str} &"
+                if any(cmd_str.startswith(app) or cmd_str == app for app in _GUI_APPS):
+                    if ("chromium" in cmd_str or "google-chrome" in cmd_str) and "--no-sandbox" not in cmd_str:
+                        cmd_str = f"{cmd_str} --no-sandbox --disable-dev-shm-usage"
+                    if not cmd_str.endswith("&"):
+                        cmd_str = f"DISPLAY=:99 {cmd_str} &"
                 res = await self.computer.terminal(workspace_id, cmd_str)
                 action_exit_code = getattr(res, "exit_code", None)
                 actual_obs_str = res.stdout.strip() or f"Exit {res.exit_code}"

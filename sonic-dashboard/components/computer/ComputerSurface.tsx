@@ -55,6 +55,7 @@ export function ComputerSurface({
   const [cmdRunning, setCmdRunning] = useState(false);
   const [useStream, setUseStream] = useState(true);
   const canvasRef = useRef<HTMLDivElement>(null);
+  const imgRef = useRef<HTMLImageElement>(null);
   const cmdLogRef = useRef<HTMLDivElement>(null);
   const isFetchingScreenshot = useRef(false);
 
@@ -106,14 +107,42 @@ export function ComputerSurface({
   };
   const handleCanvasClick = async (e: React.MouseEvent<HTMLDivElement>) => {
     if (!isInteractive || !canvasRef.current) return;
-    const rect = canvasRef.current.getBoundingClientRect();
-    const scaleX = 1280 / rect.width;
-    const scaleY = 800 / rect.height;
-    const x = Math.round((e.clientX - rect.left) * scaleX);
-    const y = Math.round((e.clientY - rect.top) * scaleY);
+    const containerRect = canvasRef.current.getBoundingClientRect();
+
+    const img = imgRef.current;
+    const naturalWidth = img?.naturalWidth || desktopState?.resolution?.width || 1280;
+    const naturalHeight = img?.naturalHeight || desktopState?.resolution?.height || 800;
+
+    const containerRatio = containerRect.width / containerRect.height;
+    const imageRatio = naturalWidth / naturalHeight;
+
+    let renderedWidth = containerRect.width;
+    let renderedHeight = containerRect.height;
+    let offsetX = 0;
+    let offsetY = 0;
+
+    if (containerRatio > imageRatio) {
+      // Pillarbox (bars on left/right)
+      renderedWidth = containerRect.height * imageRatio;
+      offsetX = (containerRect.width - renderedWidth) / 2;
+    } else {
+      // Letterbox (bars on top/bottom)
+      renderedHeight = containerRect.width / imageRatio;
+      offsetY = (containerRect.height - renderedHeight) / 2;
+    }
+
+    const clickRelX = e.clientX - containerRect.left - offsetX;
+    const clickRelY = e.clientY - containerRect.top - offsetY;
+
+    if (clickRelX < 0 || clickRelX > renderedWidth || clickRelY < 0 || clickRelY > renderedHeight) {
+      return;
+    }
+
+    const x = Math.round((clickRelX / renderedWidth) * naturalWidth);
+    const y = Math.round((clickRelY / renderedHeight) * naturalHeight);
 
     const rippleId = Date.now();
-    setClickRipples((prev) => [...prev, { id: rippleId, x: e.clientX - rect.left, y: e.clientY - rect.top }]);
+    setClickRipples((prev) => [...prev, { id: rippleId, x: e.clientX - containerRect.left, y: e.clientY - containerRect.top }]);
     setTimeout(() => setClickRipples((prev) => prev.filter((r) => r.id !== rippleId)), 800);
 
     try {
@@ -146,6 +175,18 @@ export function ComputerSurface({
       setTimeout(fetchScreenshot, 300);
     } catch (err) {
       console.error("Failed to press key:", err);
+    }
+  };
+
+  const handleToggleTakeover = async () => {
+    const nextState = !isInteractive;
+    setIsInteractive(nextState);
+    if (nextState && onInterrupt) {
+      try {
+        await onInterrupt();
+      } catch (err) {
+        console.error("Failed to trigger onInterrupt during human takeover:", err);
+      }
     }
   };
 
@@ -210,7 +251,7 @@ export function ComputerSurface({
           </div>
 
           <button
-            onClick={() => setIsInteractive(!isInteractive)}
+            onClick={handleToggleTakeover}
             className={`px-2.5 py-0.5 rounded text-[10px] font-mono font-semibold flex items-center gap-1.5 transition border ${
               isInteractive
                 ? "bg-warning/20 text-warning border-warning/60 shadow-glow"
@@ -272,6 +313,7 @@ export function ComputerSurface({
               }`}
             >
               <img
+                ref={imgRef}
                 src={`data:image/png;base64,${screenshotBase64}`}
                 alt="SONIC Cyber Workstation"
                 className="w-full h-full object-contain pointer-events-none select-none"

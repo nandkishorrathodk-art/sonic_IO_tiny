@@ -202,13 +202,16 @@ class WorkstationBootstrapEngine:
         res["cert_fetched"] = True
 
         # 3. Convert DER to PEM
-        conv_cmd = "openssl x509 -inform DER -in /tmp/cacert.der -out /tmp/burp-ca.crt 2>/dev/null || true"
-        await self._exec_cmd(conv_cmd, workspace_id=workspace_id, timeout=5)
+        conv_cmd = "openssl x509 -inform DER -in /tmp/cacert.der -out /tmp/burp-ca.crt 2>/dev/null"
+        ccode, _, cerr = await self._exec_cmd(conv_cmd, workspace_id=workspace_id, timeout=5)
+        if ccode != 0:
+            logger.warning("burp_ca_der_conversion_failed", error=cerr)
+            return res
 
         # 4. Inject into Linux System Store
         os_store_cmd = (
             "cp /tmp/burp-ca.crt /usr/local/share/ca-certificates/burp-ca.crt 2>/dev/null && "
-            "update-ca-certificates 2>/dev/null || true"
+            "update-ca-certificates 2>/dev/null"
         )
         ocode, _, _ = await self._exec_cmd(os_store_cmd, workspace_id=workspace_id, timeout=10)
         res["os_imported"] = (ocode == 0)
@@ -216,8 +219,8 @@ class WorkstationBootstrapEngine:
         # 5. Inject into Chromium NSS DB
         nss_cmd = (
             "mkdir -p /root/.pki/nssdb && "
-            "certutil -d sql:/root/.pki/nssdb -N --empty-password 2>/dev/null || true; "
-            "certutil -d sql:/root/.pki/nssdb -A -t \"C,,\" -n \"PortSwigger CA\" -i /tmp/burp-ca.crt 2>/dev/null || true"
+            "(certutil -d sql:/root/.pki/nssdb -N --empty-password 2>/dev/null || true) && "
+            "certutil -d sql:/root/.pki/nssdb -A -t \"C,,\" -n \"PortSwigger CA\" -i /tmp/burp-ca.crt 2>/dev/null"
         )
         ncode, _, _ = await self._exec_cmd(nss_cmd, workspace_id=workspace_id, timeout=10)
         res["nss_imported"] = (ncode == 0)
@@ -234,6 +237,6 @@ class WorkstationBootstrapEngine:
             logger.info("burp_ca_trust_handshake_verified", status_code=pout.strip())
         else:
             # Local loopback verification fallback
-            res["verified"] = res["cert_fetched"] and res["nss_imported"]
+            res["verified"] = bool(res["cert_fetched"] and res["nss_imported"])
 
         return res

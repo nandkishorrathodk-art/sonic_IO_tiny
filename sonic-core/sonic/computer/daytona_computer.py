@@ -297,7 +297,6 @@ class DaytonaComputerProvider(ComputerProvider):
                             self._sandboxes[found_sb.id] = found_sb
                             if workspace_id:
                                 self._sandboxes[workspace_id] = found_sb
-                            os.environ["DAYTONA_SANDBOX_ID"] = found_sb.id
                             return found_sb
 
                         logger.info("daytona_auto_healing_provisioning_fresh_sandbox")
@@ -311,7 +310,6 @@ class DaytonaComputerProvider(ComputerProvider):
                             self._sandboxes[sandbox.id] = sandbox
                             if workspace_id:
                                 self._sandboxes[workspace_id] = sandbox
-                            os.environ["DAYTONA_SANDBOX_ID"] = sandbox.id
                             return sandbox
                     except Exception as heal_err:
                         logger.error("daytona_auto_heal_failed", error=str(heal_err))

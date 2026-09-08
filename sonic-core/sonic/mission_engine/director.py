@@ -343,16 +343,26 @@ class MissionDirector:
             # Outcome reflects reality: success only if the agent actually did
             # something that succeeded.
             state.current_phase = MissionPhase.COMPLETED
-            if successful > 0:
+            success_ratio = (successful / total_actions) if total_actions else 0.0
+            deliverables_count = len(self.deliverables.get(mission_id, []))
+
+            if successful > 0 and success_ratio >= 0.60 and deliverables_count > 0:
                 state.status = MissionStatus.COMPLETED
                 state.outcome = MissionOutcome.SUCCESS
                 state.current_next_action = (
                     f"Mission completed: {successful}/{total_actions} actions succeeded; "
-                    f"{len(self.deliverables.get(mission_id, []))} deliverables produced."
+                    f"{deliverables_count} deliverables produced."
+                )
+            elif successful > 0:
+                state.status = MissionStatus.COMPLETED
+                state.outcome = MissionOutcome.PARTIAL_SUCCESS
+                state.current_next_action = (
+                    f"Mission completed with partial success: {successful}/{total_actions} actions succeeded; "
+                    f"{deliverables_count} deliverables produced."
                 )
             else:
                 state.status = MissionStatus.COMPLETED
-                state.outcome = MissionOutcome.PARTIAL_SUCCESS if total_actions else MissionOutcome.FAILED
+                state.outcome = MissionOutcome.FAILED
                 state.current_next_action = (
                     f"Mission ended with no successful actions ({total_actions} attempted)."
                 )

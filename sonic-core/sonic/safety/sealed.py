@@ -136,6 +136,10 @@ class SealedActionPolicy(ActionPolicy):
         }
         if getattr(self, "scope_config", None):
             payload["scope_config"] = self.scope_config
+        if hasattr(self, "scope_checker") and self.scope_checker is not None:
+            patterns = getattr(self.scope_checker, "_destructive_patterns", getattr(self.scope_checker, "_DESTRUCTIVE_PATTERNS", []))
+            forbidden = getattr(self.scope_checker, "_forbidden_patterns", [])
+            payload["scope_patterns_repr"] = sorted([getattr(p, "pattern", str(p)) for p in patterns]) + sorted([getattr(p, "pattern", str(p)) for p in forbidden])
         return hashlib.sha256(
             json.dumps(payload, sort_keys=True).encode()
         ).hexdigest()

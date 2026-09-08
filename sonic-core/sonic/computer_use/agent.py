@@ -2305,9 +2305,13 @@ class ComputerUseAgent:
                         active_sg.attempt_count += 1
                         obs_txt = str(getattr(trace, "actual_observation", "") or "")
                         if "[VISUAL VERIFICATION]: Screen state unchanged" not in obs_txt:
-                            self.checklist.mark_active_completed(
-                                evidence=f"{action_type} succeeded: {obs_txt[:100]}"
-                            )
+                            cmd_str = str(getattr(trace, "payload", "") or "").strip().lower()
+                            trivial_cmds = ("pwd", "whoami", "uname", "id", "echo", "true")
+                            is_trivial = any(cmd_str == tc or cmd_str.startswith(f"{tc} ") for tc in trivial_cmds)
+                            if not is_trivial:
+                                self.checklist.mark_active_completed(
+                                    evidence=f"{action_type} succeeded: {obs_txt[:100]}"
+                                )
 
         # Update Telemetry Metrics.
         self.metrics.actions_total = len(self.traces)

@@ -97,7 +97,8 @@ class DockerComputerProvider(ComputerProvider):
         if self._container_checked_at is not None and (now - self._container_checked_at) < 1.5:
             return self._container_running_cache
         try:
-            probe = subprocess.run(
+            probe = await asyncio.to_thread(
+                subprocess.run,
                 ["docker", "inspect", "-f", "{{.State.Running}}", self.container_name],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.DEVNULL,
@@ -161,7 +162,8 @@ class DockerComputerProvider(ComputerProvider):
             or (self._daemon_checked_at is not None and (now - self._daemon_checked_at) > 10.0)
         ):
             try:
-                probe = subprocess.run(
+                probe = await asyncio.to_thread(
+                    subprocess.run,
                     ["docker", "info", "--format", "{{.ServerVersion}}"],
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,

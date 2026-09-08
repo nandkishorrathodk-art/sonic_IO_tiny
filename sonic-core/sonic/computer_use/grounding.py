@@ -26,7 +26,12 @@ from sonic.logger import get_logger
 logger = get_logger(__name__)
 
 
-def extract_bbox_midpoint(bbox_response: Any, width: int = 1280, height: int = 800) -> Optional[Tuple[int, int]]:
+def extract_bbox_midpoint(
+    bbox_response: Any,
+    width: int = 1280,
+    height: int = 800,
+    is_normalized_1000: Optional[bool] = None,
+) -> Optional[Tuple[int, int]]:
     """Extract (x, y) pixel midpoint from multimodal model grounding output.
     
     Supports:
@@ -46,7 +51,7 @@ def extract_bbox_midpoint(bbox_response: Any, width: int = 1280, height: int = 8
                 if max(x1, y1, x2, y2) <= 1.0:
                     mid_x = int(((x1 + x2) / 2.0) * width)
                     mid_y = int(((y1 + y2) / 2.0) * height)
-                elif max(x1, y1, x2, y2) > width or max(x1, y1, x2, y2) > height:
+                elif is_normalized_1000 or (is_normalized_1000 is None and (max(x1, y1, x2, y2) > width or max(x1, y1, x2, y2) > height)):
                     mid_x = int(((x1 + x2) / 2.0 / 1000.0) * width)
                     mid_y = int(((y1 + y2) / 2.0 / 1000.0) * height)
                 else:
@@ -58,7 +63,7 @@ def extract_bbox_midpoint(bbox_response: Any, width: int = 1280, height: int = 8
                 if max(x, y) <= 1.0:
                     px = int(x * width)
                     py = int(y * height)
-                elif x > width or y > height:
+                elif is_normalized_1000 or (is_normalized_1000 is None and (x > width or y > height)):
                     px = int((x / 1000.0) * width)
                     py = int((y / 1000.0) * height)
                 else:
@@ -82,11 +87,8 @@ def extract_bbox_midpoint(bbox_response: Any, width: int = 1280, height: int = 8
         if max(x1, y1, x2, y2) <= 1.0:
             mid_x = int(((x1 + x2) / 2.0) * width)
             mid_y = int(((y1 + y2) / 2.0) * height)
-        elif match is not None and max(x1, y1, x2, y2) <= 1000:
-            # Model grounding bounding box tags always use [0, 1000] scale
-            mid_x = int(((x1 + x2) / 2.0 / 1000.0) * width)
-            mid_y = int(((y1 + y2) / 2.0 / 1000.0) * height)
-        elif max(x1, y1, x2, y2) > width or max(x1, y1, x2, y2) > height:
+        elif is_normalized_1000 or (match is not None and max(x1, y1, x2, y2) <= 1000) or max(x1, y1, x2, y2) > width or max(x1, y1, x2, y2) > height:
+            # Model grounding bounding box tags or normalized scale use [0, 1000]
             mid_x = int(((x1 + x2) / 2.0 / 1000.0) * width)
             mid_y = int(((y1 + y2) / 2.0 / 1000.0) * height)
         else:
@@ -99,10 +101,7 @@ def extract_bbox_midpoint(bbox_response: Any, width: int = 1280, height: int = 8
         if max(x, y) <= 1.0:
             px = int(x * width)
             py = int(y * height)
-        elif match is not None and max(x, y) <= 1000:
-            px = int((x / 1000.0) * width)
-            py = int((y / 1000.0) * height)
-        elif x > width or y > height:
+        elif is_normalized_1000 or (match is not None and max(x, y) <= 1000) or x > width or y > height:
             px = int((x / 1000.0) * width)
             py = int((y / 1000.0) * height)
         else:

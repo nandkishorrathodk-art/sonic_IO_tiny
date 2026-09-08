@@ -104,6 +104,7 @@ services:
       - ./docker/entrypoint-workstation.sh:/entrypoint-workstation.sh:ro
       - workstation_workspace:/workspace
     entrypoint: ["/bin/bash", "/entrypoint-workstation.sh"]
+    init: true
     networks:
       - sonic-sandbox-net
     restart: unless-stopped

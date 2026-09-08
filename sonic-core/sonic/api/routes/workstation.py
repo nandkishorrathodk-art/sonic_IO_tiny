@@ -40,6 +40,7 @@ from sonic.computer.docker_computer import DockerComputerProvider
 from sonic.computer.models import (
     ApplicationPolicy,
     ComputerProfile,
+    ComputerWorkspaceStatus,
     ComputerWorkspaceType,
     GUIAction,
     GUIActionType,

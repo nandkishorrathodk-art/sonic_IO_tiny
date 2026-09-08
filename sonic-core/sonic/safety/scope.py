@@ -56,6 +56,7 @@ class ScopeChecker:
     def __init__(self, scope_config: dict | None = None):
         self._rules: dict = {}
         self._forbidden_patterns: list[re.Pattern] = []
+        self._destructive_patterns: list[re.Pattern] = list(self._DESTRUCTIVE_PATTERNS)
         self._allowed_egress: list[str] = []
         self._loaded = False
         self.scope_config: dict = scope_config or {}
@@ -151,10 +152,12 @@ class ScopeChecker:
 
     # Patterns that indicate destructive or high-risk operations
     _DESTRUCTIVE_PATTERNS = [
-        re.compile(r"\brm\s+-rf?\b", re.IGNORECASE),
-        re.compile(r"\bmkfs\b", re.IGNORECASE),
-        re.compile(r"\bdd\b.*\bof=/dev/", re.IGNORECASE),
+        re.compile(r"\brm\s+.*(-[a-zA-Z]*r[a-zA-Z]*f|-[a-zA-Z]*f[a-zA-Z]*r|--recursive)\b", re.IGNORECASE),
+        re.compile(r"\brm\s+(-rf?|-fr|-r\s+-f|-f\s+-r|--recursive)\b", re.IGNORECASE),
+        re.compile(r"\b(mkfs(\.\w+)?|mke2fs|wipefs)\b", re.IGNORECASE),
+        re.compile(r"\bdd\b.*\bof=[\"']?/dev/", re.IGNORECASE),
         re.compile(r">\s*/dev/sd", re.IGNORECASE),
+        re.compile(r"\b(killall\s+-9|pkill\s+-9)\b", re.IGNORECASE),
         re.compile(r"\bshutdown\b", re.IGNORECASE),
         re.compile(r"\breboot\b", re.IGNORECASE),
         re.compile(r"\bhalt\b", re.IGNORECASE),
@@ -193,7 +196,8 @@ class ScopeChecker:
         if not command or not command.strip():
             return RiskLevel.L0_SAFE
 
-        for pattern in self._DESTRUCTIVE_PATTERNS:
+        patterns_to_check = getattr(self, "_destructive_patterns", self._DESTRUCTIVE_PATTERNS)
+        for pattern in patterns_to_check:
             if pattern.search(command):
                 logger.warning("command_classified_destructive", command=command[:200])
                 return RiskLevel.L2_FORBIDDEN

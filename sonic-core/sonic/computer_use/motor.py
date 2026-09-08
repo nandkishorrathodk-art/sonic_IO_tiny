@@ -232,10 +232,7 @@ class MotorReflexes:
         if settle_seconds > 0:
             await asyncio.sleep(settle_seconds)
 
-        # Stage 3: Physical mouse move and click
-        click_cmd = f"DISPLAY=:99 xdotool mousemove {x} {y} click {button}"
-        await self._exec_cmd(click_cmd, workspace_id)
-
+        # Stage 3: Physical mouse move and click (dispatch exactly once)
         if hasattr(self.computer, "gui_action"):
             try:
                 await self.computer.gui_action(
@@ -243,7 +240,11 @@ class MotorReflexes:
                     GUIAction(action=GUIActionType.CLICK, x=x, y=y),
                 )
             except Exception:
-                pass
+                click_cmd = f"DISPLAY=:99 xdotool mousemove {x} {y} click {button}"
+                await self._exec_cmd(click_cmd, workspace_id)
+        else:
+            click_cmd = f"DISPLAY=:99 xdotool mousemove {x} {y} click {button}"
+            await self._exec_cmd(click_cmd, workspace_id)
 
         return f"two_stage_clicked: window={target_window} at=({x},{y})"
 

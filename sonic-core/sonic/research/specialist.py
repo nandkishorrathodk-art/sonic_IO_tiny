@@ -764,14 +764,9 @@ class NetworkSpecialist(SpecialistAgent):
                 logger.debug("network_specialist_scan_ports_failed", error=str(e))
 
         if not ports:
-            ports = context.get(
-                "open_ports",
-                [
-                    {"port": 80, "service": "http", "banner": "nginx/1.24.0"},
-                    {"port": 8080, "service": "http-alt", "banner": "uvicorn/0.32.0"},
-                    {"port": 22, "service": "ssh", "banner": "OpenSSH_9.2p1"},
-                ],
-            )
+            # Only use ports explicitly provided in context (e.g. test fixtures or prior scans).
+            # Never fabricate hallucinated open ports when live probing finds nothing.
+            ports = context.get("open_ports", [])
 
         for p in ports:
             self.budget.check_limits()
@@ -1061,7 +1056,7 @@ class FalsificationSpecialist(SpecialistAgent):
                 event_bus=event_bus,
             )
             return {"falsified": True, "hypothesis_id": hypo_id}
-        else:
+        elif plan.get("verification_details") or context.get("verification_details") or plan.get("verified") or context.get("verified"):
             verification_details = plan.get(
                 "verification_details",
                 context.get("verification_details", f"Adversarially Confirmed: {statement}"),
@@ -1076,8 +1071,10 @@ class FalsificationSpecialist(SpecialistAgent):
                 reproduction_steps=[
                     f"1. Formulated hypothesis: {statement}",
                     "2. Executed discriminating falsification test",
-                    "3. Target confirmed vulnerable with reproduction evidence",
+                    f"3. Target confirmed with evidence: {verification_details}",
                 ],
                 event_bus=event_bus,
             )
             return {"falsified": False, "verified": True, "hypothesis_id": hypo_id}
+        else:
+            return {"falsified": False, "verified": False, "hypothesis_id": hypo_id, "status": "INCONCLUSIVE"}

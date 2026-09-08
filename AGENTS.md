@@ -1562,3 +1562,40 @@ BugBountyClient existed but was referenced nowhere.
 - Implemented `MotorReflexes` (`sonic/computer_use/motor.py`) providing zero-latency keyboard hotkeys (`Ctrl+L` URL navigation, `Ctrl+T` new tab, `Ctrl+W` tab closing, `Escape` modal dialog dismissal), human typing cadence (25ms delay preventing frontend debounce drops), and tab budgeting.
 - Implemented desktop tiling (`tile_workstation`) using `wmctrl` to arrange browser and security tools side-by-side.
 - Created resilient PowerShell server launcher `run_backend.ps1` to prevent Windows file-watch reloader termination.
+
+## Phase 24 — Comprehensive Remediation of All Audited Gaps Across 4 Pillars (DONE)
+Resolved all core architectural and security gaps identified by the 4-subagent deep audit across all layers of SONIC-REDA:
+
+### 1. Workstation & Computer-Use Layer (Pillar 1)
+- `bootstrap.py`: Removed silent `|| true` masking from OpenSSL and NSS certutil commands. Verified true exit codes of `update-ca-certificates` and `certutil -A`, ensuring CA certificate trust is only claimed when genuine injection succeeded.
+- `motor.py`: Fixed duplicate click dispatch in `two_stage_click` (previously ran `xdotool click` via `_exec_cmd` AND `computer.gui_action(CLICK)` simultaneously). Now dispatches click exactly once.
+- `grounding.py`: Added explicit `is_normalized_1000` handling and robust [0, 1000] bounding box scaling so coordinate normalization never misinterprets coordinates as raw pixels on 1280x800 or 1920x1080 displays.
+- `docker_computer.py`: Replaced synchronous blocking `subprocess.run` calls in `_container_is_running` and daemon probes with `await asyncio.to_thread(subprocess.run, ...)`, preventing FastAPI event loop freezing during container virtualization latency.
+- `docker-compose.yml`: Added `init: true` to the `workstation` service (`sonic-desktop-workstation`) so Docker initializes `tini` as PID 1 to reliably reap `<defunct>` zombie child processes.
+
+### 2. Swarm, Epistemic Reasoning & Mission Planning (Pillar 2)
+- `specialist.py` (`NetworkSpecialist`): Eliminated hallucinated fallback ports (80/nginx, 8080/uvicorn, 22/OpenSSH). If active probe finds zero open ports, returns genuinely empty findings (no synthetic attack surface).
+- `specialist.py` (`FalsificationSpecialist`): Failure to falsify a hypothesis no longer fabricates a verified vulnerability without positive empirical proof. If evidence is absent, hypothesis is marked `INCONCLUSIVE`.
+- `agent.py`: Prevented trivial orientation commands (`pwd`, `whoami`, `uname`, `echo`, `true`) from prematurely exhausting the `SubGoalChecklist`.
+- `director.py`: Calibrated `MissionOutcome.SUCCESS` to require >= 0.60 success ratio and genuine non-empty deliverables. Missions with lower success ratios are honestly classified as `PARTIAL_SUCCESS` or `FAILED`.
+
+### 3. Security, Safety Envelope & Boundaries (Pillar 3)
+- `sealed.py`: Expanded `_compute_seal_hash` in `SealedActionPolicy` to hash `scope_checker` destructive and forbidden patterns. Any runtime alteration of safety rules immediately trips the SHA-256 seal and fails closed.
+- `scope.py`: Expanded `_DESTRUCTIVE_PATTERNS` regexes to capture `rm -fr`, `rm -r -f`, `rm --recursive`, `mkfs(\.\w+)?`, `mke2fs`, `wipefs`, quoted `dd of="..."`, and aggressive process kills (`killall -9`, `pkill -9`).
+- `daytona_computer.py` & `workstation.py`: Removed global `os.environ["DAYTONA_SANDBOX_ID"]` mutations that leaked provisioned sandboxes across tenant sessions. Workspace ID resolution is now strictly tenant-scoped.
+
+### 4. API & Dashboard Telemetry (Pillar 4)
+- `workstation.py`: Imported `ComputerWorkspaceStatus` from `sonic.computer.models`, resolving the silent `NameError` at lines 624 and 1043 that wiped `vnc_url` and `novnc_url` from desktop telemetry.
+- `ComputerSurface.tsx`: Wired the `onInterrupt` prop directly to the "Human Takeover" button toggle, ensuring user takeover immediately halts conflicting autonomous agent actions.
+- `ComputerSurface.tsx`: Implemented mathematically exact letterbox and pillarbox aspect-ratio offset calculations in `handleCanvasClick` using natural image dimensions to eliminate click drift on contained canvases.
+
+### Done-gate (`test_phase24_audit_remediation.py`, 15 tests; 126 regression tests green)
+- Verified `ComputerWorkspaceStatus` import integrity in workstation telemetry.
+- Verified single-dispatch click execution in `MotorReflexes`.
+- Verified zero hallucinated open ports in `NetworkSpecialist`.
+- Verified positive-evidence requirement in `FalsificationSpecialist`.
+- Verified low-confidence outcome calibration in `MissionDirector`.
+- Verified tamper detection in `SealedActionPolicy` when scope checker patterns mutate.
+- Verified expanded destructive command detection across 9 dangerous shell variations.
+- Verified accurate coordinate midpoint scaling on 1280x800 screens.
+

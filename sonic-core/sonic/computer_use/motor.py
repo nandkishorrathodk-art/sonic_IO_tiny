@@ -186,3 +186,74 @@ class MotorReflexes:
             await asyncio.sleep(0.02)
         return excess
 
+    async def handle_gtk_file_dialog(
+        self,
+        workspace_id: str,
+        file_path: str,
+        delay_ms: int = 25,
+    ) -> str:
+        """
+        Interacts with GTK file chooser dialogs (Chrome/Burp/Linux apps) by:
+          1. Pressing Ctrl + L to expose the direct path entry field.
+          2. Typing the target file path with natural human cadence.
+          3. Pressing Return to confirm file selection.
+        """
+        await self._send_hotkey(workspace_id, "ctrl+l")
+        await asyncio.sleep(0.1)
+        await self.human_type(workspace_id, file_path, delay_ms=delay_ms)
+        await asyncio.sleep(0.1)
+        await self._send_hotkey(workspace_id, "Return")
+        return f"file_selected: {file_path}"
+
+    async def two_stage_click(
+        self,
+        workspace_id: str,
+        target_window: str,
+        x: int,
+        y: int,
+        button: int = 1,
+        settle_seconds: float = 0.15,
+    ) -> str:
+        """
+        Eliminates X11 click-to-focus event swallowing:
+          Stage 1: Explicitly activate/raise target_window.
+          Stage 2: Settle for 150ms to allow window manager focus transition.
+          Stage 3: Dispatch physical click event at coordinate (x, y).
+        """
+        safe_target = shlex.quote(target_window)
+        # Stage 1: Focus/raise window
+        focus_cmd = (
+            f"DISPLAY=:99 wmctrl -a {safe_target} 2>/dev/null || "
+            f"DISPLAY=:99 xdotool search --name {safe_target} windowactivate --sync 2>/dev/null || true"
+        )
+        await self._exec_cmd(focus_cmd, workspace_id)
+
+        # Stage 2: Settle for window manager focus transition
+        if settle_seconds > 0:
+            await asyncio.sleep(settle_seconds)
+
+        # Stage 3: Physical mouse move and click
+        click_cmd = f"DISPLAY=:99 xdotool mousemove {x} {y} click {button}"
+        await self._exec_cmd(click_cmd, workspace_id)
+
+        if hasattr(self.computer, "gui_action"):
+            try:
+                await self.computer.gui_action(
+                    workspace_id,
+                    GUIAction(action=GUIActionType.CLICK, x=x, y=y),
+                )
+            except Exception:
+                pass
+
+        return f"two_stage_clicked: window={target_window} at=({x},{y})"
+
+    async def burp_forward(self, workspace_id: str) -> str:
+        """Forward intercepted HTTP packet in Burp Suite (Ctrl + F)."""
+        await self._send_hotkey(workspace_id, "ctrl+f")
+        return "burp_packet_forwarded"
+
+    async def burp_toggle_intercept(self, workspace_id: str) -> str:
+        """Toggle HTTP interception state in Burp Suite."""
+        await self._send_hotkey(workspace_id, "ctrl+t")
+        return "burp_intercept_toggled"
+

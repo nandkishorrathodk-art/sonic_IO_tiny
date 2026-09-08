@@ -16,6 +16,7 @@ from sonic.computer_use.models import (
     ComputerWorldObservation,
     EngineeringMissionMode,
 )
+from sonic.computer_use.grounding import crop_toolbar_region, map_crop_to_screen
 from sonic.computer_use.motor import MotorReflexes
 from sonic.computer_use.scratchpad import HackerScratchpad
 from sonic.computer_use.wire_telemetry import WireTelemetryEngine
@@ -35,5 +36,7 @@ __all__ = [
     "MotorReflexes",
     "HackerScratchpad",
     "WireTelemetryEngine",
+    "crop_toolbar_region",
+    "map_crop_to_screen",
 ]
 

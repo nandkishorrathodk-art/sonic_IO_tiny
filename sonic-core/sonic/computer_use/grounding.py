@@ -261,8 +261,38 @@ _COMMON_UI_LANDMARKS: dict[str, tuple[float, float]] = {
     "cancel button": (0.450, 0.550),
     "cancel": (0.450, 0.550),
     "save button": (0.520, 0.550),
-    "save": (0.520, 0.550),
     "search button": (0.620, 0.380),
+
+    # Burp Suite Window & Toolbars (Phase 8 Cyber Workstation)
+    "burp suite": (0.250, 0.040),
+    "burpsuite": (0.250, 0.040),
+    "burp dashboard tab": (0.045, 0.040),
+    "burp target tab": (0.110, 0.040),
+    "burp proxy tab": (0.165, 0.040),
+    "proxy tab": (0.165, 0.040),
+    "burp intruder tab": (0.220, 0.040),
+    "burp repeater tab": (0.275, 0.040),
+    "repeater tab": (0.275, 0.040),
+    "burp sequencer tab": (0.330, 0.040),
+    "burp decoder tab": (0.385, 0.040),
+    "burp comparer tab": (0.435, 0.040),
+    "burp extensions tab": (0.490, 0.040),
+    "burp intercept tab": (0.050, 0.075),
+    "intercept tab": (0.050, 0.075),
+    "burp http history tab": (0.130, 0.075),
+    "burp http history": (0.130, 0.075),
+    "http history": (0.130, 0.075),
+    "burp proxy options tab": (0.230, 0.075),
+    "burp forward button": (0.045, 0.110),
+    "burp forward": (0.045, 0.110),
+    "forward button": (0.045, 0.110),
+    "burp drop button": (0.095, 0.110),
+    "burp drop": (0.095, 0.110),
+    "drop button": (0.095, 0.110),
+    "burp intercept toggle": (0.155, 0.110),
+    "intercept is on": (0.155, 0.110),
+    "intercept is off": (0.155, 0.110),
+    "burp action button": (0.225, 0.110),
 
     # Web Applications, Marketplaces & Navigation (e.g. OpenSea, Web3, dApps)
     "web search bar": (0.350, 0.160),
@@ -438,5 +468,53 @@ async def query_multimodal_grounding(
     except Exception as exc:
         logger.warning("multimodal_grounding_model_query_failed", query=query, error=str(exc))
         return None
+
+
+def crop_toolbar_region(
+    screenshot_b64: str,
+    bbox: Optional[Tuple[int, int, int, int]] = None,
+    width: int = 1280,
+    height: int = 800,
+) -> Tuple[str, Tuple[int, int]]:
+    """
+    Hierarchical micro-crop targeting of high-density UI toolbars (e.g. 14-18px Java Swing buttons in Burp Suite).
+
+    Args:
+        screenshot_b64: Base64-encoded PNG screenshot of the desktop.
+        bbox: Optional (x1, y1, x2, y2) bounding box to crop. Defaults to the top toolbar band (0, 0, width, min(240, height)).
+        width: Desktop screen width.
+        height: Desktop screen height.
+
+    Returns:
+        Tuple of (cropped_screenshot_b64, (offset_x, offset_y)).
+        If PIL is unavailable or decoding fails, returns (screenshot_b64, (0, 0)).
+    """
+    if not _HAS_PIL or not screenshot_b64:
+        return screenshot_b64, (0, 0)
+
+    crop_box = bbox or (0, 0, width, min(240, height))
+    x1, y1, x2, y2 = crop_box
+
+    try:
+        raw_b64 = screenshot_b64.split(",", 1)[-1] if "," in screenshot_b64 else screenshot_b64
+        raw_bytes = base64.b64decode(raw_b64)
+        image = Image.open(io.BytesIO(raw_bytes))
+        cropped = image.crop((x1, y1, x2, y2))
+
+        buffer = io.BytesIO()
+        cropped.convert("RGB").save(buffer, format="PNG")
+        cropped_b64 = base64.b64encode(buffer.getvalue()).decode("utf-8")
+        return cropped_b64, (x1, y1)
+    except Exception as exc:
+        logger.warning("crop_toolbar_region_failed", error=str(exc))
+        return screenshot_b64, (0, 0)
+
+
+def map_crop_to_screen(
+    local_coords: Tuple[int, int],
+    offset: Tuple[int, int],
+) -> Tuple[int, int]:
+    """Translate coordinates detected inside a micro-crop back to absolute desktop screen coordinates."""
+    return local_coords[0] + offset[0], local_coords[1] + offset[1]
 
 

@@ -1119,40 +1119,44 @@ class ComputerUseAgent:
             )
             self.traces.append(trace)
             self.history.append({"action": f"{action_type.value} {target_resource}", "result": actual_obs_str})
-        # ----- Consecutive Action Loop Detector & Circuit Breaker -----
-        # Detect if the agent is repeating the exact same action signature consecutively.
-        action_sig = (action_type.value, str(target_resource).strip().lower(), str(payload).strip())
-        self._recent_action_signatures.append(action_sig)
-        if len(self._recent_action_signatures) >= 3 and all(
-            s == action_sig for s in self._recent_action_signatures[-3:]
-        ):
-            actual_obs_str = (
-                f"[ACTION LOOP DETECTED]: You have repeated '{action_type.value}' on '{target_resource}' "
-                "3 times consecutively without state progression. "
-                "This action is BLOCKED. Advance to a different action (e.g. GUI_CLICK on elements, GUI_TYPE, scroll, or conclude)."
-            )
-            status = ActionExecutionStatus.BLOCKED
-            logger.warning(
-                "action_loop_breaker_triggered",
-                action=action_type.value,
-                target=target_resource,
-                consecutive_count=3,
-            )
-            trace = ComputerDecisionTrace(
-                step_index=self.action_counter,
-                action_type=action_type,
-                target_resource=target_resource,
-                payload=str(payload),
-                predicted_outcome=predicted_outcome,
-                actual_observation=actual_obs_str,
-                expected_observation=predicted_outcome,
-                info_gain=0.0,
-                recovery_attempted=False,
-                status=status,
-            )
-            self.traces.append(trace)
-            self.history.append({"action": f"{action_type.value} {target_resource}", "result": actual_obs_str})
             return trace
+
+        # ----- Consecutive Action Loop Detector & Circuit Breaker -----
+        # Detect if the agent is repeating the exact same GUI action signature consecutively.
+        # Terminal and Security Tool actions are governed by FailureBudgetTracker and strategy budgets.
+        if action_type not in (ComputerActionType.TERMINAL_EXEC, ComputerActionType.SECURITY_TOOL):
+            action_sig = (action_type.value, str(target_resource).strip().lower(), str(payload).strip())
+            self._recent_action_signatures.append(action_sig)
+            if len(self._recent_action_signatures) >= 3 and all(
+                s == action_sig for s in self._recent_action_signatures[-3:]
+            ):
+                actual_obs_str = (
+                    f"[ACTION LOOP DETECTED]: You have repeated '{action_type.value}' on '{target_resource}' "
+                    "3 times consecutively without state progression. "
+                    "This action is BLOCKED. Advance to a different action (e.g. GUI_CLICK on elements, GUI_TYPE, scroll, or conclude)."
+                )
+                status = ActionExecutionStatus.BLOCKED
+                logger.warning(
+                    "action_loop_breaker_triggered",
+                    action=action_type.value,
+                    target=target_resource,
+                    consecutive_count=3,
+                )
+                trace = ComputerDecisionTrace(
+                    step_index=self.action_counter,
+                    action_type=action_type,
+                    target_resource=target_resource,
+                    payload=str(payload),
+                    predicted_outcome=predicted_outcome,
+                    actual_observation=actual_obs_str,
+                    expected_observation=predicted_outcome,
+                    info_gain=0.0,
+                    recovery_attempted=False,
+                    status=status,
+                )
+                self.traces.append(trace)
+                self.history.append({"action": f"{action_type.value} {target_resource}", "result": actual_obs_str})
+                return trace
 
         # ----- Visual Grounding Target Resolution -----
         # If numeric coordinates were not provided for a GUI action, attempt to
@@ -1637,6 +1641,8 @@ class ComputerUseAgent:
                         status_code=200,
                         response_body="HTML DOM Rendered",
                     )
+                if url.startswith("http"):
+                    await self.check_and_resolve_intercept_deadlock(workspace_id)
 
             elif action_type == ComputerActionType.BROWSER_CLICK:
                 selector = payload.get("selector") or target_resource
@@ -1645,6 +1651,7 @@ class ComputerUseAgent:
                     actual_obs_str = f"Clicked {selector}" if ok else f"Click failed: {selector}"
                     if not ok:
                         recovery_needed = True
+                    await self.check_and_resolve_intercept_deadlock(workspace_id)
                 else:
                     actual_obs_str = f"Browser DOM click '{selector}' not available without BrowserAgent; use GUI_CLICK"
 
@@ -1987,6 +1994,50 @@ class ComputerUseAgent:
     # than repeating the same failing strategy until the step budget is gone.
     _STUCK_THRESHOLD: int = 3
 
+    async def check_and_resolve_intercept_deadlock(
+        self,
+        workspace_id: str,
+        screen_observation: Any | None = None,
+    ) -> bool:
+        """
+        Detects if an HTTP request is stalled in Burp Suite Proxy Intercept:
+        If Burp proxy intercept is holding a request or if the screen shows Burp Suite
+        with an active intercepted packet, dispatches an automatic packet forward (motor.burp_forward)
+        or toggles intercept so browser missions never deadlock.
+        """
+        # 1. Check if Burp is active or burp_client configured
+        burp_active = self.burp_client is not None
+        if not burp_active and hasattr(self.computer, "terminal"):
+            try:
+                chk = await self.computer.terminal(workspace_id, "pgrep -i burp || pgrep -i java 2>/dev/null || true")
+                if chk and getattr(chk, "stdout", "").strip():
+                    burp_active = True
+            except Exception:
+                pass
+
+        if not burp_active:
+            return False
+
+        # 2. Check if screen indicates intercepted request or active window is Burp
+        should_forward = False
+        if screen_observation is not None:
+            active_win = str(getattr(screen_observation, "active_window", "")).lower()
+            if "burp" in active_win:
+                should_forward = True
+
+        if not should_forward and hasattr(self, "wire_telemetry") and self.wire_telemetry:
+            should_forward = True
+
+        if should_forward and hasattr(self, "motor") and self.motor:
+            try:
+                await self.motor.burp_forward(workspace_id)
+                logger.info("burp_intercept_deadlock_resolved_via_forward", workspace_id=workspace_id)
+                return True
+            except Exception as exc:
+                logger.warning("burp_intercept_deadlock_resolution_failed", error=str(exc))
+
+        return False
+
     async def verify_goal(
         self,
         workspace_id: str,
@@ -2142,6 +2193,22 @@ class ComputerUseAgent:
 
         if getattr(self, "checklist", None) is None or self.checklist.top_level_goal != goal:
             self.checklist = await self.decompose_goal(goal)
+
+        # Autonomous Workstation Environment Bootstrap & Audit (Phase 8)
+        if not getattr(self, "_bootstrap_performed", False):
+            try:
+                from sonic.computer.bootstrap import WorkstationBootstrapEngine
+                bootstrap = WorkstationBootstrapEngine(self.computer)
+                b_res = await bootstrap.ensure_workstation_ready(workspace_id=workspace_id)
+                logger.info(
+                    "mission_workstation_bootstrap_audit",
+                    status=b_res.get("status"),
+                    present_count=len(b_res.get("present", [])),
+                    missing=b_res.get("missing", []),
+                )
+                self._bootstrap_performed = True
+            except Exception as b_err:
+                logger.warning("mission_workstation_bootstrap_failed", error=str(b_err))
 
         for step in range(1, steps + 1):
             if self._interrupted or (callable(interrupt_check) and interrupt_check()):

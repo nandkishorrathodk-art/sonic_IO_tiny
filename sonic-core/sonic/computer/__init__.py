@@ -25,6 +25,7 @@ from sonic.computer.models import (
     ScreenObservation,
     ServiceInfo,
 )
+from sonic.computer.bootstrap import WorkstationBootstrapEngine
 from sonic.computer.headless import HeadlessComputeProvider
 from sonic.computer.provider import ComputerProvider, UnifiedComputerProvider
 
@@ -51,5 +52,6 @@ __all__ = [
     "ScreenObservation",
     "ServiceInfo",
     "UnifiedComputerProvider",
+    "WorkstationBootstrapEngine",
 ]
 

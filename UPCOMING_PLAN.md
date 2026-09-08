@@ -73,3 +73,4 @@ We keep this complete roadmap locked in the plan so no insight is lost, while pr
    - Implement GTK `Ctrl+L` file dialog handler, Two-Stage Click, and Deadlock Detector.
 4. **Step 4: Micro-Target Visual Grounding**
    - Implement localized image cropping in `grounding.py` for Java Swing widgets.
+

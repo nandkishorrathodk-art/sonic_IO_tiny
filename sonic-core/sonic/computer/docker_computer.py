@@ -512,6 +512,20 @@ class DockerComputerProvider(ComputerProvider):
             sandbox_id=self.container_name,
         )
 
+    async def execute(
+        self,
+        workspace_id: str,
+        command: str | list[str],
+        timeout: int = 60,
+        actor: str = "operator",
+    ) -> ExecResult:
+        """Executes a command inside the container (ComputeProvider interface for SecurityTool)."""
+        if isinstance(command, list):
+            cmd_str = " ".join(shlex.quote(c) for c in command)
+        else:
+            cmd_str = str(command)
+        return await self.terminal(workspace_id, cmd_str, timeout=timeout, actor=actor)
+
     # -------------------------------------------------------------
     # Filesystem & Git Operations
     # -------------------------------------------------------------

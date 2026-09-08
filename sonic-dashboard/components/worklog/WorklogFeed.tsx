@@ -18,6 +18,10 @@ import {
   Copy,
   Check,
   Zap,
+  MousePointer,
+  Eye,
+  Monitor,
+  AppWindow,
 } from "lucide-react";
 import { WorklogItem } from "../../types/workstation";
 import { MarkdownText } from "./MarkdownText";
@@ -174,12 +178,34 @@ export function WorklogFeed({
             }
 
             // 2. Terminal Shell Command (matching Devin's code pill)
-            if (item.type === "command" || item.command) {
+            const isTerminalExec =
+              item.type === "command" ||
+              Boolean(item.command) ||
+              item.title?.includes("TERMINAL_EXEC") ||
+              item.title?.toLowerCase().includes("terminal_exec");
+
+            if (isTerminalExec) {
+              let cmdText = item.command || "";
+              let outText = item.output || item.content || "";
+              if (!cmdText) {
+                const targetMatch = item.content?.match(/Target:\s*(\{[^}]+\}|[^\n]+)/);
+                if (targetMatch) {
+                  const rawTarget = targetMatch[1].trim();
+                  try {
+                    const parsed = JSON.parse(rawTarget);
+                    cmdText = parsed.command || rawTarget;
+                  } catch {
+                    cmdText = rawTarget.replace(/^\{['"]command['"]:\s*['"](.*)['"]\}$/, "$1");
+                  }
+                } else {
+                  cmdText = item.title?.replace(/^Step \d+:\s*/, "") || "command";
+                }
+              }
               return (
                 <CommandBlock
                   key={itemId}
-                  command={item.command || item.title || "command"}
-                  output={item.output || item.content}
+                  command={cmdText}
+                  output={outText}
                   durationSeconds={item.duration_seconds}
                   exitCode={item.exit_code}
                 />
@@ -187,14 +213,26 @@ export function WorklogFeed({
             }
 
             // 3. File Operations (matching Devin's Read <file>:<lines> badge)
-            if (
+            const isFileOp =
               item.type === "read" ||
               item.type === "write" ||
               item.title?.startsWith("Read ") ||
-              item.title?.startsWith("Write ")
-            ) {
-              const opType = item.type === "write" || item.title?.startsWith("Write ") ? "write" : "read";
-              const targetFile = item.file || item.title?.replace(/^(Read|Write)\s+/, "") || "file";
+              item.title?.startsWith("Write ") ||
+              item.title?.includes("FILE_READ") ||
+              item.title?.includes("FILE_WRITE");
+
+            if (isFileOp) {
+              const opType =
+                item.type === "write" ||
+                item.title?.startsWith("Write ") ||
+                item.title?.includes("FILE_WRITE")
+                  ? "write"
+                  : "read";
+              let targetFile = item.file || "";
+              if (!targetFile) {
+                const targetMatch = item.content?.match(/Target:\s*([^\n]+)/);
+                targetFile = targetMatch ? targetMatch[1].trim() : item.title?.replace(/^(Read|Write)\s+/, "") || "file";
+              }
               return (
                 <FileActionBlock
                   key={itemId}
@@ -203,6 +241,66 @@ export function WorklogFeed({
                   lines={item.lines}
                   onSelectFile={onSelectFile}
                 />
+              );
+            }
+
+            // 4. GUI & Desktop Interactions (GUI_CLICK, APP_LAUNCH, APP_FOCUS, GUI_TYPE, GUI_WAIT)
+            const isGuiOp =
+              item.title?.includes("GUI_") ||
+              item.title?.includes("APP_") ||
+              item.title?.includes("SECURITY_TOOL");
+
+            if (isGuiOp) {
+              const actionTitle = item.title?.replace(/^Step \d+:\s*/, "") || "GUI Action";
+              let targetText = "";
+              const targetMatch = item.content?.match(/Target:\s*([^\n]+)/);
+              if (targetMatch) {
+                targetText = targetMatch[1].trim();
+              }
+              const isClick = actionTitle.includes("CLICK");
+              const isType = actionTitle.includes("TYPE");
+              const isLaunch = actionTitle.includes("LAUNCH") || actionTitle.includes("FOCUS");
+              const isSecurity = actionTitle.includes("SECURITY_TOOL");
+
+              const icon = isClick ? (
+                <MousePointer className="w-3.5 h-3.5 text-accent-cyan shrink-0" />
+              ) : isLaunch ? (
+                <AppWindow className="w-3.5 h-3.5 text-secondary-400 shrink-0" />
+              ) : isSecurity ? (
+                <Shield className="w-3.5 h-3.5 text-accent-purple shrink-0" />
+              ) : isType ? (
+                <Terminal className="w-3.5 h-3.5 text-accent-amber shrink-0" />
+              ) : (
+                <Eye className="w-3.5 h-3.5 text-muted-bright shrink-0" />
+              );
+
+              return (
+                <div key={itemId} className="my-1 flex items-center gap-2 font-mono text-[11px] py-1 px-2.5 rounded-lg bg-ink-850/60 border border-ink-800/80 hover:border-ink-750 transition">
+                  {icon}
+                  <span className="font-semibold text-slate-200">{actionTitle}</span>
+                  {targetText && (
+                    <span className="text-secondary-300 bg-ink-900 px-1.5 py-0.5 rounded border border-ink-800 text-[10.5px] truncate max-w-xs font-mono">
+                      {targetText}
+                    </span>
+                  )}
+                  {item.duration_seconds && item.duration_seconds > 0 ? (
+                    <span className="ml-auto text-[9.5px] text-muted-dim">{item.duration_seconds}s</span>
+                  ) : null}
+                </div>
+              );
+            }
+
+            // 5. Desktop Observation Brief Banner
+            if (item.title === "Agent Desktop Observation" || item.title === "Agent Visual Computer Use") {
+              const isObservation = item.title === "Agent Desktop Observation";
+              return (
+                <div key={itemId} className="my-1.5 flex items-center gap-2 text-[10.5px] font-mono text-muted-bright py-1 px-2.5 rounded-lg bg-ink-900 border border-ink-800">
+                  <Monitor className="w-3.5 h-3.5 text-secondary-400 shrink-0" />
+                  <span className="text-slate-300 font-medium">
+                    {isObservation ? "🖥️ Desktop Observation Synchronized" : "🎯 Autonomous Visual Objective"}
+                  </span>
+                  <span className="text-muted-dim text-[9.5px] ml-auto">1280x800</span>
+                </div>
               );
             }
 

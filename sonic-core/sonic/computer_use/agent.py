@@ -1516,6 +1516,20 @@ class ComputerUseAgent:
                 if str(cmd).lower() in ("none", ""):
                     cmd = "echo OK"
                 cmd_str = str(cmd).strip()
+                if cmd_str.startswith("{"):
+                    try:
+                        import json
+                        p = json.loads(cmd_str)
+                        if isinstance(p, dict) and "command" in p:
+                            cmd_str = str(p["command"]).strip()
+                    except Exception:
+                        try:
+                            import ast
+                            p = ast.literal_eval(cmd_str)
+                            if isinstance(p, dict) and "command" in p:
+                                cmd_str = str(p["command"]).strip()
+                        except Exception:
+                            pass
                 cmd_str = re.sub(r'^(?:xfce4-terminal,?\s*)?(?:command|cmd)\s*=\s*', '', cmd_str)
                 # Map /home/sonic to the actual sandbox home directory
                 if "/home/sonic" in cmd_str:
@@ -1532,7 +1546,7 @@ class ComputerUseAgent:
                 # GUI applications must not block the terminal execution
                 _GUI_APPS = ("chromium", "google-chrome", "firefox", "mousepad", "thunar", "burpsuite", "xfce4-terminal")
                 if any(cmd_str.startswith(app) or cmd_str == app for app in _GUI_APPS) and not cmd_str.endswith("&"):
-                    cmd_str = f"DISPLAY=:0 {cmd_str} &"
+                    cmd_str = f"DISPLAY=:99 {cmd_str} &"
                 res = await self.computer.terminal(workspace_id, cmd_str)
                 action_exit_code = getattr(res, "exit_code", None)
                 actual_obs_str = res.stdout.strip() or f"Exit {res.exit_code}"

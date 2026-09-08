@@ -66,6 +66,7 @@ class DockerComputerProvider(ComputerProvider):
         self._active_windows: dict[str, str] = {}
         self.audit_log: list[ComputerAuditEvent] = []
         self._daemon_checked: bool | None = None
+        self._daemon_checked_at: float | None = None
         self._container_running_cache: bool = False
         self._container_checked_at: float | None = None
         self._default_workspace_id = self.container_name
@@ -153,14 +154,24 @@ class DockerComputerProvider(ComputerProvider):
             return 127, "", "docker binary not found on host"
         if not await self._container_is_running():
             return 125, "", f"container {self.container_name} is not running; command blocked fail-closed"
-        if self._daemon_checked is None:
-            probe = subprocess.run(
-                ["docker", "info", "--format", "{{.ServerVersion}}"],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                timeout=10,
-            )
-            self._daemon_checked = probe.returncode == 0
+        now = asyncio.get_event_loop().time()
+        if (
+            self._daemon_checked is None
+            or not self._daemon_checked
+            or (self._daemon_checked_at is not None and (now - self._daemon_checked_at) > 10.0)
+        ):
+            try:
+                probe = subprocess.run(
+                    ["docker", "info", "--format", "{{.ServerVersion}}"],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    timeout=10,
+                )
+                self._daemon_checked = probe.returncode == 0
+                self._daemon_checked_at = now
+            except Exception:
+                self._daemon_checked = False
+                self._daemon_checked_at = now
         if not self._daemon_checked:
             return 126, "", "docker daemon is unreachable; command execution failed-closed"
         async with self._exec_lock:

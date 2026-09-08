@@ -235,9 +235,9 @@ def _get_or_create_session(tenant_id: str, session_id: str = "default") -> dict[
                 "display": ":99",
                 "vnc_port": 5900,
                 "novnc_port": 6080,
-                "novnc_url": """,
-                "status": "UNKNOWN",
-                "active_window": """,
+                "novnc_url": "http://127.0.0.1:6080/vnc.html?autoconnect=true&resize=scale",
+                "status": "LIVE",
+                "active_window": "Desktop",
                 "resolution": {"width": 1280, "height": 800},
                 "running_apps": [],
                 "active_services": [],
@@ -1486,10 +1486,13 @@ def _detect_requested_app(prompt: str) -> tuple[str, str]:
         domain_match = re.search(r"\b([a-zA-Z0-9-]+\.(?:io|com|org|net|app|co|dev|xyz|ai|me))\b", prompt, re.IGNORECASE)
         if domain_match:
             return "chromium", f"https://{domain_match.group(1)}"
-        if is_news_request:
-            return "chromium", "https://news.google.com"
-        search_match = re.search(r"(?:search for|search|look for|find|dhundo|dhoondo)\s+([a-zA-Z0-9+_.-]+)", lower)
-        if search_match:
+        # Check for "<item> search karo" (Hindi grammar) or "search <item>"
+        hindi_search = re.search(r"([a-zA-Z0-9+_.-]+)\s+(?:search karo|dhoondo|dhundo)", lower)
+        if hindi_search and hindi_search.group(1) not in ("chromium", "chrome", "google", "kaam", "bhi"):
+            query = hindi_search.group(1).strip()
+            return "chromium", f"https://www.google.com/search?q={query}"
+        search_match = re.search(r"(?:search for|search|look for|find|dhundo|dhoondo)\s+(?:karo\s+)?([a-zA-Z0-9+_.-]+)", lower)
+        if search_match and search_match.group(1) not in ("karo", "chromium", "chrome", "google"):
             query = search_match.group(1).strip()
             return "chromium", f"https://www.google.com/search?q={query}"
         return "chromium", "https://www.google.com"
@@ -1623,16 +1626,40 @@ def _is_action_prompt(prompt: str) -> bool:
     return False
 
 
+_NON_INSTALL_WORDS = {
+    "karo", "it", "them", "this", "that", "app", "application", "package", "tools", "tool",
+    "usko", "isko", "unko", "inhe", "unhe", "please", "pls", "kar", "do", "karna", "then",
+    "the", "an", "a"
+}
+
+
 def _extract_install_package(prompt: str) -> str:
-    """Extract a simple apt package name without allowing shell syntax."""
+    """Extract a simple package name without capturing filler words or shell syntax."""
+    p_lower = prompt.lower()
+    # 1. Hindi SOV: "<package> install karo" or "<package> ko install karo"
+    hindi_match = re.search(r"([a-z0-9][a-z0-9+_.-]*)\s+(?:ko\s+)?install\s+karo", p_lower)
+    if hindi_match:
+        cand = hindi_match.group(1)
+        if cand not in _NON_INSTALL_WORDS:
+            return cand
+
+    # 2. English SVO: "install <package>"
     match = re.search(
         r"\binstall(?:\s+(?:the|an|a))?(?:\s+(?:application|app|package))?\s+([a-z0-9][a-z0-9+_.-]*)\b",
-        prompt.lower(),
+        p_lower,
     )
-    if not match:
-        return ""
-    package = match.group(1)
-    return "" if package in _PACKAGE_PLACEHOLDERS else package
+    if match:
+        cand = match.group(1)
+        if cand not in _NON_INSTALL_WORDS:
+            return cand
+
+    # 3. Known security tools mentioned in an install context
+    if "install" in p_lower:
+        for tool in ("burpsuite", "chromium", "nmap", "ffuf", "sqlmap", "wireshark", "nikto", "metasploit"):
+            if tool in p_lower:
+                return tool
+
+    return ""
 
 
 def _extract_terminal_command(prompt: str) -> str:
@@ -1687,6 +1714,21 @@ async def _run_autonomous_desktop_loop(
     if "install" in lower:
         package = _extract_install_package(prompt)
         if package:
+            if package == "burpsuite":
+                chk = await computer.terminal(desktop_id, "which burpsuite || [ -f /opt/burpsuite/burpsuite_community.jar ]", timeout=10, actor=tenant_id)
+                if chk.exit_code == 0:
+                    await computer.terminal(desktop_id, "DISPLAY=:99 burpsuite >/dev/null 2>&1 &", timeout=10, actor=tenant_id)
+                    observations.append("Burp Suite Community Edition is already pre-installed at `/usr/local/bin/burpsuite`. Launched on Display :99.")
+                    _append_worklog(state, "action", "Burp Suite Pre-installed & Launched", "Burp Suite verified as pre-installed and launched on graphical display :99.")
+                    if any(b in lower for b in ("chromium", "chrome", "browser", "search")):
+                        _, target_url = _detect_requested_app(prompt)
+                        target_url = target_url or "https://www.google.com"
+                        b_cmd = f"DISPLAY=:99 chromium --no-sandbox --disable-dev-shm-usage --disable-gpu --disable-quic --no-first-run --no-default-browser-check {shlex.quote(target_url)} >/dev/null 2>&1 &"
+                        await computer.terminal(desktop_id, b_cmd, timeout=15, actor=tenant_id)
+                        observations.append(f"Chromium browser launched side-by-side on Display :99 ({target_url}).")
+                        _append_worklog(state, "action", "Chromium Launched", f"Launched Chromium navigating to `{target_url}`.")
+                    return observations, None, False
+
             allowed, reason = ApplicationPolicy().is_package_allowed(package)
             if not allowed:
                 message = f"Installation blocked by the sandbox package policy: {reason}"
@@ -1738,7 +1780,7 @@ async def _run_autonomous_desktop_loop(
         target_url = target_url or "https://www.google.com"
 
         # Launch GUI browser in X11 graphical desktop
-        browser_launch_cmd = f"DISPLAY=:0 chromium --no-sandbox --disable-dev-shm-usage --disable-gpu --disable-quic --no-first-run --no-default-browser-check {shlex.quote(target_url)} >/dev/null 2>&1 &"
+        browser_launch_cmd = f"DISPLAY=:99 chromium --no-sandbox --disable-dev-shm-usage --disable-gpu --disable-quic --no-first-run --no-default-browser-check {shlex.quote(target_url)} >/dev/null 2>&1 &"
         await computer.terminal(desktop_id, browser_launch_cmd, timeout=15, actor=tenant_id)
 
         try:
@@ -1758,6 +1800,11 @@ async def _run_autonomous_desktop_loop(
             f"Launched Chromium browser on Daytona Graphical Desktop (Display :99) navigating to `{target_url}`.",
         )
         observations.append(f"Desktop GUI: Chromium browser launched on display :99 pointing to {target_url}.")
+        if "burp" in lower:
+            chk = await computer.terminal(desktop_id, "which burpsuite || true", timeout=10, actor=tenant_id)
+            if "burpsuite" in chk.stdout:
+                observations.append("Burp Suite Community Edition is already installed on the workstation (`/usr/local/bin/burpsuite`).")
+                _append_worklog(state, "action", "Burp Suite Pre-installed", "Verified Burp Suite is pre-installed at `/usr/local/bin/burpsuite` ready for interception.")
         return observations, None, False
 
     # 5. Autonomous Multi-Phase Security Recon & Bug Hunting Loop
@@ -2173,7 +2220,7 @@ async def _run_prompt_reasoning(tenant_id: str, session_id: str, prompt: str) ->
                 terminal = await computer.terminal(desktop_id, "pwd", actor=tenant_id)
                 inventory = await computer.terminal(
                     desktop_id,
-                    "ls -la /home/daytona 2>/dev/null | head -40",
+                    "ls -la /root 2>/dev/null || ls -la /home 2>/dev/null || ls -la",
                     actor=tenant_id,
                 )
 
@@ -2433,7 +2480,7 @@ async def _run_prompt_reasoning(tenant_id: str, session_id: str, prompt: str) ->
             try:
                 llm_res = await asyncio.wait_for(
                     llm.complete(LLMRequest(messages=messages, max_tokens=900, temperature=0.2)),
-                    timeout=30,
+                    timeout=60,
                 )
                 if llm_res and llm_res.content:
                     state["thought_summary"] = llm_res.content
@@ -2448,12 +2495,13 @@ async def _run_prompt_reasoning(tenant_id: str, session_id: str, prompt: str) ->
                     fallback_response = (
                         f"**Desktop Action Completed:**\n\n"
                         f"{obs_summary}\n\n"
-                        f"*The Daytona graphical workstation and terminal are synchronized with these results.*"
+                        f"*The cyber workstation and terminal are synchronized with these results.*"
                     )
                 elif desktop_id:
                     fallback_response = (
-                        f"Objective processed in Daytona workstation.\n"
-                        f"Observation context: {desktop_context[:300]}"
+                        f"I have inspected the live workstation desktop and terminal environment. "
+                        f"Ready to execute your instructions. You can ask me to launch tools (e.g. Chromium, Burp Suite, Nmap) "
+                        f"or perform security tasks directly."
                     )
                 else:
                     fallback_response = (

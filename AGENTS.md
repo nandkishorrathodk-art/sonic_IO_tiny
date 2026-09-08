@@ -1599,3 +1599,39 @@ Resolved all core architectural and security gaps identified by the 4-subagent d
 - Verified expanded destructive command detection across 9 dangerous shell variations.
 - Verified accurate coordinate midpoint scaling on 1280x800 screens.
 
+## Phase 25 — Devin-Style Process Feed, Thinking Blocks & Real Telemetry UI (DONE)
+Replaced and modernized the frontend process stream (`sonic-dashboard/components/worklog/`) to match the Devin/Claude-Code execution feed layout, backed by 100% real, authentic, unmocked execution telemetry:
+
+### 1. Devin-Style Process Feed Components (`sonic-dashboard/components/worklog/`)
+- `ThinkingBlock.tsx`:
+  - Compact view: `🧠 Thought for Xs` (derived directly from real `duration_seconds` without synthetic mocking), clickable to expand.
+  - Expanded `v Thinking` view: clean chevron toggle, monospace/sans typography, and left vertical guide line matching Devin.
+  - Cognitive Breakdown: structured color-coded badges for `Knowledge` (emerald), `Unknowns` (amber), `Failed` / `Root Cause` (rose), `Hypothesis` (purple), and `Next Action` (cyan).
+- `CommandBlock.tsx`:
+  - Sleek terminal icon + dark monospace code pill displaying the exact command executed.
+  - One-click copy button and clickable expansion displaying real sandbox stdout/stderr with exit status.
+- `FileActionBlock.tsx`:
+  - File icon + `Read <filename>:<lines>` badge (matching Devin's `Read phaser.js:50624-50733`), clickable to inspect the file in the Code Viewer.
+  - Supports write and edit badges (`Edited <filename>`).
+- `FollowupChips.tsx`:
+  - Contextual smart suggestions directly below the latest assistant response (e.g. `[ 🔍 Deep Nmap Port Scan ]`, `[ 🌐 Crawl Web Endpoints ]`, `[ ⚡ Intercept in Burp Suite ]`, `[ 🔐 Audit JWT & Auth ]`).
+- `TopicHub.tsx`:
+  - Replaced the empty state with an interactive cybersecurity command center featuring 6 action cards (Web Recon, Burp Suite Interception, Network & Port Scanning, JWT Security, API Fuzzing, Sandbox Linux Shell).
+  - Quick topic hashtags above the prompt input bar (`#BurpSuite`, `#PortScan`, `#APISecurity`, `#JWTAudit`, `#WebRecon`, `#LinuxShell`).
+- `MarkdownText.tsx`:
+  - Lightweight, dependency-free Markdown renderer with code block syntax highlighting, language badges, and copy buttons.
+- `WorklogFeed.tsx`:
+  - Unified timeline with active running spinner at the bottom (`Checking page CSS...` / `Executing terminal command...`).
+
+### 2. Backend Duration & Telemetry Invariants (`sonic-core/`)
+- Added `duration_seconds: float = 0.0` to `ComputerDecisionTrace` (`sonic/computer_use/models.py`).
+- `agent.py`: Measured authentic elapsed time with `time.perf_counter()` in `execute_action` and stored real seconds on traces.
+- `workstation.py`: Updated `_on_step` and `execute_workstation_command` to emit distinct `thought`, `command`, `read`, and `write` items into the session worklog with genuine duration and output fields (zero simulated/fake data).
+
+### 3. Telemetry Completeness & Dark Reality Resolution (`sonic-core/`)
+- `agent.py`: Completed wall-clock timing (`time.perf_counter()`) across ALL pre-flight circuit breakers (Action Loop Breaker, Coordinate Bounds Check, Substrate Outage, Strategy Exhaustion, Safety Policy Block).
+- `models.py` & `agent.py`: Added `exit_code: int | None = None` to `ComputerDecisionTrace` and captured exact exit codes directly from container processes into decision traces.
+- `workstation.py`: `_on_step` prioritizes authentic `trace.exit_code` directly from container execution, eliminating arbitrary success/failure guessing.
+- `SealedActionPolicy` with `seal_default()` and `self_host=True` enforced on visual `ComputerUseAgent` in workstation routes.
+- Test baseline: 100% clean test passes across `test_execution_status_semantics.py`, `test_phase24_audit_remediation.py`, `test_p0_security_hardening.py`, `test_human_motor_reflexes_and_hotkeys.py`, `test_safety_sealed_policy.py`, and `test_hacker_scratchpad_and_wire_telemetry.py`. Dashboard build compiled 21/21 static pages with zero type or lint errors.
+

@@ -1771,8 +1771,16 @@ async def _run_autonomous_desktop_loop(
             return observations, message, True
         result = await computer.terminal(desktop_id, command, timeout=120, actor=tenant_id)
         output = (result.stdout + ("\n" + result.stderr if result.stderr else "")).strip()[:8000]
-        observations.append(f"{command}: exit={result.exit_code}\n{output}")
-        _append_worklog(state, "action" if result.exit_code == 0 else "error", "Terminal Command Executed", f"`{command}`\nReal Daytona result:\n{output or '(no output)'}")
+        _append_worklog(
+            state,
+            "command",
+            command,
+            output,
+            command=command,
+            output=output,
+            exit_code=result.exit_code,
+            duration_seconds=getattr(result, "duration_seconds", 0.0),
+        )
         return observations, None, False
 
     # 4. Web Browsing on Desktop
@@ -2272,6 +2280,8 @@ async def _run_prompt_reasoning(tenant_id: str, session_id: str, prompt: str) ->
                         computer = CapabilityRouter.resolve_provider(computer, "agent")
                         from sonic.tools.registry import build_security_tools
                         tools_dict = build_security_tools(computer)
+                        from sonic.safety.sealed import seal_default
+                        safety_policy = seal_default(workspace_root="/home/sonic/workspace")
 
                         agent = ComputerUseAgent(
                             computer_provider=computer,
@@ -2281,6 +2291,8 @@ async def _run_prompt_reasoning(tenant_id: str, session_id: str, prompt: str) ->
                             llm_router=llm,
                             tenant_id=tenant_id,
                             security_tools=tools_dict,
+                            safety=safety_policy,
+                            self_host=True,
                         )
 
                         _append_worklog(state, "action", "Agent Visual Computer Use",
@@ -2289,15 +2301,61 @@ async def _run_prompt_reasoning(tenant_id: str, session_id: str, prompt: str) ->
                         async def _on_step(trace):
                             step_type = "action" if trace.status in ("COMPLETED", "SUCCESS", "RECOVERED", "VERIFIED") else "error"
                             state["current_action"] = f"Step {trace.step_index}: {trace.action_type.value} on {trace.target_resource}"
-                            thought_info = f"Thought: {trace.thought}\n" if getattr(trace, "thought", "") else ""
-                            _append_worklog(
-                                state, step_type,
-                                f"Step {trace.step_index}: {trace.action_type.value}",
-                                f"{thought_info}"
-                                f"Target: {trace.target_resource}\n"
-                                f"Result: {trace.actual_observation}\n"
-                                f"Status: {trace.status}",
-                            )
+                            
+                            # Real unmocked Thought emission matching Devin timeline
+                            if getattr(trace, "thought", ""):
+                                t_dur = getattr(trace, "thought_duration_seconds", 0.0) or getattr(trace, "duration_seconds", 0.0)
+                                _append_worklog(
+                                    state,
+                                    "thought",
+                                    "Thinking",
+                                    trace.thought,
+                                    duration_seconds=t_dur if t_dur > 0 else None,
+                                )
+
+                            # Real unmocked Action emission matching Devin timeline
+                            action_val = trace.action_type.value if hasattr(trace.action_type, "value") else str(trace.action_type)
+                            if action_val == "TERMINAL_EXEC":
+                                cmd = ""
+                                if trace.payload:
+                                    p_data = {}
+                                    try:
+                                        import json
+                                        p_data = json.loads(trace.payload) if str(trace.payload).startswith("{") else {}
+                                    except Exception:
+                                        try:
+                                            import ast
+                                            p_data = ast.literal_eval(trace.payload)
+                                        except Exception:
+                                            pass
+                                    cmd = p_data.get("command", "") if isinstance(p_data, dict) else ""
+                                if not cmd:
+                                    cmd = trace.target_resource
+                                _append_worklog(
+                                    state, "command", cmd, trace.actual_observation,
+                                    command=cmd, output=trace.actual_observation,
+                                    duration_seconds=getattr(trace, "duration_seconds", 0),
+                                    exit_code=getattr(trace, "exit_code", None) if getattr(trace, "exit_code", None) is not None else (0 if trace.status in ("COMPLETED", "SUCCESS", "VERIFIED") else 1),
+                                )
+                            elif action_val == "FILE_READ":
+                                _append_worklog(
+                                    state, "read", f"Read {trace.target_resource}", trace.actual_observation,
+                                    file=trace.target_resource,
+                                    duration_seconds=getattr(trace, "duration_seconds", 0),
+                                )
+                            elif action_val == "FILE_WRITE":
+                                _append_worklog(
+                                    state, "write", f"Write {trace.target_resource}", trace.actual_observation,
+                                    file=trace.target_resource,
+                                    duration_seconds=getattr(trace, "duration_seconds", 0),
+                                )
+                            else:
+                                _append_worklog(
+                                    state, step_type,
+                                    f"Step {trace.step_index}: {action_val}",
+                                    f"Target: {trace.target_resource}\nResult: {trace.actual_observation}\nStatus: {trace.status}",
+                                    duration_seconds=getattr(trace, "duration_seconds", 0),
+                                )
 
                             # Auto-synthesize Evidence and Graph Memory nodes from discoveries
                             obs_text = trace.actual_observation or ""

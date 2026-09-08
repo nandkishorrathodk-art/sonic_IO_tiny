@@ -730,8 +730,10 @@ class ComputerUseAgent:
             ],
             task_type="reasoning",
         )
+        t_thought_start = time.perf_counter()
         try:
             response = await self.llm_router.complete(request)
+            self._last_thought_duration = round(time.perf_counter() - t_thought_start, 2)
             t_match = re.search(r'(?:\*{1,2}|_)?\bTHOUGHT\b(?:\*{1,2}|_)?:\s*(.*?)(?=(?:\*{1,2}|_)?\b(?:THOUGHT|ACTION|TARGET|PAYLOAD|EXPECTED)\b(?:\*{1,2}|_)?\:|$)', response.content, re.DOTALL | re.IGNORECASE)
             self._last_thought = t_match.group(1).strip(" *_\n\r\t") if t_match else ""
             action_type, target, payload, expected = self._parse_llm_action(
@@ -739,6 +741,7 @@ class ComputerUseAgent:
             )
             return action_type, target, payload, expected
         except Exception as e:
+            self._last_thought_duration = round(time.perf_counter() - t_thought_start, 2)
             logger.warning("computer_llm_action_failed_diagnostic_fallback", error=str(e))
             self._last_thought = ""
             return self._diagnostic_fallback(primary_file)
@@ -1016,10 +1019,11 @@ class ComputerUseAgent:
     ) -> ComputerDecisionTrace:
         """Executes the action inside the computer sandbox and validates outcome."""
         self.action_counter += 1
-        time.perf_counter()
+        t_start = time.perf_counter()
         actual_obs_str = ""
         status = ActionExecutionStatus.COMPLETED
         recovery_needed = False
+        action_exit_code: int | None = None
 
         if not hasattr(self, "failure_budget"):
             self.failure_budget = FailureBudgetTracker()
@@ -1055,6 +1059,9 @@ class ComputerUseAgent:
                     info_gain=0.0,
                     recovery_attempted=False,
                     status=status,
+                    exit_code=126,
+                    duration_seconds=round(time.perf_counter() - t_start, 3),
+                    thought_duration_seconds=getattr(self, "_last_thought_duration", 0.0),
                 )
                 self.traces.append(trace)
                 self.history.append({"action": action_type.value, "result": actual_obs_str})
@@ -1086,6 +1093,8 @@ class ComputerUseAgent:
                 info_gain=0.0,
                 recovery_attempted=False,
                 status=status,
+                duration_seconds=round(time.perf_counter() - t_start, 3),
+                thought_duration_seconds=getattr(self, "_last_thought_duration", 0.0),
             )
             self.traces.append(trace)
             self.history.append({"action": f"{action_type.value} {target_resource}", "result": actual_obs_str})
@@ -1116,6 +1125,8 @@ class ComputerUseAgent:
                 info_gain=0.0,
                 recovery_attempted=False,
                 status=status,
+                duration_seconds=round(time.perf_counter() - t_start, 3),
+                thought_duration_seconds=getattr(self, "_last_thought_duration", 0.0),
             )
             self.traces.append(trace)
             self.history.append({"action": f"{action_type.value} {target_resource}", "result": actual_obs_str})
@@ -1153,6 +1164,9 @@ class ComputerUseAgent:
                     info_gain=0.0,
                     recovery_attempted=False,
                     status=status,
+                    thought=getattr(self, "_last_thought", ""),
+                    duration_seconds=round(time.perf_counter() - t_start, 3),
+                    thought_duration_seconds=getattr(self, "_last_thought_duration", 0.0),
                 )
                 self.traces.append(trace)
                 self.history.append({"action": f"{action_type.value} {target_resource}", "result": actual_obs_str})
@@ -1220,6 +1234,9 @@ class ComputerUseAgent:
                 info_gain=0.0,
                 recovery_attempted=False,
                 status=status,
+                thought=getattr(self, "_last_thought", ""),
+                duration_seconds=round(time.perf_counter() - t_start, 3),
+                thought_duration_seconds=getattr(self, "_last_thought_duration", 0.0),
             )
             self.traces.append(trace)
             self.history.append({"action": action_type.value, "result": actual_obs_str})
@@ -1484,12 +1501,12 @@ class ComputerUseAgent:
                                 status = ActionExecutionStatus.BLOCKED
 
             elif action_type == ComputerActionType.FILE_READ:
-                path = payload.get("path", "/home/sonic/workspace/README.md")
+                path = payload.get("path") or target_resource or "/home/sonic/workspace/README.md"
                 content = await self.computer.read_file(workspace_id, path)
                 actual_obs_str = f"Read {len(content)} bytes from {path}"
 
             elif action_type == ComputerActionType.FILE_WRITE:
-                path = payload.get("path", "/home/sonic/workspace/auth.py")
+                path = payload.get("path") or target_resource or "/home/sonic/workspace/auth.py"
                 content = payload.get("content", "")
                 await self.computer.write_file(workspace_id, path, content)
                 actual_obs_str = f"Wrote patch ({len(content)} bytes) to {path}"
@@ -1517,6 +1534,7 @@ class ComputerUseAgent:
                 if any(cmd_str.startswith(app) or cmd_str == app for app in _GUI_APPS) and not cmd_str.endswith("&"):
                     cmd_str = f"DISPLAY=:0 {cmd_str} &"
                 res = await self.computer.terminal(workspace_id, cmd_str)
+                action_exit_code = getattr(res, "exit_code", None)
                 actual_obs_str = res.stdout.strip() or f"Exit {res.exit_code}"
                 if res.exit_code != 0:
                     err_class, err_reason = classify_failure(
@@ -1769,6 +1787,7 @@ class ComputerUseAgent:
                     if status_val in ("blocked", "failed", "timed_out"):
                         raw_err = getattr(result, "raw_output", "") or getattr(result, "error", "")
                         exit_c = 126 if status_val == "blocked" else (124 if status_val == "timed_out" else 1)
+                        action_exit_code = exit_c
                         err_class, _ = classify_failure(
                             exit_code=exit_c,
                             stdout="",
@@ -1796,6 +1815,7 @@ class ComputerUseAgent:
                             status = ActionExecutionStatus.FAILED
                             recovery_needed = True
                     else:
+                        action_exit_code = 0
                         self.failure_budget.record_success(tool=tool_name, provider=provider_name)
 
             elif action_type == ComputerActionType.TOOL_AUTHOR:
@@ -1940,6 +1960,9 @@ class ComputerUseAgent:
             recovery_attempted=recovery_needed,
             thought=getattr(self, "_last_thought", ""),
             status=status,
+            exit_code=action_exit_code,
+            duration_seconds=round(time.perf_counter() - t_start, 2),
+            thought_duration_seconds=getattr(self, "_last_thought_duration", 0.0),
         )
         self.traces.append(trace)
         # Record into the reasoning history so the next LLM call sees what was

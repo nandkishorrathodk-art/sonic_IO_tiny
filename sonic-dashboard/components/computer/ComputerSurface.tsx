@@ -227,6 +227,7 @@ export function ComputerSurface({
           )}
         </div>
 
+        <div className="flex items-center gap-2">
           <div className="flex items-center rounded bg-ink-950 border border-ink-700 p-0.5 text-[10px] font-mono">
             <button
               type="button"

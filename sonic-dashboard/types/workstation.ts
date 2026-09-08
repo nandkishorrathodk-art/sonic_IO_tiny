@@ -15,6 +15,8 @@ export interface WorklogItem {
   lines?: string;
   timestamp?: string;
   duration_seconds?: number;
+  exit_code?: number;
+  role?: "user" | "assistant" | "system" | string;
 }
 
 export interface DesktopApp {

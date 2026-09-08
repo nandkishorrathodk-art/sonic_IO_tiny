@@ -53,9 +53,12 @@ export function ComputerSurface({
   const [showCmdPanel, setShowCmdPanel] = useState(false);
   const [cmdInput, setCmdInput] = useState("");
   const [cmdRunning, setCmdRunning] = useState(false);
+  const [useStream, setUseStream] = useState(true);
   const canvasRef = useRef<HTMLDivElement>(null);
   const cmdLogRef = useRef<HTMLDivElement>(null);
   const isFetchingScreenshot = useRef(false);
+
+  const streamUrl = desktopState?.novnc_url || (desktopState as any)?.vnc_url || "http://localhost:6080/vnc.html?autoconnect=true&resize=scale";
 
   const fetchScreenshot = async () => {
     if (isFetchingScreenshot.current) return;
@@ -183,7 +186,29 @@ export function ComputerSurface({
           )}
         </div>
 
-        <div className="flex items-center gap-2">
+          <div className="flex items-center rounded bg-ink-950 border border-ink-700 p-0.5 text-[10px] font-mono">
+            <button
+              type="button"
+              onClick={() => setUseStream(true)}
+              className={`px-2 py-0.5 rounded transition ${
+                useStream ? "bg-secondary-600 text-white font-bold shadow-glow" : "text-muted hover:text-white"
+              }`}
+              title="Live 60fps interactive noVNC stream"
+            >
+              VNC Stream
+            </button>
+            <button
+              type="button"
+              onClick={() => setUseStream(false)}
+              className={`px-2 py-0.5 rounded transition ${
+                !useStream ? "bg-secondary-600 text-white font-bold shadow-glow" : "text-muted hover:text-white"
+              }`}
+              title="Static screenshot snapshots"
+            >
+              Snapshot
+            </button>
+          </div>
+
           <button
             onClick={() => setIsInteractive(!isInteractive)}
             className={`px-2.5 py-0.5 rounded text-[10px] font-mono font-semibold flex items-center gap-1.5 transition border ${
@@ -219,7 +244,25 @@ export function ComputerSurface({
         className="flex-1 bg-ink-950 relative flex flex-col items-center justify-center overflow-hidden select-none"
         style={{ minHeight: 0 }}
       >
-        {hasScreenshot ? (
+        {useStream && (isLive || streamUrl) ? (
+          <div className="w-full h-full flex flex-col items-center justify-center p-2 relative">
+            <div
+              className="w-full h-full max-w-[1280px] max-h-[800px] aspect-[16/10] rounded border border-ink-700 bg-black relative shadow-2xl overflow-hidden flex items-center justify-center"
+            >
+              <iframe
+                src={streamUrl}
+                title="SONIC Cyber Workstation VNC Stream"
+                className="w-full h-full border-0"
+                allow="clipboard-read; clipboard-write; fullscreen"
+              />
+              <div className="absolute top-2.5 left-2.5 z-20 flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-black/80 border border-success/40 text-[11px] font-mono text-success shadow-lg backdrop-blur-sm pointer-events-none">
+                <Bot className="w-3.5 h-3.5 text-success" />
+                <span>SONIC Autonomous Desktop</span>
+                <span className="text-[9px] text-muted-dim uppercase tracking-wider ml-1 bg-ink-800 px-1 py-0.2 rounded">60 FPS Live VNC</span>
+              </div>
+            </div>
+          </div>
+        ) : hasScreenshot ? (
           <div className="w-full h-full flex flex-col items-center justify-center p-2 relative">
             <div
               ref={canvasRef}

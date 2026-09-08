@@ -334,17 +334,13 @@ class DockerComputerProvider(ComputerProvider):
             return self._last_screenshot
 
         scr_cmd = (
-            "DISPLAY=:99 import -window root /tmp/sonic_screen.png 2>/dev/null && "
-            "(LOC=$(DISPLAY=:99 xdotool getmouselocation --shell 2>/dev/null); "
-            "if [ $? -eq 0 ] && [ -n \"$LOC\" ]; then eval \"$LOC\"; "
-            "DISPLAY=:99 convert /tmp/sonic_screen.png -stroke black -strokewidth 1 -fill '#00ffcc' "
-            "-draw \"polygon $X,$Y $(($X+15)),$(($Y+12)) $(($X+9)),$(($Y+12)) $(($X+14)),$(($Y+22)) $(($X+10)),$(($Y+24)) $(($X+5)),$(($Y+14)) $X,$(($Y+18))\" "
-            "/tmp/sonic_screen.png 2>/dev/null || true; fi) && "
-            "base64 -w0 /tmp/sonic_screen.png && "
+            "DISPLAY=:99 scrot -o /tmp/sonic_screen.png 2>/dev/null || "
+            "DISPLAY=:99 import -window root /tmp/sonic_screen.png 2>/dev/null; "
+            "base64 -w0 /tmp/sonic_screen.png 2>/dev/null && "
             "echo '___ACTIVE_WINDOW___' && "
             "DISPLAY=:99 xdotool getactivewindow getwindowname 2>/dev/null || true"
         )
-        code, out, _ = await self._docker_exec(scr_cmd, timeout=8)
+        code, out, _ = await self._docker_exec(scr_cmd, timeout=15)
         b64 = ""
         active_win = "Desktop"
         if code == 0 and out:

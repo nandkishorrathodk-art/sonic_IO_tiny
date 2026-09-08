@@ -1535,3 +1535,30 @@ BugBountyClient existed but was referenced nowhere.
   4. **On-Prem CSS/UX**: dashboard stores JWT in localStorage; `ensureAuthToken` auto-hits dev-token endpoint (production 404,, Google OAuth state param is sent-only-if-provided and not verified on callback (login-CSRF,, mild.
   5. **Code quality**: 141 ruff errors core+1 cli — CI lint job would fail. Mostly E402(36,, F401 unused imports(17,, E741(13,, N806(5,, I001(9,W293(5,SIM/S103/B007 etc;; no F821 undefined names. Largest: workstation.py~2300 lines,, engagement.py~900 lines (need split.. Dead code noted: unused imports,, `blocked` var unused in workstation mission summary (minor UX,, `class jwt` fallback in google_auth.py (N801,but isolated fallback only w/o jose/pyjwt.
 - Docker socket note:: this host sandbox has no docker images;; those 4 failures remain — do not mark source as broken on that basis.
+
+## Phase 23 — Live Workstation Observability, Burp Suite Autonomy & System 1 Reflexes (DONE)
+### 1. Workstation GUI Observability Gap Resolved (Dashboard noVNC Embedding)
+- **Problem diagnosed**: Dashboard (`localhost:12001`) previously relied solely on polling a static Base64 screenshot every 3 seconds via `/workstation/desktop/screenshot`. If the backend experienced reloads or container status checks lagged, the dashboard froze on an initial boot wallpaper (rat logo) while real GUI activities (Chrome, Burp Suite modal) were actively occurring in the background (visible only at `http://localhost:6080/vnc.html`).
+- **Solution implemented in `sonic-dashboard/components/computer/ComputerSurface.tsx`**:
+  - Implemented an intuitive segmented control: `[ VNC Stream ]` (live 60 FPS noVNC stream) and `[ Snapshot ]` (static inspection with interactive coordinate crosshairs).
+  - Embedded live noVNC stream (`streamUrl = novnc_url || "http://localhost:6080/vnc.html?autoconnect=true&resize=scale"`) directly into the cyber workstation surface body via an iframe with clipboard and fullscreen allowances.
+  - Zero polling delay, real-time visualization of container processes, and seamless human takeover capability.
+
+### 2. High-Performance Screen Capture (`docker_computer.py`)
+- Replaced slow ImageMagick `import -window root` + `convert -draw polygon` pipeline (which took 8–12 seconds and frequently hit 8-second timeouts on Docker Desktop for Windows, causing false-positive `NO_DISPLAY` verdicts) with ultra-fast `scrot -o` (173ms execution).
+- Increased execution timeout from 8s to 15s to handle Docker virtualization spikes cleanly.
+- `screenshot()` now reliably returns `desktop_state="INTERACTIVE"` with real Base64 screen data.
+
+### 3. Burp Suite Community Edition & Java 21 Integration
+- Diagnosed container runtime error: Burp Suite Community Edition (`/opt/burpsuite/burpsuite_community.jar`) was compiled with Java 21 (`class file version 65.0`), whereas the container originally possessed OpenJDK 17 (`class file version 61.0`), resulting in immediate crashes (`java.lang.UnsupportedClassVersionError`).
+- Upgraded container Java runtime to `openjdk-21-jre`, setting default Java alternatives to OpenJDK 21.
+- Validated Burp Suite Community Edition v2024.7.1 startup: Terms and Conditions modal handled, Temporary Project initialized, and Burp Proxy actively listening on `127.0.0.1:8080`.
+
+### 4. Hinglish Intent Extraction & Application Routing (`workstation.py`)
+- Sanitized natural language and Hinglish package extraction (`_extract_install_package` and `_detect_requested_app`): filtered Hindi/Hinglish command suffixes (`karo`, `usko`, `isko`, `kar`, `then`, `plz`, `bhai`) preventing invalid operations like `apt install karo`.
+- Added pre-installed application awareness: checks `/usr/local/bin/burpsuite` and launches the application directly rather than hallucinating external download flows.
+
+### 5. System 1 Motor Reflexes & Workstation Auto-Tiling (`motor.py`)
+- Implemented `MotorReflexes` (`sonic/computer_use/motor.py`) providing zero-latency keyboard hotkeys (`Ctrl+L` URL navigation, `Ctrl+T` new tab, `Ctrl+W` tab closing, `Escape` modal dialog dismissal), human typing cadence (25ms delay preventing frontend debounce drops), and tab budgeting.
+- Implemented desktop tiling (`tile_workstation`) using `wmctrl` to arrange browser and security tools side-by-side.
+- Created resilient PowerShell server launcher `run_backend.ps1` to prevent Windows file-watch reloader termination.

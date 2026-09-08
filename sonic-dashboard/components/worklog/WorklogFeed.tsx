@@ -25,7 +25,6 @@ import { ThinkingBlock } from "./ThinkingBlock";
 import { CommandBlock } from "./CommandBlock";
 import { FileActionBlock } from "./FileActionBlock";
 import { FollowupChips } from "./FollowupChips";
-import { TopicHub, TOPIC_TAGS } from "./TopicHub";
 
 type Mode = "Normal" | "Autonomous" | "Pair-Program";
 const MODES: Mode[] = ["Normal", "Autonomous", "Pair-Program"];
@@ -147,7 +146,15 @@ export function WorklogFeed({
       {/* Main Process Timeline */}
       <div className="flex-1 overflow-y-auto px-4 py-3 space-y-2 text-xs">
         {displayItems.length === 0 ? (
-          <TopicHub onSelectTopic={handleTopicClick} />
+          <div className="h-full min-h-[320px] flex flex-col items-center justify-center text-center p-6 text-muted-dim space-y-2 select-none">
+            <div className="w-10 h-10 rounded-full bg-ink-850 border border-ink-800 flex items-center justify-center text-secondary-400 font-mono text-sm shadow-inner">
+              &gt;_
+            </div>
+            <p className="text-xs text-slate-300 font-mono font-medium">Ready</p>
+            <p className="text-[11.5px] text-muted-dim max-w-xs leading-relaxed">
+              Type an objective or instruction below to operate the graphical workstation.
+            </p>
+          </div>
         ) : (
           displayItems.map((item, idx) => {
             const itemId = item.id || `item-${idx}`;
@@ -316,26 +323,8 @@ export function WorklogFeed({
         <div ref={worklogEndRef} />
       </div>
 
-      {/* Prompt Area & Quick Topic Chips */}
+      {/* Prompt Area */}
       <div className="p-3 border-t border-ink-800 bg-ink-900 space-y-2">
-        {/* Quick Topic Chips above input bar */}
-        <div className="flex items-center gap-1.5 overflow-x-auto pb-0.5 no-scrollbar select-none text-[10.5px]">
-          <span className="text-muted-dim text-[10px] font-mono shrink-0 font-semibold uppercase tracking-wider pl-0.5">
-            Topics:
-          </span>
-          {TOPIC_TAGS.map((t) => (
-            <button
-              key={t.tag}
-              type="button"
-              onClick={() => handleTopicClick(t.prompt)}
-              className="px-2 py-0.5 rounded-full bg-ink-850 hover:bg-ink-800 border border-ink-750 hover:border-secondary-500/50 text-slate-400 hover:text-secondary-300 transition shrink-0 font-mono"
-              title={t.prompt}
-            >
-              {t.tag}
-            </button>
-          ))}
-        </div>
-
         {/* Input Bar */}
         <form
           onSubmit={handleSubmit}

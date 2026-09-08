@@ -734,10 +734,15 @@ class ComputerUseAgent:
         try:
             response = await self.llm_router.complete(request)
             self._last_thought_duration = round(time.perf_counter() - t_thought_start, 2)
-            t_match = re.search(r'(?:\*{1,2}|_)?\bTHOUGHT\b(?:\*{1,2}|_)?:\s*(.*?)(?=(?:\*{1,2}|_)?\b(?:THOUGHT|ACTION|TARGET|PAYLOAD|EXPECTED)\b(?:\*{1,2}|_)?\:|$)', response.content, re.DOTALL | re.IGNORECASE)
-            self._last_thought = t_match.group(1).strip(" *_\n\r\t") if t_match else ""
+            content_str = response.content
+            action_idx = content_str.find("ACTION:")
+            if action_idx != -1:
+                self._last_thought = content_str[:action_idx].strip(" *_\n\r\t")
+            else:
+                t_match = re.search(r'(?:\*{1,2}|_)?\b(?:THOUGHT|REASONING)\b(?:\*{1,2}|_)?:\s*(.*?)(?=(?:\*{1,2}|_)?\b(?:ACTION|TARGET|PAYLOAD|EXPECTED)\b(?:\*{1,2}|_)?\:|$)', content_str, re.DOTALL | re.IGNORECASE)
+                self._last_thought = t_match.group(1).strip(" *_\n\r\t") if t_match else content_str.strip()
             action_type, target, payload, expected = self._parse_llm_action(
-                response.content, primary_file
+                content_str, primary_file
             )
             return action_type, target, payload, expected
         except Exception as e:

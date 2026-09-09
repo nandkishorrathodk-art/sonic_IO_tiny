@@ -37,10 +37,19 @@ class CapabilityRouter:
     def __init__(self, headless_provider: HeadlessComputeProvider | None = None):
         self._headless_provider = headless_provider
 
+    @staticmethod
+    def _safe_headless() -> HeadlessComputeProvider:
+        """Headless fallback must ALWAYS be host-execution-DISABLED (fail-closed).
+
+        If no sandbox provider is available, the agent fails closed (exit 126)
+        instead of silently running directly on the host OS machine.”
+        """
+        return HeadlessComputeProvider()
+
     @property
     def headless_provider(self) -> HeadlessComputeProvider:
         if self._headless_provider is None:
-            self._headless_provider = HeadlessComputeProvider()
+            self._headless_provider = self._safe_headless()
         return self._headless_provider
 
     # -------------------------------------------------------------
@@ -167,10 +176,10 @@ class CapabilityRouter:
             "HTTP_PROBE",
             "RECON",
         }:
-            return HeadlessComputeProvider()
+            return CapabilityRouter._safe_headless()
 
         if preferred_provider is None:
-            return HeadlessComputeProvider()
+            return CapabilityRouter._safe_headless()
 
         if isinstance(preferred_provider, HeadlessComputeProvider):
             return preferred_provider
@@ -182,7 +191,7 @@ class CapabilityRouter:
                 preferred=preferred_provider.__class__.__name__,
                 task_type=task_type,
             )
-            return HeadlessComputeProvider()
+            return CapabilityRouter._safe_headless()
 
         return preferred_provider
 

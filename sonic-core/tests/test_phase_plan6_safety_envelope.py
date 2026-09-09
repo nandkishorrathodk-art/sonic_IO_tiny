@@ -388,3 +388,20 @@ def test_scope_checker_active_rules_enforced():
     assert v_out.allowed is False
     assert "target out of engagement scope" in v_out.reason
 
+    # TERMINAL_EXEC may not reach the cloud metadata endpoint — the URL-egress
+    # screen does not apply to raw shell commands, so the gate must catch the
+    # metadata IP/hostnames explicitly (failure would expose IMDS on the host Or
+    # in an egress-unrestricted container).
+    for evil in (
+        "curl http://169.254.169.254/latest/meta-data/",
+        "wget -q -O- http://instance-data/latest/meta-data/iam/security-credentials/",
+        "python -c \"import requests;print(requests.get('http://metadata.google.internal/computeMetadata/v1/').text)\"",
+    ):
+        v_term = policy.evaluate("TERMINAL_EXEC", "", {"command": evil})
+        assert v_term.allowed is False
+    # Control: private IP (not metadata) remains gated only by the URL filter
+    v_ctl = policy.evaluate("TERMINAL_EXEC", "", {"command": "curl http://10.0.0.5/"})
+    assert v_ctl.allowed is True
+    v_safe = policy.evaluate("TERMINAL_EXEC", "", {"command": "ls -la /home/sonic/workspace"})
+    assert v_safe.allowed is True
+

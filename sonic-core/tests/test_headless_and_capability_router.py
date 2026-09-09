@@ -26,7 +26,9 @@ from sonic.sandbox.provider import ComputeProvider, ExecResult
 @pytest.mark.no_live_infra
 @pytest.mark.asyncio
 async def test_headless_terminal_execution(tmp_path):
-    provider = HeadlessComputeProvider(base_dir=tmp_path)
+    # Host execution is OPT-IN: default is fail-closed (False) so a fallback
+    # substrate can never silently run directly on the host OS.
+    provider = HeadlessComputeProvider(base_dir=tmp_path, allow_host_execution=True)
     ws = await provider.create(tenant_id="test-tenant", engagement_id="eng-1")
     assert ws.id is not None
 
@@ -286,13 +288,13 @@ def test_capability_router_provider_resolution():
 @pytest.mark.no_live_infra
 @pytest.mark.asyncio
 async def test_capability_router_execute_with_exit_125_fallback(tmp_path):
-    headless = HeadlessComputeProvider(base_dir=tmp_path)
+    headless = HeadlessComputeProvider(base_dir=tmp_path, allow_host_execution=True)
     router = CapabilityRouter(headless_provider=headless)
 
     # Create a mock Docker provider that passes initial check but returns exit code 125
     # (simulating container was killed or not running)
     failing_provider = MagicMock(spec=ComputeProvider)
-    failing_provider.__class__.__name__ = "SimulatedDockerProvider"
+    failing_provider.__class__.__name__ = "SimulatedSandboxProvider"
     failing_provider.terminal = AsyncMock(
         return_value=ExecResult(
             command="echo test",
@@ -310,3 +312,39 @@ async def test_capability_router_execute_with_exit_125_fallback(tmp_path):
     )
     assert res.exit_code == 0
     assert "fallback_success" in res.stdout
+
+@pytest.mark.no_live_infra
+@pytest.mark.asyncio
+async def test_headless_default_fail_closed_no_silent_host_execution():
+    """
+    The audit backdoor: HeadlessComputeProvider previously defaulted to
+    allow_host_execution=True — so when Docker/Daytona were down, the
+    CapabilityRouter silently fell back to a provider that ran commands directly
+    on the host OS (zero isolation). Now the default is fail-closed:
+    - constructor default → exit 126 (no host subprocess spawned)
+    - CapabilityRouter's fallback provider is constructed host-execution-DISABLED
+    """
+    provider = HeadlessComputeProvider()
+    res = await provider.execute("ws-test", "echo should_not_run")
+    assert res.exit_code == 126
+    assert "FAIL-CLOSED" in res.stderr
+
+    # CapabilityRouter safe fallback — default construction is host-execution-safe.
+    router = CapabilityRouter()
+    fallback = router.resolve_provider(None)
+    assert fallback.allow_host_execution is False
+
+    # execute_with_fallback with a unavailable Docker provider must fail-closed,
+    # NOT silently run on the host machine.
+    failing = MagicMock(spec=ComputeProvider)
+    failing.__class__.__name__ = "DockerComputerProvider"
+    failing.terminal = AsyncMock(
+        return_value=ExecResult(command="echo x", exit_code=125, stdout="", stderr="")
+    )
+    res = await router.execute_with_fallback(
+        provider=failing,
+        workspace_id="ws-test",
+        command="echo host_backdoor",
+    )
+    assert res.exit_code == 126
+    assert "FAIL-CLOSED" in res.stderr

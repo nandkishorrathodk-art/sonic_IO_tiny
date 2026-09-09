@@ -24,6 +24,7 @@ self-directed exploration cannot escape the envelope.
 
 from __future__ import annotations
 
+import re
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -179,7 +180,21 @@ class ActionPolicy:
                 return PolicyVerdict(False, f"traversal in path: {path}")
         return PolicyVerdict(True, "path confined")
 
+    _CLOUD_METADATA_RE = re.compile(
+        r"169\.254\.169\.254"
+        r"|instance-data(?:\.ec2\.internal)?\b"
+        r"|metadata\.google\.internal\b"
+        r"|metadata\.azure\.com\b",
+        re.IGNORECASE,
+    )
+
     def _check_command(self, command: str) -> PolicyVerdict:
+        # TERMINAL_EXEC bypasses the URL-egress filter (it runs shell howeverthe
+        # operator/being chooses). Close the metadata hole explicitly: a shell
+        # command must never reach the cloud metadata endpoint — on the host Or
+        # inside an egress-unrestricted container。
+        if self._CLOUD_METADATA_RE.search(command or ""):
+            return PolicyVerdict(False, "cloud metadata access blocked in terminal command")
         try:
             risk = self.scope_checker.classify_command_risk(command)
         except Exception:

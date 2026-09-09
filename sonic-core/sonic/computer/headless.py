@@ -77,7 +77,7 @@ class HeadlessComputeProvider(ComputerProvider, ComputeProvider):
     def __init__(
         self,
         base_dir: str | Path | None = None,
-        allow_host_execution: bool = True,
+        allow_host_execution: bool = False,
         app_policy: ApplicationPolicy | None = None,
     ):
         if base_dir:

@@ -38,6 +38,33 @@ from sonic.research.event_bus import (
 logger = get_logger(__name__)
 
 
+def _build_tool_request(
+    tool_name: str,
+    action: str,
+    target: str,
+    options: dict | None = None, timeout_seconds: int = 60,
+) -> Any:
+    """Build a real ToolRequest for the provider-bound security adapters."""
+    from sonic.tools.base import ToolRequest
+    return ToolRequest(
+        tenant_id="default",
+        engagement_id="default",
+        workspace_id="default",
+        agent_id="specialist",
+        tool_name=tool_name,
+        target=target,
+        options=options or {},
+        timeout_seconds=timeout_seconds,
+    )
+
+
+def _real_findings(res: Any) -> list:
+    """Map a ToolResult's structured findings (parsed_data or legacy findings)."""
+    if res is None:
+        return []
+    return getattr(res, "parsed_data", None) or getattr(res, "findings", None) or []
+
+
 # =====================================================================
 # 1. State, Budget & Exceptions
 # =====================================================================
@@ -468,17 +495,17 @@ class WebSpecialist(SpecialistAgent):
         http_tool = tools.get("http_client") if isinstance(tools, dict) else None
         if http_tool:
             try:
-                from types import SimpleNamespace
-                req = SimpleNamespace(tool_name="http_client", action="probe", target=target, options={}, timeout_seconds=30)
+                req = _build_tool_request(http_tool.name if hasattr(http_tool, "name") else "http_client", "probe", target, timeout_seconds=30)
                 res = await http_tool.execute(req)
-                if res and getattr(res, "findings", None):
-                    for finding in res.findings:
-                        raw = getattr(finding, "raw", finding) if not isinstance(finding, dict) else finding
+                if res:
+                    for finding in _real_findings(res):
+                        raw = finding if isinstance(finding, dict) else getattr(finding, "raw", finding)
                         endpoints.append({
                             "url": target,
                             "method": "GET",
-                            "status_code": raw.get("status_code", 200),
+                            "status_code": raw.get("status_code", 200) if isinstance(raw, dict) else 200,
                             "params": [],
+                            "metadata": {"discovered_by": "live_probe", "status_code": raw.get("status_code", 200) if isinstance(raw,dict) else 200},
                         })
             except Exception as e:
                 logger.debug("web_specialist_http_probe_failed", error=str(e))
@@ -492,19 +519,17 @@ class WebSpecialist(SpecialistAgent):
                     "method": "GET",
                     "status_code": probe_res.get("status_code", 200),
                     "params": [],
+                    "metadata": {"discovered_by": "live_probe", "status_code": probe_res.get("status_code", 200)},
                 })
             except Exception as e:
                 logger.debug("web_specialist_provider_probe_failed", error=str(e))
 
+        # No live probe and no context-provided endpoints → emit NOTHING.
+
+        # A specialist must never invent endpoints out of thin air — otherwise
+        # the dashboard's "Endpoint discovered" stream is theater.
         if not endpoints:
-            endpoints = context.get(
-                "endpoints",
-                [
-                    {"url": f"{target}/", "method": "GET", "params": []},
-                    {"url": f"{target}/login", "method": "GET", "params": ["username", "password"]},
-                    {"url": f"{target}/api/v1/user", "method": "GET", "params": ["id"], "auth_required": True},
-                ],
-            )
+            endpoints = context.get("endpoints", [])
 
         for ep in endpoints:
             self.budget.check_limits()
@@ -585,25 +610,12 @@ class ApiSpecialist(SpecialistAgent):
 
         self.budget.record_action()
 
-        api_routes = context.get(
-            "api_routes",
-            [
-                {
-                    "url": f"{target}/v1/users/me",
-                    "method": "GET",
-                    "params": ["fields"],
-                    "content_type": "application/json",
-                },
-                {
-                    "url": f"{target}/v1/orders",
-                    "method": "POST",
-                    "params": ["item_id", "qty", "shipping_address"],
-                    "content_type": "application/json",
-                },
-            ],
-        )
+        # Only analyze API routes that were REALLY discovered (live probes or
+        # caller-supplied recon). Never invent /v1/users/me-style routes.
+        api_routes = context.get("api_routes", [])
 
         for route in api_routes:
+
             self.budget.check_limits()
             await event_bus.publish(
                 EndpointDiscoveredEvent(
@@ -611,18 +623,21 @@ class ApiSpecialist(SpecialistAgent):
                     url=route.get("url", target),
                     method=route.get("method", "GET"),
                     params=route.get("params", []),
-                    content_type=route.get("content_type", "application/json"),
-                    auth_required=True,
+                    content_type=route.get("content_type"),
+                    auth_required=route.get("auth_required"),
+                    metadata=route.get("metadata", {"discovered_by": "live_probe"}),
                 )
             )
 
-        # Propose BOLA/IDOR hypothesis if requested
-        if context.get("propose_hypothesis", True):
+        # Propose BOLA/IDOR hypothesis only when a real route exists; the
+        # hypothesis is explicitly a candidate, never a confirmed finding.
+
+        if api_routes and context.get("propose_hypothesis", True):
             hypo_data = context.get("propose_hypothesis")
             statement = (
                 hypo_data.get("statement")
                 if isinstance(hypo_data, dict)
-                else f"Endpoint {target}/v1/users/me may permit IDOR via parameter tampering"
+                else f"API resources on {target} may permit IDOR/BOLA via parameter tampering"
             )
             await self.propose_hypothesis(
                 statement=statement,
@@ -671,28 +686,30 @@ class AuthSpecialist(SpecialistAgent):
         hypo = await self.propose_hypothesis(
             statement=context.get(
                 "statement",
-                f"Authentication on {target} accepts unverified JWT algorithm 'none'",
+                f"Authentication boundary on {target} may accept tampered tokens or fail to enforce server-side authorization",
             ),
             vulnerability_class="broken_auth",
-            falsification_criteria="Server rejects tokens without verified HMAC/RSA signature with 401 Unauthorized",
-            confidence=0.75,
+            falsification_criteria="Server rejects unsigned/tampered tokens and enforces server-side authorization",
+            confidence=0.6,
             target=target,
             event_bus=event_bus,
         )
 
-        if context.get("verified", False):
+        # NEVER emit a verified vulnerability without real reproduction evidence:
+        # a specialist must not fabricate a JWT alg=none finding out of thin air.
+        evidence = context.get("verification_evidence") or context.get("evidence")
+        if evidence:
             self.budget.record_action()
             await self.verify_vulnerability(
                 vulnerability_id=f"vuln-{uuid.uuid4().hex[:8]}",
                 title=f"Authentication Bypass on {target}",
                 vulnerability_class="Authentication Bypass",
-                severity="critical",
+                severity=context.get("severity", "critical"),
                 target=target,
-                evidence=context.get("evidence", {"jwt_header": {"alg": "none"}}),
+                evidence=evidence,
                 reproduction_steps=[
-                    "1. Construct JWT header with alg='none'",
-                    "2. Submit request with unsigned token",
-                    "3. Observe 200 OK access granted",
+                    "1. Observed real in-sandbox reproduction evidence",
+                    f"2. Evidence: {str(evidence)[:200]}",
                 ],
                 event_bus=event_bus,
             )
@@ -738,16 +755,21 @@ class NetworkSpecialist(SpecialistAgent):
 
         if nmap_tool:
             try:
-                from types import SimpleNamespace
-                req = SimpleNamespace(tool_name="nmap", action="scan", target=target, options=context.get("nmap_options", {}), timeout_seconds=60)
+                req = _build_tool_request(
+                    nmap_tool.name if hasattr(nmap_tool, "name") else "nmap",
+                    "scan",
+                    target,
+                    options=context.get("nmap_options", {}),
+                    timeout_seconds=60,
+                )
                 res = await nmap_tool.execute(req)
-                if res and getattr(res, "findings", None):
-                    for finding in res.findings:
-                        raw = getattr(finding, "raw", finding) if not isinstance(finding, dict) else finding
+                if res:
+                    for finding in _real_findings(res):
+                        raw = finding if isinstance(finding, dict) else getattr(finding, "raw", finding)
                         ports.append({
                             "port": raw.get("port"),
                             "service": raw.get("service", "unknown"),
-                            "banner": raw.get("version", ""),
+                            "banner": raw.get("version", "") if isinstance(raw, dict) else "",
                         })
             except Exception as e:
                 logger.debug("network_specialist_nmap_failed", error=str(e))
@@ -835,13 +857,9 @@ class BusinessLogicSpecialist(SpecialistAgent):
 
         self.budget.record_action()
 
-        workflows = context.get(
-            "workflows",
-            [
-                {"name": "checkout", "steps": ["/cart", "/checkout", "/pay", "/confirm"]},
-                {"name": "coupon_redemption", "steps": ["/cart", "/apply-coupon"]},
-            ],
-        )
+        # Only reason about REAL workflows (live probes or caller-supplied recon).
+        # Never invent a /cart→/checkout→/pay story out of thin air.
+        workflows = context.get("workflows", [])
 
         # 1. Look for order-of-operation anomalies or race conditions
         for wf in workflows:
@@ -857,20 +875,24 @@ class BusinessLogicSpecialist(SpecialistAgent):
                 )
             )
 
-        # 2. Formulate business logic hypothesis
-        hypo = await self.propose_hypothesis(
-            statement=context.get(
-                "statement",
-                f"Multi-step checkout on {target} allows payment step-skipping or parameter tampering",
-            ),
-            vulnerability_class="business_logic_flaw",
-            falsification_criteria="Server enforces strict state validation and rejects out-of-order finalization",
-            confidence=0.70,
-            target=target,
-            event_bus=event_bus,
-        )
+        # 2. Formulate business logic hypothesis ONLY when a real workflow exists
+        hypo = None
+        if workflows:
+            hypo = await self.propose_hypothesis(
+                statement=context.get(
+                    "statement",
+                    f"Business workflows on {target} may permit step-skipping, parameter tampering, or race conditions",
+                ),
+                vulnerability_class="business_logic_flaw",
+                falsification_criteria="Server enforces strict per-step state validation and rejects out-of-order transitions",
+                confidence=0.6,
+                target=target,
+                event_bus=event_bus,
+            )
 
-        if context.get("verified", False):
+        # 3. NEVER emit a verified vulnerability without real reproduction evidence:
+        evidence = context.get("verification_evidence") or context.get("evidence")
+        if workflows and evidence:
             self.budget.record_action()
             await self.verify_vulnerability(
                 vulnerability_id=f"vuln-{uuid.uuid4().hex[:8]}",
@@ -878,16 +900,18 @@ class BusinessLogicSpecialist(SpecialistAgent):
                 vulnerability_class="Business Logic Flaw",
                 severity="high",
                 target=target,
-                evidence=context.get("evidence", {"skipped_step": "/pay", "order_status": "confirmed"}),
+                evidence=evidence,
                 reproduction_steps=[
-                    "1. Add item to cart",
-                    "2. Skip payment step and directly call /confirm with order_id",
-                    "3. Order processed without valid payment capture",
+                    "1. Observed real in-sandbox reproduction evidence",
+                    f"2. Evidence: {str(evidence)[:200]}",
                 ],
                 event_bus=event_bus,
             )
 
-        return {"business_logic_hypothesis_id": hypo.id, "workflows_analyzed": len(workflows)}
+        return {
+            "business_logic_hypothesis_id": hypo.id if hypo else "",
+            "workflows_analyzed": len(workflows),
+        }
 
 
 class CloudSpecialist(SpecialistAgent):
@@ -923,13 +947,10 @@ class CloudSpecialist(SpecialistAgent):
 
         self.budget.record_action()
 
-        cloud_assets = context.get(
-            "cloud_assets",
-            [
-                {"type": "cloud_storage", "name": f"{target}-assets", "provider": "s3"},
-                {"type": "imds_target", "name": "169.254.169.254", "flavor": "aws_imds_v1"},
-            ],
-        )
+        # Only reason about REAL cloud assets (explicitly discovered or caller-supplied).
+        # Never invent a `{target}-assets` S3 bucket or IMDS endpoint out of thin air。
+
+        cloud_assets = context.get("cloud_assets", [])
 
         for asset in cloud_assets:
             self.budget.check_limits()
@@ -942,19 +963,25 @@ class CloudSpecialist(SpecialistAgent):
                 )
             )
 
-        hypo = await self.propose_hypothesis(
-            statement=context.get(
-                "statement",
-                f"Cloud asset {target} permits unauthorized S3 bucket access or IMDSv1 SSRF credential extraction",
-            ),
-            vulnerability_class="cloud_misconfiguration",
-            falsification_criteria="IMDSv2 hop-limit enforced and S3 bucket blocks unauthenticated public read/write",
-            confidence=0.80,
-            target=target,
-            event_bus=event_bus,
-        )
+        # Hypothesis only when there is a concrete asset to investigate.
+        hypo = None
+        if cloud_assets:
+            hypo = await self.propose_hypothesis(
+                statement=context.get(
+                    "statement",
+                    f"Cloud resources associated with {target} may permit unauthorized access or metadata exposure",
+                ),
+                vulnerability_class="cloud_misconfiguration",
+                falsification_criteria="IMDSv2 hop-limit enforced and storage buckets block unauthenticated read/write",
+                confidence=0.6,
+                target=target,
+                event_bus=event_bus,
+            )
 
-        if context.get("verified", False):
+        # NEVER emit a verified vulnerability without real reproduction evidence.
+
+        evidence = context.get("verification_evidence") or context.get("evidence")
+        if cloud_assets and evidence:
             self.budget.record_action()
             await self.verify_vulnerability(
                 vulnerability_id=f"vuln-{uuid.uuid4().hex[:8]}",
@@ -962,16 +989,18 @@ class CloudSpecialist(SpecialistAgent):
                 vulnerability_class="Cloud Misconfiguration",
                 severity="critical",
                 target=target,
-                evidence=context.get("evidence", {"public_bucket_acl": "AllUsers:READ"}),
+                evidence=evidence,
                 reproduction_steps=[
-                    f"1. Query public storage endpoint {target}-assets",
-                    "2. Enumerate objects without authentication",
-                    "3. Confidential backups retrieved",
+                    "1. Observed real in-sandbox reproduction evidence",
+                    f"2. Evidence: {str(evidence)[:200]}",
                 ],
                 event_bus=event_bus,
             )
 
-        return {"cloud_hypothesis_id": hypo.id, "cloud_assets_evaluated": len(cloud_assets)}
+        return {
+            "cloud_hypothesis_id": hypo.id if hypo else "",
+            "cloud_assets_evaluated": len(cloud_assets),
+        }
 
 
 class FalsificationSpecialist(SpecialistAgent):
@@ -1045,32 +1074,28 @@ class FalsificationSpecialist(SpecialistAgent):
                 "disproving_evidence",
                 context.get(
                     "falsification_reason",
-                    f"Adversarial counter-test proved {statement} does not trigger exploitable condition",
+                    f"Adversarial counter-test found no exploitable condition for: {statement}",
                 ),
             )
             await self.falsify_hypothesis(
                 hypothesis_id=hypo_id,
                 reason=reason,
-                evidence=plan.get("evidence", {"test": "adversarial_probe_disproved"}),
+                evidence=plan.get("evidence") or {"reason": reason},
                 event_bus=event_bus,
             )
             return {"falsified": True, "hypothesis_id": hypo_id}
-        elif plan.get("verification_details") or context.get("verification_details") or plan.get("verified") or context.get("verified"):
-            verification_details = plan.get(
-                "verification_details",
-                context.get("verification_details", f"Adversarially Confirmed: {statement}"),
-            )
+        verification_details = plan.get("verification_details") or context.get("verification_details")
+        if verification_details:
             await self.verify_vulnerability(
                 vulnerability_id=f"vuln-{uuid.uuid4().hex[:8]}",
                 title=verification_details,
                 vulnerability_class=vuln_class,
                 severity=context.get("severity", "high"),
                 target=target,
-                evidence=plan.get("evidence", {"verification": "confirmed"}),
+                evidence=plan.get("evidence") or {"verification_details": verification_details},
                 reproduction_steps=[
-                    f"1. Formulated hypothesis: {statement}",
-                    "2. Executed discriminating falsification test",
-                    f"3. Target confirmed with evidence: {verification_details}",
+                    "1. Executed a discriminating falsification test",
+                    f"2. Evidence: {verification_details[:200]}",
                 ],
                 event_bus=event_bus,
             )

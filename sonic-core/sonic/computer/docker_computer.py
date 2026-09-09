@@ -65,6 +65,7 @@ class DockerComputerProvider(ComputerProvider):
         self.workspaces: dict[str, ComputerWorkspace] = {}
         self._active_windows: dict[str, str] = {}
         self.audit_log: list[ComputerAuditEvent] = []
+        self._last_exec: tuple[str, int, str, str] | None = None  # (cmd, exit, stdout, stderr)
         self._daemon_checked: bool | None = None
         self._daemon_checked_at: float | None = None
         self._container_running_cache: bool = False
@@ -88,6 +89,10 @@ class DockerComputerProvider(ComputerProvider):
             )
             self.workspaces[self._default_workspace_id] = ws
         return self.workspaces[self._default_workspace_id]
+
+    @property
+    def name(self) -> str:
+        return "DockerComputerProvider"
 
     async def _container_is_running(self) -> bool:
         """Probe the real Docker container state (fail-closed, short TTL cache)."""
@@ -191,6 +196,7 @@ class DockerComputerProvider(ComputerProvider):
                 exit_code = proc.returncode if proc.returncode is not None else 0
                 stdout_str = stdout_data.decode("utf-8", errors="replace")
                 stderr_str = stderr_data.decode("utf-8", errors="replace")
+                self._last_exec = (cmd, exit_code, stdout_str, stderr_str)
                 return exit_code, stdout_str, stderr_str
             except asyncio.TimeoutError:
                 try:
@@ -232,8 +238,33 @@ class DockerComputerProvider(ComputerProvider):
         ws.status = ComputerWorkspaceStatus.RUNNING
         return ws
 
+    async def get_or_create_home(self, tenant_id: str) -> ComputerWorkspace:
+        """Return the tenant's long-lived MISSION_COMPUTER home (persistent body)."""
+        for ws in self.workspaces.values():
+            if (
+                ws.tenant_id == tenant_id
+                and ws.workspace_type == ComputerWorkspaceType.MISSION_COMPUTER
+                and ws.status not in (ComputerWorkspaceStatus.DESTROYED, ComputerWorkspaceStatus.FAILED)
+            ):
+                logger.info(
+                    "home_workstation_reused",
+                    workspace_id=ws.id,
+                    tenant_id=tenant_id,
+                )
+                return ws
+        ws = ComputerWorkspace(
+            id=f"home-{tenant_id}",
+            tenant_id=tenant_id,
+            name="MISSION_COMPUTER",
+            workspace_type=ComputerWorkspaceType.MISSION_COMPUTER,
+            status=ComputerWorkspaceStatus.RUNNING,
+        )
+        self.workspaces[ws.id] = ws
+        return ws
+
     async def destroy(self, workspace_id: str) -> bool:
         if workspace_id in self.workspaces:
+
             del self.workspaces[workspace_id]
         return True
 

@@ -296,8 +296,20 @@ class MissionDirector:
                         break
             safety_policy = seal_default(workspace_root=workspace_root)
 
+            from sonic.tools.computer_as_compute_provider import ComputerAsComputeProvider
+            from sonic.tools.registry import get_default_registry
+
+            # THE LLM BRAIN + REAL security tools — previously omitted, so the
+            # production agent fell back to _diagnostic_fallback() (re-reading the
+            # same file) instead of reasoning. This is the machine's mind.
+            security_registry = get_default_registry(
+                ComputerAsComputeProvider(self.computer)
+            )
+
             agent = ComputerUseAgent(
                 computer_provider=self.computer,
+                llm_router=self.model_router,
+                security_tools=security_registry.as_dict(),
                 autonomy_level=self.autonomy_level,
                 mode=EngineeringMissionMode.ENGINEERING_MODE,
                 browser=browser,

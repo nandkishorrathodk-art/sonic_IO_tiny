@@ -916,6 +916,13 @@ class AsyncResearchOrchestrator:
         elif isinstance(event, AnomalyDetectedEvent):
             context["target"] = event.target
             context["anomaly"] = event.description or event.observation
+        # Propagate shared recon/tools/provider so dynamically-spawned specialists
+        # act on REAL observations, never invented attack surface.””
+        shared = getattr(self, "_shared_context", {})
+        if isinstance(shared, dict):
+            for key in ("tools", "security_tools", "provider", "computer", "endpoints", "open_ports", "cloud_assets", "api_routes", "verification_evidence"):
+                if key in shared and key not in context:
+                    context[key] = shared[key]
         return context
 
     def schedule_specialist(
@@ -1199,6 +1206,10 @@ class AsyncResearchOrchestrator:
         self._cancelled = False
         self.task_traces.clear()
         self._task_counter = 0
+        # Shared recon/tools/provider propagate to dynamically-spawned specialists.
+        # A child specialist must see what the parent actually discovered — never
+        # fall back to inventing endpoints/assets out of thin air。”
+        self._shared_context = dict(initial_context or {})
 
         # Schedule initial specialists
         if initial_specialists:

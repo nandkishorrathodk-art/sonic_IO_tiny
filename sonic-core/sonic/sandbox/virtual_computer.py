@@ -13,6 +13,7 @@ Execution Providers:
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import shutil
 from abc import ABC, abstractmethod
@@ -20,6 +21,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
+from typing import Any
 
 import httpx
 
@@ -57,8 +59,29 @@ class FileInfo:
     modified_at: str
 
 
+@dataclass
+class HomeWorkspace:
+    """A per-tenant persistent "home" workspace (like Daytona's get_or_create_home)."""
+    id: str
+    workspace_root: str
+    provider_type: str
+    marker_path: str = ""
+    name: str = "MISSION_COMPUTER"
+
+
 class VirtualComputer(ABC):
     """Abstract interface for any virtual computer execution provider."""
+
+    # ------------------------------------------------------------------
+    # Tenanted persistent home workspace (Phase 2 / Persistent Body).
+    # The being/engagement needs a long-lived per-tenant "home" like the
+    # Daytona provider's get_or_create_home. Without one, the always-on life
+    # loop aborts at boot (get_sandbox_provider returns a VirtualComputer
+    # which never had that method) — the loop was dead-on-arrival.
+    # friction-and-file based home so it works for every sandbox provider (no
+    # provider-specific SDK): a marker file persists the tenant's workspace.
+
+    _home_marker_prefix = ".sonic_home_"
 
     @abstractmethod
     async def initialize(self) -> bool:
@@ -262,6 +285,17 @@ class DockerSandbox(VirtualComputer):
         except Exception:
             return False
 
+    async def get_or_create_home(self, tenant_id: str) -> Any:
+        safe = tenant_id.replace("/", "_").replace("\\", "_")
+        marker = f"/root/{self._home_marker_prefix}{safe}.json"
+        await self.execute(f"mkdir -p /root && touch {marker}")
+        return HomeWorkspace(
+            id=f"docker-{safe}",
+            workspace_root="/root",
+            provider_type="docker",
+            marker_path=marker,
+        )
+
 
 # ============================================
 # 2. Daytona Remote Cloud Sandbox Provider
@@ -364,6 +398,14 @@ class DaytonaSandbox(VirtualComputer):
         except Exception:
             return False
 
+    async def get_or_create_home(self, tenant_id: str) -> Any:
+        safe = tenant_id.replace("/", "_").replace("\\", "_")
+        marker = f"/root/{self._home_marker_prefix}{safe}.json"
+        await self.execute(f"mkdir -p /root && touch {marker}")
+        return HomeWorkspace(
+            id=f"daytona-{safe}", workspace_root="/root", provider_type="daytona", marker_path=marker,
+        )
+
 
 # ============================================
 # 3. Local Sandbox (LOCKED by default)
@@ -451,6 +493,16 @@ class LocalSandbox(VirtualComputer):
 
     async def destroy(self) -> bool:
         return True
+
+    async def get_or_create_home(self, tenant_id: str) -> Any:
+        marker = Path(self.base_dir) / f"{self._home_marker_prefix}{tenant_id.replace('/', '_').replace('\\', '_')}_.json"
+        marker.touch(exist_ok=True)
+        return HomeWorkspace(
+            id=f"local-{tenant_id}",
+            workspace_root=str(self.base_dir),
+            provider_type="local",
+            marker_path=str(marker),
+        )
 
 
 # ============================================

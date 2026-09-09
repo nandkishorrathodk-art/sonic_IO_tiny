@@ -150,6 +150,7 @@ class ComputerUseAgent:
         motor: MotorReflexes | None = None,
         wire_telemetry: WireTelemetryEngine | None = None,
         burp_client: Any | None = None,
+        being_mind: Any | None = None,
     ):
         self.computer = computer_provider
         self.autonomy_level = autonomy_level
@@ -205,6 +206,10 @@ class ComputerUseAgent:
             self._compact_mode = False
         self.failure_budget = failure_budget if failure_budget is not None else FailureBudgetTracker()
         self.scratchpad = scratchpad if scratchpad is not None else HackerScratchpad()
+        # Optional BeingMind (persistent affect state—curiosity_drive/focus/
+        # satiety). Injected into reasoning so the being's own mood actually
+        # shapes what it tries next (not cosmetic dead floats).
+        self.being_mind = being_mind
         self.motor = motor if motor is not None else MotorReflexes(self.computer)
         self.burp_client = burp_client
         self.wire_telemetry = (
@@ -248,6 +253,7 @@ class ComputerUseAgent:
         self._interrupted: bool = False
         self.goal_reached: bool = False
         self._consecutive_failures: int = 0
+        self._goal_complete_declared: bool = False
         self._replan_count: int = 0
         self._last_navigated_url: str = ""
         self._recent_action_signatures: list[tuple[str, str, str]] = []
@@ -406,14 +412,25 @@ class ComputerUseAgent:
 
         # Read the live terminal state so reasoning reflects reality. A no-op
         # echo keeps this cheap; providers return their real shell output.
+        term_res = None
         try:
-            term_res = await self.computer.terminal(workspace_id, "echo __sonic_obs_ready__")
-            raw_stdout = getattr(term_res, "stdout", "") or ""
-            term_out = _safe_str(raw_stdout).strip()
-            terminal_output = term_out or f"Exit {getattr(term_res, 'exit_code', 0)}"
+            # Prefer the provider's real last-command output when available so
+            # the agent actually sees the result of its own previous action, not
+            # a dummy marker. Providers without _last_exec fall back to the probe.
+            last_exec = getattr(self.computer, "_last_exec", None)
+            terminal_output = ""
+            if last_exec is not None and last_exec[2].strip():
+                last_cmd, _, last_stdout, _ = last_exec
+                if "echo __sonic_obs_ready__" not in str(last_cmd):
+                    terminal_output = _safe_str((last_stdout or "").strip())
+            if not terminal_output:
+                term_res = await self.computer.terminal(workspace_id, "echo __sonic_obs_ready__")
+                raw_stdout = getattr(term_res, "stdout", "") or ""
+                term_out = _safe_str(raw_stdout.strip())
+                terminal_output = term_out or f"Exit {getattr(term_res, 'exit_code', 0)}"
         except Exception:
             terminal_output = f"Terminal Ready ({len(status.running_processes)} procs)"
-
+        
         if not hasattr(self, "_last_navigated_url"):
             self._last_navigated_url = ""
         if not hasattr(self, "_recent_action_signatures"):
@@ -652,6 +669,30 @@ class ComputerUseAgent:
             from sonic.being.lessons import inject_into_context
             lessons_block = inject_into_context(self.lessons_ledger.relevant(goal))
 
+        # Living state (BeingMind mood) — a real affect signal the LLM can
+        # act on (fixed the audit: mood floats were never read by any prompt).
+        # High satiety => curious exploration is "fed", drop curiosity; high focus
+        # => stay the course; high boredom => pivot. The being is not a static
+        # tool: its own history shapes what it tries next.
+
+        living_block = ""
+        if getattr(self, "being_mind", None) is not None:
+
+            mood = self.being_mind
+            learned_n = len(getattr(mood, "learned_facts", []) or [])
+            living_block = (
+
+                "Living state (from prior cycles — NOT task state):\n"
+                f"  idle_cycles_run={getattr(mood, 'idle_cycles_run', 0)}, "
+                f"learned_facts={learned_n}, "
+                f"curiosity_drive={getattr(mood, 'curiosity_drive', 0.5):.2f}, "
+                f"focus={getattr(mood, 'focus', 0.5):.2f}, "
+                f"satiety={getattr(mood, 'satiety', 0.5):.2f}\n"
+                "  DRIVE POLICY: if focus > 0.8 stay on the current sub-task; "
+                "if satiety > 0.85 prefer a genuinely NEW area; if curiosity_drive < 0.2 "
+                "prefer consolidating known facts over venturing into more unknowns.\n"
+            )
+
         # Explicit strategy tracking
         curr_tool = primary_file_str if primary_file_str != "UNKNOWN" else "terminal"
         provider_name = self._get_provider_name()
@@ -775,6 +816,7 @@ class ComputerUseAgent:
             f"Primary file: {primary_file_str}, Test file: {test_file_str}\n"
             f"Available security tools: {available_tools}\n"
             f"{lessons_block}"
+            f"{living_block}"
         )
 
         # In compact mode (small models), skip the verbose strategy/cognitive
@@ -2635,7 +2677,29 @@ class ComputerUseAgent:
             evidence = f"Re-observed: app={obs.active_application}, term={obs.terminal_output[:120]}"
 
         ev_lower = evidence.lower()
-        verified = bool(evidence) and "error" not in ev_lower and "traceback" not in ev_lower
+        # Fail-closed verification: an observation of the world is NOT success.
+        # "Absence of evidence is not evidence of success" — a bare re-observe
+        # (or the dummy terminal probe) must NOT mark the goal verified. Only
+        # evidence that positively demonstrates completion (non-error output) does.
+        _raw_has_content = bool(evidence.strip())
+        if "Re-observed: " in evidence:
+            # Fail-closed only against a bare/placeholder re-observation (no
+            # captured signal). A re-observation carrying a real terminal/process
+            # signal (e.g. `term=pytest exit 0`) positively counts.
+
+            _has_concrete_evidence = (
+                "term=" in evidence
+                and not evidence.rstrip().endswith("term=")
+            )
+        else:
+            _has_concrete_evidence = _raw_has_content
+        _no_error_markers = (
+            "error" not in ev_lower
+            and "traceback" not in ev_lower
+            and "exception" not in ev_lower
+            and "failed" not in ev_lower
+        )
+        verified = _has_concrete_evidence and _no_error_markers
         return verified, evidence
 
     def _inject_replan(self, goal: str) -> None:
@@ -2648,6 +2712,7 @@ class ComputerUseAgent:
         """
         self._replan_count += 1
         self._consecutive_failures = 0
+        self._goal_complete_declared = False
         if getattr(self, "checklist", None) is not None:
             active_sg = self.checklist.active_sub_goal()
             if active_sg:
@@ -2723,6 +2788,11 @@ class ComputerUseAgent:
             # Goal-complete sentinel: the LLM JUDGED the goal achieved — but we
             # do not stop on self-declaration alone. We independently verify.
             if expected == _GOAL_COMPLETE_SENTINEL:
+                if getattr(self, "_goal_complete_declared", False):
+                    logger.info("mission_goal_complete_unverified_second_declaration")
+                    goal_reached = False
+                    break
+                self._goal_complete_declared = False
                 verified, evidence = await self.verify_goal(workspace_id, goal)
                 if verified:
                     logger.info(
@@ -2746,6 +2816,7 @@ class ComputerUseAgent:
                     "result": f"VERIFICATION FAILED: {evidence[:200]}. Goal NOT achieved — continue.",
                 })
                 self._consecutive_failures += 1
+                self._goal_complete_declared = True
                 if getattr(self, "checklist", None) is not None:
                     active_sg = self.checklist.active_sub_goal()
                     if active_sg:

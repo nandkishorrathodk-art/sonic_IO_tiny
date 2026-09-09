@@ -57,7 +57,9 @@ async def test_business_logic_specialist_workflow():
         "workflows": [
             {"name": "checkout_flow", "steps": ["/cart", "/checkout", "/pay", "/confirm"]},
         ],
-        "verified": True,
+        # Real reproduction evidence must be explicit (caller-supplied) — a
+        # specialist must never fabricate a confirmed vulnerability by itself.
+        "verification_evidence": "Reproduced: direct /confirm without /pay transitioned order to confirmed",
     }
 
     result = await specialist.run(context, bus)
@@ -66,7 +68,7 @@ async def test_business_logic_specialist_workflow():
     assert len(anomalies) == 1
     assert "checkout_flow" in anomalies[0].observation
     assert len(hypotheses) == 1
-    assert "checkout" in hypotheses[0].statement
+    assert "Business workflows" in hypotheses[0].statement
     assert len(verified) == 1
     assert verified[0].vulnerability_class == "Business Logic Flaw"
 
@@ -92,7 +94,10 @@ async def test_cloud_specialist_imds_and_storage():
             {"type": "cloud_storage", "name": "customer-app-data", "provider": "s3"},
             {"type": "imds_target", "name": "169.254.169.254", "flavor": "aws_imds_v1"},
         ],
-        "verified": True,
+        # Real reproduction evidence must be explicit (caller-supplied) — a
+        # specialist must never fabricate an S3/IMDS finding by itself.
+
+        "verification_evidence": "Reproduced: anonymous list of S3 bucket returned 200 (AllUsers:READ)",
     }
 
     result = await specialist.run(context, bus)
@@ -101,7 +106,7 @@ async def test_cloud_specialist_imds_and_storage():
     assert len(targets) == 2
     assert any(t.target == "customer-app-data" for t in targets)
     assert len(hypotheses) == 1
-    assert "S3 bucket" in hypotheses[0].statement or "IMDSv1" in hypotheses[0].statement
+    assert "Cloud resources" in hypotheses[0].statement
     assert len(verified) == 1
     assert verified[0].vulnerability_class == "Cloud Misconfiguration"
 

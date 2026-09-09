@@ -79,6 +79,7 @@ class BeingLifeLoop:
         self._task: asyncio.Task | None = None
         self._stop = asyncio.Event()
         self.cycles_completed = 0
+        self.before_tick_hooks: list = []
 
     # ------------------------------------------------------------------
     def mind(self) -> BeingMind:
@@ -91,6 +92,11 @@ class BeingLifeLoop:
         real loop, so every action is gated by the ActionPolicy. The outcome is
         recorded in the BeingMind (mood evolves, facts persist across restart).
         """
+        for hook in self.before_tick_hooks:
+            try:
+                hook()
+            except Exception as e:
+                logger.warning("being_tick_hook_failed", error=str(e))
         try:
             res = await self.agent.idle_cycle(self.workspace_id, self.curiosity)
             learned = getattr(res, "learned_fact", None)

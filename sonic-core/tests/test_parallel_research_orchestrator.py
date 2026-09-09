@@ -216,7 +216,15 @@ async def test_dynamic_decomposition_reactive_spawning():
 
     # Run orchestrator starting ONLY with InitialReconSpecialist
     recon = InitialReconSpecialist(name="PortScanner", specialty="network", objective="Scan ports")
-    result = await orchestrator.run(initial_specialists=[recon], timeout_seconds=5.0)
+    # Caller-supplied recon: a discovered login endpoint — WebSpecialist points
+    # at it, never invents one out of thin air.
+    result = await orchestrator.run(
+        initial_specialists=[recon],
+        initial_context={
+            "endpoints": [{"url": "http://10.10.10.5:8080/login", "method": "GET"}],
+        },
+        timeout_seconds=5.0,
+    )
 
     assert result.success is True
     # Initial recon + dynamically spawned WebSpecialist both executed
@@ -316,9 +324,15 @@ async def test_dynamic_decomposition_multi_level_chain():
         target="10.0.0.99",
     )
 
+    # Caller-supplied recon: a discovered /api/v1/user endpoint (no invented
+    # routes) — WebSpecialist re-publishes it, which then spawns Api+Auth.
+
     result = await orchestrator.run(
         initial_specialists=[initial_recon],
-        initial_context={"open_ports": [{"port": 8080, "service": "http"}]},
+        initial_context={
+            "open_ports": [{"port": 8080, "service": "http"}],
+            "endpoints": [{"url": "http://10.0.0.99:8080/api/v1/user", "method": "GET", "auth_required": True}],
+        },
         timeout_seconds=5.0,
     )
 
@@ -539,7 +553,14 @@ async def test_central_brain_failure_diagnosis_on_blackboard():
 
     await orchestrator.run(
         initial_specialists=[net_spec, auth_spec, falsifier],
-        initial_context={"delay": 0.04, "verified": True},
+        initial_context={
+            "delay": 0.04,
+            # AuthSpecialist only reports a verified vuln when the caller supplies
+            # REAL reproduction evidence — never a fabricated alg=none finding.
+
+
+            "verification_evidence": "Reproduced: unsigned JWT with alg=none returned 200 OK on sandboxed probe",
+        },
         timeout_seconds=5.0,
     )
 

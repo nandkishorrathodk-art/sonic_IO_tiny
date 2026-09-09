@@ -75,6 +75,14 @@ class ReconAgent(BaseAgent):
                     engagement_id=engagement_id,
                 )
                 if self.memory:
+                    # Preserve the honest provenance label (certificate_transparency /
+                    # live_probe / llm_hypothesis) from the asset's metadata instead of
+                    # stamping every asset with the generic agent_id — otherwise LLM
+                    # guesses would appear in Graph Memory as observed discoveries.
+                    meta_src = (asset_data.get("metadata", {}) or {}).get(
+                        "discovered_by", self.agent_id
+                    )
+                    asset.discovered_by = str(meta_src)
                     uid = await self.memory.upsert_asset(asset)
                     if uid:
                         stored_count += 1
@@ -110,7 +118,7 @@ class ReconAgent(BaseAgent):
             return assets
 
         try:
-            from sonic.agents.http_probe import HTTPProbe, ProbeTest
+            from sonic.tools.http_probe import HTTPProbe, ProbeTest
 
             live_assets: list[dict] = []
             async with HTTPProbe() as probe:
@@ -173,7 +181,7 @@ class ReconAgent(BaseAgent):
             logger.info("recon_ct_source_blocked", reason=reason)
             return []
         try:
-            from sonic.agents.http_probe import HTTPProbe, ProbeTest
+            from sonic.tools.http_probe import HTTPProbe, ProbeTest
             async with HTTPProbe() as probe:
                 res = await probe.run(ProbeTest(
                     test_name="ct_subdomain_enum",

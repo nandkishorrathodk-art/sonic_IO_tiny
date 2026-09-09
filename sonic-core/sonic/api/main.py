@@ -55,7 +55,7 @@ async def _maybe_start_being_life_loop(settings):
         logger.info("being_life_loop_disabled", reason="SONIC_ENABLE_BEING_LIFE_LOOP!=1")
         return None
     try:
-        from sonic.being.identity import get_or_create_being
+        from sonic.being.identity import get_or_create_being, get_being_store
         from sonic.being.life_loop import BeingLifeLoop
         from sonic.computer_use.agent import ComputerUseAgent
         from sonic.computer_use.curiosity import CuriosityLoop
@@ -66,11 +66,28 @@ async def _maybe_start_being_life_loop(settings):
         being = get_or_create_being(tenant_id)
 
         # Re-attach the home desktop (Phase 2 persistent body).
-        provider = await get_sandbox_provider()
+        # Prefer the native Docker cyber-workstation (real GUI + terminal +
+        # browser) when the daemon is reachable; fall back to the generic
+        # sandbox provider (container or fail-closed local). Both providers
+        # now expose get_or_create_home, so the always-on being has a home instead
+        # of aborting at boot (the pre-fix VirtualComputer had no such method).
+        provider = None
+        try:
+            import shutil
+            from sonic.computer.docker_computer import DockerComputerProvider
+            from sonic.computer.models import ComputerState
+            if shutil.which("docker"):
+                candidate = DockerComputerProvider()
+                if await candidate.status(candidate.container_name) != ComputerState.FAILED:
+                    provider = candidate
+        except Exception as e:
+            logger.warning("being_provider_docker_unavailable", error=str(e))
+        if provider is None:
+            provider = await get_sandbox_provider()
         home = None
         if hasattr(provider, "get_or_create_home"):
             home = await provider.get_or_create_home(tenant_id)
-        if home is None or getattr(home, "id", None) is None:
+        if home is None or getattr(home, "id", None) is None or getattr(home, "id", "") == "":
             logger.warning("being_life_loop_no_home", being_id=being.being_id)
             return None
 
@@ -115,11 +132,19 @@ async def _maybe_start_being_life_loop(settings):
             method_lab=method_lab,
             # Wire the lessons ledger so cross-mission lessons compound across sessions.
             lessons_ledger=lessons_ledger,
+            # Wire the being's persistent mind (mood) into reasoning — the LLM
+            # actually sees curiosity_drive/focus/satiety when choosing actions.
+            being_mind=get_being_store().get_mind(being.being_id),
         )
         curiosity = CuriosityLoop(llm_router=router, vector_memory=get_vector_memory(), max_cycles=1)
         tick_interval = float(os.environ.get("SONIC_BEING_TICK_INTERVAL", "60"))
         loop = BeingLifeLoop(being, agent, curiosity, home.id, tick_interval=tick_interval)
         loop.start()
+        # Keep the agent's view of the mind fresh as cycles evolve it.
+        loop.before_tick_hooks: list = getattr(loop, "before_tick_hooks", [])
+        loop.before_tick_hooks.append(
+            lambda: setattr(agent, "being_mind", get_being_store().get_mind(being.being_id))
+        )
         logger.info("being_life_loop_running", being_id=being.being_id, home_id=home.id)
         return loop
     except Exception as e:

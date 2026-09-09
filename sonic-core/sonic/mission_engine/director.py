@@ -267,18 +267,17 @@ class MissionDirector:
             # navigate/click/type/screenshot as a first-class reasoning action
             # (was orphaned — BrowserAgent existed but no caller passed browser=).
             from sonic.agents.browser_agent import BrowserAgent
-            from sonic.tools.registry import get_default_registry
             from sonic.being.toolsmith import ToolsmithLoop
             from sonic.being.method_lab import MethodLab
             from sonic.being.craft import BeingCraft
             from sonic.memory.vector import get_vector_memory
+            from sonic.safety.sealed import seal_default
             browser = BrowserAgent(headless=True)
             await browser.launch()
-            registry = get_default_registry(self.computer.compute)
             toolsmith = ToolsmithLoop(
                 craft=BeingCraft(being_id=f"mission-{mission_id}"),
                 llm=self.model_router,
-                registry=registry,
+                registry=None,
             )
             method_lab = MethodLab(
                 llm=self.model_router,
@@ -288,12 +287,21 @@ class MissionDirector:
             from sonic.being.lessons import LessonsLedger
             obj_tenant = getattr(state.objective, "tenant_id", "default") if hasattr(state, "objective") else "default"
             lessons_ledger = LessonsLedger(tenant_id=obj_tenant, agent_id="computer-use-agent")
+
+            workspace_root = "/home/sonic/workspace"
+            if getattr(state, "objective", None) and getattr(state.objective, "scope", None):
+                for s in state.objective.scope:
+                    if s.startswith("/"):
+                        workspace_root = s
+                        break
+            safety_policy = seal_default(workspace_root=workspace_root)
+
             agent = ComputerUseAgent(
                 computer_provider=self.computer,
                 autonomy_level=self.autonomy_level,
                 mode=EngineeringMissionMode.ENGINEERING_MODE,
-                security_tools=get_default_registry(self.computer.compute).as_dict(),
                 browser=browser,
+                safety=safety_policy,
                 toolsmith=toolsmith,
                 method_lab=method_lab,
                 lessons_ledger=lessons_ledger,

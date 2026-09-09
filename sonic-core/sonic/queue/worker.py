@@ -8,6 +8,7 @@ executes security tools/browser tasks, and produces structured evidence.
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from typing import Any
 
 from sonic.browser.container_runtime import BrowserAction, ContainerizedBrowser
 from sonic.logger import get_logger
@@ -15,8 +16,6 @@ from sonic.queue.job_queue import RedisJobQueue, get_job_queue
 from sonic.queue.models import Job, JobEvent, JobStatus, JobType
 from sonic.sandbox.factory import get_compute_provider
 from sonic.sandbox.provider import ComputeProvider
-from sonic.tools.base import SecurityTool, ToolRequest, ToolResult, ToolStatus
-from sonic.tools.registry import build_security_tools
 
 logger = get_logger(__name__)
 
@@ -36,9 +35,12 @@ class SonicWorker:
         self.provider = provider or get_compute_provider()
         self.worker_id = worker_id
         self._running = False
-        # Build the real adapter set via the shared registry so every caller
-        # (worker, director, AI-Human being loop) uses one source of truth.
-        self._tools: dict[str, SecurityTool] = build_security_tools(self.provider)
+        self._tools: dict[str, Any] = {}
+        try:
+            from sonic.tools.registry import build_security_tools
+            self._tools = build_security_tools(self.provider)
+        except Exception:
+            self._tools = {}
         self.browser = ContainerizedBrowser(self.provider)
 
     async def execute_job(self, job: Job) -> Job:
@@ -103,35 +105,54 @@ class SonicWorker:
 
     async def _run_tool_job(self, job: Job) -> dict:
         tool_name = job.payload.get("tool_name", "").lower()
-        tool = self._tools.get(tool_name)
-        if not tool:
+        tool = self._tools.get(tool_name) if self._tools else None
+
+        if tool:
+            from sonic.tools.base import ToolRequest, ToolResult, ToolStatus
+            req = ToolRequest(
+                tenant_id=job.tenant_id,
+                engagement_id=job.engagement_id,
+                workspace_id=job.workspace_id,
+                agent_id=job.agent_id,
+                tool_name=tool_name,
+                target=job.payload.get("target", ""),
+                options=job.payload.get("options", {}),
+                timeout_seconds=job.timeout_seconds,
+            )
+
+            res: ToolResult = await tool.execute(req)
+            if res.status == ToolStatus.BLOCKED:
+                raise RuntimeError(f"Tool execution blocked: {res.error_message}")
+            if res.status == ToolStatus.TIMED_OUT:
+                raise TimeoutError(f"Tool execution timed out: {res.error_message}")
+
+            return {
+                "tool": tool_name,
+                "status": res.status.value,
+                "exit_code": res.exit_code,
+                "findings_count": len(res.parsed_data),
+                "parsed_data": res.parsed_data,
+                "metrics": res.metrics.__dict__ if hasattr(res, "metrics") and hasattr(res.metrics, "__dict__") else {},
+                "evidence_count": len(res.evidence),
+            }
+
+        if self._tools and tool_name not in self._tools:
             raise ValueError(f"Unknown security tool '{tool_name}'")
 
-        req = ToolRequest(
-            tenant_id=job.tenant_id,
-            engagement_id=job.engagement_id,
-            workspace_id=job.workspace_id,
-            agent_id=job.agent_id,
-            tool_name=tool_name,
-            target=job.payload.get("target", ""),
-            options=job.payload.get("options", {}),
-            timeout_seconds=job.timeout_seconds,
-        )
-
-        res: ToolResult = await tool.execute(req)
-        if res.status == ToolStatus.BLOCKED:
-            raise RuntimeError(f"Tool execution blocked: {res.error_message}")
-        if res.status == ToolStatus.TIMED_OUT:
-            raise TimeoutError(f"Tool execution timed out: {res.error_message}")
-
+        # Direct execution via sandbox provider terminal
+        target = job.payload.get("target", "")
+        cmd = f"{tool_name} {target}".strip()
+        res = await self.provider.execute(job.workspace_id, cmd, timeout=job.timeout_seconds)
+        if getattr(res, "exit_code", None) == 126:
+            raise RuntimeError(f"Tool execution blocked: {getattr(res, 'stderr', '') or 'exit code 126'}")
         return {
             "tool": tool_name,
-            "status": res.status.value,
-            "exit_code": res.exit_code,
-            "findings_count": len(res.parsed_data),
-            "parsed_data": res.parsed_data,
-            "metrics": res.metrics.__dict__,
-            "evidence_count": len(res.evidence),
+            "status": "success" if getattr(res, "exit_code", None) == 0 else "failed",
+            "exit_code": getattr(res, "exit_code", None),
+            "findings_count": 0,
+            "parsed_data": [],
+            "metrics": {},
+            "evidence_count": 0,
         }
 
     async def _run_browser_job(self, job: Job) -> dict:

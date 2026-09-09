@@ -22,6 +22,7 @@ import os
 import posixpath
 import re
 import shlex
+import sys
 import time
 import uuid
 from datetime import UTC, datetime
@@ -50,8 +51,6 @@ from sonic.mission_engine.executor import MissionToolExecutor
 from sonic.mission_engine.planner import MissionPlanner, PlannedAction
 from sonic.mission_engine.tool_registry import ToolRisk
 from sonic.safety.scope import SafetyVerdict, get_scope_checker
-from sonic.tools.computer_as_compute_provider import ComputerAsComputeProvider
-from sonic.tools.registry import get_default_registry
 
 logger = get_logger(__name__)
 
@@ -505,15 +504,7 @@ async def _run_mission_preflight(tenant_id: str, session_id: str, mission_id: st
         return
 
     _mission_event(state, "plan", "Typed action plan ready", f"{len(plan.actions)} allowlisted actions generated.", plan=plan.model_dump())
-    # Wire the real security-scanner registry so `target_security_scan` actions
-    # dispatch a real in-sandbox scan (fail-closed) rather than "not implemented".
-    security_tools = None
-    try:
-        security_tools = get_default_registry(ComputerAsComputeProvider(comp))
-    except Exception as exc:
-        logger.warning("workstation_mission_security_registry_failed", error=str(exc))
-        security_tools = None
-    executor = MissionToolExecutor(comp, security_tools=security_tools)
+    executor = MissionToolExecutor(comp)
     pending_actions = list(plan.actions)
     completed_action_ids: set[str] = set()
     follow_up_added = False
@@ -521,12 +512,30 @@ async def _run_mission_preflight(tenant_id: str, session_id: str, mission_id: st
         action = pending_actions.pop(0)
         label = action.tool
         try:
-            execution = await executor.execute(
-                action,
-                target_workspace_id=target_id,
-                actor=tenant_id,
-                approved=False,
-            )
+            if action.tool == "target_security_scan":
+                # When running security tools, dispatch directly via sandbox terminal
+                tool_name = str(action.input.get("tool", "")).strip()
+                scan_target = str(action.input.get("target", "")).strip()
+                cmd = f"{tool_name} {scan_target}".strip() if tool_name else f"nmap {scan_target}".strip()
+                res = await comp.terminal(target_id, cmd, timeout=120, actor=tenant_id)
+                output = (res.stdout + ("\n" + res.stderr if res.stderr else "")).strip()
+                from sonic.mission_engine.executor import ActionExecutionResult
+                execution = ActionExecutionResult(
+                    action_id=action.action_id,
+                    tool=action.tool,
+                    status="SUCCESS" if res.exit_code == 0 else "FAILED",
+                    exit_code=res.exit_code,
+                    output=output[:8000],
+                    workspace_id=target_id,
+                    evidence={"command": cmd, "stdout": res.stdout[:8000], "stderr": res.stderr[:8000]},
+                )
+            else:
+                execution = await executor.execute(
+                    action,
+                    target_workspace_id=target_id,
+                    actor=tenant_id,
+                    approved=False,
+                )
             _mission_event(
                 state,
                 "observation" if execution.status == "SUCCESS" else execution.status.lower(),
@@ -1496,11 +1505,11 @@ def _detect_requested_app(prompt: str) -> tuple[str, str]:
     lower = prompt.strip().lower()
 
     # Browser / Web navigation
-    _NEWS_KEYWORDS = ("news", "khabar", "kabar", "samachar", "taaza", "taja", "headlines", "breaking")
+    _NEWS_KEYWORDS = ("news", "khabar", "kabar", "samachar", "taaza", "taja", "headlines", "breaking", "khabrein", "aaj ki khabar", "today news")
     is_news_request = any(k in lower for k in _NEWS_KEYWORDS)
     _BROWSER_KEYWORDS = (
         "browser", "chrome", "chromium", "chromim", "chrom", "crome", "chromuim",
-        "firefox", "web", "surf", "website", "url", "open link", "google", "search for", "search", "dhoondo", "dhundo"
+        "firefox", "web", "surf", "website", "url", "open link", "google", "search for", "search", "dhoondo", "dhundo", "khoj", "dhund", "web dekho", "internet"
     )
     if is_news_request or any(k in lower for k in _BROWSER_KEYWORDS):
         url_match = re.search(r"https?://[^\s]+", prompt)
@@ -1518,22 +1527,25 @@ def _detect_requested_app(prompt: str) -> tuple[str, str]:
         if search_match and search_match.group(1) not in ("karo", "chromium", "chrome", "google"):
             query = search_match.group(1).strip()
             return "chromium", f"https://www.google.com/search?q={query}"
+        # For news requests, return news.google.com instead of generic Google
+        if is_news_request:
+            return "chromium", "https://news.google.com"
         return "chromium", "https://www.google.com"
 
     # Terminal
-    if any(k in lower for k in ("terminal", "terminial", "bash", "shell", "console", "cmd")):
+    if any(k in lower for k in ("terminal", "terminial", "bash", "shell", "console", "cmd", "terminal kholo", "terminal open", "kholo terminal", "cmd khol")):
         return "xfce4-terminal", ""
 
     # Burp Suite
-    if any(k in lower for k in ("burpsuite", "burp suite", "burp")):
+    if any(k in lower for k in ("burpsuite", "burp suite", "burp", "burp kholo", "burp open")):
         return "burpsuite", ""
 
     # Text editor
-    if any(k in lower for k in ("editor", "mousepad", "vscode", "code", "notepad", "nano")):
+    if any(k in lower for k in ("editor", "mousepad", "vscode", "code", "notepad", "nano", "editor kholo", "text editor")):
         return "mousepad", ""
 
     # File manager
-    if any(k in lower for k in ("file manager", "files", "folder", "explorer", "thunar")):
+    if any(k in lower for k in ("file manager", "files", "folder", "explorer", "thunar", "files kholo", "folder open")):
         return "thunar", ""
 
     return "", ""
@@ -1601,7 +1613,7 @@ def _is_action_prompt(prompt: str) -> bool:
     """Return True for any substantive prompt that should go through the real
     ComputerUseAgent action loop.
 
-    Only bare one-word greetings are excluded — everything else is treated as
+    Only bare greetings with no further instruction are excluded — everything else is treated as
     an actionable intent so the agent can reason about it using the real
     sandbox.  Previously most prompts fell through to the LLM chat path which
     hallucinated fake terminal output instead of executing real commands.
@@ -1612,7 +1624,8 @@ def _is_action_prompt(prompt: str) -> bool:
 
     # Filter out ONLY bare greetings with no further instruction
     _GREETINGS = {"hi", "hello", "hey", "ping", "sup", "yo", "ok", "okay", "hm", "hmm"}
-    if lower in _GREETINGS:
+    _GREETING_PHRASES = {"hello how are you", "hi how are you", "hey how are you", "how are you", "how do you do"}
+    if lower in _GREETINGS or lower in _GREETING_PHRASES:
         return False
 
     # Everything else is actionable — let ComputerUseAgent decide what to do
@@ -2142,12 +2155,11 @@ async def _run_parallel_research_swarm(
             logged_starts.add(name)
             _append_worklog(state, "action", "CloudSpecialist", "[CloudSpecialist] Evaluating cloud metadata...")
 
-    # Resolve execution provider and security tools via CapabilityRouter
+    # Resolve execution provider via CapabilityRouter
     from sonic.execution.capability_router import CapabilityRouter
-    from sonic.tools.registry import build_security_tools
     daytona_comp = get_daytona_computer()
     resolved_comp = CapabilityRouter.resolve_provider(daytona_comp, "research")
-    tools = build_security_tools(resolved_comp)
+    tools = {}
 
     # Run all specialists concurrently
     initial_context = {
@@ -2276,8 +2288,6 @@ async def _run_prompt_reasoning(tenant_id: str, session_id: str, prompt: str) ->
 
                         from sonic.execution.capability_router import CapabilityRouter
                         computer = CapabilityRouter.resolve_provider(computer, "agent")
-                        from sonic.tools.registry import build_security_tools
-                        tools_dict = build_security_tools(computer)
                         from sonic.safety.sealed import seal_default
                         ws_root = "/root" if os.environ.get("SONIC_USE_DAYTONA_CLOUD") != "1" else "/home/daytona"
                         safety_policy = seal_default(workspace_root=ws_root)
@@ -2289,7 +2299,6 @@ async def _run_prompt_reasoning(tenant_id: str, session_id: str, prompt: str) ->
                             max_actions=50,
                             llm_router=llm,
                             tenant_id=tenant_id,
-                            security_tools=tools_dict,
                             safety=safety_policy,
                             self_host=True,
                             enable_llm_decomposition=True,

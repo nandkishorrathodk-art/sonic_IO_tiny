@@ -30,6 +30,7 @@ BLOCKED_NETWORKS = [
     ipaddress.ip_network("100.64.0.0/10"),        # RFC 6598 Carrier-Grade NAT
     ipaddress.ip_network("224.0.0.0/4"),          # Multicast IPv4
     ipaddress.ip_network("::1/128"),              # IPv6 loopback
+    ipaddress.ip_network("::/128"),               # IPv6 unspecified address
     ipaddress.ip_network("fc00::/7"),             # IPv6 private (ULA)
     ipaddress.ip_network("fe80::/10"),            # IPv6 link-local
     ipaddress.ip_network("ff00::/8"),             # Multicast IPv6

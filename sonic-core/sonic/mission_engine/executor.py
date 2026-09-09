@@ -8,12 +8,27 @@ from urllib.parse import urlparse
 
 from pydantic import BaseModel, Field
 
+import uuid
+from dataclasses import dataclass, field
+
 from sonic.computer.daytona_computer import DaytonaComputerProvider
 from sonic.mission_engine.planner import PlannedAction
 from sonic.mission_engine.tool_registry import MissionToolRegistry, ToolPlane, ToolRisk
 from sonic.safety.scope import RiskLevel, SafetyVerdict, get_scope_checker
-from sonic.tools.base import ToolRequest
-from sonic.tools.registry import SecurityToolRegistry
+
+
+@dataclass
+class ToolRequest:
+    """Parameters passed to initiate tool execution."""
+    tenant_id: str
+    engagement_id: str
+    workspace_id: str
+    agent_id: str
+    tool_name: str
+    target: str
+    options: dict[str, Any] = field(default_factory=dict)
+    timeout_seconds: int = 120
+    execution_id: str = field(default_factory=lambda: f"exec-{uuid.uuid4().hex[:12]}")
 
 
 class ActionExecutionResult(BaseModel):
@@ -29,9 +44,22 @@ class ActionExecutionResult(BaseModel):
 class MissionToolExecutor:
     """Fail-closed executor for the typed mission tool registry."""
 
-    _READONLY_COMMANDS = ("pwd", "git status", "git log", "find ", "ls", "whoami", "uname")
+    _READONLY_COMMANDS = (
+        "pwd",
+        "git status",
+        "git log",
+        "find ",
+        "ls",
+        "whoami",
+        "uname",
+        "grep",
+        "cat ",
+        "head ",
+        "tail ",
+        "echo ",
+    )
 
-    def __init__(self, computer: DaytonaComputerProvider, security_tools: SecurityToolRegistry | None = None):
+    def __init__(self, computer: DaytonaComputerProvider, security_tools: Any | None = None):
         self.computer = computer
         # Optional registry of real security scanners (nmap/nuclei/ffuf/http).
         # When wired, `target_security_scan` dispatches a real in-sandbox scan;
@@ -109,9 +137,10 @@ class MissionToolExecutor:
                     return ActionExecutionResult(action_id=action.action_id, tool=action.tool, status="BLOCKED", workspace_id=workspace_id, output="Security scan requires a 'tool' (nmap/nuclei/ffuf/http_client) and a 'target'")
                 if self.security_tools is None:
                     return ActionExecutionResult(action_id=action.action_id, tool=action.tool, status="BLOCKED", workspace_id=workspace_id, output="Security tool registry is not configured for this executor — scanners exist but are not provisioned")
-                scanner = self.security_tools.get(tool_name)
+                scanner = self.security_tools.get(tool_name) if hasattr(self.security_tools, "get") else None
                 if scanner is None:
-                    return ActionExecutionResult(action_id=action.action_id, tool=action.tool, status="BLOCKED", workspace_id=workspace_id, output=f"Scanner '{tool_name}' is not registered (available: {self.security_tools.names()})")
+                    available = self.security_tools.names() if hasattr(self.security_tools, "names") else (list(self.security_tools.keys()) if hasattr(self.security_tools, "keys") else [])
+                    return ActionExecutionResult(action_id=action.action_id, tool=action.tool, status="BLOCKED", workspace_id=workspace_id, output=f"Scanner '{tool_name}' is not registered (available: {available})")
                 verdict = get_scope_checker().check_action(f"{tool_name} {target}", RiskLevel.L0_SAFE)
                 if verdict != SafetyVerdict.ALLOWED:
                     return ActionExecutionResult(action_id=action.action_id, tool=action.tool, status="BLOCKED", workspace_id=workspace_id, output=f"Safety policy verdict: {verdict.value}")
@@ -134,9 +163,10 @@ class MissionToolExecutor:
                     output=(result.raw_stdout + ("\n" + result.raw_stderr if result.raw_stderr else ""))[:8000],
                     workspace_id=workspace_id,
                     evidence={
-                        "tool": tool_name, "target": target, "status": result.status.value,
-                        "parsed_findings": result.parsed_data[:50],
-                        "error": result.error_message,
+                        "tool": tool_name, "target": target,
+                        "status": result.status.value if hasattr(result.status, "value") else str(result.status),
+                        "parsed_findings": getattr(result, "parsed_data", [])[:50],
+                        "error": getattr(result, "error_message", None),
                     },
                 )
 

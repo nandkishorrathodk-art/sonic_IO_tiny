@@ -54,7 +54,57 @@ from sonic.research.failure_classifier import classify_failure
 from sonic.llm.prompts import COMPUTER_USE_SYSTEM_PROMPT
 from sonic.logger import get_logger
 
-logger = get_logger(__name__)
+
+def _safe_str(val: Any) -> str:
+    """Ensure strings handle non-ASCII/emojis safely with errors='replace'
+    to prevent Windows charmap/cp1252 codec crashes."""
+    if val is None:
+        return ""
+    if isinstance(val, bytes):
+        return val.decode("utf-8", errors="replace")
+    s = str(val)
+    try:
+        import sys
+        encoding = getattr(sys.stdout, "encoding", None) or "utf-8"
+        s.encode(encoding)
+        return s
+    except (UnicodeEncodeError, LookupError):
+        try:
+            return s.encode(encoding, errors="replace").decode(encoding, errors="replace")
+        except Exception:
+            return s.encode("ascii", errors="replace").decode("ascii")
+    except Exception:
+        return s.encode("utf-8", errors="replace").decode("utf-8", errors="replace")
+
+
+class _SafeLogger:
+    """Proxy around logger ensuring all events and kwargs are string-safe for Windows console/logs."""
+    def __init__(self, raw_logger: Any):
+        self._raw_logger = raw_logger
+
+    def _sanitize(self, val: Any) -> Any:
+        if isinstance(val, str):
+            return _safe_str(val)
+        if isinstance(val, dict):
+            return {k: self._sanitize(v) for k, v in val.items()}
+        if isinstance(val, (list, tuple)):
+            return [self._sanitize(v) for v in val]
+        return val
+
+    def info(self, event: str, **kwargs: Any):
+        self._raw_logger.info(_safe_str(event), **{k: self._sanitize(v) for k, v in kwargs.items()})
+
+    def warning(self, event: str, **kwargs: Any):
+        self._raw_logger.warning(_safe_str(event), **{k: self._sanitize(v) for k, v in kwargs.items()})
+
+    def error(self, event: str, **kwargs: Any):
+        self._raw_logger.error(_safe_str(event), **{k: self._sanitize(v) for k, v in kwargs.items()})
+
+    def debug(self, event: str, **kwargs: Any):
+        self._raw_logger.debug(_safe_str(event), **{k: self._sanitize(v) for k, v in kwargs.items()})
+
+
+logger = _SafeLogger(get_logger(__name__))
 
 # A sentinel the LLM may emit to signal the goal is achieved, so the mission
 # loop can terminate early instead of running a fixed step count.
@@ -358,7 +408,9 @@ class ComputerUseAgent:
         # echo keeps this cheap; providers return their real shell output.
         try:
             term_res = await self.computer.terminal(workspace_id, "echo __sonic_obs_ready__")
-            terminal_output = (term_res.stdout.strip() if term_res.stdout else "") or f"Exit {term_res.exit_code}"
+            raw_stdout = getattr(term_res, "stdout", "") or ""
+            term_out = _safe_str(raw_stdout).strip()
+            terminal_output = term_out or f"Exit {getattr(term_res, 'exit_code', 0)}"
         except Exception:
             terminal_output = f"Terminal Ready ({len(status.running_processes)} procs)"
 
@@ -383,10 +435,10 @@ class ComputerUseAgent:
             screen=screen_obs,
             active_application=status.active_application,
             windows=status.open_applications,
-            visible_text=screen_obs.visible_text,
+            visible_text=_safe_str(screen_obs.visible_text),
             filesystem_files=file_names,
             processes=status.running_processes,
-            terminal_output=terminal_output,
+            terminal_output=_safe_str(terminal_output),
             working_directory=getattr(status, "working_directory", "") or "/home/daytona",
             browser_state=browser_state,
             ide_state={"active_file": file_names[0] if file_names else "", "cursor_line": 1},
@@ -568,7 +620,7 @@ class ComputerUseAgent:
                 f"ANTI-LOOP PROGRESSION RULE: Do NOT emit BROWSER_NAVIGATE to '{active_url}' again! "
                 "The page is already open on screen. You MUST interact directly with the visible page: "
                 "use GUI_CLICK on buttons, input fields, links, or search bars (using coordinates or element names like 'search bar', 'explore', 'connect wallet'), "
-                "or use GUI_TYPE, GUI_SCROLL, or TERMINAL_EXEC to make forward progress.\n"
+                "or use GUI_TYPE, GUI_SCROLL, or SECURITY_TOOL to make forward progress.\n"
             )
 
         recent_sigs = getattr(self, "_recent_action_signatures", [])
@@ -577,8 +629,8 @@ class ComputerUseAgent:
             if all(s == last_sig for s in recent_sigs[-2:]):
                 anti_loop_banner += (
                     f"ANTI-REPETITION ALERT: You have already executed '{last_sig[0]}' with target '{last_sig[1]}'. "
-                    "DO NOT repeat this action! Change modality (GUI ↔ TERMINAL_EXEC / SECURITY_TOOL) "
-                    "or pick a different target to advance state.\n"
+                    "DO NOT repeat this action! Change modality (GUI ↔ SECURITY_TOOL / TERMINAL_EXEC) "
+                    "or pick a different security tool/target to advance state.\n"
                 )
 
         tool_lines = ""
@@ -1781,12 +1833,14 @@ class ComputerUseAgent:
                         cmd_str = f"DISPLAY=:99 {cmd_str} &"
                 res = await self.computer.terminal(workspace_id, cmd_str)
                 action_exit_code = getattr(res, "exit_code", None)
-                actual_obs_str = res.stdout.strip() or f"Exit {res.exit_code}"
+                safe_stdout = _safe_str(getattr(res, "stdout", "") or "")
+                safe_stderr = _safe_str(getattr(res, "stderr", "") or "")
+                actual_obs_str = safe_stdout.strip() or f"Exit {res.exit_code}"
                 if res.exit_code != 0:
                     err_class, err_reason = classify_failure(
                         exit_code=res.exit_code,
-                        stdout=getattr(res, "stdout", "") or "",
-                        stderr=getattr(res, "stderr", "") or "",
+                        stdout=safe_stdout,
+                        stderr=safe_stderr,
                         provider=provider_name,
                         tool=tool_name,
                     )
@@ -1794,7 +1848,7 @@ class ComputerUseAgent:
                         tool=tool_name,
                         provider=provider_name,
                         error_class=err_class,
-                        raw_error=getattr(res, "stderr", "") or getattr(res, "stdout", "") or f"Exit {res.exit_code}",
+                        raw_error=safe_stderr or safe_stdout or f"Exit {res.exit_code}",
                     )
                     if self.failure_budget.is_strategy_exhausted(tool=tool_name, provider=provider_name):
                         actual_obs_str = f"{actual_obs_str} | Strategy exhausted ({fail_rec.count} failures). Retrying is blocked."
@@ -1813,9 +1867,9 @@ class ComputerUseAgent:
                     self.failure_budget.record_success(tool=tool_name, provider=provider_name)
 
                 if hasattr(self, "scratchpad") and self.scratchpad:
-                    self.scratchpad.extract_from_text(res.stdout, source="terminal")
-                    if getattr(res, "stderr", ""):
-                        self.scratchpad.extract_from_text(res.stderr, source="terminal_err")
+                    self.scratchpad.extract_from_text(safe_stdout, source="terminal")
+                    if safe_stderr:
+                        self.scratchpad.extract_from_text(safe_stderr, source="terminal_err")
 
                 if hasattr(self, "wire_telemetry") and self.wire_telemetry:
                     if "curl " in cmd_str or "http " in cmd_str:
@@ -2007,37 +2061,65 @@ class ComputerUseAgent:
                 args = payload.get("args", "")
                 tool = self.security_tools.get(tool_name)
                 if tool is None:
-                    actual_obs_str = f"Unknown security tool: {tool_name}"
-                    recovery_needed = True
-                else:
-                    from sonic.tools.base import ToolRequest
-                    options = {"args": args} if args else {}
-                    req = ToolRequest(
-                        tenant_id=self.tenant_id,
-                        engagement_id=self.engagement_id,
-                        workspace_id=workspace_id,
-                        agent_id=self.agent_id,
-                        tool_name=tool_name,
-                        target=scan_target,
-                        options=options,
+                    # Native execution directly inside sandbox via TERMINAL_EXEC
+                    tool_name_raw = str(tool_name).strip()
+                    if " " in tool_name_raw:
+                        cmd_str = tool_name_raw
+                        if args and str(args).strip() not in cmd_str:
+                            cmd_str = f"{cmd_str} {str(args).strip()}"
+                    else:
+                        parts = [tool_name_raw]
+                        if args:
+                            parts.append(str(args).strip())
+                        if scan_target and str(scan_target).strip() != tool_name_raw and str(scan_target).strip() not in str(args):
+                            parts.append(str(scan_target).strip())
+                        cmd_str = " ".join(parts).strip()
+
+                    cmd_str = self._clean_terminal_command(cmd_str)
+                    if "/home/sonic" in cmd_str:
+                        real_home = getattr(self, "_last_working_dir", "") or "/home/daytona"
+                        if "/workspace" in real_home:
+                            real_home = real_home.split("/workspace")[0]
+                        cmd_str = cmd_str.replace("/home/sonic", real_home)
+                    if "~/" in cmd_str:
+                        real_home = getattr(self, "_last_working_dir", "") or "/home/daytona"
+                        if "/workspace" in real_home:
+                            real_home = real_home.split("/workspace")[0]
+                        cmd_str = cmd_str.replace("~/", f"{real_home}/")
+
+                    res = await self.computer.terminal(workspace_id, cmd_str)
+                    res_stdout = _safe_str(getattr(res, "stdout", "") or "")
+                    res_stderr = _safe_str(getattr(res, "stderr", "") or "")
+                    exit_c = getattr(res, "exit_code", 0)
+                    action_exit_code = exit_c
+
+                    out_str = res_stdout.strip()
+                    if res_stderr.strip():
+                        out_str = f"{out_str}\n{res_stderr.strip()}" if out_str else res_stderr.strip()
+                    actual_obs_str = out_str or f"Tool {tool_name} exit {exit_c}"
+
+                    from types import SimpleNamespace
+                    findings = []
+                    for line in res_stdout.splitlines():
+                        line_s = line.strip()
+                        if line_s:
+                            findings.append({"finding": line_s, "source": str(tool_name)})
+
+                    self._last_tool_result = SimpleNamespace(
+                        tool_name=str(tool_name),
+                        status="completed" if exit_c == 0 else "failed",
+                        exit_code=exit_c,
+                        raw_stdout=res_stdout,
+                        raw_stderr=res_stderr,
+                        parsed_data=findings,
+                        error_message=res_stderr if exit_c != 0 else None,
                     )
-                    result = await tool.execute(req)
-                    self._last_tool_result = result
-                    findings = getattr(result, "parsed_data", []) or []
-                    actual_obs_str = (
-                        f"Tool {tool_name} status={getattr(result, 'status', '?')} "
-                        f"findings={len(findings)}"
-                    )
-                    # Fail-closed: a blocked/failed tool is a recovery trigger.
-                    status_val = str(getattr(result, "status", "")).lower()
-                    if status_val in ("blocked", "failed", "timed_out"):
-                        raw_err = getattr(result, "raw_output", "") or getattr(result, "error", "")
-                        exit_c = 126 if status_val == "blocked" else (124 if status_val == "timed_out" else 1)
-                        action_exit_code = exit_c
+
+                    if exit_c != 0:
                         err_class, _ = classify_failure(
                             exit_code=exit_c,
-                            stdout="",
-                            stderr=str(raw_err),
+                            stdout=res_stdout,
+                            stderr=res_stderr,
                             provider=provider_name,
                             tool=tool_name,
                         )
@@ -2045,7 +2127,89 @@ class ComputerUseAgent:
                             tool=tool_name,
                             provider=provider_name,
                             error_class=err_class,
-                            raw_error=str(raw_err),
+                            raw_error=res_stderr or res_stdout or f"Exit {exit_c}",
+                        )
+                        if self.failure_budget.is_strategy_exhausted(tool=tool_name, provider=provider_name):
+                            actual_obs_str = f"{actual_obs_str} | Strategy exhausted ({fail_rec.count} failures). Retrying is blocked."
+                            status = ActionExecutionStatus.FAILED
+                            recovery_needed = False
+                        elif exit_c in (125, 126):
+                            status = ActionExecutionStatus.BLOCKED
+                            recovery_needed = True
+                        elif exit_c == 124:
+                            status = ActionExecutionStatus.TIMED_OUT
+                            recovery_needed = True
+                        else:
+                            status = ActionExecutionStatus.FAILED
+                            recovery_needed = True
+                    else:
+                        self.failure_budget.record_success(tool=tool_name, provider=provider_name)
+
+                    if hasattr(self, "scratchpad") and self.scratchpad:
+                        self.scratchpad.extract_from_text(res_stdout, source="security_tool")
+                        if res_stderr:
+                            self.scratchpad.extract_from_text(res_stderr, source="security_tool_err")
+
+                    if hasattr(self, "wire_telemetry") and self.wire_telemetry:
+                        if "curl " in cmd_str or "http " in cmd_str:
+                            url_m = re.search(r'https?://[^\s"\']+', cmd_str)
+                            target_url = url_m.group(0) if url_m else "http://target"
+                            method = "POST" if ("-X POST" in cmd_str or "-d " in cmd_str or "--data" in cmd_str) else "GET"
+                            status_code = 200 if exit_c == 0 else 500
+                            status_m = re.search(r'\b([1-5]\d{2})\b', res_stdout[:50])
+                            if status_m:
+                                try:
+                                    status_code = int(status_m.group(1))
+                                except Exception:
+                                    pass
+                            self.wire_telemetry.record_wire_event(
+                                method=method,
+                                url=target_url,
+                                status_code=status_code,
+                                response_body=res_stdout[:300],
+                            )
+                else:
+                    from types import SimpleNamespace
+                    options = {"args": args} if args else {}
+                    req = SimpleNamespace(
+                        tenant_id=self.tenant_id,
+                        engagement_id=self.engagement_id,
+                        workspace_id=workspace_id,
+                        agent_id=self.agent_id,
+                        tool_name=tool_name,
+                        target=scan_target,
+                        options=options,
+                        timeout_seconds=120,
+                        execution_id=f"exec-{int(time.time() * 1000)}",
+                    )
+                    result = await tool.execute(req)
+                    self._last_tool_result = result
+                    findings = getattr(result, "parsed_data", []) or []
+                    raw_out = _safe_str(getattr(result, "raw_stdout", "") or getattr(result, "raw_output", "") or "")
+                    raw_err = _safe_str(getattr(result, "raw_stderr", "") or getattr(result, "error", "") or getattr(result, "error_message", "") or "")
+                    actual_obs_str = (
+                        f"Tool {tool_name} status={getattr(result, 'status', '?')} "
+                        f"findings={len(findings)}"
+                    )
+                    if raw_out.strip() and not findings:
+                        actual_obs_str = f"{actual_obs_str}\n{raw_out.strip()}"
+                    # Fail-closed: a blocked/failed tool is a recovery trigger.
+                    status_val = str(getattr(result, "status", "")).lower()
+                    if status_val in ("blocked", "failed", "timed_out"):
+                        exit_c = 126 if status_val == "blocked" else (124 if status_val == "timed_out" else 1)
+                        action_exit_code = exit_c
+                        err_class, _ = classify_failure(
+                            exit_code=exit_c,
+                            stdout="",
+                            stderr=raw_err,
+                            provider=provider_name,
+                            tool=tool_name,
+                        )
+                        fail_rec = self.failure_budget.record_failure(
+                            tool=tool_name,
+                            provider=provider_name,
+                            error_class=err_class,
+                            raw_error=raw_err,
                         )
                         if self.failure_budget.is_strategy_exhausted(tool=tool_name, provider=provider_name):
                             actual_obs_str = f"{actual_obs_str} | Strategy exhausted ({fail_rec.count} failures). Retrying is blocked."
@@ -2102,8 +2266,9 @@ class ComputerUseAgent:
                         actual_obs_str = f"No authored tool named '{tool_name}' to run"
                         recovery_needed = True
                     else:
+                        target = payload.get("target") or getattr(authored, "target", None)
                         confirmed = await self.toolsmith.confirm_and_register(
-                            authored, self.computer, workspace_id,
+                            authored, self.computer, workspace_id, target=target,
                         )
                         if confirmed.reproduced:
                             # Make the confirmed tool callable via SECURITY_TOOL.
@@ -2195,6 +2360,7 @@ class ComputerUseAgent:
                 await self.motor.backtrack(workspace_id, reason="modal_blocked")
                 actual_obs_str = f"{actual_obs_str} | Reflexive backtrack: dismissed blocking modal"
 
+        actual_obs_str = _safe_str(actual_obs_str)
         trace = ComputerDecisionTrace(
             step_index=self.action_counter,
             action_type=action_type,

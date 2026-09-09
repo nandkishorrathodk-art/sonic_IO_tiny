@@ -109,6 +109,21 @@ def test_tampered_policy_fails_closed(restore_nets):
     assert "seal mismatch" in v.reason or "tamper" in v.reason
 
 
+def test_tampering_intrusive_patterns_invalidates_seal(restore_nets):
+    from sonic.safety.scope import ScopeChecker
+    import re
+    p = seal_default("/ws")
+    original = list(ScopeChecker._INTRUSIVE_PATTERNS)
+    try:
+        # Attacker tampers with class-level intrusive patterns
+        ScopeChecker._INTRUSIVE_PATTERNS.append(re.compile(r"injected_custom_pattern"))
+        v = p.evaluate("SECURITY_TOOL", _PUB, {"target": _PUB})
+        assert v.allowed is False
+        assert "seal mismatch" in v.reason or "tamper" in v.reason
+    finally:
+        ScopeChecker._INTRUSIVE_PATTERNS[:] = original[:]
+
+
 # ---------------------------------------------------------------------------
 # [x] egress uses the FROZEN snapshot — module mutation cannot widen it
 # ---------------------------------------------------------------------------

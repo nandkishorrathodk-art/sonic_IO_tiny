@@ -1,0 +1,28 @@
+[package]
+name = "sonic-kernel-rs"
+version = "0.2.0"
+edition = "2021"
+authors = ["SONIC Architecture Team"]
+description = "Core architectural kernel for SONIC v2 (AI Human Pentester) written in Rust"
+license = "Apache-2.0"
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+sha2 = "0.10"
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1.8", features = ["v4", "fast-rng", "serde"] }
+regex = "1.10"
+
+[lib]
+name = "sonic_kernel"
+path = "src/lib.rs"
+
+[[bin]]
+name = "sonic-kernel"
+path = "src/main.rs"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1

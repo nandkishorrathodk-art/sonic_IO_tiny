@@ -297,6 +297,7 @@ def test_react_execute_with_tools_dict_args_coerced():
         content="",
         tool_calls=[_tc("curl", {"args": "http://example.com"})],
     )
+
     step2 = LLMResponse(content="final", tool_calls=[])
     llm = _ToolLLM([step1, step2])
     result = _run(engine.execute_with_tools("task", llm.complete))

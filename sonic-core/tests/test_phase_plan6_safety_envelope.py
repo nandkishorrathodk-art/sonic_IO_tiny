@@ -191,6 +191,32 @@ def test_destructive_command_denied():
     assert all("rm -rf" not in c for c in comp.commands)
 
 
+@pytest.mark.parametrize("cmd", [
+    r"r\m -rf /",
+    r"r\m -r\f /",
+    r"\rm -rf /",
+    '""rm -rf /',
+    "'rm' -rf /",
+    '"rm" -rf /',
+    'r""m -rf /',
+    r"m\kfs.ext4 /dev/sda1",
+    '""mkfs.ext4 /dev/sda1',
+    r"s\hutdown -h now",
+    '""shutdown -h now',
+    r"d\d if=/dev/zero of=/dev/sda",
+    '""dd if=/dev/zero of=/dev/sda',
+])
+def test_destructive_command_obfuscation_denied(cmd):
+    from sonic.safety.scope import RiskLevel, ScopeChecker
+    sc = ScopeChecker()
+    assert sc.classify_command_risk(cmd) == RiskLevel.L2_FORBIDDEN
+
+    policy = _policy()
+    v = policy.evaluate("TERMINAL_EXEC", "sh", {"command": cmd})
+    assert v.allowed is False
+    assert "destructive" in v.reason.lower()
+
+
 # ---------------------------------------------------------------------------
 # [x] Security tool against private/metadata target denied (egress)
 # ---------------------------------------------------------------------------
@@ -317,6 +343,9 @@ def test_rate_limit_denies_beyond_cap():
     "0x7f000001",             # Hex for 127.0.0.1
     "http://2130706433:8080/foo",
     "2130706433:80",
+    "::",                     # IPv6 unspecified address (::/128)
+    "[::]",                   # IPv6 unspecified address bracketed
+    "http://[::]:8080",       # IPv6 unspecified address URL
 ])
 def test_hardened_egress_blocks_forbidden_ranges(target):
     policy = _policy()

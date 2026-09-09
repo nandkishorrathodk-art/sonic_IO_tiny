@@ -44,4 +44,8 @@ __all__ = [
     "EvidencePackageManager",
     "TrustBenchmarkRunner",
     "TrustBenchmarkMetrics",
+    "VerificationGate",
+    "GateDecision",
+    "GateStatus",
 ]
+from sonic.evidence.gate import GateDecision, GateStatus, VerificationGate

@@ -183,6 +183,12 @@ class ToolsmithLoop:
         source = "\n".join(text.splitlines()[src_idx + 1:]).strip()
         if not source:
             return None
+        # Strip markdown code fences (```python ... ``` and ``` ... ```)
+        if "```" in source:
+            source = re.sub(r"^`{3,}(?:python|py)?\s*\n?", "", source.strip(), flags=re.IGNORECASE).strip()
+            source = re.sub(r"\n?`{3,}\s*$", "", source).strip()
+        if not source:
+            return None
         ok, reason = _source_safety_lint(source)
         if not ok:
             logger.info("toolsmith_proposal_rejected", name=name, reason=reason)
@@ -232,6 +238,7 @@ class ToolsmithLoop:
         provider: Any,
         workspace_id: str,
         timeout: int = 60,
+        target: str | None = None,
     ) -> AuthoredTool:
         """Run the authored tool in-sandbox. Register ONLY on a successful,
         non-empty run. Never register by decree.
@@ -251,8 +258,9 @@ class ToolsmithLoop:
             logger.warning("toolsmith_write_failed", name=tool.name, error=str(e))
             return tool
 
+        target_arg = target or getattr(tool, "target", None) or "127.0.0.1"
         try:
-            res = await provider.execute(workspace_id, f"python {path}", timeout=timeout)
+            res = await provider.execute(workspace_id, f"python {path} {target_arg}", timeout=timeout)
         except Exception as e:
             logger.warning("toolsmith_run_failed", name=tool.name, error=str(e))
             return tool
@@ -291,8 +299,7 @@ class AuthoredToolAdapter:
     Implements the SecurityTool contract (name/version/build_command/parse_output/
     execute) bound to the provider that confirmed it, so the being can call its
     own tools through the same ``SECURITY_TOOL`` action path it uses for
-    nmap/nuclei. Inherits the fail-closed, in-sandbox ``execute`` from
-    ``SecurityTool`` — zero host execution, exit 126 => BLOCKED.
+    nmap/nuclei. Zero host execution, exit 126 => BLOCKED.
     """
 
     def __init__(self, tool: AuthoredTool, provider: Any):
@@ -311,7 +318,7 @@ class AuthoredToolAdapter:
         # The authored source is already on disk in the sandbox; just run it.
         # Pass the target as argv[1] so the authored tool can read it.
         target = getattr(request, "target", "") or ""
-        safe_target = target.replace("'", "")
+        safe_target = str(target).replace("'", "")
         return f"python /home/sonic/workspace/toolsmith/{self._tool.name}.py '{safe_target}'"
 
     def parse_output(self, raw_stdout: str, raw_stderr: str) -> list[dict[str, Any]]:
@@ -330,28 +337,90 @@ class AuthoredToolAdapter:
         return findings
 
     async def execute(self, request: Any):
-        """Delegate to the shared SecurityTool.execute (fail-closed, in-sandbox).
+        """Execute the authored tool in-sandbox (fail-closed, zero host execution).
 
-        Reuses the base-class execute so we inherit the exit-126/blocked,
-        timeout, and parse-output handling instead of duplicating it.
+        Implements a duck-typed ToolResult matching the SecurityTool interface
+        without requiring rigid wrapper classes or base-class inheritance.
         """
-        from sonic.tools.base import SecurityTool
+        from types import SimpleNamespace
 
-        class _Bound(SecurityTool):
-            @property
-            def name(self) -> str:
-                return self._outer.name
+        start_dt = datetime.now(UTC)
+        cmd = self.build_command(request)
+        timeout = getattr(request, "timeout_seconds", 60)
+        workspace_id = getattr(request, "workspace_id", "")
+        execution_id = getattr(request, "execution_id", "")
+        tenant_id = getattr(request, "tenant_id", "")
 
-            @property
-            def version(self) -> str:
-                return self._outer.version
+        logger.info(
+            "authored_tool_execution_started",
+            tool=self.name,
+            execution_id=execution_id,
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+        )
 
-            def build_command(self, req: Any) -> str:
-                return self._outer.build_command(req)
+        try:
+            exec_res = await self.provider.execute(
+                workspace_id,
+                cmd,
+                timeout=timeout,
+            )
+        except TypeError:
+            exec_res = await self.provider.execute(
+                workspace_id=workspace_id,
+                command=cmd,
+                timeout=timeout,
+            )
 
-            def parse_output(self, raw_stdout: str, raw_stderr: str) -> list[dict[str, Any]]:
-                return self._outer.parse_output(raw_stdout, raw_stderr)
+        end_dt = datetime.now(UTC)
+        duration = (end_dt - start_dt).total_seconds()
 
-        bound = _Bound(self.provider)
-        bound._outer = self  # type: ignore[attr-defined]
-        return await bound.execute(request)
+        exit_code = getattr(exec_res, "exit_code", 0)
+        stdout = getattr(exec_res, "stdout", "") or ""
+        stderr = getattr(exec_res, "stderr", "") or ""
+        timed_out = getattr(exec_res, "timed_out", False)
+
+        if timed_out:
+            status = "timed_out"
+            err = f"Tool execution timed out after {timeout}s"
+        elif exit_code == 126:
+            status = "blocked"
+            err = stderr or "Execution blocked by fail-closed security engine"
+        elif exit_code != 0 and not stdout:
+            status = "failed"
+            err = stderr or f"Tool exited with code {exit_code}"
+        else:
+            status = "completed"
+            err = None
+
+        parsed_data = []
+        if stdout:
+            try:
+                parsed_data = self.parse_output(stdout, stderr)
+            except Exception as e:
+                logger.error("authored_tool_output_parsing_failed", tool=self.name, error=str(e))
+                err = f"Output parsing error: {str(e)}"
+
+        return SimpleNamespace(
+            execution_id=execution_id,
+            tenant_id=tenant_id,
+            engagement_id=getattr(request, "engagement_id", ""),
+            workspace_id=workspace_id,
+            agent_id=getattr(request, "agent_id", ""),
+            tool_name=self.name,
+            tool_version=self.version,
+            status=status,
+            start_time=start_dt.isoformat(),
+            end_time=end_dt.isoformat(),
+            exit_code=exit_code,
+            raw_stdout=stdout,
+            raw_stderr=stderr,
+            parsed_data=parsed_data,
+            error_message=err,
+            error=err,
+            metrics=SimpleNamespace(
+                duration_seconds=round(duration, 2),
+                exit_code=exit_code,
+                bytes_received=len(stdout.encode("utf-8", errors="replace")),
+            ),
+        )

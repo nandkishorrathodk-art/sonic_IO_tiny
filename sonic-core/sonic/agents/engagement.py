@@ -553,11 +553,9 @@ class EngagementManager:
 
         try:
             from sonic.computer_use.agent import ComputerUseAgent
-            from sonic.tools.registry import get_default_registry
+            from sonic.safety.sealed import seal_default
 
-            # Wire the security tool registry (nmap, nuclei, ffuf, http_client, burp)
-            registry = get_default_registry(self.provider)
-            security_tools = registry.as_dict()
+            safety = seal_default(workspace_root="/home/sonic/workspace")
 
             # Optionally wire Toolsmith + MethodLab for self-evolution during engagement
             extra_agent_kwargs: dict[str, Any] = {}
@@ -570,7 +568,7 @@ class EngagementManager:
                 toolsmith = ToolsmithLoop(
                     craft=BeingCraft(being_id=f"engagement-{engagement_id}"),
                     llm=self.router,
-                    registry=registry,
+                    registry=None,
                 )
                 method_lab = MethodLab(
                     llm=self.router,
@@ -595,10 +593,10 @@ class EngagementManager:
             eng = self.active_engagements.get(engagement_id, {})
             tenant_id = eng.get("tenant_id", "default")
 
-            # Create the agent with all capabilities wired
+            # Create the agent with direct reasoning and sealed safety boundary
             agent = ComputerUseAgent(
                 computer_provider=self.provider,
-                security_tools=security_tools,
+                safety=safety,
                 browser=browser,
                 tenant_id=tenant_id,
                 **extra_agent_kwargs,

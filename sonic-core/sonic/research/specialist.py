@@ -466,11 +466,10 @@ class WebSpecialist(SpecialistAgent):
         endpoints = []
         tools = context.get("tools") or context.get("security_tools") or {}
         http_tool = tools.get("http_client") if isinstance(tools, dict) else None
-
         if http_tool:
             try:
-                from sonic.tools.base import ToolRequest
-                req = ToolRequest(tool_name="http_client", action="probe", target=target)
+                from types import SimpleNamespace
+                req = SimpleNamespace(tool_name="http_client", action="probe", target=target, options={}, timeout_seconds=30)
                 res = await http_tool.execute(req)
                 if res and getattr(res, "findings", None):
                     for finding in res.findings:
@@ -739,8 +738,8 @@ class NetworkSpecialist(SpecialistAgent):
 
         if nmap_tool:
             try:
-                from sonic.tools.base import ToolRequest
-                req = ToolRequest(tool_name="nmap", action="scan", target=target, options=context.get("nmap_options", {}))
+                from types import SimpleNamespace
+                req = SimpleNamespace(tool_name="nmap", action="scan", target=target, options=context.get("nmap_options", {}), timeout_seconds=60)
                 res = await nmap_tool.execute(req)
                 if res and getattr(res, "findings", None):
                     for finding in res.findings:

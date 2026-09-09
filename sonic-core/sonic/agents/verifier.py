@@ -28,7 +28,7 @@ from sonic.evidence.reproduction_engine import ReproductionEngine
 from sonic.logger import get_logger
 from sonic.memory.schemas import FindingStatus
 from sonic.safety.rate_limiter import get_rate_limiter
-from sonic.tools.http_probe import HTTPProbe, ProbeResult, ProbeTest
+from sonic.agents.http_probe import HTTPProbe, ProbeResult, ProbeTest
 
 logger = get_logger(__name__)
 

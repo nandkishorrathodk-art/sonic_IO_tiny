@@ -110,7 +110,7 @@ class ReconAgent(BaseAgent):
             return assets
 
         try:
-            from sonic.tools.http_probe import HTTPProbe, ProbeTest
+            from sonic.agents.http_probe import HTTPProbe, ProbeTest
 
             live_assets: list[dict] = []
             async with HTTPProbe() as probe:
@@ -173,7 +173,7 @@ class ReconAgent(BaseAgent):
             logger.info("recon_ct_source_blocked", reason=reason)
             return []
         try:
-            from sonic.tools.http_probe import HTTPProbe, ProbeTest
+            from sonic.agents.http_probe import HTTPProbe, ProbeTest
             async with HTTPProbe() as probe:
                 res = await probe.run(ProbeTest(
                     test_name="ct_subdomain_enum",

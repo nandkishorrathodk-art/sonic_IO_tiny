@@ -133,6 +133,9 @@ class SealedActionPolicy(ActionPolicy):
             "require_approval_for_intrusive": self.require_approval_for_intrusive,
             "workspace_root": str(self.workspace_root),
             "blocked_networks": [str(n) for n in self._blocked_networks_snapshot],
+            "scope_intrusive_patterns": sorted(
+                [getattr(p, "pattern", str(p)) for p in getattr(ScopeChecker, "_INTRUSIVE_PATTERNS", [])]
+            ),
         }
         if getattr(self, "scope_config", None):
             payload["scope_config"] = self.scope_config
@@ -140,6 +143,9 @@ class SealedActionPolicy(ActionPolicy):
             patterns = getattr(self.scope_checker, "_destructive_patterns", getattr(self.scope_checker, "_DESTRUCTIVE_PATTERNS", []))
             forbidden = getattr(self.scope_checker, "_forbidden_patterns", [])
             payload["scope_patterns_repr"] = sorted([getattr(p, "pattern", str(p)) for p in patterns]) + sorted([getattr(p, "pattern", str(p)) for p in forbidden])
+            intrusive_inst = getattr(self.scope_checker, "_INTRUSIVE_PATTERNS", None)
+            if intrusive_inst is not None:
+                payload["scope_instance_intrusive_patterns"] = sorted([getattr(p, "pattern", str(p)) for p in intrusive_inst])
         return hashlib.sha256(
             json.dumps(payload, sort_keys=True).encode()
         ).hexdigest()

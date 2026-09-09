@@ -45,6 +45,21 @@ class SafetyVerdict(StrEnum):
     BLOCKED = "blocked"
 
 
+def _normalize_command(command: str) -> str:
+    """Normalize a shell command to defeat obfuscation like shell escapes and quote wrapping."""
+    if not command:
+        return command
+    # Remove backslash line-continuations: e.g. rm \\\n -rf -> rm -rf
+    norm = re.sub(r"\\\n", "", command)
+    # Remove shell backslash escapes: e.g. r\m -> rm, \rm -> rm, -r\f -> -rf
+    norm = re.sub(r"\\([^\n]?)", r"\1", norm)
+    # Remove empty quotes: e.g. ""rm -> rm, ''rm -> rm, r""m -> rm
+    norm = re.sub(r'""|\'\'', "", norm)
+    # Remove quotes wrapping tokens/words: e.g. "rm" -> rm, 'rm' -> rm
+    norm = re.sub(r'["\']', "", norm)
+    return norm
+
+
 class ScopeChecker:
     """
     Validates actions against the Immutable Safety Layer.
@@ -196,24 +211,27 @@ class ScopeChecker:
         if not command or not command.strip():
             return RiskLevel.L0_SAFE
 
+        norm_command = _normalize_command(command)
+        candidates = [command] if norm_command == command else [command, norm_command]
+
         patterns_to_check = getattr(self, "_destructive_patterns", self._DESTRUCTIVE_PATTERNS)
-        for pattern in patterns_to_check:
-            if pattern.search(command):
-                logger.warning("command_classified_destructive", command=command[:200])
-                return RiskLevel.L2_FORBIDDEN
+        for cmd in candidates:
+            for pattern in patterns_to_check:
+                if pattern.search(cmd):
+                    logger.warning("command_classified_destructive", command=command[:200])
+                    return RiskLevel.L2_FORBIDDEN
 
-        # Honor forbidden-action patterns loaded from safety_rules.yaml so the
-        # classifier stays in parity with the declared policy (not just the
-        # hardcoded regex set above).
-        for pattern in self._forbidden_patterns:
-            if pattern.search(command):
-                logger.warning("command_classified_forbidden_rule", command=command[:200])
-                return RiskLevel.L2_FORBIDDEN
+        for cmd in candidates:
+            for pattern in self._forbidden_patterns:
+                if pattern.search(cmd):
+                    logger.warning("command_classified_forbidden_rule", command=command[:200])
+                    return RiskLevel.L2_FORBIDDEN
 
-        for pattern in self._INTRUSIVE_PATTERNS:
-            if pattern.search(command):
-                logger.info("command_classified_intrusive", command=command[:200])
-                return RiskLevel.L1_NEEDS_APPROVAL
+        for cmd in candidates:
+            for pattern in self._INTRUSIVE_PATTERNS:
+                if pattern.search(cmd):
+                    logger.info("command_classified_intrusive", command=command[:200])
+                    return RiskLevel.L1_NEEDS_APPROVAL
 
         return RiskLevel.L0_SAFE
 

@@ -147,3 +147,27 @@ def test_target_security_scan_is_registered_approval_required():
     from sonic.mission_engine.tool_registry import MissionToolRegistry, ToolRisk
     spec = MissionToolRegistry.get("target_security_scan")
     assert spec.risk == ToolRisk.APPROVAL_REQUIRED
+
+
+def test_readonly_allowlist_includes_grep_cat_head_tail():
+    exe = _make_executor()
+    for prefix in ("grep", "cat ", "head ", "tail "):
+        assert prefix in exe._READONLY_COMMANDS
+
+    for cmd in ("grep -rnE 'TODO' .", "cat /path/to/file", "head -100 file", "tail -50 file"):
+        action = PlannedAction(tool="target_shell_readonly", risk=ToolRisk.READ_ONLY, input={"command": cmd})
+        res = asyncio.run(exe.execute(action, target_workspace_id="ws-1"))
+        assert res.status == "SUCCESS", f"Command '{cmd}' should not be blocked: {res.output}"
+
+
+def test_adaptive_plans_not_blocked():
+    from sonic.mission_engine.planner import MissionPlanner
+    exe = _make_executor()
+    planner = MissionPlanner()
+    for intent in ("recon", "web", "test", "db"):
+        plan = planner.build_plan("m-test", f"run {intent} investigation", "target.com", "ws-1")
+        for a in plan.actions:
+            if a.tool == "target_shell_readonly":
+                res = asyncio.run(exe.execute(a, target_workspace_id="ws-1"))
+                assert res.status == "SUCCESS", f"Plan action '{a.input.get('command')}' for intent '{intent}' was rejected: {res.output}"
+

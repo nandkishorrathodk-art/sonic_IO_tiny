@@ -32,6 +32,10 @@ out/
 .turbo/
 *.tsbuildinfo
 
+# ---- Rust ----
+target/
+**/target/
+
 # ---- IDE ----
 .vscode/
 .idea/
@@ -53,6 +57,7 @@ htmlcov/
 # ---- Logs ----
 *.log
 logs/
+last_logs.txt
 
 # ---- Evidence & Artifacts (large files) ----
 evidence_store/

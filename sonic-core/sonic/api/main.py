@@ -81,19 +81,16 @@ async def _maybe_start_being_life_loop(settings):
         # Reuse a shared LLM router if available; curiosity needs an LLM.
         from sonic.agents.browser_agent import BrowserAgent
         from sonic.llm.router import ModelRouter
-        from sonic.tools.registry import get_default_registry
         router = ModelRouter.for_default() if hasattr(ModelRouter, "for_default") else ModelRouter()
         browser = BrowserAgent(headless=True)
         await browser.launch()
         # Toolsmith loop (Phase A, AIOSR): the being authors NEW tools for
-        # observation gaps. Tools register into the security-tools map ONLY
-        # after a real in-sandbox run (confirm_and_register honesty guard).
+        # observation gaps.
         from sonic.being.craft import BeingCraft
         from sonic.being.toolsmith import ToolsmithLoop
-        registry = get_default_registry(provider)
         toolsmith = ToolsmithLoop(
             craft=BeingCraft(being_id=being.being_id),
-            llm=router, registry=registry,
+            llm=router, registry=None,
         )
         # Method-invention loop (Phase B, AIOSR): the being synthesizes NOVEL
         # offensive techniques (new methods, not just tools) from observation +
@@ -109,9 +106,6 @@ async def _maybe_start_being_life_loop(settings):
         agent = ComputerUseAgent(
             computer_provider=provider, llm_router=router,
             safety=safety, self_host=True, tenant_id=tenant_id, agent_id=being.being_id,
-            # Wire the REAL security-tool adapters so the being can actually run
-            # scans during self-directed curiosity (in-sandbox, fail-closed).
-            security_tools=registry.as_dict(),
             # Wire the browser so the being can navigate/click/type/screenshot as
             # a first-class reasoning action (was orphaned before).
             browser=browser,

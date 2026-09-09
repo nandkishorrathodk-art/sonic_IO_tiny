@@ -51,6 +51,7 @@ from sonic.computer_use.wire_telemetry import WireTelemetryEngine
 from sonic.research.failure_budget import FailureBudgetTracker
 from sonic.research.failure_classifier import classify_failure
 
+from sonic.llm.prompts import COMPUTER_USE_SYSTEM_PROMPT
 from sonic.logger import get_logger
 
 logger = get_logger(__name__)
@@ -92,6 +93,8 @@ class ComputerUseAgent:
         engagement_id: str = "default",
         agent_id: str = "computer-use-agent",
         enable_llm_verification: bool = False,
+        enable_llm_decomposition: bool = False,
+        compact_mode: bool | None = None,
         failure_budget: FailureBudgetTracker | None = None,
         scratchpad: HackerScratchpad | None = None,
         motor: MotorReflexes | None = None,
@@ -138,6 +141,18 @@ class ComputerUseAgent:
         self.engagement_id = engagement_id
         self.agent_id = agent_id
         self.enable_llm_verification = enable_llm_verification
+        self.enable_llm_decomposition = enable_llm_decomposition
+        # Auto-detect compact mode for small models if not explicitly set.
+        if compact_mode is not None:
+            self._compact_mode = compact_mode
+        elif llm_router is not None:
+            model_name = (getattr(llm_router, "default_model", "") or "").lower()
+            self._compact_mode = any(
+                tag in model_name
+                for tag in ("7b", "8b", "11b", "3b", "1b", "small", "mini", "tiny")
+            )
+        else:
+            self._compact_mode = False
         self.failure_budget = failure_budget if failure_budget is not None else FailureBudgetTracker()
         self.scratchpad = scratchpad if scratchpad is not None else HackerScratchpad()
         self.motor = motor if motor is not None else MotorReflexes(self.computer)
@@ -192,6 +207,51 @@ class ComputerUseAgent:
         """Signal the agent to stop its active mission loop immediately."""
         self._interrupted = True
 
+    async def _llm_decompose_goal(self, goal: str) -> SubGoalChecklist | None:
+        """Use LLM to decompose the mission goal into concrete, actionable sub-goals."""
+        from sonic.llm.schemas import LLMRequest, Message, MessageRole
+        targets = self._extract_targets_from_goal(goal)
+        target_info = ""
+        if targets["urls"]:
+            target_info = f" Target URL: {targets['urls'][0]}."
+        elif targets["hostnames"]:
+            target_info = f" Target Host: {targets['hostnames'][0]}."
+
+        prompt = (
+            f"Given this engineering or security mission:\n\"{goal}\"\n"
+            f"{target_info}\n"
+            "List 2 to 4 concrete, actionable, sequential sub-goals to accomplish it.\n"
+            "Rules:\n"
+            "- Each sub-goal must be a specific concrete action (e.g. 'Run curl -I to check response headers', 'Scan open ports using nmap', 'Launch application and verify window').\n"
+            "- Do NOT generate vague generic steps like 'Inspect environment and orient', 'Execute core operation', or 'Verify outcome'.\n"
+            "- Output ONLY numbered lines, e.g.:\n"
+            "1. <action>\n"
+            "2. <action>\n"
+        )
+        request = LLMRequest(
+            messages=[
+                Message(role=MessageRole.SYSTEM, content="You are an autonomous engineering planner. Decompose tasks into concrete, verifiable execution steps."),
+                Message(role=MessageRole.USER, content=prompt),
+            ],
+            task_type="reasoning",
+            max_tokens=256,
+            temperature=0.2,
+        )
+        try:
+            resp = await asyncio.wait_for(self.llm_router.complete(request), timeout=8.0)
+            text = (resp.content or "").strip()
+            items = []
+            for line in text.splitlines():
+                m = re.match(r'^(?:\d+[\.\)]|\-|\*)\s*(.*)', line.strip())
+                if m and len(m.group(1).strip()) > 5:
+                    items.append(m.group(1).strip())
+            if len(items) >= 2:
+                sub_goals = [SubGoal(description=item) for item in items[:5]]
+                return SubGoalChecklist(top_level_goal=goal, sub_goals=sub_goals, active_index=0)
+        except Exception as e:
+            logger.debug("llm_decompose_goal_fallback", error=str(e))
+        return None
+
     async def decompose_goal(self, goal: str) -> SubGoalChecklist:
         """Decompose a top-level mission into sequential, verifiable sub-goals."""
         sub_goals: list[SubGoal] = []
@@ -211,22 +271,42 @@ class ComputerUseAgent:
                 sub_goals.append(SubGoal(description=item))
             return SubGoalChecklist(top_level_goal=goal, sub_goals=sub_goals, active_index=0)
 
-        # 2. Intent-based heuristic decomposition
+        # 2. Try LLM-driven goal decomposition when enabled and a router is available
+        if getattr(self, "enable_llm_decomposition", False) and self.llm_router is not None:
+            llm_checklist = await self._llm_decompose_goal(goal)
+            if llm_checklist is not None:
+                return llm_checklist
+
+        # 3. Intent-based heuristic decomposition (fallback)
+        targets = self._extract_targets_from_goal(goal)
+        target_str = targets["urls"][0] if targets["urls"] else (targets["hostnames"][0] if targets["hostnames"] else (targets["ips"][0] if targets["ips"] else ""))
+
         g_lower = goal.lower()
-        if any(w in g_lower for w in ("http://", "https://", ".com", ".org", "browse", "opensea", "web", "site")):
-            target_url = ""
-            for part in goal.split():
-                if part.startswith(("http://", "https://")):
-                    target_url = part
-                    break
+        if any(w in g_lower for w in ("curl", "header", "http_client", "endpoint", "api")):
+            dest = target_str or "target service"
             sub_goals = [
-                SubGoal(description=f"Navigate to {target_url or 'target web page'} and confirm page loaded"),
-                SubGoal(description="Locate interactive search or input controls and execute query"),
-                SubGoal(description="Read observation results and verify data extracted"),
+                SubGoal(description=f"Send HTTP probe or curl -I request to {dest}"),
+                SubGoal(description="Analyze HTTP response headers and status code"),
+                SubGoal(description="Verify response data and record findings"),
+            ]
+        elif any(w in g_lower for w in ("http://", "https://", ".com", ".org", "browse", "web", "site")):
+            dest = target_str or "target web page"
+            sub_goals = [
+                SubGoal(description=f"Navigate to {dest} and confirm page loaded"),
+                SubGoal(description="Inspect page content and interact with controls"),
+                SubGoal(description="Verify outcome and extract findings"),
+            ]
+        elif any(w in g_lower for w in ("burp", "burpsuite", "chromium", "chrome", "firefox", "wireshark", "launch", "open ")):
+            app = "burpsuite" if "burp" in g_lower else ("chromium" if ("chrome" in g_lower or "chromium" in g_lower) else "application")
+            sub_goals = [
+                SubGoal(description=f"Launch and focus {app}"),
+                SubGoal(description="Perform requested operation in application"),
+                SubGoal(description="Verify application state and complete task"),
             ]
         elif any(w in g_lower for w in ("scan", "port", "nmap", "recon", "network")):
+            dest = target_str or "target host"
             sub_goals = [
-                SubGoal(description="Perform initial network reconnaissance and service discovery"),
+                SubGoal(description=f"Perform network reconnaissance against {dest}"),
                 SubGoal(description="Analyze open ports and inspect service banners"),
                 SubGoal(description="Compile security findings and verify evidence"),
             ]
@@ -403,6 +483,28 @@ class ComputerUseAgent:
 
         return self._diagnostic_fallback(primary_file)
 
+    @staticmethod
+    def _extract_targets_from_goal(goal: str) -> dict[str, list[str]]:
+        """Extract URLs, IPs, and hostnames from the goal text.
+
+        Returns a dict with ``urls``, ``ips``, and ``hostnames`` so the
+        reasoning context can inject them prominently at the top of the
+        observation — preventing the model from inventing a target like
+        ``example.com`` when the user specified a real one.
+        """
+        urls = re.findall(r'https?://[^\s,\'"<>]+', goal)
+        ips = re.findall(r'\b(?:\d{1,3}\.){3}\d{1,3}\b', goal)
+        # Hostnames: things that look like domain names but aren't URLs
+        hostnames = re.findall(r'\b(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}\b', goal)
+        # Remove hostnames that are already part of extracted URLs
+        url_hosts = set()
+        for u in urls:
+            m = re.search(r'https?://([^/:\s]+)', u)
+            if m:
+                url_hosts.add(m.group(1))
+        hostnames = [h for h in hostnames if h not in url_hosts]
+        return {"urls": urls, "ips": ips, "hostnames": hostnames}
+
     def _build_reasoning_context(
         self,
         goal: str,
@@ -475,7 +577,8 @@ class ComputerUseAgent:
             if all(s == last_sig for s in recent_sigs[-2:]):
                 anti_loop_banner += (
                     f"ANTI-REPETITION ALERT: You have already executed '{last_sig[0]}' with target '{last_sig[1]}'. "
-                    "DO NOT repeat this action! Choose a different action to advance state.\n"
+                    "DO NOT repeat this action! Change modality (GUI ↔ TERMINAL_EXEC / SECURITY_TOOL) "
+                    "or pick a different target to advance state.\n"
                 )
 
         tool_lines = ""
@@ -552,7 +655,10 @@ class ComputerUseAgent:
             what_failed = f"{last_fail.tool} on {last_fail.provider} ({last_fail.error_class.value})"
             why_did_it_fail = last_fail.raw_error or f"Classified as {last_fail.error_class.value}"
             what_hypothesis = f"Disproves direct success of {last_fail.tool}; supports hypothesis that alternative approach is required."
-            if strat_a_state == StrategyState.EXHAUSTED:
+            failed_tool_clean = re.sub(r'[^a-zA-Z0-9_-]', '', str(last_fail.tool or '')).lower()
+            if failed_tool_clean in ("launch", "open", "click", "type", "press", "wait", "focus", "browse", "navigate", ""):
+                highest_info_action = "Previous command syntax was invalid. Advance goal using direct standard Linux tools (curl, nmap, etc.) or valid GUI actions."
+            elif strat_a_state == StrategyState.EXHAUSTED:
                 highest_info_action = "Pivot to Strategy B (alternative instrumentation) since Strategy A is exhausted."
             else:
                 highest_info_action = f"Inspect error cause for '{last_fail.tool}' using shell or inspection commands."
@@ -591,12 +697,17 @@ class ComputerUseAgent:
             if w_text:
                 wire_summary = f"{w_text}\n"
 
+        screen_w = getattr(self, "_screen_width", 1920)
+        screen_h = getattr(self, "_screen_height", 1080)
+        max_act = getattr(self, "max_actions", 50)
+        compact = getattr(self, "_compact_mode", False)
+
         obs_summary = (
-            f"Screen resolution: {self._screen_width}x{self._screen_height}\n"
-            f"Step {step_index} of {self.max_actions}. Overall Mission: {goal}\n"
-            f"CURRENT ACTIVE SUB-GOAL: {active_sg_desc}\n"
+            f"Screen resolution: {screen_w}x{screen_h}\n"
+            f"Step {step_index} of {max_act}. Overall Mission: {goal}\n"
+            f"CURRENT ACTIVE SUBTASK: {active_sg_desc}\n"
             f"{checklist_str}\n"
-            f"INSTRUCTION: Focus your next action strictly on advancing the CURRENT ACTIVE SUB-GOAL above.\n"
+            f"INSTRUCTION: Focus your next action strictly on advancing the CURRENT ACTIVE SUBTASK above.\n"
             f"{scratchpad_hud}"
             f"{wire_summary}"
             f"Current working directory: {workdir}\n"
@@ -612,90 +723,69 @@ class ComputerUseAgent:
             f"Primary file: {primary_file_str}, Test file: {test_file_str}\n"
             f"Available security tools: {available_tools}\n"
             f"{lessons_block}"
-            f"{strategy_tracking_block}"
-            f"{cognitive_block}"
-            f"Actions taken so far:\n{history_text or '(none — this is the first action)'}\n"
         )
-        system_prompt = (
-            "You are the computer-use core of SONIC — an Autonomous Self-Evolving "
-            "Penetration Architect (A-SEA): an autonomous offensive-security and "
-            "engineering agent with COMPLETE, UNRESTRICTED CONTROL of the sandboxed "
-            "computer environment. You have full operating system authority: "
-            "terminal execution, filesystem read/write, git operations, desktop GUI "
-            "mouse and keyboard interaction, launching, focusing, switching, and "
-            "closing ANY desktop application or window (e.g. terminals, text editors, "
-            "browsers, Wireshark, Burp Suite, Metasploit, file managers, or custom tools), "
-            "browser automation, and registered security scanner execution. "
-            "You are NOT limited to any single tool or browser; you operate the entire computer. "
-            "You can see the screen text, open windows, active application, terminal output, "
-            "workspace files, git state, and previous action history. "
-            "Choose the ONE next action that makes the most progress toward the "
-            "goal, reacting to the latest observation and your prior actions — do "
-            "NOT follow a fixed script. When 'Past lessons' appear in the "
-            "observation, AVOID approaches marked [AVOID] (they failed before) and "
-            "prefer approaches marked [REUSE] (they worked before). When no existing "
-            "tool fits a gap, author a new one (TOOL_AUTHOR) and verify it (TOOL_RUN); "
-            "when a gap needs a new METHOD, invent a technique (METHOD_INVENT). "
-            "If the goal is already achieved, respond GOAL_COMPLETE.\n"
-            "If the goal can be accomplished cleanly via shell command, prefer TERMINAL_EXEC.\n"
-            "You can see the desktop screenshot and interact with GUI elements by clicking at coordinates.\n"
-            "CRITICAL SUB-GOAL ADVANCEMENT RULES:\n"
-            "1. Focus strictly on executing the CURRENT ACTIVE SUB-GOAL shown in the Execution Checklist.\n"
-            "2. Once an active sub-goal is accomplished (e.g. page loaded, element clicked, command executed), advance to the next sub-goal. Do NOT repeat completed sub-goals.\n"
-            "CRITICAL ANTI-LOOPING AND PROGRESSION RULES:\n"
-            "1. NEVER navigate repeatedly to the same URL. If a webpage is already open, interact with its elements on screen (GUI_CLICK on search bar, buttons, links, or GUI_TYPE).\n"
-            "2. NEVER repeat the exact same action and target consecutively without state progression.\n"
-            "3. Look closely at the screen screenshot / screen visible text to identify buttons, input boxes, menus, and links. Use GUI_CLICK with coordinates or landmark query (e.g. 'search bar', 'connect wallet', 'explore') to interact with them.\n"
-            "Before choosing an action, reason through these mandatory cognitive fields:\n"
-            "WHAT DO I KNOW?: <Facts established by verified observation, or UNKNOWN>\n"
-            "WHAT DO I NOT KNOW?: <Unverified assumptions, missing data, or UNKNOWN>\n"
-            "WHAT FAILED?: <Previous failure if any, or NONE>\n"
-            "WHY DID IT FAIL?: <Root cause classification and explanation, or NONE>\n"
-            "WHAT HYPOTHESIS DOES THIS SUPPORT/DISPROVE?: <Epistemic hypothesis update>\n"
-            "WHAT IS THE HIGHEST-INFORMATION NEXT ACTION?: <Strategic justification for the action chosen>\n"
-            "Respond in EXACTLY this format (no markdown code fences):\n"
-            "WHAT DO I KNOW?: ...\n"
-            "WHAT DO I NOT KNOW?: ...\n"
-            "WHAT FAILED?: ...\n"
-            "WHY DID IT FAIL?: ...\n"
-            "WHAT HYPOTHESIS DOES THIS SUPPORT/DISPROVE?: ...\n"
-            "WHAT IS THE HIGHEST-INFORMATION NEXT ACTION?: ...\n"
-            "THOUGHT: <Brief 1-sentence thought explaining what you intend to do and why>\n"
-            "ACTION: <GUI_CLICK|GUI_DOUBLE_CLICK|GUI_RIGHT_CLICK|GUI_TYPE|GUI_KEYPRESS|GUI_MOVE|GUI_SCROLL|GUI_DRAG|GUI_SCREENSHOT|GUI_WAIT|FILE_READ|FILE_WRITE|TERMINAL_EXEC|GIT_COMMIT|APP_LAUNCH|APP_CLOSE|APP_FOCUS|APP_INSTALL|SERVICE_ACTION|BROWSER_NAVIGATE|BROWSER_CLICK|BROWSER_TYPE|BROWSER_SCREENSHOT|BROWSER_WAIT|BROWSER_DOWNLOAD|SECURITY_TOOL|TOOL_AUTHOR|TOOL_RUN|METHOD_INVENT|GOAL_COMPLETE>\n"
-            "TARGET: <resource path, application/window name, url, css selector, coordinates, or UI element query>\n"
-            'PAYLOAD: <json dict, e.g. {"path": "...", "content": "..."}, '
-            '{"command": "..."}, {"url": "..."}, {"selector": "...", "text": "..."}, '
-            '{"app_name": "..."}, {"tool": "...", "target": "...", "args": "..."}>\n'
-            'For GUI_CLICK/GUI_DOUBLE_CLICK/GUI_RIGHT_CLICK/GUI_MOVE: TARGET can be numeric pixel coordinates like "640,400" OR a visual UI query like "Applications menu", "Terminal icon", "Google Chrome", "search bar"\n'
-            'For GUI_DRAG: TARGET is "x,y" (source) and PAYLOAD is {"x2": <int>, "y2": <int>} (destination)\n'
-            'For GUI_TYPE: PAYLOAD is {"text": "..."}\n'
-            'For GUI_KEYPRESS: PAYLOAD is {"key": "Return|Tab|Escape|ctrl+c|ctrl+v|alt+Tab|..."}\n'
-            'For GUI_SCROLL: TARGET is "x,y" and PAYLOAD is {"delta": -3} (negative=down, positive=up)\n'
-            'For GUI_SCREENSHOT: no target or payload needed\n'
-            'For GUI_WAIT: PAYLOAD is {"seconds": 3} to let a window or page settle\n'
-            'For APP_INSTALL: TARGET is the package to install (e.g. nmap, wireshark, chromium, git, curl)\n'
-            'For APP_LAUNCH: TARGET is the application name to start (e.g. xfce4-terminal, mousepad, thunar, burpsuite, wireshark, chromium, code)\n'
-            'For APP_FOCUS: TARGET is the window title or application name to bring to foreground (e.g. any window from Open desktop windows)\n'
-            'For APP_CLOSE: TARGET is the application or window name to close\n'
-            'For TERMINAL_EXEC: TARGET or PAYLOAD {"command": "..."} must be an EXACT executable shell command line (e.g. uname -a, netstat -tuln, which google-chrome, ls -la), NEVER natural language like "Terminal" or "netstat or ss command"\n'
-            'For BROWSER_NAVIGATE: TARGET or PAYLOAD {"url": "..."} is the external target URL (e.g. https://google.com, https://example.org). Private subnets (localhost, 127.0.0.1, 10.0.0.0/8) are blocked by safety policy.\n'
-            'For BROWSER_TYPE: PAYLOAD is {"text": "text to type"} and TARGET is the input selector or "address bar"\n'
-            'For SECURITY_TOOL: TARGET must be one of the Available security tools listed above (e.g. nmap, nuclei, ffuf, http_client)\n'
-            'For BROWSER_WAIT: PAYLOAD is {"selector": "<css>"} to wait for an element to render\n'
-            'For BROWSER_DOWNLOAD: PAYLOAD is {"selector": "<css>", "save_path": "~/workspace/file"}\n'
-            "EXPECTED: <short description of predicted outcome>"
-        )
+
+        # In compact mode (small models), skip the verbose strategy/cognitive
+        # blocks that overwhelm limited context.  Full mode keeps everything.
+        if not compact:
+            obs_summary += f"{strategy_tracking_block}{cognitive_block}"
+
+        obs_summary += f"Actions taken so far:\n{history_text or '(none — this is the first action)'}\n"
+
+        # Inject extracted targets prominently at the VERY TOP so the model
+        # sees the actual target URL/IP before anything else.
+        targets = self._extract_targets_from_goal(goal)
+        target_header = ""
+        if targets["urls"]:
+            target_header += f"TARGET URLS: {', '.join(targets['urls'])}\n"
+        if targets["ips"]:
+            target_header += f"TARGET IPS: {', '.join(targets['ips'])}\n"
+        if targets["hostnames"]:
+            target_header += f"TARGET HOSTS: {', '.join(targets['hostnames'])}\n"
+        if target_header:
+            target_header += "USE THESE TARGETS — do NOT substitute example.com or other URLs.\n"
+            obs_summary = target_header + obs_summary
+
+        # Select system prompt based on model capability
+        if compact:
+            try:
+                from sonic.llm.prompts import COMPUTER_USE_SYSTEM_PROMPT_COMPACT
+                system_prompt = COMPUTER_USE_SYSTEM_PROMPT_COMPACT
+            except ImportError:
+                system_prompt = COMPUTER_USE_SYSTEM_PROMPT
+        else:
+            system_prompt = COMPUTER_USE_SYSTEM_PROMPT
         return system_prompt, obs_summary
 
+    _MAX_HISTORY_STEPS: int = 10
+
     def _format_history(self) -> str:
-        """Render the action/result transcript for the LLM."""
+        """Render the action/result transcript for the LLM.
+
+        Bounded to the last ``_MAX_HISTORY_STEPS`` entries so that the context
+        stays within the capacity of smaller models. Earlier steps are
+        summarised in a single line with success/fail counts.
+        """
         if not self.history:
             return ""
-        lines = []
-        for i, h in enumerate(self.history, 1):
-            lines.append(
-                f"  {i}. {h.get('action', '?')} -> {h.get('result', '?')}"
+        lines: list[str] = []
+        window = self._MAX_HISTORY_STEPS
+        if len(self.history) > window:
+            skipped = len(self.history) - window
+            ok = sum(
+                1 for h in self.history[:skipped]
+                if any(w in h.get("result", "").lower() for w in ("success", "completed", "exit 0"))
             )
+            lines.append(
+                f"  [... {skipped} earlier steps: {ok} succeeded, {skipped - ok} failed ...]"
+            )
+        start_idx = max(0, len(self.history) - window)
+        for i, h in enumerate(self.history[start_idx:], start_idx + 1):
+            result_text = h.get("result", "?")
+            # Truncate very long results to keep context compact
+            if len(result_text) > 150:
+                result_text = result_text[:147] + "..."
+            lines.append(f"  {i}. {h.get('action', '?')} -> {result_text}")
         return "\n".join(lines)
 
     async def _llm_choose_action(
@@ -744,6 +834,19 @@ class ComputerUseAgent:
             action_type, target, payload, expected = self._parse_llm_action(
                 content_str, primary_file
             )
+
+            # If the LLM hallucinated example.com/example.org but the user specified a real target,
+            # substitute the real target into the command / target / payload
+            targets = self._extract_targets_from_goal(goal)
+            primary_target = targets["urls"][0] if targets["urls"] else (f"https://{targets['hostnames'][0]}" if targets["hostnames"] else (f"http://{targets['ips'][0]}" if targets["ips"] else ""))
+            if primary_target:
+                if "command" in payload and any(ex in str(payload["command"]).lower() for ex in ("example.com", "example.org")):
+                    payload["command"] = re.sub(r'https?://(?:www\.)?example\.(?:com|org)', primary_target, str(payload["command"]), flags=re.IGNORECASE)
+                if any(ex in target.lower() for ex in ("example.com", "example.org")):
+                    target = re.sub(r'https?://(?:www\.)?example\.(?:com|org)', primary_target, target, flags=re.IGNORECASE)
+                    if "url" in payload:
+                        payload["url"] = target
+
             return action_type, target, payload, expected
         except Exception as e:
             self._last_thought_duration = round(time.perf_counter() - t_thought_start, 2)
@@ -752,30 +855,70 @@ class ComputerUseAgent:
             return self._diagnostic_fallback(primary_file)
 
     @staticmethod
+    def _normalize_app_name(target: str) -> str:
+        """Normalize desktop application aliases to their canonical Linux binary names."""
+        if not target:
+            return "xfce4-terminal"
+        target_low = target.lower().strip(" *_\n\r\t`\"'")
+        if "burp" in target_low:
+            return "burpsuite"
+        elif "chrome" in target_low or "chromium" in target_low:
+            return "chromium"
+        elif "firefox" in target_low:
+            return "firefox"
+        elif "terminal" in target_low or "bash" in target_low or "shell" in target_low:
+            return "xfce4-terminal"
+        elif "editor" in target_low or "mousepad" in target_low or "notepad" in target_low:
+            return "mousepad"
+        elif "file" in target_low or "thunar" in target_low or "explorer" in target_low:
+            return "thunar"
+        elif "wireshark" in target_low:
+            return "wireshark"
+        else:
+            words = target_low.split()
+            if words and words[0] in ("the", "a", "an") and len(words) > 1:
+                return words[1].strip(" *_\n\r\t`\"'")
+            elif words:
+                return words[0].strip(" *_\n\r\t`\"'")
+        return target_low
+
+    @staticmethod
     def _parse_llm_action(
         text: str, default_file: str
     ) -> tuple[ComputerActionType, str, dict[str, Any], str]:
         """Parse structured LLM response into an action tuple."""
-        # Robust multi-field extraction (handles single-line, multi-line, markdown bold/italics, and alternative delimiter names)
-        pattern = r'(?:\*{1,2}|_)?\b(ACTION|TARGET|PAYLOAD|EXPECTED|EXPECTED[\s_]+OUTCOME|REASONING|THOUGHT|EXPLANATION)\b(?:\*{1,2}|_)?:\s*(.*?)(?=(?:\*{1,2}|_)?\b(?:ACTION|TARGET|PAYLOAD|EXPECTED|EXPECTED[\s_]+OUTCOME|REASONING|THOUGHT|EXPLANATION)\b(?:\*{1,2}|_)?\:|$)'
-        matches = re.findall(pattern, text, re.DOTALL | re.IGNORECASE)
-        raw_fields: dict[str, str] = {k.strip().upper(): v.strip(" *_\n\r\t") for k, v in matches}
+        # If the LLM wrote multiple steps (e.g. 'Step 1: ... Step 2: ...'), isolate Step 1
+        step1_match = re.search(r'(?:Step\s*1\b|First\b)[^:\n]*:\s*(.*?)(?=(?:Step\s*2\b|Second\b|\*\*Step|\bAnswer\b)|\Z)', text, re.DOTALL | re.IGNORECASE)
+        parse_target_text = step1_match.group(1) if step1_match else text
+
+        pattern = r'(?:\*{1,2}|_)?\b(ACTION|TARGET|PAYLOAD|EXPECTED|EXPECTED[\s_]+OUTCOME|REASONING|THOUGHT|EXPLANATION|COORDINATES|COMMAND)\b(?:\*{1,2}|_)?:\s*(.*?)(?=(?:\*{1,2}|_)?\b(?:ACTION|TARGET|PAYLOAD|EXPECTED|EXPECTED[\s_]+OUTCOME|REASONING|THOUGHT|EXPLANATION|COORDINATES|COMMAND)\b(?:\*{1,2}|_)?\:|$)'
+        matches = re.findall(pattern, parse_target_text, re.DOTALL | re.IGNORECASE)
+        # Use setdefault to preserve the FIRST action in case of multiple blocks
+        raw_fields: dict[str, str] = {}
+        for k, v in matches:
+            key_upper = k.strip().upper()
+            if key_upper not in raw_fields:
+                raw_fields[key_upper] = v.strip(" *_\n\r\t")
         fields: dict[str, str] = {}
         for k, v in raw_fields.items():
             if "OUTCOME" in k:
                 fields.setdefault("EXPECTED", v)
             elif any(sub in k for sub in ("THOUGHT", "REASON", "EXPLAN")):
                 fields.setdefault("THOUGHT", v)
+            elif "COORD" in k:
+                fields.setdefault("COORDINATES", v)
+            elif "COMMAND" in k:
+                fields.setdefault("COMMAND", v)
             else:
                 fields[k] = v
 
         # Fallback to line-by-line if regex matched nothing
         if not fields:
-            lines = [l.strip() for l in text.strip().splitlines() if l.strip()]
+            lines = [l.strip() for l in parse_target_text.strip().splitlines() if l.strip()]
             for line in lines:
                 if ":" in line:
                     key, _, val = line.partition(":")
-                    fields[key.strip().upper()] = val.strip()
+                    fields.setdefault(key.strip().upper(), val.strip())
 
         raw_action = fields.get("ACTION", "TERMINAL_EXEC").upper()
         action_word = raw_action.split()[0] if raw_action.split() else "TERMINAL_EXEC"
@@ -796,6 +939,16 @@ class ComputerUseAgent:
             "TERMINAL_EXEC": ComputerActionType.TERMINAL_EXEC,
             "GIT_COMMIT": ComputerActionType.GIT_COMMIT,
             "APP_LAUNCH": ComputerActionType.APP_LAUNCH,
+            "LAUNCH": ComputerActionType.APP_LAUNCH,
+            "OPEN": ComputerActionType.APP_LAUNCH,
+            "START": ComputerActionType.APP_LAUNCH,
+            "CLICK": ComputerActionType.GUI_CLICK,
+            "TYPE": ComputerActionType.GUI_TYPE,
+            "RUN": ComputerActionType.TERMINAL_EXEC,
+            "EXEC": ComputerActionType.TERMINAL_EXEC,
+            "NAVIGATE": ComputerActionType.BROWSER_NAVIGATE,
+            "BROWSE": ComputerActionType.BROWSER_NAVIGATE,
+            "SCAN": ComputerActionType.SECURITY_TOOL,
             "APP_CLOSE": ComputerActionType.APP_CLOSE,
             "APP_FOCUS": ComputerActionType.APP_FOCUS,
             "APP_INSTALL": ComputerActionType.APP_INSTALL,
@@ -826,8 +979,10 @@ class ComputerUseAgent:
 
         default_target = default_file if action_type in (ComputerActionType.FILE_READ, ComputerActionType.FILE_WRITE) else ""
 
-        raw_target = fields.get("TARGET", "") or default_target
+        raw_target = fields.get("TARGET", "") or fields.get("COORDINATES", "") or default_target
         target = raw_target.strip(" *_\n\r\t`\"'")
+        if not target and fields.get("COORDINATES"):
+            target = fields["COORDINATES"].strip(" *_\n\r\t`\"'")
         if target:
             # Take first non-empty line to strip accidental trailing markdown blocks
             for line in target.splitlines():
@@ -836,19 +991,10 @@ class ComputerUseAgent:
                     break
 
         if action_type in (ComputerActionType.APP_LAUNCH, ComputerActionType.APP_CLOSE, ComputerActionType.APP_FOCUS, ComputerActionType.APP_INSTALL):
+            if not target and raw_action:
+                target = re.sub(r'^(?:APP_LAUNCH|APP_CLOSE|APP_FOCUS|APP_INSTALL|LAUNCH|OPEN|START|CLOSE|KILL)\s+', '', raw_action, flags=re.IGNORECASE).strip()
             if target:
-                words = target.split()
-                if words:
-                    if words[0].lower() in ("the", "a", "an") and len(words) > 1:
-                        target = words[1].strip(" *_\n\r\t`\"'")
-                    else:
-                        target = words[0].strip(" *_\n\r\t`\"'")
-                if target.lower() in ("terminal", "the terminal"):
-                    target = "xfce4-terminal"
-                elif target.lower() in ("editor", "text editor"):
-                    target = "mousepad"
-                elif target.lower() in ("files", "file manager"):
-                    target = "thunar"
+                target = ComputerUseAgent._normalize_app_name(target)
 
         elif action_type == ComputerActionType.BROWSER_NAVIGATE:
             target_lower = target.lower()
@@ -872,7 +1018,7 @@ class ComputerUseAgent:
                 payload["text"] = payload["command"]
 
         if action_type == ComputerActionType.TERMINAL_EXEC:
-            raw_cmd = payload.get("command")
+            raw_cmd = payload.get("command") or fields.get("COMMAND")
             if not raw_cmd or str(raw_cmd).lower() == "none":
                 payload["command"] = target if target and target != default_file else "pwd"
             if payload.get("command"):
@@ -894,7 +1040,50 @@ class ComputerUseAgent:
                 else:
                     # Strip trailing " command" or " commands"
                     cmd_str = re.sub(r'\s+commands?$', '', cmd_str, flags=re.IGNORECASE)
-                payload["command"] = cmd_str
+
+                # Redirect conversational pseudo-commands to real action types
+                m_launch = re.match(r'^(?:launch|open|start)\s+([a-zA-Z0-9_\-\s]+)$', cmd_str, re.IGNORECASE)
+                m_nav = re.match(r'^(?:navigate|browse|go)(?:\s+to)?\s+(https?://\S+)', cmd_str, re.IGNORECASE)
+                m_which_verb = re.match(r'^which\s+(?:launch|open|start|run|the)\b', cmd_str, re.IGNORECASE)
+                m_which_app = re.match(r'^which\s+([A-Za-z0-9_\-\s]+)$', cmd_str, re.IGNORECASE)
+
+                if m_launch:
+                    action_type = ComputerActionType.APP_LAUNCH
+                    target = ComputerUseAgent._normalize_app_name(m_launch.group(1).strip())
+                    payload = {"app_name": target}
+                elif m_nav:
+                    action_type = ComputerActionType.BROWSER_NAVIGATE
+                    target = m_nav.group(1).strip()
+                    payload = {"url": target}
+                elif cmd_str.startswith("http://") or cmd_str.startswith("https://"):
+                    action_type = ComputerActionType.BROWSER_NAVIGATE
+                    target = cmd_str.split()[0]
+                    payload = {"url": target}
+                elif m_which_verb:
+                    # Model hallucinated "which Launch" or "which Open"
+                    cmd_str = "pwd"
+                    payload["command"] = cmd_str
+                elif m_which_app and any(app in m_which_app.group(1).lower() for app in ("burp", "chrome", "chromium", "firefox", "terminal", "editor", "wireshark")):
+                    norm = ComputerUseAgent._normalize_app_name(m_which_app.group(1).strip())
+                    cmd_str = f"which {norm}"
+                    payload["command"] = cmd_str
+                elif re.match(r'^(?:click|press)(?:\s+on)?\s+([a-zA-Z0-9_\-\s]+)$', cmd_str, re.IGNORECASE):
+                    action_type = ComputerActionType.GUI_CLICK
+                    target = re.sub(r'^(?:click|press)(?:\s+on)?\s+', '', cmd_str, flags=re.IGNORECASE).strip()
+                    payload = {}
+                elif not any(c in cmd_str for c in ('|', '&&', '>', '<', ';', '$', '`', '-', '/')) and len(cmd_str.split()) > 7:
+                    # Long prose sentence with no shell syntax masquerading as a command
+                    cs_low = cmd_str.lower()
+                    if "port" in cs_low or "network" in cs_low or "connect" in cs_low:
+                        payload["command"] = "netstat -tuln || ss -tuln"
+                    elif "header" in cs_low or "curl" in cs_low or "http" in cs_low:
+                        payload["command"] = "curl -sI https://example.com"
+                    elif "file" in cs_low or "dir" in cs_low or "list" in cs_low:
+                        payload["command"] = "ls -la"
+                    else:
+                        payload["command"] = "pwd"
+                else:
+                    payload["command"] = cmd_str
 
         if action_type in (ComputerActionType.GUI_CLICK, ComputerActionType.GUI_DOUBLE_CLICK, ComputerActionType.GUI_RIGHT_CLICK, ComputerActionType.GUI_MOVE, ComputerActionType.GUI_DRAG):
             if target and "," in target:
@@ -1482,7 +1671,13 @@ class ComputerUseAgent:
                     elif words:
                         app_name = words[0]
                     await self.computer.gui_action(workspace_id, GUIAction(action=GUIActionType.OPEN_APP, app_name=app_name))
-                    actual_obs_str = f"Launched and focused {app_name}"
+                    import asyncio as _asyncio
+                    await _asyncio.sleep(1.0)
+                    screen = await self.computer.screenshot(workspace_id)
+                    self._last_screenshot_b64 = getattr(screen, "screenshot_base64", "")
+                    self._update_screen_dims(screen)
+                    active_w = getattr(screen, "active_window", "") or app_name
+                    actual_obs_str = f"Launched and focused {app_name} (active window: {active_w})"
 
             elif action_type == ComputerActionType.APP_CLOSE:
                 raw_app = payload.get("app_name") or target_resource
@@ -2068,6 +2263,60 @@ class ComputerUseAgent:
     # than repeating the same failing strategy until the step budget is gone.
     _STUCK_THRESHOLD: int = 3
 
+    # Commands that gather no new information. Blocked after
+    # ``_MAX_TRIVIAL_CONSECUTIVE`` consecutive uses.
+    _TRIVIAL_COMMANDS: frozenset[str] = frozenset({
+        "pwd", "whoami", "id", "uname", "echo", "true", "uname -m",
+        "uname -a", "echo OK", "hostname", "date",
+    })
+    _MAX_TRIVIAL_CONSECUTIVE: int = 2
+
+    def _is_trivial_or_repeated_action(
+        self,
+        action_type: ComputerActionType,
+        target: str,
+        payload: dict[str, Any],
+    ) -> str | None:
+        """Return a rejection reason if this action should be pre-emptively
+        blocked, else ``None``.
+
+        Called BEFORE ``execute_action`` so the step is never wasted.
+        """
+        if action_type == ComputerActionType.TERMINAL_EXEC:
+            cmd = (payload.get("command") or target or "").strip().lower()
+            # Strip trailing semicolons/whitespace for matching
+            cmd_clean = cmd.rstrip("; \t")
+            if cmd_clean in self._TRIVIAL_COMMANDS:
+                recent_trivial = 0
+                for h in self.history[-4:]:
+                    act = h.get("action", "")
+                    if "TERMINAL_EXEC" in act:
+                        res_lower = h.get("result", "").lower()
+                        if any(tc in res_lower or tc in act.lower() for tc in self._TRIVIAL_COMMANDS):
+                            recent_trivial += 1
+                if recent_trivial >= self._MAX_TRIVIAL_CONSECUTIVE:
+                    return (
+                        f"BLOCKED: '{cmd_clean}' is a trivial info command and has been "
+                        f"run {recent_trivial} times recently. Choose a goal-advancing "
+                        f"action instead (e.g. curl, nmap, file edit, app launch)."
+                    )
+
+        # Block exact repeat of last action
+        if self._recent_action_signatures:
+            last_sig = self._recent_action_signatures[-1]
+            new_sig = (
+                action_type.value,
+                target,
+                str(payload.get("command", "")),
+            )
+            if new_sig == last_sig:
+                return (
+                    f"BLOCKED: exact repeat of previous action "
+                    f"'{last_sig[0]} {last_sig[1]}'. Choose a DIFFERENT action."
+                )
+
+        return None
+
     async def check_and_resolve_intercept_deadlock(
         self,
         workspace_id: str,
@@ -2240,8 +2489,14 @@ class ComputerUseAgent:
                 active_sg.evidence = "Failed repeatedly during execution — pivoting strategy."
                 self.checklist.advance()
 
+        # Collect failed command patterns from recent history
+        failed_cmds = [
+            h.get("result", "")[:60] for h in self.history[-5:]
+            if any(marker in h.get("result", "").lower() for marker in ("failed", "blocked", "error", "exit 126", "exit 1"))
+        ]
+        avoid_clause = f" FAILED ATTEMPTS TO AVOID: {failed_cmds}." if failed_cmds else ""
         replan_note = (
-            f"REPLAN #{self._replan_count}: the last approach failed repeatedly. "
+            f"REPLAN #{self._replan_count}: the last approach failed repeatedly.{avoid_clause} "
             f"Goal remains: {goal}. Re-assess from the current observation and "
             f"choose a DIFFERENT strategy — do not repeat the failing action."
         )
@@ -2329,6 +2584,20 @@ class ComputerUseAgent:
                     active_sg = self.checklist.active_sub_goal()
                     if active_sg:
                         active_sg.attempt_count += 1
+                if self._consecutive_failures >= self._STUCK_THRESHOLD:
+                    self._inject_replan(goal)
+                continue
+
+            # 2.5 PRE-EXECUTION GUARD: block trivial/repeated actions before
+            # they waste a step. The rejection reason is injected into history
+            # so the LLM sees it and pivots.
+            rejection = self._is_trivial_or_repeated_action(action_type, target, payload)
+            if rejection:
+                self.history.append({
+                    "action": f"{action_type.value} {target} (BLOCKED)",
+                    "result": rejection,
+                })
+                self._consecutive_failures += 1
                 if self._consecutive_failures >= self._STUCK_THRESHOLD:
                     self._inject_replan(goal)
                 continue

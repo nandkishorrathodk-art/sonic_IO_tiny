@@ -79,7 +79,7 @@ class BeingCraft:
         if not os.path.exists(path):
             return
         try:
-            with open(path) as f:
+            with open(path, encoding="utf-8") as f:
                 data = json.load(f)
             for entry in data.get("notes", []):
                 n = CraftNote(**entry)
@@ -88,7 +88,7 @@ class BeingCraft:
             logger.warning("craft_index_load_failed", being_id=self.being_id, error=str(e))
 
     def _save_index(self) -> None:
-        with open(self._index_path(), "w") as f:
+        with open(self._index_path(), "w", encoding="utf-8") as f:
             json.dump({"notes": [n.__dict__ for n in self._index.values()]}, f, indent=2)
 
     # ------------------------------------------------------------------
@@ -101,7 +101,7 @@ class BeingCraft:
             kind=kind, created_at=ts, updated_at=ts,
         )
         # Write the note body (markdown, human-readable on disk).
-        with open(self._note_path(note_id), "w") as f:
+        with open(self._note_path(note_id), "w", encoding="utf-8") as f:
             f.write(f"# {title}\n\n_kind: {kind}_\n_created: {ts}_\n\n{body}\n")
         self._index[note_id] = note
         self._save_index()
@@ -118,7 +118,7 @@ class BeingCraft:
             return None
         # Re-read body from disk (authoritative).
         try:
-            with open(self._note_path(note_id)) as f:
+            with open(self._note_path(note_id), encoding="utf-8") as f:
                 n.body = f.read()
         except FileNotFoundError:
             pass
@@ -134,7 +134,7 @@ class BeingCraft:
         if title is not None:
             n.title = title
         n.updated_at = _now()
-        with open(self._note_path(note_id), "w") as f:
+        with open(self._note_path(note_id), "w", encoding="utf-8") as f:
             f.write(f"# {n.title}\n\n_kind: {n.kind}_\n_created: {n.created_at}_\n_updated: {n.updated_at}_\n\n{n.body}\n")
         self._save_index()
         return n

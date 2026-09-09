@@ -24,6 +24,7 @@ from enum import StrEnum
 from typing import Any
 
 from sonic.logger import get_logger
+from sonic.llm.prompts import react_system_prompt
 from sonic.llm.providers.custom import parse_tool_arguments
 from sonic.llm.schemas import (
     LLMRequest,
@@ -148,38 +149,12 @@ class ReActEngine:
 
     def build_react_prompt(self, task_description: str, context: str = "") -> str:
         """Build the ReAct-format prompt for the LLM."""
-        tools_section = self.tools.format_for_prompt()
-
-        return f"""You are an autonomous security-research agent of SONIC — an Autonomous Self-Evolving Penetration Architect (A-SEA). You solve tasks by iterating through Thought/Action/Observation cycles.
-
-{tools_section}
-
-## Response Format
-You MUST respond in this EXACT format for each step:
-
-Thought: <your reasoning about what to do next>
-Action: tool_name[argument]
-
-After receiving the observation, think again and decide the next action.
-When you have enough information to answer, respond with:
-
-Thought: <final reasoning>
-Final Answer: <your complete structured answer as JSON>
-
-## Rules
-1. Always think before acting.
-2. Use tools to gather REAL data. Never hallucinate tool outputs.
-3. Each Action must use exactly one tool with one argument.
-4. After gathering enough evidence, provide a Final Answer.
-5. Maximum {self.max_iterations} iterations allowed.
-
-{f"## Additional Context{chr(10)}{context}" if context else ""}
-
-## Task
-{task_description}
-
-Begin:
-"""
+        return react_system_prompt(
+            self.tools.format_for_prompt(),
+            self.max_iterations,
+            context,
+            task_description,
+        )
 
     async def execute(
         self,

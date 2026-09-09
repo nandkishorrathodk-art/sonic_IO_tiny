@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from sonic.agents.base import BaseAgent
+from sonic.llm.prompts import CODEFIX_SYSTEM
 from sonic.logger import get_logger
 
 logger = get_logger(__name__)
@@ -41,17 +42,7 @@ class CodeFixAgent(BaseAgent):
         super().__init__(name="CodeFixAgent", **kwargs)
 
     def get_system_prompt(self) -> str:
-        return """You are the CodeFix & Remediation Agent of SONIC-REDA.
-
-Your job is to generate production-grade, secure patches for identified vulnerabilities.
-
-Rules:
-1. MINIMAL PATCH: Make surgical fixes without altering unrelated business logic.
-2. DEFENSIVE CODING: Use parameterized queries, context-aware escaping, proper authorization checks.
-3. REGRESSION TESTS: Provide automated unit tests verifying the fix.
-4. PULL REQUEST READY: Provide PR title and markdown description.
-
-Return results as structured JSON."""
+        return CODEFIX_SYSTEM
 
     async def run(self, task: dict[str, Any]) -> dict[str, Any]:
         """Generate remediation package for a vulnerability."""

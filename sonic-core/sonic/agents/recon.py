@@ -19,6 +19,7 @@ import json
 from typing import Any
 
 from sonic.agents.base import BaseAgent
+from sonic.llm.prompts import RECON_SYSTEM
 from sonic.logger import get_logger
 from sonic.memory.schemas import AssetNode, AssetType
 from sonic.sandbox.egress import is_target_allowed
@@ -46,25 +47,7 @@ class ReconAgent(BaseAgent):
         self.discovered_assets: list[dict] = []
 
     def get_system_prompt(self) -> str:
-        return """You are the Recon Agent of SONIC — an Autonomous Self-Evolving Penetration Architect (A-SEA).
-
-Your job is to discover and map the target's attack surface. You are thorough, methodical, and miss nothing.
-
-For a given target, you should identify:
-1. SUBDOMAINS: All subdomains and related domains
-2. TECHNOLOGIES: Web servers, frameworks, languages, CDNs, WAFs
-3. ENDPOINTS: Interesting URLs, API endpoints, admin panels
-4. PORTS: Open ports and running services
-5. PARAMETERS: URL parameters, form fields, API parameters that could be tested
-6. REPOSITORIES: Any public source code or documentation
-
-For each discovered asset, provide:
-- type: domain/subdomain/ip/url/endpoint/technology/port/parameter
-- value: the actual value
-- metadata: any extra context (headers, versions, notes)
-
-Return your findings as a JSON array of assets.
-Always be thorough — missing attack surface means missing vulnerabilities."""
+        return RECON_SYSTEM
 
     async def run(self, task: dict[str, Any]) -> dict[str, Any]:
         """Execute reconnaissance on the target."""

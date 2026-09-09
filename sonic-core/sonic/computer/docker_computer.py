@@ -418,8 +418,10 @@ class DockerComputerProvider(ComputerProvider):
 
         elif atype == GUIActionType.OPEN_APP and action.app_name:
             app = action.app_name.strip().lower()
-            if "chrome" in app or "browser" in app:
+            if "chrome" in app or "browser" in app or "chromium" in app:
                 spawn = "DISPLAY=:99 nohup /usr/local/bin/chrome >/dev/null 2>&1 &"
+            elif "burp" in app:
+                spawn = "DISPLAY=:99 nohup /usr/local/bin/burpsuite >/dev/null 2>&1 &"
             elif "term" in app:
                 spawn = "DISPLAY=:99 nohup xfce4-terminal >/dev/null 2>&1 &"
             elif "thunar" in app or "file" in app:
@@ -518,12 +520,17 @@ class DockerComputerProvider(ComputerProvider):
         command: str | list[str],
         timeout: int = 60,
         actor: str = "operator",
+        cwd: str | None = None,
+        env: dict[str, str] | None = None,
+        **kwargs: Any,
     ) -> ExecResult:
         """Executes a command inside the container (ComputeProvider interface for SecurityTool)."""
         if isinstance(command, list):
             cmd_str = " ".join(shlex.quote(c) for c in command)
         else:
             cmd_str = str(command)
+        if cwd:
+            cmd_str = f"cd {shlex.quote(cwd)} && {cmd_str}"
         return await self.terminal(workspace_id, cmd_str, timeout=timeout, actor=actor)
 
     # -------------------------------------------------------------

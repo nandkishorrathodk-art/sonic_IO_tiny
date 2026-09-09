@@ -168,6 +168,17 @@ def _load_workstation_state() -> None:
                                 desktop["display"] = ":99"
                             if not desktop.get("resolution"):
                                 desktop["resolution"] = {"width": 1280, "height": 800}
+                            # When running locally with Docker workstation (not Daytona Cloud),
+                            # migrate any stale cloud UUIDs so local Docker execution works immediately.
+                            if os.environ.get("SONIC_USE_DAYTONA_CLOUD") != "1":
+                                docker_ws = os.environ.get("SONIC_DOCKER_WORKSTATION_CONTAINER", "sonic-desktop-workstation").strip()
+                                desktop["workspace_id"] = docker_ws
+                                desktop["sandbox_id"] = docker_ws
+                                desktop["os_name"] = "Linux Cyber Workstation (Docker XFCE4)"
+                        # Reset lingering RUNNING status on restart since no background task survived
+                        if session.get("status") == "RUNNING":
+                            session["status"] = "IDLE"
+                            session["current_action"] = "Ready when you are."
     except Exception as exc:
         logger.warning("workstation_state_restore_failed", error=str(exc))
 
@@ -320,6 +331,17 @@ def _get_or_create_session(tenant_id: str, session_id: str = "default") -> dict[
 
 def _session_workspace_id(user: User, session_id: str) -> str:
     """Return only a workspace explicitly owned by this tenant/session."""
+    # When not in Daytona cloud mode, always bind to the local Docker workstation container
+    if os.environ.get("SONIC_USE_DAYTONA_CLOUD") != "1":
+        docker_ws = os.environ.get("SONIC_DOCKER_WORKSTATION_CONTAINER", "sonic-desktop-workstation").strip()
+        state = _tenant_workstations.get(user.email, {}).get(session_id)
+        if state:
+            desk = state.setdefault("desktop", {})
+            desk["workspace_id"] = docker_ws
+            desk["sandbox_id"] = docker_ws
+            desk["os_name"] = "Linux Cyber Workstation (Docker XFCE4)"
+        return docker_ws
+
     state = _tenant_workstations.get(user.email, {}).get(session_id)
     if state:
         workspace_id = str(state.get("desktop", {}).get("workspace_id", ""))
@@ -618,7 +640,7 @@ async def get_workstation_state(
             desktop_telemetry = {
                 "status": desktop_state,
                 "active_window": cstate.active_window or "",
-                "running_apps": [p.name for p in (cstate.running_processes or [])],
+                "running_apps": [p.name if hasattr(p, "name") else str(p) for p in (cstate.running_processes or [])],
                 "vnc_url": "",
                 "novnc_url": "",
             }
@@ -1038,7 +1060,7 @@ async def get_desktop_status(
             cstate = await comp.status(target_id)
             desktop_state = cstate.status.value if hasattr(cstate.status, "value") else str(cstate.status)
             desktop["status"] = desktop_state
-            running_processes = [p.name for p in (cstate.running_processes or [])]
+            running_processes = [p.name if hasattr(p, "name") else str(p) for p in (cstate.running_processes or [])]
             desktop["running_processes"] = running_processes
             desktop["active_window"] = cstate.active_window or ""
             if desktop_state == ComputerWorkspaceStatus.RUNNING.value:
@@ -1576,55 +1598,25 @@ def _extract_target_url_or_domain(prompt: str, state: dict[str, Any] | None = No
 
 
 def _is_action_prompt(prompt: str) -> bool:
+    """Return True for any substantive prompt that should go through the real
+    ComputerUseAgent action loop.
+
+    Only bare one-word greetings are excluded — everything else is treated as
+    an actionable intent so the agent can reason about it using the real
+    sandbox.  Previously most prompts fell through to the LLM chat path which
+    hallucinated fake terminal output instead of executing real commands.
+    """
     lower = prompt.strip().lower()
     if not lower:
         return False
 
-    # Filter out pure conversational greetings / smalltalk
-    _GREETINGS = {"hi", "hello", "hey", "test", "ping", "who are you", "what are you", "sup", "yo"}
+    # Filter out ONLY bare greetings with no further instruction
+    _GREETINGS = {"hi", "hello", "hey", "ping", "sup", "yo", "ok", "okay", "hm", "hmm"}
     if lower in _GREETINGS:
         return False
 
-    # 1. Window / Process closing commands
-    if any(k in lower for k in ("close terminal", "kill terminal", "exit terminal", "close your terminal", "close window", "band karo", "close app", "close browser")):
-        return True
-
-    # 1b. Information / news requests (Hindi + English) are actionable intents
-    if any(k in lower for k in ("news", "khabar", "kabar", "samachar", "taaza", "taja", "headlines", "breaking", "batao", "bata", "dikho", "dekho", "dikhao", "show me")):
-        return True
-
-    # 2. Explicit terminal command syntax or direct shell command invocation
-    if _extract_terminal_command(prompt):
-        return True
-
-    # 3. Package install intent
-    if _extract_install_package(prompt) or "install" in lower:
-        return True
-
-    # 4. GUI app opening / launching / searching on desktop
-    app, _ = _detect_requested_app(prompt)
-    if app:
-        return True
-
-    # 5. Targeted recon, bug bounty, bug hunting or live security scanning
-    has_target = bool(re.search(r"https?://[^\s]+|\b[a-zA-Z0-9-]+\.(?:io|com|org|net|app|co|dev|xyz|ai|me)\b", prompt, re.IGNORECASE))
-    scan_verbs = ("recon", "scan", "audit", "pentest", "nmap", "curl", "dig", "traceroute", "ping", "whois", "test", "bug", "bounty", "vulnerability", "rce", "xss", "sqli", "cors", "graphql")
-    if has_target and any(w in lower for w in scan_verbs):
-        return True
-
-    # 6. Active recon / bug hunting phrases without explicit target url
-    if any(p in lower for p in ("active recon", "target recon", "network scan", "port scan", "bug hunt", "bug bounty", "find bug", "look for bug", "find bugs", "security audit", "start pentest")):
-        return True
-
-    # 7. GUI direct interaction verbs (mouse, keyboard, app navigation, hindi action verbs)
-    if any(k in lower for k in (
-        "click", "type", "press", "scroll", "drag", "mouse", "cursor", "navigate",
-        "download", "search", "dhundo", "dhoondo", "kholo", "chalao", "dabao", "likho",
-        "check whoami", "check ip", "run", "open", "launch", "close"
-    )):
-        return True
-
-    return False
+    # Everything else is actionable — let ComputerUseAgent decide what to do
+    return True
 
 
 _NON_INSTALL_WORDS = {
@@ -1930,10 +1922,14 @@ async def _run_autonomous_desktop_loop(
 
 
 def _is_research_prompt(prompt: str) -> bool:
-    """Detect if prompt requests autonomous research, security assessment, or scanning."""
-    p_lower = prompt.strip().lower()
-    keywords = ["scan", "port", "research", "recon", "audit", "pentest", "test", "vulnerability"]
-    return any(kw in p_lower for kw in keywords)
+    """Detect if prompt requests autonomous research, security assessment, or scanning.
+
+    DISABLED (Phase 7.9): The parallel research swarm produces hallucinated
+    endpoints and hypotheses — zero real HTTP requests or scans.  All prompts
+    now flow through the real ComputerUseAgent action loop which executes
+    commands in the sandbox.  Re-enable once specialists make real requests.
+    """
+    return False
 
 
 async def _run_parallel_research_swarm(
@@ -2213,6 +2209,7 @@ async def _run_prompt_reasoning(tenant_id: str, session_id: str, prompt: str) ->
             await _run_parallel_research_swarm(state, tenant_id, session_id, prompt)
             return
 
+        from sonic.llm.prompts import WORKSTATION_CHAT_SYSTEM
         from sonic.llm.providers.custom import CustomLLMProvider
         from sonic.llm.schemas import LLMRequest, Message, MessageRole
 
@@ -2266,13 +2263,14 @@ async def _run_prompt_reasoning(tenant_id: str, session_id: str, prompt: str) ->
                         )
                         from sonic.llm.providers.custom import CustomLLMProvider
 
-                        nvidia_key = os.environ.get("NVIDIA_API_KEY", "")
-                        nvidia_url = os.environ.get("NVIDIA_BASE_URL", "https://integrate.api.nvidia.com/v1")
-                        model_to_use = "meta/llama-3.2-11b-vision-instruct"
+                        agent_api_key = os.environ.get("SONIC_AGENT_API_KEY") or os.environ.get("NVIDIA_API_KEY", "")
+                        agent_base_url = os.environ.get("SONIC_AGENT_BASE_URL") or os.environ.get("NVIDIA_BASE_URL", "https://integrate.api.nvidia.com/v1")
+                        agent_provider_name = os.environ.get("SONIC_AGENT_PROVIDER", "nvidia")
+                        model_to_use = os.environ.get("SONIC_AGENT_MODEL", "meta/llama-3.2-90b-vision-instruct")
                         llm = CustomLLMProvider(
-                            name="nvidia",
-                            base_url=nvidia_url,
-                            api_key=nvidia_key,
+                            name=agent_provider_name,
+                            base_url=agent_base_url,
+                            api_key=agent_api_key,
                             default_model=model_to_use,
                         )
 
@@ -2281,7 +2279,8 @@ async def _run_prompt_reasoning(tenant_id: str, session_id: str, prompt: str) ->
                         from sonic.tools.registry import build_security_tools
                         tools_dict = build_security_tools(computer)
                         from sonic.safety.sealed import seal_default
-                        safety_policy = seal_default(workspace_root="/home/sonic/workspace")
+                        ws_root = "/root" if os.environ.get("SONIC_USE_DAYTONA_CLOUD") != "1" else "/home/daytona"
+                        safety_policy = seal_default(workspace_root=ws_root)
 
                         agent = ComputerUseAgent(
                             computer_provider=computer,
@@ -2293,6 +2292,7 @@ async def _run_prompt_reasoning(tenant_id: str, session_id: str, prompt: str) ->
                             security_tools=tools_dict,
                             safety=safety_policy,
                             self_host=True,
+                            enable_llm_decomposition=True,
                         )
 
                         _append_worklog(state, "action", "Agent Visual Computer Use",
@@ -2411,9 +2411,24 @@ async def _run_prompt_reasoning(tenant_id: str, session_id: str, prompt: str) ->
                                     logger.debug("workstation_graph_memory_update_failed", error=str(mem_err))
 
                         state["interrupted"] = False
+
+                        # Enhance goal with target context from session history if not directly in prompt
+                        effective_goal = prompt
+                        urls_in_history = []
+                        for entry in state.get("worklog", []):
+                            txt = str(entry.get("content") or "")
+                            for u in re.findall(r'https?://[a-zA-Z0-9.\-_~:/?#\[\]@!$&\'()*+,;=%]+', txt):
+                                if not any(ign in u for ign in ("localhost", "127.0.0.1", "github.com", "nmap.org")):
+                                    urls_in_history.append(u.rstrip(").,;\"'"))
+                        if urls_in_history:
+                            seen = set()
+                            dedup_urls = [u for u in urls_in_history if not (u in seen or seen.add(u))]
+                            if not any(u in prompt for u in dedup_urls):
+                                effective_goal += f"\n[Contextual Target URL in scope: {dedup_urls[0]}]"
+
                         traces = await agent.run_mission(
                             workspace_id=desktop_id,
-                            goal=prompt,
+                            goal=effective_goal,
                             steps=agent.max_actions,
                             step_callback=_on_step,
                             interrupt_check=lambda: bool(state.get("interrupted")),
@@ -2504,34 +2519,7 @@ async def _run_prompt_reasoning(tenant_id: str, session_id: str, prompt: str) ->
                 api_key=nvidia_key,
                 default_model=model_to_use,
             )
-            system_prompt = (
-                "You are SONIC — an Autonomous Self-Evolving Penetration Architect (A-SEA): "
-                "a self-developing offensive-security being that operates its own sandboxed "
-                "computer, performs authorized security assessments, discovers and tests new "
-                "attack hypotheses, and improves its own tools and methods over time. "
-                "You have live, direct execution access to a dedicated Daytona Linux "
-                "workstation and sandbox terminal, a Toolsmith that authors NEW tools for "
-                "gaps no scanner covers, and a Method Lab that synthesizes NOVEL attack "
-                "techniques confirmed only on real in-sandbox reproduction.\n\n"
-                "CRITICAL INSTRUCTIONS:\n"
-                "1. REAL RESULTS ONLY: Ground your analysis strictly and exclusively in the "
-                "real terminal outputs and sandbox environment provided in context. NEVER "
-                "fabricate scan outputs, imaginary IP addresses, or fake server banners.\n"
-                "2. TARGET RECON & VULNERABILITY ANALYSIS: Report the real findings from the "
-                "headers, endpoints, and architecture provided in context. For web "
-                "applications fronted by a CDN, note that port scans against edge IPs show "
-                "the CDN proxies, and direct server RCE is not present at the CDN edge. Focus "
-                "on realistic in-scope vectors: API endpoints, embedded wallet integrations, "
-                "GraphQL mutations, CORS misconfigurations, smart contract integrations, and "
-                "SDKs. When no existing tool fits a gap, propose authoring a new tool or "
-                "synthesizing a novel technique rather than forcing a known scanner.\n"
-                "3. AUTONOMOUS ACTIONS: You execute actions in the Daytona sandbox on the "
-                "operator's behalf, within the sealed safety envelope. Summarize what has "
-                "been executed and provide concrete technical deductions.\n"
-                "4. HONESTY: Never claim a tool works or a technique is confirmed without "
-                "real reproduction evidence. A blocked or empty result is reported as such.\n"
-                "5. LANGUAGE: Respond in clear, professional English or the user's preferred language."
-            )
+            system_prompt = WORKSTATION_CHAT_SYSTEM
             messages = [
                 Message(role=MessageRole.SYSTEM, content=system_prompt),
                 Message(role=MessageRole.USER, content=f"Operator Objective:\n{prompt}\n\nWorkstation Context & Real Terminal Output:\n{desktop_context}"),

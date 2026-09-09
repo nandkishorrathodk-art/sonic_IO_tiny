@@ -443,16 +443,12 @@ async def query_multimodal_grounding(
     """Ground a visual UI query using the configured multimodal vision model (e.g. moonshotai/kimi-k3)."""
     if not llm_router or not screenshot_b64:
         return None
+    from sonic.llm.prompts import grounding_user_prompt
     from sonic.llm.schemas import ImageContent, LLMRequest, Message, MessageRole
 
     raw_b64 = screenshot_b64.split(",", 1)[-1] if "," in screenshot_b64 else screenshot_b64
     images = [ImageContent(base64=raw_b64, media_type="image/png")]
-    prompt = (
-        f"Analyze this desktop screenshot ({width}x{height} resolution). "
-        f"Locate the UI element: '{query}'. "
-        f"Return ONLY the exact pixel coordinates or bounding box in format: "
-        f"<|box_start|>(x1, y1, x2, y2)<|box_end|> or [x, y]. Do not output extra text."
-    )
+    prompt = grounding_user_prompt(query, width, height)
     req = LLMRequest(
         messages=[
             Message(role=MessageRole.USER, content=prompt, images=images)

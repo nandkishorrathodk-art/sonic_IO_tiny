@@ -39,6 +39,8 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from sonic.llm.prompts import asea_identity
+
 from sonic.agents.cognitive_state import (
     CognitiveState,
     Unknown,
@@ -347,7 +349,7 @@ class ReplanEngine:
             for u in state.get_unresolved_unknowns()[:10]
         ]
 
-        return f"""You are the Replan Engine of SONIC — an Autonomous Self-Evolving Penetration Architect (A-SEA).
+        return f"""{asea_identity("Replan Engine")}
 
 A {trigger.value} event has occurred. Evaluate whether the current plan should be modified.
 

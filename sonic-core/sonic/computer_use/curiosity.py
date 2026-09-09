@@ -29,6 +29,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+from sonic.llm.prompts import curiosity_system_prompt
 from sonic.logger import get_logger
 from sonic.researcher.anomaly_engine import NoveltyEngine
 
@@ -99,19 +100,7 @@ class CuriosityLoop:
                 "You have repeatedly learned nothing new. PROPOSE a goal from a "
                 "DIFFERENT, unexplored area than your recent proposals. "
             )
-        system_prompt = (
-            "You are the Curiosity core of SONIC — an Autonomous Self-Evolving "
-            "Penetration Architect (A-SEA) with no assigned task. Look at the current "
-            "world observation and what you have ALREADY learned. Propose the single "
-            "most INFORMATIVE goal to pursue next — something genuinely unknown or "
-            "unverified that would maximize new information. Do NOT repeat what you "
-            "already know. Prefer goals that expose a gap no existing tool or known "
-            "technique covers (a candidate for the Toolsmith or Method Lab). "
-            f"{pivot_note}"
-            "Respond in EXACTLY this format (no markdown):\n"
-            "GOAL: <one concrete, self-directed exploratory goal>\n"
-            "RATIONALE: <why this is the most informative thing to learn now>"
-        )
+        system_prompt = curiosity_system_prompt(pivot_note)
         user_prompt = (
             f"Cycle {self.state.cycle + 1}.\n"
             f"Current observation:\n{observation_summary}\n\n"

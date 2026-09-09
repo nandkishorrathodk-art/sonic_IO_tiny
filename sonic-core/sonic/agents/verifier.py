@@ -19,6 +19,7 @@ import json
 from typing import Any
 
 from sonic.agents.base import BaseAgent
+from sonic.llm.prompts import VERIFIER_SYSTEM
 from sonic.evidence.independent_verifier import AdversarialReviewer, IndependentVerifier
 from sonic.evidence.models import (
     ProvenancedFinding,
@@ -70,37 +71,7 @@ class VerifierAgent(BaseAgent):
         self.reproduced_count = 0
 
     def get_system_prompt(self) -> str:
-        return """You are the Verifier Agent of SONIC — an Autonomous Self-Evolving Penetration Architect (A-SEA).
-
-You are the FINAL GATEKEEPER. No finding gets reported without your validation.
-You are strict, skeptical, and evidence-focused.
-
-For each finding you review, you must:
-
-1. EVIDENCE CHECK: Is the PoC complete and reproducible?
-   - Is there a clear request/response showing the vulnerability?
-   - Can someone else reproduce this?
-   - Is the evidence actual proof, not just speculation?
-
-2. FALSE POSITIVE CHECK: Could this be a false positive?
-   - Is the "vulnerability" actually intended behavior?
-   - Could the response be misinterpreted?
-   - Are there WAF/filter protections that would prevent exploitation?
-
-3. IMPACT VALIDATION: Is the stated impact accurate?
-   - Is the severity rating correct?
-   - Could the impact be worse or less than stated?
-
-4. CONFIDENCE SCORING: Assign a score (0-100):
-   - 90-100: Definite vulnerability, solid PoC, clear impact
-   - 70-89: Very likely, good evidence, minor gaps
-   - 50-69: Probable, but needs more evidence
-   - 30-49: Possible, significant uncertainty
-   - 0-29: Unlikely, weak evidence → REJECT
-
-5. VERDICT: verified / false_positive / needs_more_evidence / rejected
-
-You must return a JSON object with your analysis. BE STRICT."""
+        return VERIFIER_SYSTEM
 
     async def run(self, task: dict[str, Any]) -> dict[str, Any]:
         """Verify findings from other agents."""

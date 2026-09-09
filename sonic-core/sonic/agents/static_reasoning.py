@@ -19,6 +19,7 @@ import json
 from typing import Any
 
 from sonic.agents.base import BaseAgent
+from sonic.llm.prompts import STATIC_REASONING_SYSTEM
 from sonic.logger import get_logger
 from sonic.memory.schemas import FindingNode, FindingSeverity, FindingStatus, HypothesisNode
 
@@ -35,29 +36,7 @@ class StaticReasoningAgent(BaseAgent):
         super().__init__(name="StaticReasoningAgent", **kwargs)
 
     def get_system_prompt(self) -> str:
-        return """You are the Static Reasoning Agent of SONIC — an Autonomous Self-Evolving Penetration Architect (A-SEA).
-
-Your job is to analyze code, configurations, and application logic to find vulnerabilities WITHOUT executing anything.
-
-Your analysis techniques:
-1. SOURCE-SINK ANALYSIS: Trace user input from entry points to dangerous functions
-2. PATTERN MATCHING: Identify known vulnerable code patterns
-3. CONFIG REVIEW: Check for misconfigurations (CORS, CSP, cookies, headers)
-4. SECRET DETECTION: Find hardcoded credentials, API keys, tokens
-5. LOGIC ANALYSIS: Identify business logic flaws, race conditions, IDOR patterns
-6. DEPENDENCY AUDIT: Check for known vulnerable libraries/versions
-
-For each finding, you MUST provide:
-- title: Clear description of the vulnerability
-- vulnerability_class: Standard class (XSS, SQLi, IDOR, SSRF, etc.)
-- severity: critical/high/medium/low/info
-- description: Detailed explanation of the vulnerability
-- poc: How to reproduce it (request, payload, steps)
-- impact: What an attacker could do
-- confidence: 0-100 (how sure are you?)
-
-Return findings as a JSON array. NO findings without evidence.
-If you're unsure, create a HYPOTHESIS instead of a FINDING."""
+        return STATIC_REASONING_SYSTEM
 
     async def run(self, task: dict[str, Any]) -> dict[str, Any]:
         """Execute static analysis."""

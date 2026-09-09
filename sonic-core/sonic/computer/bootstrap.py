@@ -133,7 +133,7 @@ class WorkstationBootstrapEngine:
         # Ensure python symlink exists
         await self._exec_cmd("ln -sf /usr/bin/python3 /usr/local/bin/python 2>/dev/null || true", workspace_id=workspace_id)
         # Ensure NSS database directory exists
-        await self._exec_cmd("mkdir -p /root/.pki/nssdb && certutil -d sql:/root/.pki/nssdb -N --empty-password 2>/dev/null || true", workspace_id=workspace_id)
+        await self._exec_cmd("mkdir -p /root/.pki/nssdb && ( [ -f /root/.pki/nssdb/cert9.db ] || timeout 5 certutil -d sql:/root/.pki/nssdb -N --empty-password < /dev/null 2>/dev/null || true )", workspace_id=workspace_id)
 
         return results
 
@@ -219,7 +219,7 @@ class WorkstationBootstrapEngine:
         # 5. Inject into Chromium NSS DB
         nss_cmd = (
             "mkdir -p /root/.pki/nssdb && "
-            "(certutil -d sql:/root/.pki/nssdb -N --empty-password 2>/dev/null || true) && "
+            "([ -f /root/.pki/nssdb/cert9.db ] || timeout 5 certutil -d sql:/root/.pki/nssdb -N --empty-password < /dev/null 2>/dev/null || true) && "
             "certutil -d sql:/root/.pki/nssdb -A -t \"C,,\" -n \"PortSwigger CA\" -i /tmp/burp-ca.crt 2>/dev/null"
         )
         ncode, _, _ = await self._exec_cmd(nss_cmd, workspace_id=workspace_id, timeout=10)

@@ -44,6 +44,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
+from sonic.llm.prompts import method_lab_system_prompt
 from sonic.logger import get_logger
 
 logger = get_logger(__name__)
@@ -144,28 +145,7 @@ class MethodLab:
         from sonic.llm.schemas import LLMRequest, Message, MessageRole
 
         known_str = "\n".join(f"- {t}" for t in known_techniques[:8]) or "(no known techniques yet)"
-        system = (
-            "You are the Method-Researcher of SONIC — an Autonomous Self-Evolving "
-            "Penetration Architect (A-SEA). You are a self-developing offensive-"
-            "security being that synthesizes genuinely NOVEL attack METHODS (not "
-            "just new tools). Given an observation, a FAILED attempt, and the "
-            "techniques you ALREADY know, synthesize ONE genuinely novel offensive "
-            "technique that is NOT in the known list — a concrete attack method "
-            "(auth-bypass logic, parser-confusion chain, fuzzer mutation strategy, "
-            "header-injection primitive, race-condition probe, etc.). Implement it "
-            "as a small self-contained Python 3 probe that takes a target as "
-            "argv[1] and prints one JSON finding per line to stdout when the "
-            "technique works. "
-            f"KNOWN TECHNIQUES (do NOT re-invent these):\n{known_str}\n"
-            "Output EXACTLY:\n"
-            "NAME: <lowercase snake_case identifier>\n"
-            "FAMILY: <one of: auth-bypass|parser-confusion|fuzz-mutation|"
-            "header-injection|race-condition|info-leak|logic-flaw|other>\n"
-            "HYPOTHESIS: <one line: the novel idea and why it differs from known>\n"
-            "TARGET_HINT: <what the probe should be aimed at, e.g. an endpoint or host>\n"
-            "PROBE_SOURCE:\n<full python source, runnable as `python <name>.py <target>`>\n"
-            "If no genuinely novel technique is warranted, output exactly: DECLINE"
-        )
+        system = method_lab_system_prompt(known_str)
         user = (
             f"Observation:\n{observation}\n\n"
             f"Failed attempt (what did NOT work):\n{failure or '(none)'}\n"

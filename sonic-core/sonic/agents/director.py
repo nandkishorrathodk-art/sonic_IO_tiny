@@ -54,6 +54,7 @@ from sonic.agents.task_graph import (
     TaskPriority,
     TaskStatus,
 )
+from sonic.llm.prompts import DIRECTOR_SYSTEM
 from sonic.llm.router import ModelRouter
 from sonic.llm.schemas import LLMRequest, Message, MessageRole
 from sonic.logger import get_logger
@@ -1078,7 +1079,7 @@ Create 3-6 initial tasks. Start with recon."""
             messages=[
                 Message(
                     role=MessageRole.SYSTEM,
-                    content="You are the Director of SONIC — an Autonomous Self-Evolving Penetration Architect (A-SEA) — an AI security-assessment coordinator. Respond with valid JSON only.",
+                    content=DIRECTOR_SYSTEM,
                 ),
                 Message(role=MessageRole.USER, content=prompt),
             ],

@@ -33,6 +33,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
+from sonic.llm.prompts import toolsmith_system_prompt
 from sonic.logger import get_logger
 
 logger = get_logger(__name__)
@@ -131,21 +132,7 @@ class ToolsmithLoop:
         from sonic.llm.schemas import LLMRequest, Message, MessageRole
 
         existing_str = ", ".join(sorted(existing)) or "(none)"
-        system = (
-            "You are the Toolsmith of SONIC — an Autonomous Self-Evolving "
-            "Penetration Architect (A-SEA). You are a self-developing offensive-"
-            "security being that builds its own tools for gaps no existing "
-            "scanner covers. Given an observation and prior failed attempts, "
-            "propose ONE small, self-contained Python 3 tool (a scanner / "
-            "fuzzer / parser / probe) that fills a gap NO existing tool covers. "
-            f"Existing tools (do NOT duplicate any of these): {existing_str}. "
-            "Output EXACTLY:\n"
-            "NAME: <lowercase snake_case identifier, not in existing>\n"
-            "RATIONALE: <one line: the gap this fills>\n"
-            "SOURCE:\n<full python source, runnable as `python <name>.py`, "
-            "prints findings to stdout>\n"
-            "If no novel tool is warranted, output exactly: DECLINE"
-        )
+        system = toolsmith_system_prompt(existing_str)
         user = (
             f"Observation:\n{observation}\n\n"
             f"Failed attempts:\n{(chr(10).join(failed_attempts) or '(none)')}\n"

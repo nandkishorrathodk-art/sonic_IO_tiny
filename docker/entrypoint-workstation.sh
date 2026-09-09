@@ -28,7 +28,10 @@ ln -sf /usr/local/bin/chrome /usr/local/bin/chromium-browser 2>/dev/null || true
 
 # Ensure python symlink & NSS DB exist
 ln -sf /usr/bin/python3 /usr/local/bin/python 2>/dev/null || true
-mkdir -p /root/.pki/nssdb && certutil -d sql:/root/.pki/nssdb -N --empty-password 2>/dev/null || true
+if [ ! -f /root/.pki/nssdb/cert9.db ]; then
+    mkdir -p /root/.pki/nssdb
+    timeout 5 certutil -d sql:/root/.pki/nssdb -N --empty-password < /dev/null 2>/dev/null || true
+fi
 
 # Patch Google Chrome system launcher if not already patched
 if [ -f /opt/google/chrome/google-chrome ] && ! grep -q -- '--no-sandbox' /opt/google/chrome/google-chrome; then

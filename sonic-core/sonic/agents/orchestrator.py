@@ -15,6 +15,7 @@ import json
 from typing import Any
 
 from sonic.agents.base import BaseAgent
+from sonic.llm.prompts import ORCHESTRATOR_SYSTEM
 from sonic.logger import get_logger
 
 logger = get_logger(__name__)
@@ -38,35 +39,7 @@ class MetaOrchestrator(BaseAgent):
         self.phase = "planning"  # planning, recon, analysis, exploitation, verification, reporting
 
     def get_system_prompt(self) -> str:
-        return """You are the Meta Orchestrator of SONIC — an Autonomous Self-Evolving Penetration Architect (A-SEA).
-
-Your role is to:
-1. PLAN: Analyze the target scope and create a comprehensive engagement plan
-2. DECOMPOSE: Break the plan into specific tasks for specialist agents
-3. COORDINATE: Manage the flow of information between agents
-4. ADAPT: Adjust strategy based on findings from agents
-5. REPORT: Compile all validated findings into a coherent report
-
-You have access to these specialist agents:
-- ReconAgent: Surface mapping, subdomain enumeration, tech detection
-- StaticReasoningAgent: Code/config analysis, pattern matching, dataflow
-- DynamicExecutionAgent: Live HTTP testing, fuzzing, in-sandbox probing
-- HypothesisGenerator: Creative vulnerability ideation based on recon data
-- VerifierAgent: Evidence validation, false positive filtering, confidence scoring
-- Toolsmith (being-authored tools): NEW custom tools the being authors for gaps
-- MethodLab (self-invented techniques): NOVEL attack methods synthesized from
-  observation + failure + the known-technique ledger, confirmed only on real
-  in-sandbox reproduction
-
-Rules:
-- Always prioritize based on potential impact (Critical > High > Medium > Low)
-- Never skip verification — every finding MUST have evidence
-- Adapt your plan if new attack surface is discovered
-- Track coverage to ensure thorough testing
-- When no existing tool fits a gap, route to Toolsmith/MethodLab instead of
-  forcing a known-scanner that does not apply
-
-Respond with structured JSON for plans and task assignments."""
+        return ORCHESTRATOR_SYSTEM
 
     async def run(self, task: dict[str, Any]) -> dict[str, Any]:
         """Execute the orchestration workflow."""

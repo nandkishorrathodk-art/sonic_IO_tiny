@@ -410,19 +410,34 @@ class ComputerUseAgent:
         files = await self.computer.list_files(workspace_id, ".")
         git_st = await self.computer.git_action(workspace_id, "status")
 
-        # Read the live terminal state so reasoning reflects reality. A no-op
-        # echo keeps this cheap; providers return their real shell output.
-        term_res = None
+        # Read live terminal state.
+        # Prefer the agent's own recorded output from the last action so the
+        # agent sees the real stdout/stderr of what it just executed.
+        # On the initial step (before any action runs), fall back to provider's
+        # last_exec or terminal probe.
+        if not hasattr(self, "_last_action_output"):
+            self._last_action_output: dict[str, Any] = {}
         try:
-            # Prefer the provider's real last-command output when available so
-            # the agent actually sees the result of its own previous action, not
-            # a dummy marker. Providers without _last_exec fall back to the probe.
-            last_exec = getattr(self.computer, "_last_exec", None)
+            last_out = self._last_action_output
             terminal_output = ""
-            if last_exec is not None and last_exec[2].strip():
-                last_cmd, _, last_stdout, _ = last_exec
-                if "echo __sonic_obs_ready__" not in str(last_cmd):
-                    terminal_output = _safe_str((last_stdout or "").strip())
+            if last_out and last_out.get("stdout", "").strip():
+                cmd_display = last_out.get("command", "")[:80]
+                stdout_text = last_out["stdout"].strip()
+                stderr_text = (last_out.get("stderr") or "").strip()
+                exit_code = last_out.get("exit_code", 0)
+                parts = [f"$ {cmd_display}" if cmd_display else ""]
+                parts.append(stdout_text[:2000])
+                if stderr_text:
+                    parts.append(f"STDERR: {stderr_text[:500]}")
+                if exit_code != 0:
+                    parts.append(f"(exit code {exit_code})")
+                terminal_output = _safe_str("\n".join(p for p in parts if p))
+            if not terminal_output:
+                last_exec = getattr(self.computer, "_last_exec", None)
+                if last_exec is not None and last_exec[2].strip():
+                    last_cmd, _, last_stdout, _ = last_exec
+                    if "echo __sonic_obs_ready__" not in str(last_cmd):
+                        terminal_output = _safe_str((last_stdout or "").strip())
             if not terminal_output:
                 term_res = await self.computer.terminal(workspace_id, "echo __sonic_obs_ready__")
                 raw_stdout = getattr(term_res, "stdout", "") or ""
@@ -717,64 +732,50 @@ class ComputerUseAgent:
         )
 
         # Cognitive Reasoning Fields (truthful and epistemic)
-        known_facts: list[str] = []
+        # === RAW FACTS (not pre-filled conclusions) ===
+        # Present structured observations and let the LLM synthesize its own
+        # epistemic state — no pre-packaged "what I know" templates.
+        raw_facts: list[str] = []
         if active_url:
-            known_facts.append(f"Browser active URL: {active_url}")
+            raw_facts.append(f"Browser URL: {active_url}")
         if files_str != "UNKNOWN":
-            known_facts.append(f"Workspace files: {files_str}")
+            raw_facts.append(f"Workspace files: {files_str}")
         if active_app != "UNKNOWN":
-            known_facts.append(f"Active application: {active_app}")
+            raw_facts.append(f"Active app: {active_app}")
         if git_branch_str != "UNKNOWN":
-            known_facts.append(f"Git branch: {git_branch_str} (clean={observation.git_clean})")
+            raw_facts.append(f"Git: {git_branch_str} (clean={observation.git_clean})")
         if terminal_text != "UNKNOWN":
-            known_facts.append(f"Terminal output: {terminal_text[:120]}")
-        what_do_i_know = "; ".join(known_facts) if known_facts else "UNKNOWN"
+            raw_facts.append(f"Last terminal output: {terminal_text[:500]}")
+        facts_str = "\n  ".join(raw_facts) if raw_facts else "(no observations yet)"
 
-        not_known_facts: list[str] = []
-        if not self.traces:
-            not_known_facts.append("Target service response, vulnerability profile, and runtime state")
-        else:
-            not_known_facts.append("Unverified edge conditions and outcomes of unexecuted alternate strategies")
-        if terminal_text == "UNKNOWN":
-            not_known_facts.append("Terminal output for last command")
-        what_do_i_not_know = "; ".join(not_known_facts) if not_known_facts else "UNKNOWN"
+        # Failure record (raw data, not conclusions about it)
+        failure_str = "None"
+        if self.failure_budget.records:
+            recent_fails = self.failure_budget.records[-3:]  # Last 3 failures
+            fail_lines = []
+            for fail in recent_fails:
+                fail_lines.append(
+                    f"  - {fail.tool} on {fail.provider}: {fail.raw_error or fail.error_class.value}"
+                )
+            failure_str = "\n".join(fail_lines)
 
         active_sg = self.checklist.active_sub_goal() if getattr(self, "checklist", None) else None
         active_sg_desc = active_sg.description if active_sg else goal
         checklist_str = self.checklist.render_prompt_markdown() if getattr(self, "checklist", None) else f"  Mission Goal: {goal}"
 
-        if self.failure_budget.records:
-            last_fail = self.failure_budget.records[-1]
-            what_failed = f"{last_fail.tool} on {last_fail.provider} ({last_fail.error_class.value})"
-            why_did_it_fail = last_fail.raw_error or f"Classified as {last_fail.error_class.value}"
-            what_hypothesis = f"Disproves direct success of {last_fail.tool}; supports hypothesis that alternative approach is required."
-            failed_tool_clean = re.sub(r'[^a-zA-Z0-9_-]', '', str(last_fail.tool or '')).lower()
-            if failed_tool_clean in ("launch", "open", "click", "type", "press", "wait", "focus", "browse", "navigate", ""):
-                highest_info_action = "Previous command syntax was invalid. Advance goal using direct standard Linux tools (curl, nmap, etc.) or valid GUI actions."
-            elif strat_a_state == StrategyState.EXHAUSTED:
-                highest_info_action = "Pivot to Strategy B (alternative instrumentation) since Strategy A is exhausted."
-            else:
-                highest_info_action = f"Inspect error cause for '{last_fail.tool}' using shell or inspection commands."
-        else:
-            what_failed = "NONE"
-            why_did_it_fail = "NONE"
-            what_hypothesis = f"Supports hypothesis that target can be tested via primary plan toward: {goal}."
-            if active_sg:
-                highest_info_action = f"Advance active sub-goal: '{active_sg.description}'."
-            else:
-                highest_info_action = f"Execute primary diagnostic or inspection action against {primary_file_str}."
-
-        if self.failure_budget.substrate_outage:
-            highest_info_action = "Execute substrate diagnostic probe to resolve infrastructure outage."
-
         cognitive_block = (
-            "Cognitive Reasoning Assessment:\n"
-            f"  WHAT DO I KNOW?: {what_do_i_know}\n"
-            f"  WHAT DO I NOT KNOW?: {what_do_i_not_know}\n"
-            f"  WHAT FAILED?: {what_failed}\n"
-            f"  WHY DID IT FAIL?: {why_did_it_fail}\n"
-            f"  WHAT HYPOTHESIS DOES THIS SUPPORT/DISPROVE?: {what_hypothesis}\n"
-            f"  WHAT IS THE HIGHEST-INFORMATION NEXT ACTION?: {highest_info_action}\n"
+            "=== SITUATION FACTS ===\n"
+            f"  {facts_str}\n"
+            f"Failure log:\n{failure_str}\n"
+            f"Active sub-goal: {active_sg_desc}\n"
+            f"Steps taken so far: {len(self.traces)}\n"
+            f"Strategy A state: {strat_a_state.value if strat_a_state != StrategyState.EXHAUSTED else 'EXHAUSTED — pivot needed'}\n"
+            "=== END FACTS ===\n\n"
+            "Based on these facts, reason through:\n"
+            "  1. What do you concretely know vs what is still unknown?\n"
+            "  2. If something failed — WHY, and what does that tell you?\n"
+            "  3. What single action would give you the MOST new information?\n"
+            "Choose your next action accordingly.\n"
         )
 
         scratchpad_hud = ""
@@ -851,14 +852,15 @@ class ComputerUseAgent:
             system_prompt = COMPUTER_USE_SYSTEM_PROMPT
         return system_prompt, obs_summary
 
-    _MAX_HISTORY_STEPS: int = 10
+    _MAX_HISTORY_STEPS: int = 25
+    _MAX_RESULT_LENGTH: int = 500
 
     def _format_history(self) -> str:
         """Render the action/result transcript for the LLM.
 
         Bounded to the last ``_MAX_HISTORY_STEPS`` entries so that the context
         stays within the capacity of smaller models. Earlier steps are
-        summarised in a single line with success/fail counts.
+        summarised with key findings extracted, not just a bare count.
         """
         if not self.history:
             return ""
@@ -870,15 +872,24 @@ class ComputerUseAgent:
                 1 for h in self.history[:skipped]
                 if any(w in h.get("result", "").lower() for w in ("success", "completed", "exit 0"))
             )
+            # Extract key findings from skipped steps so the LLM retains
+            # important discoveries (ports, vulns, errors) instead of losing them.
+            key_findings: list[str] = []
+            _interesting = ("finding", "open", "vuln", "inject", "error", "denied",
+                            "port", "http", "200", "401", "403", "500", "token", "sql")
+            for h in self.history[:skipped]:
+                result = h.get("result", "")
+                if any(w in result.lower() for w in _interesting):
+                    key_findings.append(f"{h.get('action', '?')}: {result[:100]}")
+            summary = "; ".join(key_findings[:5]) if key_findings else "routine inspection"
             lines.append(
-                f"  [... {skipped} earlier steps: {ok} succeeded, {skipped - ok} failed ...]"
+                f"  [... {skipped} earlier steps: {ok} succeeded, {skipped - ok} failed — highlights: {summary}]"
             )
         start_idx = max(0, len(self.history) - window)
         for i, h in enumerate(self.history[start_idx:], start_idx + 1):
             result_text = h.get("result", "?")
-            # Truncate very long results to keep context compact
-            if len(result_text) > 150:
-                result_text = result_text[:147] + "..."
+            if len(result_text) > self._MAX_RESULT_LENGTH:
+                result_text = result_text[:self._MAX_RESULT_LENGTH - 3] + "..."
             lines.append(f"  {i}. {h.get('action', '?')} -> {result_text}")
         return "\n".join(lines)
 
@@ -2102,7 +2113,11 @@ class ComputerUseAgent:
                 scan_target = payload.get("target", target_resource)
                 args = payload.get("args", "")
                 tool = self.security_tools.get(tool_name)
-                if tool is None:
+                if tool is None and self.security_tools:
+                    actual_obs_str = f"Unknown security tool: {tool_name}"
+                    recovery_needed = True
+                    status = ActionExecutionStatus.FAILED
+                elif tool is None:
                     # Native execution directly inside sandbox via TERMINAL_EXEC
                     tool_name_raw = str(tool_name).strip()
                     if " " in tool_name_raw:
@@ -2419,6 +2434,14 @@ class ComputerUseAgent:
             thought_duration_seconds=getattr(self, "_last_thought_duration", 0.0),
         )
         self.traces.append(trace)
+        # Store the real action output so observe() reads real terminal data
+        # instead of a dummy probe. This is provider-agnostic.
+        self._last_action_output = {
+            "command": str(payload)[:200] if payload else "",
+            "stdout": actual_obs_str[:2000],
+            "stderr": "",
+            "exit_code": action_exit_code,
+        }
         # Record into the reasoning history so the next LLM call sees what was
         # done and how it turned out — the basis for adaptive (non-scripted) action.
         self.history.append({
@@ -2677,16 +2700,17 @@ class ComputerUseAgent:
             evidence = f"Re-observed: app={obs.active_application}, term={obs.terminal_output[:120]}"
 
         ev_lower = evidence.lower()
-        # Fail-closed verification: an observation of the world is NOT success.
-        # "Absence of evidence is not evidence of success" — a bare re-observe
-        # (or the dummy terminal probe) must NOT mark the goal verified. Only
-        # evidence that positively demonstrates completion (non-error output) does.
+        # Fail-closed verification: reject dummy/placeholder observations as
+        # evidence of goal completion. Only REAL command output counts.
+        _DUMMY_MARKERS = (
+            "__sonic_obs_ready__", "generic recovery action",
+        )
+        _is_dummy = any(marker in ev_lower for marker in _DUMMY_MARKERS)
+        if _is_dummy:
+            return False, f"Verification inconclusive — dummy marker detected. Evidence: {evidence}"
+
         _raw_has_content = bool(evidence.strip())
         if "Re-observed: " in evidence:
-            # Fail-closed only against a bare/placeholder re-observation (no
-            # captured signal). A re-observation carrying a real terminal/process
-            # signal (e.g. `term=pytest exit 0`) positively counts.
-
             _has_concrete_evidence = (
                 "term=" in evidence
                 and not evidence.rstrip().endswith("term=")
@@ -2889,9 +2913,25 @@ class ComputerUseAgent:
                             trivial_cmds = ("pwd", "whoami", "uname", "id", "echo", "true")
                             is_trivial = any(cmd_str == tc or cmd_str.startswith(f"{tc} ") for tc in trivial_cmds)
                             if not is_trivial:
-                                self.checklist.mark_active_completed(
-                                    evidence=f"{action_type} succeeded: {obs_txt[:100]}"
-                                )
+                                # Semantic relevance gate: the action or its
+                                # output must share keywords with the sub-goal.
+                                # This prevents `ls` from completing "Find SQL
+                                # injection" (zero overlap) while allowing
+                                # `sqlmap --url target` to complete it.
+                                _stop = {"the", "a", "an", "in", "on", "to", "for",
+                                         "of", "and", "or", "is", "it", "with", "run",
+                                         "use", "check", "find", "get", "set"}
+                                sg_words = set(active_sg.description.lower().split()) - _stop
+                                action_text = f"{obs_txt[:300]} {cmd_str} {action_type.value}".lower()
+                                action_words = set(action_text.split()) - _stop
+                                overlap = sg_words & action_words
+                                relevance = len(overlap) / max(len(sg_words), 1)
+                                if relevance >= 0.15 or len(overlap) >= 2:
+                                    self.checklist.mark_active_completed(
+                                        evidence=f"{action_type} succeeded: {obs_txt[:100]}"
+                                    )
+                                # else: action succeeded but doesn't relate to
+                                # the sub-goal — don't mark it complete.
 
         # Update Telemetry Metrics.
         self.metrics.actions_total = len(self.traces)
@@ -2899,12 +2939,13 @@ class ComputerUseAgent:
             1 for t in self.traces if t.status in (
                 ActionExecutionStatus.COMPLETED,
                 ActionExecutionStatus.SUCCESS,
-                ActionExecutionStatus.RECOVERED,
                 ActionExecutionStatus.VERIFIED,
                 "COMPLETED",
                 "SUCCESS",
-                "RECOVERED",
                 "VERIFIED",
+                # REMOVED: RECOVERED — a failed action that ran `clear || true`
+                # is NOT a success. Counting it as such inflates metrics and
+                # corrupts the learning loop.
             )
         )
         self.metrics.actions_failed = sum(
@@ -2913,10 +2954,12 @@ class ComputerUseAgent:
                 ActionExecutionStatus.TIMED_OUT,
                 ActionExecutionStatus.BLOCKED,
                 ActionExecutionStatus.CANCELLED,
+                ActionExecutionStatus.RECOVERED,  # RECOVERED = failed + recovery attempt
                 "FAILED",
                 "TIMED_OUT",
                 "BLOCKED",
                 "CANCELLED",
+                "RECOVERED",
             )
         )
         self.metrics.recovery_events = self.recovery_events
@@ -2932,13 +2975,21 @@ class ComputerUseAgent:
         self.goal_reached = goal_reached
         t_elapsed = time.perf_counter() - t_start
         self.metrics.time_to_completion_seconds = round(t_elapsed, 2)
-        self.metrics.verification_score = 1.00 if goal_reached else (
-            0.90 if self.metrics.actions_failed == 0 else 0.80
-        )
+        # Honest verification score: ratio of real successes to total actions,
+        # not a hardcoded 0.90 that hides failures.
+        total = self.metrics.actions_total
+        if goal_reached:
+            self.metrics.verification_score = 1.00
+        elif total > 0:
+            self.metrics.verification_score = round(
+                self.metrics.actions_successful / total, 2
+            )
+        else:
+            self.metrics.verification_score = 0.0
 
         # Close the learn→apply loop: distill this mission's traces into lessons
         # and persist them so the NEXT mission's reasoning sees them. Grounded
-        # in real trace outcomes (FAILED→AVOID, SUCCESS/RECOVERED→REUSE) — never
+        # in real trace outcomes (FAILED/RECOVERED→AVOID, SUCCESS→REUSE) — never
         # fabricated. Skipped silently when no ledger is wired in.
         if self.lessons_ledger is not None:
             from sonic.being.lessons import extract_lessons

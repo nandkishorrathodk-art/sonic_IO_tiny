@@ -192,8 +192,8 @@ def test_format_history_bounded_to_window():
     provider = DummyComputerProvider()
     agent = ComputerUseAgent(computer_provider=provider)
 
-    # Add 25 history events
-    for i in range(25):
+    # Add 35 history events (above the 25-step window)
+    for i in range(35):
         agent.history.append({
             "action": f"ACTION_{i}",
             "result": f"result {i} (success)" if i % 2 == 0 else f"result {i} (failed)",
@@ -204,10 +204,10 @@ def test_format_history_bounded_to_window():
 
     # Must contain the skipped summary line
     assert any("earlier steps" in line for line in lines)
-    # The rendered steps must be at most _MAX_HISTORY_STEPS (10) + 1 summary line
-    assert len(lines) <= 11
-    # Last step must be step 25
-    assert "25. ACTION_24" in lines[-1]
+    # The rendered steps must be at most _MAX_HISTORY_STEPS (25) + 1 summary line
+    assert len(lines) <= 26
+    # Last step must be step 35
+    assert "35. ACTION_34" in lines[-1]
 
 
 # ---------------------------------------------------------------------------

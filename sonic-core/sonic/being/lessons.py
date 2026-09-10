@@ -23,9 +23,11 @@ Two halves:
         block the LLM sees in ``_build_reasoning_context``.
 
 HONESTY INVARIANT (mirrors toolsmith/method_lab):
-    A lesson is recorded ONLY from a real trace outcome (FAILED → AVOID,
-    SUCCESS/RECOVERED → REUSE). No lesson is invented by decree. An empty
-    trace yields no lessons.
+    A lesson is recorded ONLY from a real trace outcome (FAILED/RECOVERED → AVOID,
+    SUCCESS/COMPLETED/VERIFIED → REUSE). RECOVERED is treated as FAILED because
+    the action itself failed — the recovery (e.g., `clear || true`) does not
+    constitute success. No lesson is invented by decree. An empty trace yields
+    no lessons.
 
 SECURITY INVARIANT:
     Lessons are text observations about tool/approach outcomes — they carry
@@ -105,9 +107,11 @@ def extract_lessons(
 ) -> list[Lesson]:
     """Distill a mission's traces into concrete lessons.
 
-    One AVOID lesson per FAILED trace (the approach that didn't work) and one
-    REUSE lesson per SUCCESS/RECOVERED trace (the approach that did). Grounded
-    in real ``trace.status`` — never fabricates a lesson from an empty trace.
+    One AVOID lesson per FAILED/RECOVERED trace (approaches that didn't work —
+    RECOVERED means the action failed and a generic recovery ran, which is NOT
+    a success) and one REUSE lesson per SUCCESS/COMPLETED/VERIFIED trace.
+    Grounded in real ``trace.status`` — never fabricates a lesson from an empty
+    trace.
 
     Args:
         traces: the ``ComputerDecisionTrace`` list from ``run_mission``.
@@ -125,17 +129,24 @@ def extract_lessons(
         approach = f"{getattr(action, 'value', action)} on {target}".strip()
         evidence = (actual or predicted)[:200]
 
-        if status == "FAILED":
+        if status in ("FAILED", "RECOVERED"):
+            # RECOVERED means the action FAILED and a generic recovery ran
+            # (e.g., `clear || true`). This is NOT a success — record as AVOID
+            # so the agent doesn't repeat the failing approach.
             lessons.append(Lesson(
                 lesson_id=f"lesson-{int(time.time()*1000)}-{i}-avoid",
                 kind=LessonKind.AVOID,
                 goal=goal,
                 approach=approach,
-                evidence=evidence or "action failed",
+                evidence=(
+                    f"action failed and required recovery: {evidence}"
+                    if status == "RECOVERED" else
+                    evidence or "action failed"
+                ),
                 created_at=_now(),
                 tags=_keywords(f"{approach} {goal}"),
             ))
-        elif status in ("SUCCESS", "RECOVERED"):
+        elif status in ("SUCCESS", "COMPLETED", "VERIFIED"):
             lessons.append(Lesson(
                 lesson_id=f"lesson-{int(time.time()*1000)}-{i}-reuse",
                 kind=LessonKind.REUSE,

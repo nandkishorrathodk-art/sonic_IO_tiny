@@ -95,6 +95,8 @@ class _StubComputer(ComputerProvider):
 
     async def write_file(self, workspace_id, path, content, actor="operator"):
         self.written[path] = content
+        if "FAILED" in self.terminal_output:
+            self.terminal_output = "all tests passed"
         return True
 
     async def list_files(self, workspace_id, path="."):

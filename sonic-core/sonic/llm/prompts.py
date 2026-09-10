@@ -640,6 +640,7 @@ SECURITY-FIRST EXECUTION PRIORITY:
 4. GUI_*: Only for apps with no CLI (Burp Suite intercept)
 
 STUCK RULE: If the last 2 actions produced no useful scan results, try a different tool. NEVER repeat the exact same failed scan.
+Do NOT run trivial commands like pwd, whoami, id, or uname unless you have a specific reason.
 
 Respond in EXACTLY this format (no markdown fences):
 THOUGHT: <1-sentence: what you will do and why>

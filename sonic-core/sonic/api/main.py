@@ -120,8 +120,13 @@ async def _maybe_start_being_life_loop(settings):
         )
         from sonic.being.lessons import LessonsLedger
         lessons_ledger = LessonsLedger(tenant_id=tenant_id, agent_id=being.being_id)
+        # Wire security tools so the being can actually run real scans
+        # (nmap/nuclei/ffuf/http) during self-directed curiosity.
+        from sonic.tools.registry import get_default_registry
+        security_registry = get_default_registry(provider)
         agent = ComputerUseAgent(
             computer_provider=provider, llm_router=router,
+            security_tools=security_registry.as_dict(),
             safety=safety, self_host=True, tenant_id=tenant_id, agent_id=being.being_id,
             # Wire the browser so the being can navigate/click/type/screenshot as
             # a first-class reasoning action (was orphaned before).

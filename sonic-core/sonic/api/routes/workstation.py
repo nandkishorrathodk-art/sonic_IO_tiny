@@ -1541,18 +1541,6 @@ def _detect_requested_app(prompt: str) -> tuple[str, str]:
     if any(k in lower for k in ("terminal", "terminial", "bash", "shell", "console", "cmd", "terminal kholo", "terminal open", "kholo terminal", "cmd khol")):
         return "xfce4-terminal", ""
 
-    # Burp Suite
-    if any(k in lower for k in ("burpsuite", "burp suite", "burp", "burp kholo", "burp open")):
-        return "burpsuite", ""
-
-    # Text editor
-    if any(k in lower for k in ("editor", "mousepad", "vscode", "code", "notepad", "nano", "editor kholo", "text editor")):
-        return "mousepad", ""
-
-    # File manager
-    if any(k in lower for k in ("file manager", "files", "folder", "explorer", "thunar", "files kholo", "folder open")):
-        return "thunar", ""
-
     return "", ""
 
 
@@ -1725,21 +1713,6 @@ async def _run_autonomous_desktop_loop(
     if "install" in lower:
         package = _extract_install_package(prompt)
         if package:
-            if package == "burpsuite":
-                chk = await computer.terminal(desktop_id, "which burpsuite || [ -f /opt/burpsuite/burpsuite_community.jar ]", timeout=10, actor=tenant_id)
-                if chk.exit_code == 0:
-                    await computer.terminal(desktop_id, "DISPLAY=:99 burpsuite >/dev/null 2>&1 &", timeout=10, actor=tenant_id)
-                    observations.append("Burp Suite Community Edition is already pre-installed at `/usr/local/bin/burpsuite`. Launched on Display :99.")
-                    _append_worklog(state, "action", "Burp Suite Pre-installed & Launched", "Burp Suite verified as pre-installed and launched on graphical display :99.")
-                    if any(b in lower for b in ("chromium", "chrome", "browser", "search")):
-                        _, target_url = _detect_requested_app(prompt)
-                        target_url = target_url or "https://www.google.com"
-                        b_cmd = f"DISPLAY=:99 chromium --no-sandbox --disable-dev-shm-usage --disable-gpu --disable-quic --no-first-run --no-default-browser-check {shlex.quote(target_url)} >/dev/null 2>&1 &"
-                        await computer.terminal(desktop_id, b_cmd, timeout=15, actor=tenant_id)
-                        observations.append(f"Chromium browser launched side-by-side on Display :99 ({target_url}).")
-                        _append_worklog(state, "action", "Chromium Launched", f"Launched Chromium navigating to `{target_url}`.")
-                    return observations, None, False
-
             allowed, reason = ApplicationPolicy().is_package_allowed(package)
             if not allowed:
                 message = f"Installation blocked by the sandbox package policy: {reason}"

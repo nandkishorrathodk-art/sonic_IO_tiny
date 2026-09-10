@@ -838,21 +838,19 @@ class DaytonaComputerProvider(ComputerProvider):
                 raw_name = action.app_name.strip(" *_\n\r\t`\"'")
                 if "\n" in raw_name:
                     raw_name = raw_name.split("\n")[0].strip(" *_\n\r\t`\"'")
-                clean_app = raw_name.split()[0].lower() if raw_name else "chromium"
-                self._active_windows[workspace_id] = clean_app
-                try:
-                    wm_check = await sandbox.process.exec("DISPLAY=:0 wmctrl -l")
-                    is_already_open = wm_check.result and clean_app in wm_check.result.lower()
-                    if is_already_open:
-                        await sandbox.process.exec(f"DISPLAY=:0 (wmctrl -a {shlex.quote(clean_app)} 2>/dev/null || xdotool search --onlyvisible --class {shlex.quote(clean_app)} windowactivate 2>/dev/null) || true")
-                    else:
-                        if clean_app == "chromium":
-                            spawn_cmd = "DISPLAY=:0 nohup chromium --no-sandbox --disable-dev-shm-usage --disable-session-crashed-bubble --no-first-run --no-default-browser-check >/dev/null 2>&1 &"
+                clean_app = raw_name.strip()
+                if clean_app:
+                    self._active_windows[workspace_id] = clean_app
+                    try:
+                        wm_check = await sandbox.process.exec("DISPLAY=:0 wmctrl -l")
+                        is_already_open = wm_check.result and clean_app.lower() in wm_check.result.lower()
+                        if is_already_open:
+                            await sandbox.process.exec(f"DISPLAY=:0 (wmctrl -a {shlex.quote(clean_app)} 2>/dev/null || xdotool search --onlyvisible --class {shlex.quote(clean_app)} windowactivate 2>/dev/null) || true")
                         else:
-                            spawn_cmd = f"DISPLAY=:0 {shlex.quote(clean_app)} &"
-                        await sandbox.process.exec(spawn_cmd)
-                except Exception:
-                    await sandbox.process.exec(f"DISPLAY=:0 {shlex.quote(clean_app)} &")
+                            spawn_cmd = f"DISPLAY=:0 nohup {shlex.quote(clean_app)} >/dev/null 2>&1 &"
+                            await sandbox.process.exec(spawn_cmd)
+                    except Exception:
+                        await sandbox.process.exec(f"DISPLAY=:0 nohup {shlex.quote(clean_app)} >/dev/null 2>&1 &")
 
             elif action_type == GUIActionType.CLOSE_APP and action.app_name:
                 raw_name = action.app_name.strip(" *_\n\r\t`\"'")

@@ -2,7 +2,7 @@
 SONIC — Dual Perception Network Wire Telemetry Engine
 =====================================================
 Captures in-flight network HTTP transactions via local ring buffer and
-optional Burp Suite proxy telemetry for closed-loop reasoning context.
+live application network events for closed-loop reasoning context.
 """
 
 from __future__ import annotations
@@ -30,15 +30,16 @@ def _get_status_phrase(code: int) -> str:
 class WireTelemetryEngine:
     """
     Engine for tracking, fetching, and formatting network wire HTTP events
-    for agent reasoning context.
+    for agent reasoning context without vendor-specific tool dependencies.
     """
 
     def __init__(
         self,
-        burp_client: Any | None = None,
+        network_interceptor: Any | None = None,
         max_history: int = 20,
+        **kwargs: Any,
     ):
-        self.burp_client = burp_client
+        self.network_interceptor = network_interceptor or kwargs.get("burp_client")
         self._ring_buffer: deque[dict[str, Any]] = deque(maxlen=max_history)
 
     def record_wire_event(
@@ -78,77 +79,39 @@ class WireTelemetryEngine:
 
     async def fetch_latest_wire_events(self, limit: int = 3) -> list[dict[str, Any]]:
         """
-        Fetch the most recent wire events.
-        If Burp Suite client is available and responsive, queries Burp history;
-        otherwise falls back to the in-memory ring buffer.
+        Fetch the most recent wire events from live application interceptor or ring buffer.
         """
-        if self.burp_client is not None:
-            is_responsive = False
+        if self.network_interceptor is not None:
             try:
-                if hasattr(self.burp_client, "health_check"):
-                    check = self.burp_client.health_check()
-                    if asyncio.iscoroutine(check):
-                        is_responsive = await check
-                    else:
-                        is_responsive = bool(check)
-                else:
-                    is_responsive = hasattr(self.burp_client, "get_proxy_history")
-            except Exception as e:
-                logger.debug("burp_health_check_failed", error=str(e))
-                is_responsive = False
-
-            if is_responsive:
-                try:
-                    history_call = self.burp_client.get_proxy_history(limit=limit)
-                    if asyncio.iscoroutine(history_call):
-                        raw_items = await history_call
-                    else:
-                        raw_items = history_call
-
+                if hasattr(self.network_interceptor, "get_proxy_history"):
+                    history_call = self.network_interceptor.get_proxy_history(limit=limit)
+                    raw_items = await history_call if asyncio.iscoroutine(history_call) else history_call
                     if raw_items:
                         events: list[dict[str, Any]] = []
                         for item in raw_items:
                             if isinstance(item, dict):
                                 events.append(item)
                             else:
-                                # BurpHttpItem instance
                                 resp_raw = getattr(item, "response_raw", "")
                                 body = ""
-                                res_headers: dict[str, str] = {}
                                 if "\r\n\r\n" in resp_raw:
-                                    hdr_part, body = resp_raw.split("\r\n\r\n", 1)
-                                    for line in hdr_part.splitlines():
-                                        if ":" in line:
-                                            hk, hv = line.split(":", 1)
-                                            res_headers[hk.strip()] = hv.strip()
+                                    _, body = resp_raw.split("\r\n\r\n", 1)
                                 elif "\n\n" in resp_raw:
-                                    hdr_part, body = resp_raw.split("\n\n", 1)
-                                    for line in hdr_part.splitlines():
-                                        if ":" in line:
-                                            hk, hv = line.split(":", 1)
-                                            res_headers[hk.strip()] = hv.strip()
+                                    _, body = resp_raw.split("\n\n", 1)
                                 else:
                                     body = resp_raw
-
-                                event_dict = {
+                                events.append({
                                     "method": getattr(item, "method", "GET"),
                                     "url": getattr(item, "url", ""),
                                     "status_code": getattr(item, "status_code", 200),
-                                    "response_body": body.strip(),
-                                    "res_headers": res_headers,
+                                    "response_body": body.strip()[:200],
                                     "timestamp": getattr(item, "timestamp", ""),
-                                }
-                                if "Location" in res_headers or "location" in res_headers:
-                                    event_dict["redirect_url"] = (
-                                        res_headers.get("Location") or res_headers.get("location")
-                                    )
-                                events.append(event_dict)
-
+                                })
                         return events[-limit:]
-                except Exception as e:
-                    logger.warning("burp_proxy_history_query_failed", error=str(e))
+            except Exception as e:
+                logger.debug("network_interceptor_query_failed", error=str(e))
 
-        # Fallback to in-memory ring buffer
+        # Default: in-memory ring buffer
         all_events = list(self._ring_buffer)
         return all_events[-limit:]
 

@@ -1715,5 +1715,64 @@ In strict accordance with the user directives:
 - `sonic-core/tests/test_target_first_recon.py` (8 tests) — **PASSED** (8/8)
 - GUI, motor reflexes, and application action suites (77 tests) — **PASSED** (77/77)
 
+## Phase 28 — Autonomous Reality-Grounding & Complete De-Puppeting (DONE)
+Eliminated remaining scripted-puppet behaviors, rubber-stamp fake confirmations, static exploit recipes, and Burp Suite tool remnants across the codebase:
 
+### 1. Empirical PoC Validation (`sonic/agents/exploit_validator.py`)
+- Replaced the rubber-stamp `_validate_poc()` that previously marked any finding with non-empty string evidence as `is_confirmed=True`.
+- Implemented fail-closed validation: strictly checks for execution proof, rejects command failures (`exit 126`, `exit 1`, `command not found`, `connection refused`, `timed out`, `dummy`, `placeholder`), and verifies that empirical evidence proves reproduction before confirming findings.
+
+### 2. Dynamic Capability-Driven Exploit Chaining (`sonic/agents/exploit_chain.py`)
+- Removed the 5 static `CHAIN_PATTERNS` dictionary (SSRF+leak, XSS+CSRF, etc.) that acted as a scripted textbook puppet recipe.
+- Implemented dynamic capability correlation: analyzes findings by mapping output capabilities (internal network pivot, credentials, file read/drop, unauthenticated access) to input requirements of subsequent attack vectors, allowing organic synthesis of multi-stage exploit paths against unique target architectures.
+
+### 3. Complete Burp Suite Excision & Tool Neutrality
+- **Landmarks (`grounding.py`)**: Removed 30+ hardcoded Burp Suite coordinates (`burp proxy tab`, `burp forward button`, etc.). Workstation GUI landmarks now strictly focus on target web application UI controls (`submit button`, `username input`, `dashboard tab`, `settings tab`).
+- **Motor Reflexes (`motor.py`)**: Removed tool-specific `burp_forward()` and `burp_toggle_intercept()`; replaced with generic, application-level `send_application_shortcut()`.
+- **Wire Telemetry (`wire_telemetry.py`)**: Decoupled from Burp REST API; operates purely on native HTTP ring buffers and application network transaction events.
+- **Agent Subgoals & GUI Apps (`agent.py`)**: Removed `burp`/`burpsuite` subgoal branches, removed `burpsuite` from `_GUI_APPS`, and excised Burp intercept deadlock routines.
+
+### 4. True Process & Service Verification (`agent.py:verify_goal()`)
+- Tightened `verify_goal()` so goals with "run/start/serve/launch" do not claim `verified=True` merely because a generic background OS shell process is alive.
+- Explicitly extracts the requested program/service name and verifies that the specific target process or application is active in the environment.
+
+### 5. Verified Test Suite
+- `test_gap_fixes.py` & `test_production.py` (21 tests) — **PASSED**
+- `test_motor_reflexes_phase8.py` (7 tests) — **PASSED**
+- `test_hacker_scratchpad_and_wire_telemetry.py` (14 tests) — **PASSED**
+- `test_agent_quality_improvements.py` (21 tests) — **PASSED**
+- `test_phase3_real_computer_use_reasoning.py` (8 tests) — **PASSED**
+- `test_target_driven_missions.py` (5 tests) — **PASSED**
+- `test_phase_b_method_lab.py` (15 tests) — **PASSED**
+
+## Phase 29 — Elimination of Hardcoded Application Names & Puppet Mappings (DONE)
+Per explicit user directive (*"is main koi bhi computer application ka name hai to usko hata do kyu ki isko to use karna ata hai to ye puppet kyu karna... kuchh rehna nahi chahiye"*), completely eliminated all hardcoded application translation dictionaries, static GUI application tuples, and tool-forcing heuristics across the codebase:
+
+### 1. Dynamic Application Name Sanitization (`sonic/computer_use/agent.py`)
+- **`_normalize_app_name()`**: Replaced the rigid if/elif mapping table (which previously translated "editor" -> "mousepad", "file" -> "thunar", "terminal" -> "xfce4-terminal", "burp" -> "burpsuite") with pure dynamic string sanitization. Strips markdown fences, quotes, leading conversational articles (`the/a/an`), and trailing punctuation while preserving the exact binary/application requested by the model or operator.
+- **Removed Static `_GUI_APPS`**: Replaced the static 6-tuple `("chromium", "google-chrome", "firefox", "mousepad", "thunar", "xfce4-terminal")` and chromium-specific flag injection in `TERMINAL_EXEC` with dynamic display-aware backgrounding.
+- **Dynamic Goal Decomposition**: Subgoal derivation in `decompose_goal()` no longer branches on hardcoded browser/app keywords; it dynamically extracts requested binaries and targets via regex.
+- **Generalized Parsing Regexes**: Generalized terminal wrapper prefix regexes (stripping `xfce4-terminal`) and removed the 7-application whitelist in `which <app>` commands, allowing dynamic resolution of any application.
+- **Generic GUI Recovery**: Removed hardcoded `code-server` relaunch from `_attempt_recovery()`; recovery now resets the X11 display service cleanly without forcing specific applications.
+
+### 2. Autonomous Application Execution in Computer Providers
+- **`DockerComputerProvider` (`sonic/computer/docker_computer.py`)**: Excised hardcoded if/elif branches in `GUIActionType.OPEN_APP` (which previously intercepted `"chrome"`, `"term"`, `"thunar"`). Now executes `DISPLAY=:99 nohup {shlex.quote(app_name)} >/dev/null 2>&1 &` dynamically for any binary requested.
+- **`DaytonaComputerProvider` (`sonic/computer/daytona_computer.py`)**: Removed fallback defaulting to `"chromium"` and special-casing of chromium flags in `OPEN_APP`. Launches any application requested dynamically on the display.
+
+### 3. Workstation Route & Prompt Generalization
+- **`workstation.py` (`sonic/api/routes/workstation.py`)**: Excised static puppet mappings ("burp" -> "burpsuite", "editor" -> "mousepad", "file" -> "thunar") from `_detect_requested_app()`, and removed the Burp Suite pre-installed special case from package installation.
+- **`grounding.py` (`sonic/computer_use/grounding.py`)**: Removed app-specific launcher coordinates (`firefox`, `mousepad`, `thunar`) from `_COMMON_UI_LANDMARKS`, preserving only generic desktop and window environment landmarks.
+- **`prompts.py` (`sonic/llm/prompts.py`)**: Replaced all hardcoded application examples (`xfce4-terminal, mousepad, thunar, chromium`) with generic placeholders (`<application_name>`, `<package_name>`).
+- **`engagement.py` (`sonic/agents/engagement.py`)**: Removed tool-forcing goal text (`"Use nmap for port scanning, nuclei for CVE detection, ffuf for directory fuzzing"`). Goals now state target-first autonomous objectives.
+
+### 4. Verified Test Matrix (100% Green)
+- `test_agent_quality_improvements.py` (21 tests) — **PASSED**
+- `test_motor_reflexes_phase8.py` (7 tests) — **PASSED**
+- `test_workstation_desktop_browser_and_news.py` (6 tests) — **PASSED**
+- `test_phase3_real_computer_use_reasoning.py` (8 tests) — **PASSED**
+- `test_browser_tab_dedup_and_anti_loop.py` (4 tests) — **PASSED**
+- `test_phase4_unified_browser_in_loop.py` (4 tests) — **PASSED**
+- `test_phase5_security_tool_execution.py` (5 tests) — **PASSED**
+- `test_phase6_curiosity_life_loop.py` (5 tests) — **PASSED**
+- `test_security_tool_registry.py` (6 tests) — **PASSED**
 

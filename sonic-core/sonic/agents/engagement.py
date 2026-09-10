@@ -537,8 +537,8 @@ class EngagementManager:
         """Run REAL dynamic testing via ComputerUseAgent in sandbox (Gaps #1, #2, #5).
 
         This is the core gap fix: the engagement pipeline now routes through
-        ComputerUseAgent with real security tools (nmap/nuclei/ffuf/burp),
-        browser automation, and optionally Toolsmith + MethodLab.
+        ComputerUseAgent with target-first dynamic inspection, browser automation,
+        native network probes, and autonomous Toolsmith + MethodLab capabilities.
 
         The HTTP-probe dynamic phase (previous step) gives fast initial coverage.
         This phase runs deeper scans inside the sandbox.
@@ -615,8 +615,7 @@ class EngagementManager:
                 f"Perform comprehensive security assessment of {target}. "
                 f"Test hypotheses: {hypotheses_summary or 'general security testing'}. "
                 f"HTTP probe found: {http_summary or 'no initial findings'}. "
-                f"Use nmap for port scanning, nuclei for CVE detection, "
-                f"ffuf for directory fuzzing. Report all findings."
+                f"Autonomously assess target security posture, investigate attack surface, and report findings."
             )
 
             # Create a workspace and run the mission

@@ -604,8 +604,8 @@ For GUI_KEYPRESS: PAYLOAD is {{"key": "Return|Tab|Escape|ctrl+c|ctrl+v|alt+Tab|.
 For GUI_SCROLL: TARGET is "x,y" and PAYLOAD is {{"delta": -3}} (negative=down, positive=up)
 For GUI_SCREENSHOT: no target or payload needed
 For GUI_WAIT: PAYLOAD is {{"seconds": 3}} to let a window or page settle
-For APP_INSTALL: TARGET is the package to install (e.g. chromium, git, curl, python3-pip)
-For APP_LAUNCH: TARGET is the application name to start (e.g. xfce4-terminal, mousepad, thunar, chromium, code)
+For APP_INSTALL: TARGET is the package to install (e.g. <package_name>)
+For APP_LAUNCH: TARGET is the application name to start (e.g. <application_name>)
 For APP_FOCUS: TARGET is the window title or application name to bring to foreground (e.g. any window from Open desktop windows)
 For APP_CLOSE: TARGET is the application or window name to close
 For TERMINAL_EXEC: TARGET or PAYLOAD {{"command": "..."}} must be an EXACT executable shell command line (e.g. curl -sI https://target.com, python -c "...", ls -la), NEVER natural language
@@ -667,7 +667,7 @@ EXPECTED: <predicted outcome>
 KEY RULES:
 - TERMINAL_EXEC: TARGET/PAYLOAD must be an EXACT shell command (e.g. curl -sI https://target.com), NEVER natural language
 - SECURITY_TOOL: Run registered tool when needed, with real target and args in PAYLOAD
-- APP_LAUNCH: TARGET is the app name (e.g. chromium, xfce4-terminal)
+- APP_LAUNCH: TARGET is the app name (e.g. <application_name>)
 - GUI_CLICK: TARGET is "x,y" coordinates or a UI element name (e.g. "search bar", "Applications menu")
 - GUI_TYPE: PAYLOAD is {{"text": "..."}}
 - GUI_KEYPRESS: PAYLOAD is {{"key": "Return|Tab|Escape|ctrl+c|..."}}

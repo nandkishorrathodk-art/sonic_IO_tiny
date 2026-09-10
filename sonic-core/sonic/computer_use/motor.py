@@ -248,13 +248,8 @@ class MotorReflexes:
 
         return f"two_stage_clicked: window={target_window} at=({x},{y})"
 
-    async def burp_forward(self, workspace_id: str) -> str:
-        """Forward intercepted HTTP packet in Burp Suite (Ctrl + F)."""
-        await self._send_hotkey(workspace_id, "ctrl+f")
-        return "burp_packet_forwarded"
-
-    async def burp_toggle_intercept(self, workspace_id: str) -> str:
-        """Toggle HTTP interception state in Burp Suite."""
-        await self._send_hotkey(workspace_id, "ctrl+t")
-        return "burp_intercept_toggled"
+    async def send_application_shortcut(self, workspace_id: str, shortcut: str) -> str:
+        """Send a standard keyboard shortcut (e.g. 'ctrl+r', 'f5', 'ctrl+f') to the active application."""
+        await self._send_hotkey(workspace_id, shortcut)
+        return f"shortcut_sent: {shortcut}"
 

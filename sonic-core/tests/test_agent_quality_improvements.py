@@ -73,15 +73,15 @@ def test_extract_targets_from_goal():
 @pytest.mark.parametrize(
     "raw,expected",
     [
-        ("Burp Suite", "burpsuite"),
-        ("burp", "burpsuite"),
-        ("Google Chrome", "chromium"),
-        ("chromium-browser", "chromium"),
-        ("Terminal", "xfce4-terminal"),
-        ("Text Editor", "mousepad"),
-        ("File Manager", "thunar"),
-        ("Wireshark Network Analyzer", "wireshark"),
+        ("the editor", "editor"),
+        ("the terminal", "terminal"),
+        ("a browser", "browser"),
+        ("an inspector", "inspector"),
+        ("  code-server  ", "code-server"),
+        ("`wireshark`", "wireshark"),
+        ("custom-tool", "custom-tool"),
         ("the mousepad", "mousepad"),
+        ("", ""),
     ],
 )
 def test_normalize_app_name(raw, expected):
@@ -94,16 +94,16 @@ def test_normalize_app_name(raw, expected):
 
 def test_parse_llm_action_reclassifies_launch_to_app_launch():
     text = (
-        "THOUGHT: Launch Burp Suite to start intercepting\n"
+        "THOUGHT: Launch code-server to inspect codebase\n"
         "ACTION: TERMINAL_EXEC\n"
-        "TARGET: Launch Burp Suite\n"
-        "PAYLOAD: {\"command\": \"Launch Burp Suite\"}\n"
-        "EXPECTED: Burp Suite starts\n"
+        "TARGET: Launch code-server\n"
+        "PAYLOAD: {\"command\": \"Launch code-server\"}\n"
+        "EXPECTED: code-server starts\n"
     )
     act_type, target, payload, _ = ComputerUseAgent._parse_llm_action(text, "README.md")
     assert act_type == ComputerActionType.APP_LAUNCH
-    assert target == "burpsuite"
-    assert payload.get("app_name") == "burpsuite"
+    assert target == "code-server"
+    assert payload.get("app_name") == "code-server"
 
 
 def test_parse_llm_action_reclassifies_navigate_to_browser():
@@ -136,15 +136,15 @@ def test_parse_llm_action_intercepts_invalid_which_verb():
 
 def test_parse_llm_action_normalizes_which_app():
     text = (
-        "THOUGHT: Check if Burp is installed\n"
+        "THOUGHT: Check if wireshark is installed\n"
         "ACTION: TERMINAL_EXEC\n"
-        "TARGET: which Burp Suite\n"
-        "PAYLOAD: {\"command\": \"which Burp Suite\"}\n"
+        "TARGET: which wireshark\n"
+        "PAYLOAD: {\"command\": \"which wireshark\"}\n"
         "EXPECTED: path\n"
     )
     act_type, target, payload, _ = ComputerUseAgent._parse_llm_action(text, "README.md")
     assert act_type == ComputerActionType.TERMINAL_EXEC
-    assert payload.get("command") == "which burpsuite"
+    assert payload.get("command") == "which wireshark"
 
 
 # ---------------------------------------------------------------------------

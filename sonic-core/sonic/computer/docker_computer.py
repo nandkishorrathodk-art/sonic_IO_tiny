@@ -448,15 +448,8 @@ class DockerComputerProvider(ComputerProvider):
             await self._docker_exec(f"DISPLAY=:99 xdotool click --repeat {times} {btn}")
 
         elif atype == GUIActionType.OPEN_APP and action.app_name:
-            app = action.app_name.strip().lower()
-            if "chrome" in app or "browser" in app or "chromium" in app:
-                spawn = "DISPLAY=:99 nohup /usr/local/bin/chrome >/dev/null 2>&1 &"
-            elif "term" in app:
-                spawn = "DISPLAY=:99 nohup xfce4-terminal >/dev/null 2>&1 &"
-            elif "thunar" in app or "file" in app:
-                spawn = "DISPLAY=:99 nohup thunar >/dev/null 2>&1 &"
-            else:
-                spawn = f"DISPLAY=:99 nohup {shlex.quote(action.app_name)} >/dev/null 2>&1 &"
+            clean_app = action.app_name.strip()
+            spawn = f"DISPLAY=:99 nohup {shlex.quote(clean_app)} >/dev/null 2>&1 &"
             await self._docker_exec(spawn)
 
         elif atype == GUIActionType.CLOSE_APP and action.app_name:

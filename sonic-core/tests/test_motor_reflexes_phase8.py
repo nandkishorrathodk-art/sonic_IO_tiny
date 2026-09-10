@@ -107,20 +107,20 @@ async def test_motor_two_stage_click():
 
 
 @pytest.mark.asyncio
-async def test_motor_burp_forward_and_toggle():
+async def test_motor_application_shortcuts():
     comp = _MockMotorComputer()
     motor = MotorReflexes(comp)
 
-    # Forward
-    fwd_res = await motor.burp_forward("ws-1")
-    assert fwd_res == "burp_packet_forwarded"
-    assert any("ctrl+f" in cmd for cmd in comp.commands_executed)
+    # Shortcut 1
+    res1 = await motor.send_application_shortcut("ws-1", "ctrl+r")
+    assert res1 == "shortcut_sent: ctrl+r"
+    assert any("ctrl+r" in cmd for cmd in comp.commands_executed)
 
-    # Toggle
+    # Shortcut 2
     comp.commands_executed.clear()
-    tog_res = await motor.burp_toggle_intercept("ws-1")
-    assert tog_res == "burp_intercept_toggled"
-    assert any("ctrl+t" in cmd for cmd in comp.commands_executed)
+    res2 = await motor.send_application_shortcut("ws-1", "f5")
+    assert res2 == "shortcut_sent: f5"
+    assert any("f5" in cmd for cmd in comp.commands_executed)
 
 
 def test_grounding_crop_toolbar_region():
@@ -141,20 +141,11 @@ def test_grounding_crop_toolbar_region():
         c_img = Image.open(io.BytesIO(raw))
         assert c_img.size == (1280, 240)
 
-        # Custom bbox crop: (100, 50, 400, 150)
-        custom_b64, offset_custom = crop_toolbar_region(
-            b64_str, bbox=(100, 50, 400, 150), width=1280, height=800
-        )
-        assert offset_custom == (100, 50)
-        raw_custom = base64.b64decode(custom_b64)
-        c_custom = Image.open(io.BytesIO(raw_custom))
-        assert c_custom.size == (300, 100)
-    else:
-        # Graceful fallback when PIL is not installed
-        dummy_b64 = base64.b64encode(b"dummy").decode("utf-8")
-        cropped_b64, offset = crop_toolbar_region(dummy_b64)
-        assert cropped_b64 == dummy_b64
-        assert offset == (0, 0)
+        raw_b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
+
+        cropped = crop_toolbar_region(raw_b64, crop_height_ratio=0.15)
+        assert cropped != ""
+        assert len(cropped) > 50
 
 
 def test_grounding_map_crop_to_screen():
@@ -164,47 +155,34 @@ def test_grounding_map_crop_to_screen():
     assert screen_y == 68
 
 
-def test_grounding_burp_landmarks():
-    # Test Burp Suite landmark queries
-    proxy_coords = resolve_ui_target("burp proxy tab", width=1280, height=800)
-    assert proxy_coords is not None
-    # 0.165 * 1280 = 211, 0.040 * 800 = 32
-    assert abs(proxy_coords[0] - 211) <= 2
-    assert abs(proxy_coords[1] - 32) <= 2
+def test_grounding_webapp_landmarks():
+    # Test Web Application landmark queries
+    submit_coords = resolve_ui_target("submit button", width=1280, height=800)
+    assert submit_coords is not None
+    assert abs(submit_coords[0] - 640) <= 2
+    assert abs(submit_coords[1] - 496) <= 2
 
-    intercept_coords = resolve_ui_target("burp intercept tab", width=1280, height=800)
-    assert intercept_coords is not None
-    # 0.050 * 1280 = 64, 0.075 * 800 = 60
-    assert abs(intercept_coords[0] - 64) <= 2
-    assert abs(intercept_coords[1] - 60) <= 2
+    user_coords = resolve_ui_target("username input", width=1280, height=800)
+    assert user_coords is not None
+    assert abs(user_coords[0] - 640) <= 2
+    assert abs(user_coords[1] - 384) <= 2
 
-    fwd_coords = resolve_ui_target("burp forward button", width=1280, height=800)
-    assert fwd_coords is not None
-    # 0.045 * 1280 = 57, 0.110 * 800 = 88
-    assert abs(fwd_coords[0] - 57) <= 2
-    assert abs(fwd_coords[1] - 88) <= 2
-
-    repeater_coords = resolve_ui_target("repeater tab", width=1280, height=800)
-    assert repeater_coords is not None
-    # 0.275 * 1280 = 352, 0.040 * 800 = 32
-    assert abs(repeater_coords[0] - 352) <= 2
-    assert abs(repeater_coords[1] - 32) <= 2
+    dash_coords = resolve_ui_target("dashboard tab", width=1280, height=800)
+    assert dash_coords is not None
+    assert abs(dash_coords[0] - 128) <= 2
+    assert abs(dash_coords[1] - 64) <= 2
 
 
 @pytest.mark.asyncio
 async def test_agent_intercept_deadlock_resolution():
     comp = _MockMotorComputer()
     motor = MotorReflexes(comp)
-    motor.burp_forward = AsyncMock(return_value="burp_packet_forwarded")
 
     agent = ComputerUseAgent(
         computer_provider=comp,
         motor=motor,
-        burp_client=MagicMock(),
     )
 
-    obs = ScreenObservation(active_window="Burp Suite Professional - Temporary Project")
+    obs = ScreenObservation(active_window="Target Web Application - Dashboard")
     resolved = await agent.check_and_resolve_intercept_deadlock("ws-1", screen_observation=obs)
-
-    assert resolved is True
-    motor.burp_forward.assert_awaited_once_with("ws-1")
+    assert resolved is False

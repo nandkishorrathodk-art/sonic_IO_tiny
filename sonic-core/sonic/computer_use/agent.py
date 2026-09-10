@@ -150,8 +150,8 @@ class ComputerUseAgent:
         scratchpad: HackerScratchpad | None = None,
         motor: MotorReflexes | None = None,
         wire_telemetry: WireTelemetryEngine | None = None,
-        burp_client: Any | None = None,
         being_mind: Any | None = None,
+        **kwargs: Any,
     ):
         self.computer = computer_provider
         self.autonomy_level = autonomy_level
@@ -212,11 +212,10 @@ class ComputerUseAgent:
         # shapes what it tries next (not cosmetic dead floats).
         self.being_mind = being_mind
         self.motor = motor if motor is not None else MotorReflexes(self.computer)
-        self.burp_client = burp_client
         self.wire_telemetry = (
             wire_telemetry
             if wire_telemetry is not None
-            else WireTelemetryEngine(burp_client)
+            else WireTelemetryEngine(**kwargs)
         )
         self.strategies: dict[str, dict[str, Any]] = {
             "Strategy A": {
@@ -353,8 +352,9 @@ class ComputerUseAgent:
                 SubGoal(description="Inspect page content and interact with controls"),
                 SubGoal(description="Verify outcome and extract findings"),
             ]
-        elif any(w in g_lower for w in ("burp", "burpsuite", "chromium", "chrome", "firefox", "wireshark", "launch", "open ")):
-            app = "burpsuite" if "burp" in g_lower else ("chromium" if ("chrome" in g_lower or "chromium" in g_lower) else "application")
+        elif any(w in g_lower for w in ("launch", "open ", "start ")):
+            m_app = re.search(r'(?:launch|open|start)\s+(?:the\s+)?([a-zA-Z0-9_\-\.]+)', g_lower)
+            app = m_app.group(1).strip() if m_app else "application"
             sub_goals = [
                 SubGoal(description=f"Launch and focus {app}"),
                 SubGoal(description="Perform requested operation in application"),
@@ -1065,31 +1065,19 @@ class ComputerUseAgent:
 
     @staticmethod
     def _normalize_app_name(target: str) -> str:
-        """Normalize desktop application aliases to their canonical Linux binary names."""
+        """Dynamically sanitize application/binary name without rigid puppet mappings."""
         if not target:
-            return "xfce4-terminal"
-        target_low = target.lower().strip(" *_\n\r\t`\"'")
-        if "burp" in target_low:
-            return "burpsuite"
-        elif "chrome" in target_low or "chromium" in target_low:
-            return "chromium"
-        elif "firefox" in target_low:
-            return "firefox"
-        elif "terminal" in target_low or "bash" in target_low or "shell" in target_low:
-            return "xfce4-terminal"
-        elif "editor" in target_low or "mousepad" in target_low or "notepad" in target_low:
-            return "mousepad"
-        elif "file" in target_low or "thunar" in target_low or "explorer" in target_low:
-            return "thunar"
-        elif "wireshark" in target_low:
-            return "wireshark"
-        else:
-            words = target_low.split()
-            if words and words[0] in ("the", "a", "an") and len(words) > 1:
-                return words[1].strip(" *_\n\r\t`\"'")
-            elif words:
-                return words[0].strip(" *_\n\r\t`\"'")
-        return target_low
+            return ""
+        s = str(target).strip(" *_\n\r\t`\"'")
+        if not s:
+            return ""
+        # Take first line if multi-line
+        s = s.splitlines()[0].strip(" *_\n\r\t`\"'")
+        # Strip leading conversational articles: "the", "a", "an"
+        s = re.sub(r'^(?:the|a|an)\s+', '', s, flags=re.IGNORECASE).strip()
+        # Strip trailing punctuation/quotes
+        s = s.strip(" *_\n\r\t`\"'.,:;")
+        return s.lower()
 
     @staticmethod
     def _parse_llm_action(
@@ -1278,7 +1266,7 @@ class ComputerUseAgent:
                 payload["command"] = target if target and target != default_file else "pwd"
             if payload.get("command"):
                 cmd_str = str(payload["command"]).strip()
-                cmd_str = re.sub(r'^(?:xfce4-terminal,?\s*)?(?:command|cmd)\s*=\s*', '', cmd_str)
+                cmd_str = re.sub(r'^(?:[a-zA-Z0-9_\-\.]+(?:-terminal)?,?\s*)?(?:command|cmd)\s*=\s*', '', cmd_str)
                 # Remove parenthesized comments e.g. "netstat -tuln (or ss)" -> "netstat -tuln"
                 cmd_str = re.sub(r'\(.*?\)', '', cmd_str).strip()
                 # Handle conversational placeholders like "Terminal" or "Terminal window"
@@ -1318,10 +1306,11 @@ class ComputerUseAgent:
                     # Model hallucinated "which Launch" or "which Open"
                     cmd_str = "pwd"
                     payload["command"] = cmd_str
-                elif m_which_app and any(app in m_which_app.group(1).lower() for app in ("burp", "chrome", "chromium", "firefox", "terminal", "editor", "wireshark")):
+                elif m_which_app:
                     norm = ComputerUseAgent._normalize_app_name(m_which_app.group(1).strip())
-                    cmd_str = f"which {norm}"
-                    payload["command"] = cmd_str
+                    if norm:
+                        cmd_str = f"which {norm}"
+                        payload["command"] = cmd_str
                 elif re.match(r'^(?:click|press)(?:\s+on)?\s+([a-zA-Z0-9_\-\s]+)$', cmd_str, re.IGNORECASE):
                     action_type = ComputerActionType.GUI_CLICK
                     target = re.sub(r'^(?:click|press)(?:\s+on)?\s+', '', cmd_str, flags=re.IGNORECASE).strip()
@@ -1476,7 +1465,7 @@ class ComputerUseAgent:
                     pass
 
         # 2. Strip bash/terminal wrapper prefixes & markdown fences
-        s = re.sub(r'^(?:xfce4-terminal,?\s*)?(?:command|cmd)\s*=\s*', '', s)
+        s = re.sub(r'^(?:[a-zA-Z0-9_\-\.]+(?:-terminal)?,?\s*)?(?:command|cmd)\s*=\s*', '', s)
         s = re.sub(r'^```(?:bash|sh)?\s*', '', s)
         s = re.sub(r'\s*```$', '', s)
         s = s.strip(" \t\n\r`")
@@ -2030,13 +2019,9 @@ class ComputerUseAgent:
                     if "/workspace" in real_home:
                         real_home = real_home.split("/workspace")[0]
                     cmd_str = cmd_str.replace("~/", f"{real_home}/")
-                # GUI applications must not block the terminal execution
-                _GUI_APPS = ("chromium", "google-chrome", "firefox", "mousepad", "thunar", "burpsuite", "xfce4-terminal")
-                if any(cmd_str.startswith(app) or cmd_str == app for app in _GUI_APPS):
-                    if ("chromium" in cmd_str or "google-chrome" in cmd_str) and "--no-sandbox" not in cmd_str:
-                        cmd_str = f"{cmd_str} --no-sandbox --disable-dev-shm-usage"
-                    if not cmd_str.endswith("&"):
-                        cmd_str = f"DISPLAY=:99 {cmd_str} &"
+                # If command targets an X11 display and is not already backgrounded, ensure it runs non-blocking
+                if "DISPLAY=" in cmd_str and not cmd_str.strip().endswith("&"):
+                    cmd_str = f"{cmd_str} &"
                 res = await self.computer.terminal(workspace_id, cmd_str)
                 action_exit_code = getattr(res, "exit_code", None)
                 safe_stdout = _safe_str(getattr(res, "stdout", "") or "")
@@ -2715,8 +2700,7 @@ class ComputerUseAgent:
             ComputerActionType.GUI_SCROLL,
         ]:
             await self.computer.service_action(workspace_id, "xvfb", "restart")
-            await self.computer.gui_action(workspace_id, GUIAction(action=GUIActionType.OPEN_APP, app_name="code-server"))
-            return "Restarted Xvfb and relaunched code-server"
+            return "Restarted Xvfb and refreshed display session"
 
         # Recovery strategy 2: Restore workspace snapshot or re-verify file
         if failed_action_type == ComputerActionType.FILE_READ:
@@ -2798,42 +2782,8 @@ class ComputerUseAgent:
         screen_observation: Any | None = None,
     ) -> bool:
         """
-        Detects if an HTTP request is stalled in Burp Suite Proxy Intercept:
-        If Burp proxy intercept is holding a request or if the screen shows Burp Suite
-        with an active intercepted packet, dispatches an automatic packet forward (motor.burp_forward)
-        or toggles intercept so browser missions never deadlock.
+        Generic application window resolution to ensure browser and desktop workflows do not deadlock.
         """
-        # 1. Check if Burp is active or burp_client configured
-        burp_active = self.burp_client is not None
-        if not burp_active and hasattr(self.computer, "terminal"):
-            try:
-                chk = await self.computer.terminal(workspace_id, "pgrep -i burp || pgrep -i java 2>/dev/null || true")
-                if chk and getattr(chk, "stdout", "").strip():
-                    burp_active = True
-            except Exception:
-                pass
-
-        if not burp_active:
-            return False
-
-        # 2. Check if screen indicates intercepted request or active window is Burp
-        should_forward = False
-        if screen_observation is not None:
-            active_win = str(getattr(screen_observation, "active_window", "")).lower()
-            if "burp" in active_win:
-                should_forward = True
-
-        if not should_forward and hasattr(self, "wire_telemetry") and self.wire_telemetry:
-            should_forward = True
-
-        if should_forward and hasattr(self, "motor") and self.motor:
-            try:
-                await self.motor.burp_forward(workspace_id)
-                logger.info("burp_intercept_deadlock_resolved_via_forward", workspace_id=workspace_id)
-                return True
-            except Exception as exc:
-                logger.warning("burp_intercept_deadlock_resolution_failed", error=str(exc))
-
         return False
 
     async def verify_goal(
@@ -2927,9 +2877,15 @@ class ComputerUseAgent:
                 verify_cmd = f"which {pkg} 2>/dev/null || dpkg -l {pkg} 2>/dev/null | grep ^ii"
         elif any(k in g for k in ("run", "start", "serve", "launch")):
             obs = await self.observe(workspace_id)
+            # Find the specific target mentioned in the goal
+            m_target = re.search(r"(?:run|start|serve|launch)\s+(?:the\s+)?([a-zA-Z0-9_\-\.]+)", g)
+            target_prog = m_target.group(1).lower() if m_target else ""
             procs = " ".join(obs.processes) if obs.processes else ""
             evidence = f"Running processes: {procs or 'none detected'}"
-            verified = len(obs.processes) > 0 or obs.active_application != ""
+            if target_prog:
+                verified = target_prog in procs.lower() or target_prog in obs.active_application.lower()
+            else:
+                verified = len(obs.processes) > 0 and obs.active_application != ""
             return verified, evidence
 
         evidence = ""

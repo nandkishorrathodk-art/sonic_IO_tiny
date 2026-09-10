@@ -101,13 +101,17 @@ async def _maybe_start_being_life_loop(settings):
         router = ModelRouter.for_default() if hasattr(ModelRouter, "for_default") else ModelRouter()
         browser = BrowserAgent(headless=True)
         await browser.launch()
+        # Wire security tools so the being can actually run real scans
+        # (nmap/nuclei/ffuf/http) during self-directed curiosity.
+        from sonic.tools.registry import get_default_registry
+        security_registry = get_default_registry(provider)
         # Toolsmith loop (Phase A, AIOSR): the being authors NEW tools for
         # observation gaps.
         from sonic.being.craft import BeingCraft
         from sonic.being.toolsmith import ToolsmithLoop
         toolsmith = ToolsmithLoop(
             craft=BeingCraft(being_id=being.being_id),
-            llm=router, registry=None,
+            llm=router, registry=security_registry,
         )
         # Method-invention loop (Phase B, AIOSR): the being synthesizes NOVEL
         # offensive techniques (new methods, not just tools) from observation +
@@ -120,10 +124,6 @@ async def _maybe_start_being_life_loop(settings):
         )
         from sonic.being.lessons import LessonsLedger
         lessons_ledger = LessonsLedger(tenant_id=tenant_id, agent_id=being.being_id)
-        # Wire security tools so the being can actually run real scans
-        # (nmap/nuclei/ffuf/http) during self-directed curiosity.
-        from sonic.tools.registry import get_default_registry
-        security_registry = get_default_registry(provider)
         agent = ComputerUseAgent(
             computer_provider=provider, llm_router=router,
             security_tools=security_registry.as_dict(),

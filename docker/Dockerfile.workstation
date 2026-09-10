@@ -78,9 +78,5 @@ RUN ln -sf /usr/bin/python3 /usr/local/bin/python
 RUN mkdir -p /root/.pki/nssdb \
     && certutil -d sql:/root/.pki/nssdb -N --empty-password 2>/dev/null || true
 
-# Pre-configure Burp Suite user options to listen on 127.0.0.1:8080 without setup wizard
-RUN mkdir -p /root/.BurpSuite \
-    && printf '{\n  "proxy": {\n    "request_listeners": [\n      {\n        "certificate_mode": "per_host",\n        "listen_mode": "loopback_only",\n        "listener_port": 8080,\n        "running": true\n      }\n    ]\n  }\n}\n' > /root/.BurpSuite/user_options.json
-
 WORKDIR /root
 CMD ["tail", "-f", "/dev/null"]

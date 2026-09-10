@@ -1122,17 +1122,12 @@ class DaytonaComputerProvider(ComputerProvider):
 
     async def install_application(self, workspace_id: str, package_name: str, actor: str = "operator") -> tuple[bool, str]:
         """Installs an application inside the sandbox."""
+        allowed, reason = self.app_policy.is_package_allowed(package_name)
+        if not allowed:
+            return False, reason
         pkg = package_name.strip().lower()
         if pkg in ("burpsuite", "burp"):
-            cmd = (
-                "sudo apt-get update -y && sudo apt-get install -y default-jre curl && "
-                "mkdir -p /home/daytona/burp && "
-                "curl -sL 'https://portswigger.net/burp/releases/download?product=community&type=Jar' -o /home/daytona/burp/burpsuite_community.jar && "
-                "echo '#!/bin/bash\nDISPLAY=:0 java -jar /home/daytona/burp/burpsuite_community.jar \"$@\" &' | sudo tee /usr/local/bin/burpsuite >/dev/null && "
-                "sudo chmod +x /usr/local/bin/burpsuite"
-            )
-            res = await self.terminal(workspace_id, cmd, actor=actor)
-            return (res.exit_code == 0, res.stdout or res.stderr)
+            return False, "Burp Suite installation is disabled; the workstation is an Application Desktop."
 
         safe_package = shlex.quote(package_name.strip())
         res = await self.terminal(workspace_id, f"sudo apt-get update && sudo apt-get install -y -- {safe_package}", actor=actor)

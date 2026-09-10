@@ -451,8 +451,6 @@ class DockerComputerProvider(ComputerProvider):
             app = action.app_name.strip().lower()
             if "chrome" in app or "browser" in app or "chromium" in app:
                 spawn = "DISPLAY=:99 nohup /usr/local/bin/chrome >/dev/null 2>&1 &"
-            elif "burp" in app:
-                spawn = "DISPLAY=:99 nohup /usr/local/bin/burpsuite >/dev/null 2>&1 &"
             elif "term" in app:
                 spawn = "DISPLAY=:99 nohup xfce4-terminal >/dev/null 2>&1 &"
             elif "thunar" in app or "file" in app:

@@ -14,6 +14,7 @@ of a step counter. No vulnerability-specific fix is hardcoded anywhere.
 from __future__ import annotations
 
 import asyncio
+import os
 import re
 import shlex
 import time
@@ -278,7 +279,7 @@ class ComputerUseAgent:
             f"{target_info}\n"
             "List 2 to 4 concrete, actionable, sequential sub-goals to accomplish it.\n"
             "Rules:\n"
-            "- Each sub-goal must be a specific concrete action (e.g. 'Run curl -I to check response headers', 'Scan open ports using nmap', 'Launch application and verify window').\n"
+            "- Each sub-goal must be a specific concrete action (e.g. 'Run curl -I to check response headers', 'Inspect target ports/services', 'Author custom probe script', 'Launch application and verify window').\n"
             "- Do NOT generate vague generic steps like 'Inspect environment and orient', 'Execute core operation', or 'Verify outcome'.\n"
             "- Output ONLY numbered lines, e.g.:\n"
             "1. <action>\n"
@@ -362,8 +363,8 @@ class ComputerUseAgent:
         elif any(w in g_lower for w in ("scan", "port", "nmap", "recon", "network")):
             dest = target_str or "target host"
             sub_goals = [
-                SubGoal(description=f"Perform network reconnaissance against {dest}"),
-                SubGoal(description="Analyze open ports and inspect service banners"),
+                SubGoal(description=f"Perform network reconnaissance and service discovery against {dest}"),
+                SubGoal(description="Analyze open services or endpoints and inspect responses"),
                 SubGoal(description="Compile security findings and verify evidence"),
             ]
         elif any(w in g_lower for w in ("test", "pytest", "unit test", "bug", "fix")):
@@ -569,12 +570,13 @@ class ComputerUseAgent:
 
     @staticmethod
     def _extract_targets_from_goal(goal: str) -> dict[str, list[str]]:
-        """Extract URLs, IPs, and hostnames from the goal text.
+        """Extract URLs, IPs, hostnames, git repos, and endpoints from the goal text.
 
-        Returns a dict with ``urls``, ``ips``, and ``hostnames`` so the
-        reasoning context can inject them prominently at the top of the
-        observation — preventing the model from inventing a target like
-        ``example.com`` when the user specified a real one.
+        Returns a dict with ``urls``, ``ips``, ``hostnames``, ``repos``,
+        ``endpoints``, and ``primary_target`` so the reasoning context can
+        inject them prominently at the top of the observation — keeping the
+        agent laser-focused on the primary destination without inventing
+        placeholders like ``example.com``.
         """
         urls = re.findall(r'https?://[^\s,\'"<>]+', goal)
         ips = re.findall(r'\b(?:\d{1,3}\.){3}\d{1,3}\b', goal)
@@ -587,7 +589,54 @@ class ComputerUseAgent:
             if m:
                 url_hosts.add(m.group(1))
         hostnames = [h for h in hostnames if h not in url_hosts]
-        return {"urls": urls, "ips": ips, "hostnames": hostnames}
+
+        # Repos: git ssh strings, github/gitlab/bitbucket links, or .git URLs
+        repos: list[str] = []
+        git_ssh = re.findall(r'git@[a-zA-Z0-9_.-]+:[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+(?:\.git)?', goal)
+        git_urls = [u for u in urls if u.endswith('.git')]
+        hub_repos = re.findall(r'\b(?:https?://)?(?:github\.com|gitlab\.com|bitbucket\.org)/[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+(?:\.git)?\b', goal)
+        explicit_repo = re.findall(r'(?:repo|repository):\s*([^\s,\'"<>]+)', goal, re.IGNORECASE)
+        for r in git_ssh + git_urls + hub_repos + explicit_repo:
+            if r not in repos:
+                repos.append(r)
+
+        # Endpoints: API endpoints or resource paths (/api/..., /v1/..., /auth/..., etc.)
+        endpoints: list[str] = []
+        for u in urls:
+            m = re.search(r'https?://[^/]+(/[^?\s#]+)', u)
+            if m and m.group(1) not in ("/", "") and m.group(1) not in endpoints:
+                endpoints.append(m.group(1))
+        text_endpoints = re.findall(r'(?<![a-zA-Z0-9_])/(?:api|v[0-9]+|auth|login|admin|swagger|graphql|health|metrics|users|v1|v2|v3)[a-zA-Z0-9_/.-]*', goal)
+        multi_paths = re.findall(r'(?<![a-zA-Z0-9_])/(?:[a-zA-Z0-9_-]+/[a-zA-Z0-9_.-]+)+', goal)
+        for ep in text_endpoints + multi_paths:
+            if ep not in endpoints and not ep.endswith(('.py', '.js', '.ts', '.html', '.md', '.sh')):
+                endpoints.append(ep)
+
+        # Determine primary target destination
+        primary_target = ""
+        if urls:
+            primary_target = urls[0]
+        elif repos:
+            primary_target = repos[0]
+        elif hostnames:
+            h = hostnames[0]
+            ep = endpoints[0] if endpoints else ""
+            primary_target = f"https://{h}{ep}" if ep.startswith("/") else f"https://{h}"
+        elif ips:
+            ip = ips[0]
+            ep = endpoints[0] if endpoints else ""
+            primary_target = f"http://{ip}{ep}" if ep.startswith("/") else f"http://{ip}"
+        elif endpoints:
+            primary_target = endpoints[0]
+
+        return {
+            "urls": urls,
+            "ips": ips,
+            "hostnames": hostnames,
+            "repos": repos,
+            "endpoints": endpoints,
+            "primary_target": primary_target,
+        }
 
     def _build_reasoning_context(
         self,
@@ -638,12 +687,13 @@ class ComputerUseAgent:
                 for e in elements[:10]
             ) or "(no interactive elements)"
             browser_lines = (
-                f"Browser page: url={bs.get('url', 'about:blank')}, "
+                (f"Browser active URL: {active_url}\n" if active_url else "")
+                + f"Browser page: url={bs.get('url', 'about:blank')}, "
                 f"title={bs.get('title', '')}\n"
                 f"Interactive elements: {el_summary}\n"
             )
         elif active_url:
-            browser_lines = f"Desktop browser page: url={active_url}\n"
+            browser_lines = f"Desktop browser page: url={active_url}\nBrowser active URL: {active_url}\n"
 
         anti_loop_banner = ""
         if active_url:
@@ -652,7 +702,7 @@ class ComputerUseAgent:
                 f"ANTI-LOOP PROGRESSION RULE: Do NOT emit BROWSER_NAVIGATE to '{active_url}' again! "
                 "The page is already open on screen. You MUST interact directly with the visible page: "
                 "use GUI_CLICK on buttons, input fields, links, or search bars (using coordinates or element names like 'search bar', 'explore', 'connect wallet'), "
-                "or use GUI_TYPE, GUI_SCROLL, or SECURITY_TOOL to make forward progress.\n"
+                "or use GUI_TYPE, GUI_SCROLL, terminal commands, custom scripts, or appropriate tools to make forward progress.\n"
             )
 
         recent_sigs = getattr(self, "_recent_action_signatures", [])
@@ -661,8 +711,8 @@ class ComputerUseAgent:
             if all(s == last_sig for s in recent_sigs[-2:]):
                 anti_loop_banner += (
                     f"ANTI-REPETITION ALERT: You have already executed '{last_sig[0]}' with target '{last_sig[1]}'. "
-                    "DO NOT repeat this action! Change modality (GUI ↔ SECURITY_TOOL / TERMINAL_EXEC) "
-                    "or pick a different security tool/target to advance state.\n"
+                    "DO NOT repeat this action! Change your approach: author a custom script (TOOL_AUTHOR), "
+                    "execute targeted commands/curl in terminal, interact via GUI/browser, or try a different angle toward the target.\n"
                 )
 
         tool_lines = ""
@@ -771,10 +821,20 @@ class ComputerUseAgent:
             f"Steps taken so far: {len(self.traces)}\n"
             f"Strategy A state: {strat_a_state.value if strat_a_state != StrategyState.EXHAUSTED else 'EXHAUSTED — pivot needed'}\n"
             "=== END FACTS ===\n\n"
-            "Based on these facts, reason through:\n"
-            "  1. What do you concretely know vs what is still unknown?\n"
-            "  2. If something failed — WHY, and what does that tell you?\n"
-            "  3. What single action would give you the MOST new information?\n"
+            "Mandatory Cognitive Reasoning Fields to address:\n"
+            "- WHAT DO I KNOW?: Verified facts from observations\n"
+            "- WHAT DO I NOT KNOW?: Target unknowns and pending discoveries\n"
+            "- WHAT FAILED?: Recent failure or NONE\n"
+            "- WHY DID IT FAIL?: Root cause analysis or NONE\n"
+            "- WHAT HYPOTHESIS DOES THIS SUPPORT/DISPROVE?: Evidence correlation\n"
+            "- WHAT IS THE HIGHEST-INFORMATION NEXT ACTION?: Optimal next action to gain maximal ground truth\n"
+            "=== AUTONOMOUS TARGET-FIRST REASONING ===\n"
+            "Based on the objective and situation facts, reason through:\n"
+            "  1. TARGET FOCUS: What is the fastest, most effective way to understand or reach this target?\n"
+            "  2. CREATION OVER SCRIPTS: What code, query, or interaction should I create right now?\n"
+            "  3. NO TOOL FORCING: You are completely tool-neutral. You are NOT required to run canned scanners (nmap, nuclei, etc.) or follow a scripted sequence. Author your own script, test directly with curl/python, inspect files, or interact via GUI/browser.\n"
+            "  4. EPISTEMIC STATE: What do you concretely know vs what is still unknown about this target?\n"
+            "  5. ADAPTATION: If something failed — WHY, and what alternate path reaches the target faster?\n"
             "Choose your next action accordingly.\n"
         )
 
@@ -796,26 +856,48 @@ class ComputerUseAgent:
         max_act = getattr(self, "max_actions", 50)
         compact = getattr(self, "_compact_mode", False)
 
+        browser_content = browser_lines.strip() if browser_lines else "None"
+        tool_content = tool_lines.strip() if tool_lines else "None"
+
+        targets = self._extract_targets_from_goal(goal)
+        primary_dest = targets.get("primary_target") or (
+            targets["urls"][0] if targets.get("urls") else (
+                f"https://{targets['hostnames'][0]}" if targets.get("hostnames") else (
+                    f"http://{targets['ips'][0]}" if targets.get("ips") else (
+                        targets.get("repos")[0] if targets.get("repos") else (
+                            targets.get("endpoints")[0] if targets.get("endpoints") else ""
+                        )
+                    )
+                )
+            )
+        )
+
         obs_summary = (
             f"Screen resolution: {screen_w}x{screen_h}\n"
             f"Step {step_index} of {max_act}. Overall Mission: {goal}\n"
+            f"TARGET DESTINATION: {primary_dest or 'Refer to objective'}\n"
             f"CURRENT ACTIVE SUBTASK: {active_sg_desc}\n"
             f"{checklist_str}\n"
-            f"INSTRUCTION: Focus your next action strictly on advancing the CURRENT ACTIVE SUBTASK above.\n"
+            f"INSTRUCTION: Focus your next action strictly on advancing toward the TARGET and CURRENT ACTIVE SUBTASK.\n"
+            f"Think: What is the fastest, most effective way to understand or reach this target? What code, query, or interaction should I create right now?\n"
             f"{scratchpad_hud}"
             f"{wire_summary}"
             f"Current working directory: {workdir}\n"
-            f"User home directory: {user_home} (Desktop path: {user_home}/Desktop)\n"
-            f"Active window / app: {active_app}\n"
-            f"Open desktop windows: {windows_str}\n"
-            f"Screen visible text:\n{screen_text}\n"
-            f"Terminal output:\n{terminal_text}\n"
-            f"{browser_lines}{tool_lines}"
+            f"User home directory: {user_home} (Desktop path: {user_home}/Desktop)\n\n"
+            f"=== WORKSTATION APPLICATION ENVIRONMENT ===\n"
+            f"Active Application / Window: {active_app}\n"
+            f"Open Windows: {windows_str}\n"
+            f"Screen Visible Content: {screen_text}\n"
+            f"Browser State: {browser_content}\n\n"
+            f"=== EXECUTION & TOOLKIT CAPABILITIES ===\n"
+            f"Last Command Output: {terminal_text}\n"
+            f"Optional Registered Tools: {available_tools} (use only if helpful; no tool is forced)\n"
+            f"Last Tool Result: {tool_content}\n\n"
+            f"AUTONOMOUS TARGETING & CODE AUTHORING: You are an autonomous architect, not a scripted puppet. You have full freedom to author custom code/scripts (TOOL_AUTHOR), run python snippets, send curl queries, or interact with apps.\n\n"
             f"{anti_loop_banner}"
             f"Files in workspace: {files_str}\n"
             f"Git branch: {git_branch_str}, clean: {observation.git_clean}\n"
             f"Primary file: {primary_file_str}, Test file: {test_file_str}\n"
-            f"Available security tools: {available_tools}\n"
             f"{lessons_block}"
             f"{living_block}"
         )
@@ -828,18 +910,35 @@ class ComputerUseAgent:
         obs_summary += f"Actions taken so far:\n{history_text or '(none — this is the first action)'}\n"
 
         # Inject extracted targets prominently at the VERY TOP so the model
-        # sees the actual target URL/IP before anything else.
-        targets = self._extract_targets_from_goal(goal)
+        # sees the actual target URL/IP/host/repo/endpoint before anything else.
         target_header = ""
-        if targets["urls"]:
+        if targets.get("urls"):
             target_header += f"TARGET URLS: {', '.join(targets['urls'])}\n"
-        if targets["ips"]:
+        if targets.get("ips"):
             target_header += f"TARGET IPS: {', '.join(targets['ips'])}\n"
-        if targets["hostnames"]:
+        if targets.get("hostnames"):
             target_header += f"TARGET HOSTS: {', '.join(targets['hostnames'])}\n"
+        if primary_dest and not (targets.get("urls") or targets.get("ips") or targets.get("hostnames")):
+            target_header += f"PRIMARY TARGET / DESTINATION: {primary_dest}\n"
+        if targets.get("repos"):
+            target_header += f"TARGET REPOS: {', '.join(targets['repos'])}\n"
+        if targets.get("endpoints"):
+            target_header += f"TARGET ENDPOINTS: {', '.join(targets['endpoints'])}\n"
         if target_header:
             target_header += "USE THESE TARGETS — do NOT substitute example.com or other URLs.\n"
-            obs_summary = target_header + obs_summary
+
+        target_header += (
+            "================================================================================\n"
+            f"🎯 TARGET & MISSION OBJECTIVE: {goal}\n"
+            "AUTONOMY DIRECTIVE: You are an autonomous agent, NOT a scripted puppet.\n"
+            "Do NOT force or wait for canned tools. You are completely tool-neutral.\n"
+            "Think: 'What is the fastest, most effective way to understand or reach this target?\n"
+            "What code, query, or interaction should I create right now?'\n"
+            "You have full freedom to author custom code/tools (TOOL_AUTHOR), execute python snippets,\n"
+            "run curl or bash commands, inspect source, or interact via browser/GUI.\n"
+            "================================================================================\n\n"
+        )
+        obs_summary = target_header + obs_summary
 
         # Select system prompt based on model capability
         if compact:
@@ -943,7 +1042,12 @@ class ComputerUseAgent:
             # If the LLM hallucinated example.com/example.org but the user specified a real target,
             # substitute the real target into the command / target / payload
             targets = self._extract_targets_from_goal(goal)
-            primary_target = targets["urls"][0] if targets["urls"] else (f"https://{targets['hostnames'][0]}" if targets["hostnames"] else (f"http://{targets['ips'][0]}" if targets["ips"] else ""))
+            primary_target = (
+                targets.get("primary_target")
+                or (targets["urls"][0] if targets.get("urls") else "")
+                or (f"https://{targets['hostnames'][0]}" if targets.get("hostnames") else "")
+                or (f"http://{targets['ips'][0]}" if targets.get("ips") else "")
+            )
             if primary_target:
                 if "command" in payload and any(ex in str(payload["command"]).lower() for ex in ("example.com", "example.org")):
                     payload["command"] = re.sub(r'https?://(?:www\.)?example\.(?:com|org)', primary_target, str(payload["command"]), flags=re.IGNORECASE)
@@ -1066,8 +1170,19 @@ class ComputerUseAgent:
             "BROWSER_DOWNLOAD": ComputerActionType.BROWSER_DOWNLOAD,
             "SECURITY_TOOL": ComputerActionType.SECURITY_TOOL,
             "TOOL_AUTHOR": ComputerActionType.TOOL_AUTHOR,
+            "AUTHOR_TOOL": ComputerActionType.TOOL_AUTHOR,
+            "CREATE_TOOL": ComputerActionType.TOOL_AUTHOR,
+            "CODE_AUTHOR": ComputerActionType.TOOL_AUTHOR,
             "TOOL_RUN": ComputerActionType.TOOL_RUN,
             "METHOD_INVENT": ComputerActionType.METHOD_INVENT,
+            "PYTHON": ComputerActionType.TERMINAL_EXEC,
+            "PYTHON_EXEC": ComputerActionType.TERMINAL_EXEC,
+            "PYTHON3": ComputerActionType.TERMINAL_EXEC,
+            "SCRIPT": ComputerActionType.TERMINAL_EXEC,
+            "CURL": ComputerActionType.TERMINAL_EXEC,
+            "BASH": ComputerActionType.TERMINAL_EXEC,
+            "SHELL": ComputerActionType.TERMINAL_EXEC,
+            "CMD": ComputerActionType.TERMINAL_EXEC,
             # GOAL_COMPLETE is handled by the caller as a no-op terminator.
             "GOAL_COMPLETE": ComputerActionType.TERMINAL_EXEC,
         }
@@ -1118,9 +1233,44 @@ class ComputerUseAgent:
         except Exception:
             payload = {"command": payload_str} if action_type == ComputerActionType.TERMINAL_EXEC else {}
 
+        if action_type == ComputerActionType.TOOL_AUTHOR:
+            if "source" not in payload and "SOURCE" in fields:
+                payload["source"] = fields["SOURCE"]
+            elif "code" not in payload and "CODE" in fields:
+                payload["code"] = fields["CODE"]
+                payload["source"] = fields["CODE"]
+            if "code" not in payload and "command" in payload:
+                payload["code"] = payload["command"]
+                payload.setdefault("source", payload["command"])
+            if "name" not in payload and target:
+                payload["name"] = target
+            if "observation" not in payload and "OBSERVATION" in fields:
+                payload["observation"] = fields["OBSERVATION"]
+
+        if action_type == ComputerActionType.TOOL_RUN:
+            if "tool" not in payload and target:
+                payload["tool"] = target
+
+        if action_type == ComputerActionType.FILE_WRITE:
+            if "content" not in payload and "CONTENT" in fields:
+                payload["content"] = fields["CONTENT"]
+            if "path" not in payload and target:
+                payload["path"] = target
+
         if action_type == ComputerActionType.BROWSER_TYPE:
             if "command" in payload and "text" not in payload:
                 payload["text"] = payload["command"]
+
+        if action_str in ("PYTHON", "PYTHON_EXEC", "PYTHON3"):
+            py_code = payload.get("code") or payload.get("command") or target or ""
+            py_code_str = str(py_code).strip()
+            if py_code_str and not py_code_str.startswith("python"):
+                payload["command"] = f"python3 -c {shlex.quote(py_code_str)}"
+        elif action_str == "CURL":
+            curl_arg = payload.get("command") or target or ""
+            curl_arg_str = str(curl_arg).strip()
+            if curl_arg_str and not curl_arg_str.startswith("curl"):
+                payload["command"] = f"curl {curl_arg_str}"
 
         if action_type == ComputerActionType.TERMINAL_EXEC:
             raw_cmd = payload.get("command") or fields.get("COMMAND")
@@ -1182,7 +1332,8 @@ class ComputerUseAgent:
                     if "port" in cs_low or "network" in cs_low or "connect" in cs_low:
                         payload["command"] = "netstat -tuln || ss -tuln"
                     elif "header" in cs_low or "curl" in cs_low or "http" in cs_low:
-                        payload["command"] = "curl -sI https://example.com"
+                        dest = target if (target and target != default_file and not target.endswith(('.py', '.md', '.ts', '.js', '.sh'))) else "http://localhost"
+                        payload["command"] = f"curl -sI {dest}"
                     elif "file" in cs_low or "dir" in cs_low or "list" in cs_low:
                         payload["command"] = "ls -la"
                     else:
@@ -1217,11 +1368,13 @@ class ComputerUseAgent:
         diagnostic probe. It does NOT apply any vulnerability-specific patch
         and contains no JWT/SQLi/XSS logic. Real remediation requires an LLM.
         """
+        file_path = f"/home/sonic/workspace/{primary_file}" if (primary_file and primary_file != "UNKNOWN") else "/home/sonic/workspace"
+        target_name = primary_file if (primary_file and primary_file != "UNKNOWN") else "workspace"
         return (
             ComputerActionType.FILE_READ,
-            f"/home/sonic/workspace/{primary_file}",
-            {"path": f"/home/sonic/workspace/{primary_file}"},
-            f"Diagnostic: inspected {primary_file} (no LLM available to remediate)",
+            file_path,
+            {"path": file_path},
+            f"Diagnostic: inspected {target_name} (no LLM available to remediate)",
         )
 
     # =============================================================
@@ -1975,9 +2128,10 @@ class ComputerUseAgent:
                 else:
                     is_same_url = getattr(self, "_last_navigated_url", "") == url
                     self._last_navigated_url = url
+                    disp = os.environ.get("DISPLAY", ":99" if hasattr(self.computer, "_docker_exec") or getattr(self.computer, "name", "") == "DockerComputerProvider" else ":0")
                     if is_same_url:
                         # Re-focus existing browser without spawning duplicate tabs
-                        focus_cmd = "DISPLAY=:0 xdotool search --onlyvisible --class chromium windowactivate 2>/dev/null || true"
+                        focus_cmd = f"DISPLAY={disp} xdotool search --onlyvisible --class chromium windowactivate 2>/dev/null || true"
                         await self.computer.terminal(workspace_id, focus_cmd)
                         actual_obs_str = (
                             f"Browser is already active on {url}. Existing tab focused (duplicate tab prevented). "
@@ -1990,7 +2144,7 @@ class ComputerUseAgent:
                         if chrome_running:
                             # Reuse existing Chromium window: focus, focus address bar via ctrl+l, type URL and press Return
                             nav_cmd = (
-                                f"DISPLAY=:0 xdotool search --onlyvisible --class chromium windowactivate --sync "
+                                f"DISPLAY={disp} xdotool search --onlyvisible --class chromium windowactivate --sync "
                                 f"key --clearmodifiers ctrl+l sleep 0.1 type --delay 15 {shlex.quote(url)} key Return 2>/dev/null || true"
                             )
                             await self.computer.terminal(workspace_id, nav_cmd)
@@ -1999,7 +2153,7 @@ class ComputerUseAgent:
                             actual_obs_str = f"Navigated active browser tab to {url} (tab reused via address bar)"
                         else:
                             clean_flags = "--no-sandbox --disable-dev-shm-usage --disable-session-crashed-bubble --no-first-run --no-default-browser-check"
-                            cmd = f"DISPLAY=:0 nohup chromium {clean_flags} {shlex.quote(url)} >/dev/null 2>&1 &"
+                            cmd = f"DISPLAY={disp} nohup chromium {clean_flags} {shlex.quote(url)} >/dev/null 2>&1 &"
                             await self.computer.terminal(workspace_id, cmd)
                             actual_obs_str = f"Launched browser and navigated to {url}"
 
@@ -2287,17 +2441,54 @@ class ComputerUseAgent:
 
             elif action_type == ComputerActionType.TOOL_AUTHOR:
                 # Toolsmith (Phase A, AIOSR): the being authors a NEW tool for an
-                # observation gap. The source is persisted to BeingCraft; the
-                # tool is NOT registered until TOOL_RUN confirms it in-sandbox.
+                # observation gap or custom capability. The source is persisted
+                # to BeingCraft; the tool is NOT registered until confirmed in-sandbox.
                 # No "tool authored and working" claim by decree.
+                if self.toolsmith is None and self.computer is not None and self.llm_router is not None:
+                    try:
+                        from sonic.being.craft import BeingCraft
+                        from sonic.being.toolsmith import ToolsmithLoop
+                        from sonic.tools.registry import SecurityToolRegistry
+                        reg = SecurityToolRegistry(provider=self.computer)
+                        self.toolsmith = ToolsmithLoop(
+                            craft=BeingCraft(being_id=getattr(self, "agent_id", "computer-use-agent")),
+                            llm=self.llm_router,
+                            registry=reg,
+                        )
+                    except Exception as e:
+                        logger.warning("lazy_toolsmith_init_failed", error=str(e))
+
                 if self.toolsmith is None:
-                    actual_obs_str = "Toolsmith not configured (no tool authoring)"
-                    recovery_needed = True
+                    # Direct script/code authoring fallback: write custom code or script directly to workspace
+                    code = payload.get("source") or payload.get("code") or payload.get("content")
+                    if code:
+                        tool_name = payload.get("name") or target_resource or "custom_tool"
+                        tool_name = re.sub(r'[^a-zA-Z0-9_-]', '_', tool_name).strip('_') or "custom_tool"
+                        ext = ".py" if ("import " in code or "def " in code) else ".sh"
+                        script_path = f"/home/sonic/workspace/{tool_name}{ext}"
+                        try:
+                            await self.computer.write_file(workspace_id, script_path, code)
+                            actual_obs_str = f"Authored custom script at '{script_path}' (direct script authoring)"
+                            status = ActionExecutionStatus.COMPLETED
+                            recovery_needed = False
+                        except Exception as e:
+                            actual_obs_str = f"Failed writing authored script '{script_path}': {e}"
+                            recovery_needed = True
+                    else:
+                        actual_obs_str = "Toolsmith not configured (no tool authoring)"
+                        recovery_needed = True
                 else:
                     observation = payload.get("observation", "") or target_resource
                     failed = payload.get("failed_attempts", [])
-                    authored = await self.toolsmith.author_tool_for_gap(
-                        observation=observation, failed_attempts=list(failed),
+                    name = payload.get("name") or payload.get("tool")
+                    source = payload.get("source") or payload.get("code")
+                    rationale = payload.get("rationale", "")
+                    authored = await self.toolsmith.author_tool(
+                        observation=observation,
+                        failed_attempts=list(failed) if failed else None,
+                        name=name,
+                        source=source,
+                        rationale=rationale,
                     )
                     if authored is None:
                         actual_obs_str = "Toolsmith: no novel tool warranted (honest skip)"
@@ -2306,6 +2497,27 @@ class ComputerUseAgent:
                             f"Authored tool '{authored.name}' (unconfirmed; "
                             f"run TOOL_RUN to verify): {authored.rationale}"
                         )
+                        if payload.get("auto_verify") or payload.get("run"):
+                            target = payload.get("target") or getattr(authored, "target", None)
+                            confirmed = await self.toolsmith.confirm_and_register(
+                                authored, self.computer, workspace_id, target=target,
+                            )
+                            if confirmed.reproduced:
+                                adapter = self.toolsmith.registry.get(confirmed.name) if getattr(self.toolsmith, "registry", None) else None
+                                if adapter is None:
+                                    from sonic.being.toolsmith import AuthoredToolAdapter
+                                    adapter = AuthoredToolAdapter(confirmed, self.computer)
+                                self.security_tools[confirmed.name] = adapter
+                                actual_obs_str = (
+                                    f"Tool '{confirmed.name}' CONFIRMED and registered "
+                                    f"(exit={confirmed.run_exit_code})"
+                                )
+                            else:
+                                actual_obs_str = (
+                                    f"Tool '{confirmed.name}' NOT confirmed "
+                                    f"(exit={confirmed.run_exit_code}); not registered"
+                                )
+                                recovery_needed = True
 
             elif action_type == ComputerActionType.TOOL_RUN:
                 # Run a previously-authored tool in-sandbox and register it into
@@ -2329,9 +2541,11 @@ class ComputerUseAgent:
                         )
                         if confirmed.reproduced:
                             # Make the confirmed tool callable via SECURITY_TOOL.
-                            adapter = self.toolsmith.registry.get(confirmed.name)
-                            if adapter is not None:
-                                self.security_tools[confirmed.name] = adapter
+                            adapter = self.toolsmith.registry.get(confirmed.name) if getattr(self.toolsmith, "registry", None) else None
+                            if adapter is None:
+                                from sonic.being.toolsmith import AuthoredToolAdapter
+                                adapter = AuthoredToolAdapter(confirmed, self.computer)
+                            self.security_tools[confirmed.name] = adapter
                             actual_obs_str = (
                                 f"Tool '{confirmed.name}' CONFIRMED and registered "
                                 f"(exit={confirmed.run_exit_code})"
@@ -2450,6 +2664,36 @@ class ComputerUseAgent:
         })
         return trace
 
+    async def author_tool(
+        self,
+        workspace_id: str,
+        observation: str,
+        name: str | None = None,
+        source: str | None = None,
+        rationale: str | None = None,
+        target: str | None = None,
+        auto_verify: bool = True,
+    ) -> tuple[bool, str]:
+        """Programmatically author, verify, and register a custom tool into the agent's toolkit."""
+        trace = await self.execute_action(
+            workspace_id=workspace_id,
+            action_type=ComputerActionType.TOOL_AUTHOR,
+            target_resource=name or "custom_tool",
+            payload={
+                "observation": observation,
+                "name": name,
+                "source": source,
+                "rationale": rationale,
+                "target": target,
+                "auto_verify": auto_verify,
+            },
+            predicted_outcome="tool authored and verified",
+        )
+        success = "CONFIRMED and registered" in trace.actual_observation or (
+            not auto_verify and "Authored tool" in trace.actual_observation
+        )
+        return success, trace.actual_observation
+
     # =============================================================
     # 4. Adaptive Recovery Intelligence
     # =============================================================
@@ -2529,7 +2773,7 @@ class ComputerUseAgent:
                     return (
                         f"BLOCKED: '{cmd_clean}' is a trivial info command and has been "
                         f"run {recent_trivial} times recently. Choose a goal-advancing "
-                        f"action instead (e.g. curl, nmap, file edit, app launch)."
+                        f"action instead (e.g. author a tool/script, run curl, execute python/bash, inspect target, file edit, or app interaction)."
                     )
 
         # Block exact repeat of last action

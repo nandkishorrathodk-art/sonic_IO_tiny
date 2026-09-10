@@ -103,6 +103,8 @@ class DynamicWorldModel:
         resource_type: str = "endpoint",
         current_state: str = "discovered",
         sensitive: bool = False,
+        metadata: dict[str, Any] | None = None,
+        access_rules: list[str] | None = None,
     ) -> ResourceNode:
         node = ResourceNode(
             resource_id=resource_id,
@@ -110,9 +112,115 @@ class DynamicWorldModel:
             resource_type=resource_type,
             current_state=current_state,
             sensitive=sensitive,
+            metadata=metadata or {},
+            access_rules=access_rules or [],
         )
         self.resources[resource_id] = node
         return node
+
+    def ingest_asset(self, asset_data: dict[str, Any]) -> ResourceNode:
+        """Ingest a directly observed target asset into the world model.
+        
+        Maps observed recon assets (URLs, subdomains, open ports, technologies,
+        certificates, DNS records) into verified ResourceNodes with honest
+        provenance, without depending on pre-canned scanner output.
+        """
+        asset_type = asset_data.get("type", "endpoint")
+        value = str(asset_data.get("value", ""))
+        name = asset_data.get("name", "")
+        meta = dict(asset_data.get("metadata", {}) or {})
+        
+        type_mapping = {
+            "url": "endpoint",
+            "endpoint": "endpoint",
+            "subdomain": "subdomain",
+            "domain": "subdomain",
+            "technology": "technology",
+            "port": "service",
+            "service": "service",
+            "certificate": "certificate",
+            "ip_address": "infrastructure",
+            "dns_record": "infrastructure",
+            "security_header": "security_posture",
+        }
+        resource_type = type_mapping.get(asset_type, asset_type)
+        
+        resource_id = asset_data.get("resource_id")
+        if not resource_id:
+            safe_val = value.replace("://", "_").replace("/", "_").replace(":", "_").strip("_")
+            resource_id = f"{resource_type}_{safe_val}" if safe_val else f"{resource_type}_{len(self.resources) + 1}"
+        
+        is_sensitive = bool(meta.get("sensitive", False))
+        val_lower = value.lower()
+        if any(keyword in val_lower for keyword in ("admin", "secret", "backup", "internal", "metrics", "swagger", "openapi", ".env", ".git")):
+            is_sensitive = True
+
+        access_rules = list(meta.get("access_rules", []))
+        if meta.get("disallowed_by_robots"):
+            access_rules.append("disallowed_by_robots")
+        if meta.get("auth_required"):
+            access_rules.append("auth_required")
+
+        if name and "name" not in meta:
+            meta["name"] = name
+
+        return self.register_resource(
+            resource_id=resource_id,
+            uri=value,
+            resource_type=resource_type,
+            current_state="discovered",
+            sensitive=is_sensitive,
+            metadata=meta,
+            access_rules=access_rules,
+        )
+
+    def ingest_recon_assets(self, assets: list[dict[str, Any]]) -> list[ResourceNode]:
+        """Batch ingest discovered target assets into the world model."""
+        nodes: list[ResourceNode] = []
+        for asset in assets:
+            if not isinstance(asset, dict):
+                continue
+            node = self.ingest_asset(asset)
+            nodes.append(node)
+        return nodes
+
+    def get_attack_surface(self) -> dict[str, list[ResourceNode]]:
+        """Categorize all discovered resources by surface dimension."""
+        surface: dict[str, list[ResourceNode]] = {
+            "endpoints": [],
+            "services": [],
+            "subdomains": [],
+            "technologies": [],
+            "certificates": [],
+            "infrastructure": [],
+            "security_posture": [],
+            "other": [],
+        }
+        category_map = {
+            "endpoint": "endpoints",
+            "url": "endpoints",
+            "subdomain": "subdomains",
+            "domain": "subdomains",
+            "technology": "technologies",
+            "service": "services",
+            "port": "services",
+            "certificate": "certificates",
+            "infrastructure": "infrastructure",
+            "ip_address": "infrastructure",
+            "dns_record": "infrastructure",
+            "security_posture": "security_posture",
+            "security_header": "security_posture",
+        }
+        for res in self.resources.values():
+            cat = category_map.get(res.resource_type, "other")
+            surface[cat].append(res)
+        return surface
+
+    def update_target_profile(self, profile_data: dict[str, Any]) -> None:
+        """Update the live target profile (DNS, open ports, TLS, server details)."""
+        if not hasattr(self, "target_profile"):
+            self.target_profile: dict[str, Any] = {}
+        self.target_profile.update(profile_data)
 
     def record_transition(
         self,
@@ -137,14 +245,23 @@ class DynamicWorldModel:
         return t
 
     def get_summary(self) -> dict[str, Any]:
-        """Provides a high-level cognitive snapshot."""
+        """Provides a high-level cognitive snapshot with attack surface breakdown."""
+        target_prof = getattr(self, "target_profile", {})
+        surface = self.get_attack_surface()
         return {
             "target": self.target,
             "goal": self.goal,
             "actors_count": len(self.actors),
             "resources_count": len(self.resources),
+            "endpoints_count": len(surface["endpoints"]),
+            "services_count": len(surface["services"]),
+            "technologies_count": len(surface["technologies"]),
+            "confirmed_assets_count": sum(
+                1 for r in self.resources.values() if r.metadata.get("confirmed", True) is not False
+            ),
             "transitions_count": len(self.transitions),
             "unresolved_unknowns": len(self.unknowns.get_unresolved()),
             "active_hypotheses": len(self.hypotheses.get_active()),
             "verified_findings_count": len(self.verified_findings),
+            "target_profile": target_prof,
         }

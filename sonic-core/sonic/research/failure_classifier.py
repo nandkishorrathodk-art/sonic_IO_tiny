@@ -154,14 +154,18 @@ def classify_failure(
             "could not resolve host",
             "name or service not known",
             "failed to connect to",
+            "filtered port",
+            "all 1000 scanned ports",
+            "ignored states (filtered)",
+            "host seems down",
         )
     ):
         return (
             FailureClassification.NETWORK_FAILURE,
-            "Network unreachable, connection refused, or DNS resolution failure",
+            "Network unreachable, connection refused, filtered port, or DNS resolution failure",
         )
 
-    # 5. Target failures (host down, connection reset, HTTP status codes)
+    # 5. Target failures (host down, connection reset, HTTP status codes, WAF blocks)
     if any(
         term in combined_lower
         for term in (
@@ -177,8 +181,8 @@ def classify_failure(
             "Target host is down or reset connection",
         )
 
-    # HTTP status code checks (404, 500, 502, 503)
-    http_match = re.search(r"\b(?:HTTP/[0-9.]+\s+|status(?:\s*code)?[:\s]+)?(404|500|502|503)\b", combined, re.IGNORECASE)
+    # HTTP status code checks (401, 403, 404, 429, 500, 502, 503)
+    http_match = re.search(r"\b(?:HTTP/[0-9.]+\s+|status(?:\s*code)?[:\s]+)?(401|403|404|429|500|502|503)\b", combined, re.IGNORECASE)
     if http_match:
         code = http_match.group(1)
         return (
@@ -186,10 +190,28 @@ def classify_failure(
             f"Target responded with HTTP {code} failure",
         )
 
-    if any(term in combined_lower for term in ("404 not found", "500 internal server error", "502 bad gateway", "503 service unavailable")):
+    if any(
+        term in combined_lower
+        for term in (
+            "403 forbidden",
+            "401 unauthorized",
+            "429 too many requests",
+            "404 not found",
+            "500 internal server error",
+            "502 bad gateway",
+            "503 service unavailable",
+            "blocked by waf",
+            "web application firewall",
+            "cloudflare ray id",
+            "mod_security",
+            "modsecurity",
+            "rate limit exceeded",
+            "request blocked by security",
+        )
+    ):
         return (
             FailureClassification.TARGET_FAILURE,
-            "Target returned server/resource failure status",
+            "Target returned server, WAF protection, or access control failure status",
         )
 
     # 6. Syntax / Unrecognized flag / Invalid command

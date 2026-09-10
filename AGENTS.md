@@ -1635,3 +1635,85 @@ Replaced and modernized the frontend process stream (`sonic-dashboard/components
 - `SealedActionPolicy` with `seal_default()` and `self_host=True` enforced on visual `ComputerUseAgent` in workstation routes.
 - Test baseline: 100% clean test passes across `test_execution_status_semantics.py`, `test_phase24_audit_remediation.py`, `test_p0_security_hardening.py`, `test_human_motor_reflexes_and_hotkeys.py`, `test_safety_sealed_policy.py`, and `test_hacker_scratchpad_and_wire_telemetry.py`. Dashboard build compiled 21/21 static pages with zero type or lint errors.
 
+## Phase 26 — Target-First Profiling & Autonomous Reconnaissance (100% Target-First, Zero Tool-Forcing)
+Audited and enhanced the reconnaissance and target profiling subsystem (`sonic/agents/recon.py` and `sonic/brain/world_model.py`) to be 100% Target-First, with ZERO tool-forcing or scripted checklist behavior, in strict accordance with the user directive:
+> *"main target tak pahunchna hai, isko scripted puppet nahi banana hai! Force mat karo koi bhi tool ke liye, yeh khud things develop karega."*
+
+### 1. Direct Target Observation Probes (`sonic/agents/recon.py`)
+Recon does NOT require or assume external pre-packaged scanners (`nmap`, `nuclei`, `ffuf`). Instead, it directly inspects the target through native Python protocols:
+- **Direct DNS Resolution (`_probe_dns`)**: Resolves A/AAAA records and PTR reverse hostnames via `socket.getaddrinfo` and `socket.gethostbyaddr` natively (labeled `discovered_by="dns_lookup"`).
+- **Direct TLS Certificate Inspection (`_probe_tls`)**: Connects natively via `ssl` and `socket` to extract Subject CN, Issuer, Validity, TLS version, cipher suite, and Subject Alternative Names (SANs) — discovering real subdomains/hostnames directly from the cryptographic certificate (labeled `discovered_by="tls_certificate"`).
+- **Direct Socket Port Probing (`_probe_socket_ports`)**: Probes common service ports (80, 443, 8080, 8443, 3000, 5000, 8000, 22, 21, 3306, 5432, 6379) via `asyncio.open_connection` with banner grabbing on open HTTP ports — zero nmap binary required (labeled `discovered_by="socket_probe"`).
+- **Deep HTTP Surface & Security Posture (`_probe_http_surface`)**:
+  - Direct GET: Captures status code, redirects, Web Server (`Server`), and backend framework (`X-Powered-By`, `X-AspNet-Version`, `X-Runtime`).
+  - Security posture: Evaluates CSP, HSTS, X-Frame-Options, X-Content-Type-Options, Referrer-Policy, and Permissions-Policy.
+  - CORS policy: Inspects `Access-Control-Allow-Origin` and `Access-Control-Allow-Methods`.
+  - Allowed HTTP methods: Sends direct `OPTIONS` probe (`Allow`, `Access-Control-Allow-Methods`).
+  - Target endpoint discovery: Directly fetches and parses `/robots.txt` and `/sitemap.xml`, and probes standard API/health routes (`/api`, `/api/v1`, `/health`, `/metrics`, `/docs`, `/openapi.json`, etc.) without needing `ffuf`.
+  - HTML structure: Extracts page title, CMS/meta generator tags, HTML forms/actions, and in-page JavaScript API route references.
+- **Strict Egress Safety**: Every probe vets targets against `is_target_allowed()` from `sonic.sandbox.egress` before touching the network.
+
+### 2. Dynamic World Model Grounding (`sonic/brain/world_model.py`)
+- `ingest_asset()` and `ingest_recon_assets()`: Maps direct target observations into `ResourceNode`s with preserved honest provenance (`live_probe`, `tls_certificate`, `socket_probe`, `dns_lookup`, `robots_txt`, `sitemap`, `html_structure`, `api_probe`). Automatically marks sensitive routes (`sensitive=True`).
+- `get_attack_surface()`: Categorizes discovered resources into `endpoints`, `services`, `subdomains`, `technologies`, `certificates`, `infrastructure`, and `security_posture`.
+- `target_profile` and `update_target_profile()`: Maintains continuous situational awareness of the target's live profile (DNS, open ports, TLS details, web server, security posture).
+- `get_summary()`: Enriched with real surface counts and target profile metrics.
+
+### 3. Done-Gate & Test Baseline
+- `sonic-core/tests/test_target_first_recon.py` (8 tests): All passed in 0.62s.
+- Regression suite (`test_recon_honesty.py`, `test_phase1_central_research_brain.py`, `test_phase6`, `test_phase8`, `test_phase5`, `test_mission_planner_adaptive.py`): 52 passed, 0 failures.
+- Security hardening suite (`test_p0_security_hardening.py`): 21 passed, 0 failures.
+
+## Phase 27 — Autonomous Target-First Offensive Intelligence, Self-Authoring Toolsmith, Substrate Separation & De-Puppeting (DONE)
+Transforms SONIC from a scripted tool-runner into a genuine, target-first autonomous offensive intelligence: eliminates all forced scanner hierarchies, enforces clean separation between the workstation application desktop and the headless operator toolkit, empowers the being to author its own tools dynamically, and adapts testing strategies via real target feedback.
+
+In strict accordance with the user directives:
+> *"inside the computer just have to run application not commands usko computer se mat jodo, tum samajh rahe ho na?"*
+> *"Network Scanners (nmap, nuclei, ffuf)... HTTP Probes... are abhi ke liye koi bhi tools par focus mat do, main target tak pahunchna hai, isko scripted puppet nahi banana hai! Force mat karo koi bhi tool ke liye, yeh khud things develop karega."*
+> *Constraint: DO NOT install Burp Suite.*
+
+### 1. Workstation Application Environment vs. Operator Substrate Separation
+- **Pure Application Desktop**: The Computer Workstation is treated strictly as an **Application Desktop Environment** (`DISPLAY=:99`, running Chromium, target web applications under test, desktop GUI software, and window management via `APP_LAUNCH`, `APP_FOCUS`, `BROWSER_*`, and `GUI_*`).
+- **External Operator Toolset**: Terminal execution (`TERMINAL_EXEC`), native network inspection, direct socket probes, and custom security scripts run headlessly as SONIC's external operator toolset, never polluting or typing directly into the application desktop UI.
+- **Demarcated Reasoning Context (`_build_reasoning_context`)**:
+  - `=== WORKSTATION APPLICATION ENVIRONMENT ===` (Active Application / Window, Open Windows, Screen Visible Content, Browser State).
+  - `=== SONIC OPERATOR TOOLKIT (EXTERNAL EXECUTION) ===` (Last Command Output, Available Security Tools, Last Tool Result).
+- **Burp Suite Disallowed**: Removed forced download and installation branches in `docker_computer.py` and `daytona_computer.py`. Added `burpsuite` and `burp` to `forbidden_packages` in `ApplicationPolicy` (`sonic/computer/models.py`) and removed them from `allowed_packages`.
+
+### 2. De-Puppeting Prompts & Mission Planning (Target-First Autonomy)
+- **`sonic-core/sonic/llm/prompts.py`**:
+  - Eliminated the rigid `PRIMARY SECURITY ASSESSMENT STRATEGY` (`1. RECONNAISSANCE FIRST: Use SECURITY_TOOL... 4. PROFESSIONAL TOOLS: Prefer nmap...`) and `SECURITY-FIRST EXECUTION PRIORITY` checklists.
+  - Replaced with **Autonomous Target-First Security Assessment Agent** directives: 100% focus on the target objective, analyzing target responses directly, and freely choosing or authoring the most direct path without any mandatory scanner checklists.
+- **`planner.py` & `director.py`**:
+  - `MissionPlanner.build_plan()` establishes baseline orientation towards the target asset instead of forcing a rigid scanner chain.
+  - `_derive_hypothesis_from_objective()` dynamically formulates hypotheses from the target objective (SQLi, auth bypass, attack surface discovery) rather than using hardcoded defect templates.
+  - Tool-agnostic trace evaluation: any successful action providing concrete findings (terminal execution, browser DOM interactions, custom script outputs) validates or falsifies hypotheses.
+
+### 3. Autonomous Tool Authoring & Dynamic Probe Synthesis (`toolsmith.py` & `agent.py`)
+- **On-the-Fly Tool Creation**: `ToolsmithLoop` and module-level `author_tool()` empower SONIC to author its own tools on the fly (`TOOL_AUTHOR`, `TOOL_RUN`, or direct `FILE_WRITE` -> `TERMINAL_EXEC`).
+- **In-Sandbox Verification & Dynamic Registration**: Toolsmith executes the authored code inside the sandbox provider, verifies exit code 0 and non-empty output, rejects failure markers (`traceback`, `syntaxerror`, `connection refused`), and dynamically registers the tool into `SecurityToolRegistry` and the agent's live runtime.
+- **Reasoning Context Empowerment**: Injects the prompt: *"You have the ability to author your own custom tools, scripts, and probes tailored specifically to this target."*
+- **Action Parser Support**: Added first-class handling for inline Python snippets (`python3 -c ...`), targeted curl commands (`CURL`), shell probes (`BASH`, `SCRIPT`), and custom code generation (`TOOL_AUTHOR`).
+
+### 4. Dynamic Strategy Evolution & Adaptive Attack Synthesis (`evolution/` & `method_lab.py`)
+- **`DynamicStrategyEngine` (`sonic/evolution/strategy.py`)**: Reacts dynamically to real target feedback:
+  - **HTTP 403 Forbidden**: Switches to `HEADER_AND_VERB_MUTATION` (path normalization `//`, `%2e/`, override headers `X-Original-URL`, `X-Forwarded-For`, verb tampering POST/PUT/OPTIONS) and triggers `MethodLab` for auth-bypass hypothesis synthesis.
+  - **WAF Block**: Switches to `WAF_EVASION_MUTATION` to synthesize parser-confusion probes via `MethodLab` or custom obfuscated probes via `Toolsmith`.
+  - **Filtered Port**: Switches to `ALTERNATIVE_SURFACE_PIVOT`, immediately pivoting from dead ports to active web/API endpoints.
+  - **HTTP 429 Rate Limit**: Activates `RATE_THROTTLING_AND_BACKOFF` with delay jitter and client header rotation.
+- **Novelty in `MethodLab`**: Zero hardcoded exploit templates. Hypotheses are synthesized from real target observations and failure context, validated strictly inside the sandbox provider, and stored in `LessonsLedger` (`[AVOID]` / `[REUSE]` directives).
+
+### 5. Verification Test Matrix (100% Green)
+- `sonic-core/tests/test_phase_a_toolsmith.py` (24 tests) — **PASSED** (24/24)
+- `sonic-core/tests/test_phase_b_method_lab.py` (15 tests) — **PASSED** (15/15)
+- `sonic-core/tests/test_evolution_strategy_and_engine.py` (7 tests) — **PASSED** (7/7)
+- `sonic-core/tests/test_failure_engine_and_classification.py` (19 tests) — **PASSED** (19/19)
+- `sonic-core/tests/test_agent_quality_improvements.py` (21 tests) — **PASSED** (21/21)
+- `sonic-core/tests/test_phase3_real_computer_use_reasoning.py` (8 tests) — **PASSED** (8/8)
+- `sonic-core/tests/test_mission_trace_synthesis.py` (12 tests) — **PASSED** (12/12)
+- `sonic-core/tests/test_target_driven_missions.py` (5 tests) — **PASSED** (5/5)
+- `sonic-core/tests/test_target_first_recon.py` (8 tests) — **PASSED** (8/8)
+- GUI, motor reflexes, and application action suites (77 tests) — **PASSED** (77/77)
+
+
+

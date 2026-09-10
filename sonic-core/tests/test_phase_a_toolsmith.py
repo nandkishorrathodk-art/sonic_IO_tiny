@@ -64,6 +64,9 @@ class _StubProvider:
         return ExecResult(command=command, exit_code=self.exit_code,
                           stdout=self.stdout, stderr="")
 
+    async def terminal(self, workspace_id, command, **kw):
+        return await self.execute(workspace_id, command, **kw)
+
 
 class _StubLLM:
     """Returns a canned tool proposal for toolsmith authoring."""
@@ -256,3 +259,202 @@ def test_confirmed_tool_runs_via_security_tool_path(craft, registry):
     assert res.exit_code == 0
     # Real parsed findings from real stdout, not a decree.
     assert any(f.get("port") == 22 for f in res.parsed_data)
+
+
+@pytest.mark.parametrize("bad_stdout", [
+    "Connection refused",
+    "/bin/sh: line 1: tool: command not found",
+    "SyntaxError: invalid syntax",
+    "Traceback (most recent call last):\n  File 'tool.py', line 1",
+    "Usage: my_tool [options]",
+    "Error: failed to connect to host",
+])
+def test_toolsmith_rejects_failure_markers_even_on_exit_0(craft, registry, bad_stdout):
+    """Even if exit code is 0, outputs indicating failure are rejected."""
+    llm = _StubLLM(_proposal("flaky_tool", "import sys\nprint('starting')\n"))
+    ts = ToolsmithLoop(craft=craft, llm=llm, registry=registry)
+    tool = _run(ts.author_tool_for_gap("testing failure markers"))
+    assert tool is not None
+    provider = _StubProvider(exit_code=0, stdout=bad_stdout)
+    _run(ts.confirm_and_register(tool, provider, "ws"))
+    assert tool.reproduced is False
+    assert "flaky_tool" not in registry.names()
+
+
+def test_toolsmith_init_handles_none_registry(craft):
+    """ToolsmithLoop handles registry=None or omitted gracefully."""
+    ts1 = ToolsmithLoop(craft=craft, llm=_StubLLM(""))
+    assert ts1.registry is None
+    assert ts1._existing_tool_names() == set()
+
+    ts2 = ToolsmithLoop(craft=craft, llm=_StubLLM(""), registry=None)
+    assert ts2.registry is None
+    assert ts2._existing_tool_names() == set()
+
+
+def test_agent_tool_run_without_toolsmith_registry(craft):
+    """When ToolsmithLoop has registry=None, agent TOOL_RUN does not crash with
+    AttributeError, but builds an AuthoredToolAdapter and registers it in security_tools."""
+    from sonic.computer_use.agent import ComputerUseAgent
+    from sonic.computer_use.models import ComputerActionType
+
+    provider = _StubProvider(exit_code=0, stdout='{"finding": "ok"}')
+    ts = ToolsmithLoop(craft=craft, llm=_StubLLM(""), registry=None)
+    tool = AuthoredTool(name="custom_scanner", source="import sys\nprint('ok')\n", rationale="test gap")
+    ts.authored.append(tool)
+
+    agent = ComputerUseAgent(
+        computer_provider=provider,
+        toolsmith=ts,
+    )
+    trace = _run(agent.execute_action(
+        workspace_id="ws",
+        action_type=ComputerActionType.TOOL_RUN,
+        target_resource="custom_scanner",
+        payload={"tool": "custom_scanner"},
+        predicted_outcome="tool confirmed",
+    ))
+    assert tool.name in agent.security_tools
+    assert agent.security_tools[tool.name].name == "custom_scanner"
+    assert "CONFIRMED and registered" in trace.actual_observation
+
+
+def test_toolsmith_author_tool_alias_and_direct_source(craft, registry):
+    """ToolsmithLoop.author_tool acts as an alias and accepts direct source without LLM."""
+    ts = ToolsmithLoop(craft=craft, llm=_StubLLM("DECLINE"), registry=registry)
+    tool = _run(ts.author_tool(
+        observation="custom observation",
+        name="direct_probe",
+        source="import sys\nprint('direct probe ok')\n",
+        rationale="direct custom probe",
+    ))
+    assert tool is not None
+    assert tool.name == "direct_probe"
+    assert tool.reproduced is False
+    assert "direct probe ok" in tool.source
+
+
+def test_module_level_author_tool_function(craft, registry):
+    """The module-level author_tool function creates a ToolsmithLoop and authors a tool."""
+    from sonic.being.toolsmith import author_tool as module_author_tool
+    tool = _run(module_author_tool(
+        observation="direct gap",
+        craft=craft,
+        registry=registry,
+        name="module_tool",
+        source="import sys\nprint('module tool')\n",
+        rationale="module tool rationale",
+    ))
+    assert tool is not None
+    assert tool.name == "module_tool"
+
+
+def test_agent_author_tool_programmatic(craft, registry):
+    """ComputerUseAgent.author_tool programmatically authors, verifies, and registers a tool."""
+    from sonic.computer_use.agent import ComputerUseAgent
+
+    provider = _StubProvider(exit_code=0, stdout='{"finding": "direct_verified"}')
+    ts = ToolsmithLoop(craft=craft, llm=_StubLLM(""), registry=registry)
+    agent = ComputerUseAgent(
+        computer_provider=provider,
+        toolsmith=ts,
+    )
+    success, obs = _run(agent.author_tool(
+        workspace_id="ws",
+        observation="need direct api scanner",
+        name="api_scanner",
+        source="import sys, json\nprint(json.dumps({'finding': 'direct_verified'}))\n",
+        auto_verify=True,
+    ))
+    assert success is True
+    assert "api_scanner" in agent.security_tools
+    assert "CONFIRMED and registered" in obs
+
+
+def test_agent_tool_author_auto_verify_action(craft, registry):
+    """ComputerUseAgent execute_action with TOOL_AUTHOR and auto_verify=True verifies immediately."""
+    from sonic.computer_use.agent import ComputerUseAgent
+    from sonic.computer_use.models import ComputerActionType
+
+    provider = _StubProvider(exit_code=0, stdout='{"finding": "auto_verified"}')
+    ts = ToolsmithLoop(craft=craft, llm=_StubLLM(""), registry=registry)
+    agent = ComputerUseAgent(
+        computer_provider=provider,
+        toolsmith=ts,
+    )
+    trace = _run(agent.execute_action(
+        workspace_id="ws",
+        action_type=ComputerActionType.TOOL_AUTHOR,
+        target_resource="auto_probe",
+        payload={
+            "observation": "need auto probe",
+            "name": "auto_probe",
+            "source": "import sys, json\nprint(json.dumps({'finding': 'auto_verified'}))\n",
+            "auto_verify": True,
+        },
+        predicted_outcome="tool confirmed",
+    ))
+    assert "auto_probe" in agent.security_tools
+    assert "CONFIRMED and registered" in trace.actual_observation
+
+
+def test_dynamic_script_authoring_file_write_and_exec():
+    """Agent can author its own script on-the-fly via FILE_WRITE and execute it via TERMINAL_EXEC."""
+    from sonic.computer_use.agent import ComputerUseAgent
+    from sonic.computer_use.models import ComputerActionType
+
+    provider = _StubProvider(exit_code=0, stdout="custom probe execution output: port 8080 open")
+    agent = ComputerUseAgent(computer_provider=provider)
+
+    # 1. FILE_WRITE: Author the custom script
+    trace_write = _run(agent.execute_action(
+        workspace_id="ws",
+        action_type=ComputerActionType.FILE_WRITE,
+        target_resource="/home/sonic/workspace/my_probe.py",
+        payload={
+            "path": "/home/sonic/workspace/my_probe.py",
+            "content": "import sys\nprint('custom probe execution output: port 8080 open')\n",
+        },
+        predicted_outcome="file written",
+    ))
+    assert trace_write.status.value.lower() == "completed"
+    assert ("ws", "/home/sonic/workspace/my_probe.py", "import sys\nprint('custom probe execution output: port 8080 open')\n") in provider.written
+
+    # 2. TERMINAL_EXEC: Execute the authored script
+    trace_exec = _run(agent.execute_action(
+        workspace_id="ws",
+        action_type=ComputerActionType.TERMINAL_EXEC,
+        target_resource="python /home/sonic/workspace/my_probe.py",
+        payload={"command": "python /home/sonic/workspace/my_probe.py"},
+        predicted_outcome="probe executed",
+    ))
+    assert trace_exec.status.value.lower() == "completed"
+    assert "port 8080 open" in trace_exec.actual_observation
+
+
+def test_reasoning_context_contains_autonomous_tool_authoring_prompt():
+    """Agent's reasoning context explicitly instructs that it can author custom tools and probes."""
+    from sonic.computer_use.agent import ComputerUseAgent
+    from sonic.computer_use.models import ComputerWorldObservation
+
+    provider = _StubProvider()
+    agent = ComputerUseAgent(computer_provider=provider)
+    obs = ComputerWorldObservation(
+        screenshot_base64="",
+        screen_dimensions=(1920, 1080),
+        active_application="Terminal",
+        windows=["Terminal"],
+        terminal_output="Listening on 0.0.0.0",
+    )
+    sys_prompt, user_prompt = agent._build_reasoning_context(
+        goal="assess target 10.0.0.5",
+        observation=obs,
+        step_index=1,
+        primary_file="",
+        test_file="",
+    )
+    required_prompt = "You have the ability to author your own custom tools, scripts, and probes tailored specifically to this target."
+    assert required_prompt in user_prompt or required_prompt in sys_prompt
+
+
+

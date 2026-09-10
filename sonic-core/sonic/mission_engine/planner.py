@@ -1,10 +1,12 @@
-"""Scope-aware mission planning.
+"""Scope-aware, target-driven mission planning.
 
-The planner produces a read-only baseline plan adapted to the objective's
-intent — reconnaissance, source inspection, or test/audit — rather than a
-single fixed 3-action plan for every mission. Every action compiles down to
-the same allowlisted read-only tool schema before execution, and active probes
-remain approval-required (never silently executed).
+The planner produces an objective- and target-driven orientation baseline plan
+rather than forcing a rigid checklist of canned security tools or scripts. It
+orients the agent toward the target asset and workspace context, giving the
+agent full creative autonomy to select, author, and develop its own tools and
+actions. Every action compiles down to the allowlisted read-only tool schema
+before execution, and active probes remain approval-required (never silently
+executed).
 """
 
 from __future__ import annotations
@@ -119,6 +121,27 @@ class MissionPlanner:
             ),
         ]
 
+        # Target asset orientation: orient specifically toward the TARGET asset
+        # without forcing any canned security tool chains or pre-scripted checklists.
+        target_clean = target.strip()
+        if "://" in target_clean:
+            target_clean = target_clean.split("://", 1)[1]
+        target_clean = target_clean.split(":", 1)[0].split("?", 1)[0].strip("/")
+
+        if target_clean and target_clean not in (".", "/"):
+            if any(sep in target for sep in ("/", "\\")):
+                actions.append(PlannedAction(
+                    tool="target_shell_readonly",
+                    input={"command": f"ls -ld {target.strip()} 2>/dev/null || find . -path '*{target_clean}*' | head -50"},
+                    risk=ToolRisk.READ_ONLY,
+                ))
+            else:
+                actions.append(PlannedAction(
+                    tool="target_shell_readonly",
+                    input={"command": f"find . -maxdepth 3 -name '*{target_clean}*' | head -50"},
+                    risk=ToolRisk.READ_ONLY,
+                ))
+
         # Intent-specific inspection derived from the objective text.
         intent = _intent_of(objective)
         for cmd in _INTENT_COMMANDS.get(intent, []):
@@ -129,7 +152,8 @@ class MissionPlanner:
             ))
 
         # Active probes are represented as approval-required actions, but are
-        # not silently executed by the baseline planner.
+        # not silently executed by the baseline planner. The agent dynamically
+        # devises, tests, and verifies actions within the safety boundary.
         if any(word in objective.lower() for word in ("scan", "test", "probe", "audit", "pentest")):
             actions.append(PlannedAction(
                 tool="target_shell_approved",
@@ -224,9 +248,15 @@ class MissionPlanner:
             actions.append(a)
             prev_id = a.action_id
 
-        # Stage 0 — orient: locate the target working set.
+        # Stage 0 — orient: locate the target working set and orient toward target asset.
         add_stage("target_shell_readonly", "pwd", 0)
         add_stage("target_shell_readonly", "git status --short 2>/dev/null || true", 0)
+        target_clean = target.strip()
+        if "://" in target_clean:
+            target_clean = target_clean.split("://", 1)[1]
+        target_clean = target_clean.split(":", 1)[0].split("?", 1)[0].strip("/")
+        if target_clean and target_clean not in (".", "/"):
+            add_stage("target_shell_readonly", f"find . -maxdepth 3 -name '*{target_clean}*' | head -50", 0)
         # Stage 1 — surface map: top-level file tree + config landmarks.
         add_stage("target_shell_readonly", "find . -maxdepth 2 -type f | head -120", 1)
         add_stage("target_shell_readonly", "find . -maxdepth 3 -type f \\( -name '*.py' -o -name '*.js' -o -name '*.go' -o -name '*.rb' \\) | head -120", 1)

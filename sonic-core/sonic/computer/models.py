@@ -167,10 +167,11 @@ class ApplicationPolicy(BaseModel):
     allowed_packages: list[str] = Field(default_factory=lambda: [
         "nmap", "nuclei", "ffuf", "git", "curl", "wget", "jq", "python3-pip",
         "playwright", "chromium", "nodejs", "npm", "zsh", "tmux", "vim", "code-server",
-        "wireshark", "gdb", "sqlmap", "nikto", "zap", "burpsuite"
+        "wireshark", "gdb", "sqlmap", "nikto", "zap"
     ])
     forbidden_packages: list[str] = Field(default_factory=lambda: [
-        "wireshark-root", "tor-relay", "cryptominer", "kernel-mod", "ddos-bot"
+        "wireshark-root", "tor-relay", "cryptominer", "kernel-mod", "ddos-bot",
+        "burpsuite", "burp"
     ])
     max_install_size_mb: int = 2048
     require_approval: bool = False

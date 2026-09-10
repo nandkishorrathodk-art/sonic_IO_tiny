@@ -380,9 +380,12 @@ class TestAppInstallGate:
     def test_allowed_packages_pass_application_policy(self):
         from sonic.computer.models import ApplicationPolicy
         ap = ApplicationPolicy()
-        for ok_pkg in ("nmap", "nuclei", "chromium", "burpsuite"):
+        for ok_pkg in ("nmap", "nuclei", "chromium", "zap"):
             allowed, reason = ap.is_package_allowed(ok_pkg)
             assert allowed, f"{ok_pkg} should be allowed: {reason}"
+        blocked, block_reason = ap.is_package_allowed("burpsuite")
+        assert not blocked, "burpsuite must not be allowed to install"
+        assert "prohibited" in block_reason.lower()
 
     @pytest.mark.asyncio
     async def test_app_install_routes_through_provider_gate(self):

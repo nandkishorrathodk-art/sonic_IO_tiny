@@ -342,10 +342,19 @@ class TestAgentFailureIntegration:
             test_file="",
         )
 
-        assert "Screen visible text:\nUNKNOWN" in obs_summary
-        assert "Terminal output:\nUNKNOWN" in obs_summary
+        assert (
+            "Screen Visible Content: UNKNOWN" in obs_summary
+            or "Screen visible text:\nUNKNOWN" in obs_summary
+        )
+        assert (
+            "Last Command Output: UNKNOWN" in obs_summary
+            or "Terminal output:\nUNKNOWN" in obs_summary
+        )
         assert "Files in workspace: UNKNOWN" in obs_summary
-        assert "Active window / app: UNKNOWN" in obs_summary
+        assert (
+            "Active Application / Window: UNKNOWN" in obs_summary
+            or "Active window / app: UNKNOWN" in obs_summary
+        )
 
     @pytest.mark.asyncio
     async def test_failure_budget_exhaustion_blocks_retry(self):

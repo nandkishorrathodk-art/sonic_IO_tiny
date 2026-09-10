@@ -559,7 +559,12 @@ async def _run_mission_preflight(tenant_id: str, session_id: str, mission_id: st
                     f"Verified {execution.tool} result recorded with SHA-256 custody digest {evidence['sha256'][:16]}…",
                     evidence_id=evidence["id"],
                 )
-            if execution.status != "SUCCESS":
+            if execution.status == "AWAITING_APPROVAL":
+                mission["status"] = "AWAITING_APPROVAL"
+                state["current_action"] = f"Action {label} requires operator approval."
+                _mission_event(state, "approval", "Operator approval required", f"Action {label} requires operator approval before active execution.")
+                break
+            elif execution.status != "SUCCESS":
                 mission["status"] = "BLOCKED"
                 _mission_event(state, "error", "Mission preflight failed", f"{label} returned {execution.status}.")
                 return

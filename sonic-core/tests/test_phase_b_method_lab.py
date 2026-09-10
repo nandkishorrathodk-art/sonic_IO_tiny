@@ -273,3 +273,29 @@ def test_confirmed_technique_probe_registered_as_tool(vm, registry, craft):
     assert tech.confirmed is True
     # The probe was routed through the toolsmith and registered as a tool.
     assert "graphql_introspect" in registry.names()
+    # The target argument was passed through to the provider's execution.
+    assert any("10.0.0.5" in cmd for cmd in provider.executed)
+
+
+@pytest.mark.parametrize("bad_stdout", [
+    "Connection refused",
+    "/bin/sh: line 1: tool: command not found",
+    "SyntaxError: invalid syntax",
+    "Traceback (most recent call last):\n  File 'tool.py', line 1",
+    "Usage: my_probe [options]",
+    "Error: failed to connect to host",
+])
+def test_method_lab_direct_fallback_rejects_failure_markers(vm, bad_stdout):
+    """Direct run fallback rejects outputs with failure markers even on exit 0."""
+    llm = _StubLLM(_synth(
+        "flaky_probe", "discovery",
+        "A probe that fails at runtime",
+        "import sys\nprint('starting')\n",
+    ))
+    lab = MethodLab(llm=llm, vector_memory=vm, toolsmith=None)
+    tech = _run(lab.invent("observation", "prior failure"))
+    assert tech is not None
+    provider = _StubProvider(exit_code=0, stdout=bad_stdout)
+    _run(lab.confirm(tech, provider, "ws", target="10.0.0.5"))
+    assert tech.confirmed is False
+

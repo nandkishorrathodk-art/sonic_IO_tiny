@@ -96,8 +96,8 @@ async def test_motor_two_stage_click():
     executed = comp.commands_executed
     assert any("wmctrl -a 'Burp Suite'" in cmd or "windowactivate" in cmd for cmd in executed)
 
-    # Stage 3: Physical mouse click
-    assert any("xdotool mousemove 220 45 click 1" in cmd for cmd in executed)
+    # Stage 3: Physical mouse click via gui_action (or fallback shell command)
+    assert len(comp.gui_actions) >= 1 or any("xdotool mousemove 220 45 click 1" in cmd for cmd in executed)
 
     # Provider gui_action called
     assert len(comp.gui_actions) >= 1

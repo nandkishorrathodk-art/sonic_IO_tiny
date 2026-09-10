@@ -1,9 +1,15 @@
 """
 SONIC — Capability Router (Dual Execution Architecture)
 ========================================================
-Routes actions and tasks to the optimal execution substrate:
-    - COMPUTER: Graphical desktop, full browser, native desktop apps (Daytona / Docker Workstation)
-    - HEADLESS: Fast, container-free terminal commands, file I/O, security scanning, direct HTTP probing
+Implements the clean architectural separation between:
+    1. THE COMPUTER WORKSTATION (Application Environment):
+       Where APPLICATIONS run: web browsers, GUI tools, target software, desktop windows.
+       Routed to `ExecutionSubstrate.COMPUTER` (Daytona / Docker Workstation).
+    2. SONIC OPERATOR TOOLKIT (External Headless Execution):
+       Where COMMANDS and SECURITY SCANS run externally against targets without polluting
+       or cluttering the computer desktop.
+       Routed to `ExecutionSubstrate.HEADLESS` (Fast, container-free terminal commands, file I/O,
+       security scanning, direct HTTP probing).
 
 Also provides automatic fallback from unavailable or failing container providers
 (e.g., Docker daemon down, missing Daytona API key, exit code 125) to HeadlessComputeProvider.
@@ -32,6 +38,10 @@ class ExecutionSubstrate(StrEnum):
 class CapabilityRouter:
     """
     Substrate router and provider fallback resolver for SONIC A-SEA execution plane.
+
+    Enforces the architectural boundary:
+      - Workstation Application Plane: Interactive desktop/browser/app actions -> COMPUTER
+      - Operator Toolkit Plane: Headless CLI commands, scanners, and scripts -> HEADLESS
     """
 
     def __init__(self, headless_provider: HeadlessComputeProvider | None = None):
@@ -62,12 +72,32 @@ class CapabilityRouter:
         payload: dict[str, Any] | None = None,
     ) -> ExecutionSubstrate:
         """
-        Classifies an action into either COMPUTER (GUI/Workstation) or HEADLESS substrate.
+        Classifies an action into either COMPUTER (Workstation) or HEADLESS (Operator Toolkit) substrate.
 
-        Rules:
-            - GUI_*, APP_*, BROWSER_CLICK, BROWSER_TYPE -> COMPUTER
-            - TERMINAL_EXEC, FILE_*, SECURITY_TOOL -> HEADLESS
-            - BROWSER_NAVIGATE -> HEADLESS if static/fetch-only, COMPUTER if interactive/GUI requested
+        Architectural Separation:
+            1. THE COMPUTER WORKSTATION (Target & Application Environment):
+               Where applications run (web browsers, GUI software, target applications).
+               - Application and UI interactions (GUI_*, APP_*, interactive BROWSER_*)
+                 are cleanly dispatched to ExecutionSubstrate.COMPUTER.
+            2. SONIC OPERATOR TOOLKIT (External Headless Execution):
+               Where commands and security scans run externally against targets, NOT tied to
+               or cluttering the computer desktop.
+               - External shell commands and scanning tools (SECURITY_TOOL, TERMINAL_EXEC, FILE_*)
+                 are cleanly dispatched to ExecutionSubstrate.HEADLESS.
+
+        Routing Rules:
+            - Application & UI actions:
+                * GUI_* (clicks, typing, shortcuts, mouse movements) -> COMPUTER
+                * APP_* (launch, focus, close, install) -> COMPUTER
+                * BROWSER_* (click, type, screenshot, wait, download) -> COMPUTER
+            - Operator Toolkit actions:
+                * SECURITY_TOOL (nmap, nuclei, ffuf, http_client) -> HEADLESS
+                * TERMINAL_EXEC (shell commands) -> HEADLESS
+                * FILE_* (file read/write) -> HEADLESS
+                * TOOL_AUTHOR, TOOL_RUN, METHOD_INVENT, GIT_* -> HEADLESS
+            - BROWSER_NAVIGATE:
+                * HEADLESS if static/fetch-only (cURL/HTTP probe)
+                * COMPUTER if interactive/GUI requested (rendering DOM/JS for user interaction)
         """
         val = action_type.value if hasattr(action_type, "value") else str(action_type)
         payload = payload or {}

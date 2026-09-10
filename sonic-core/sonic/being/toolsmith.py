@@ -102,7 +102,7 @@ class ToolsmithLoop:
         registry:  the SecurityToolRegistry the being can later call tools from.
     """
 
-    def __init__(self, craft: Any, llm: Any, registry: Any):
+    def __init__(self, craft: Any, llm: Any, registry: Any = None):
         self.craft = craft
         self.llm = llm
         self.registry = registry
@@ -200,8 +200,14 @@ class ToolsmithLoop:
         self,
         observation: str,
         failed_attempts: list[str] | None = None,
+        name: str | None = None,
+        source: str | None = None,
+        rationale: str | None = None,
     ) -> AuthoredTool | None:
         """Propose + persist a novel tool for the observation gap.
+
+        Supports both direct source provision (when the agent or caller authors
+        custom code directly) and LLM-driven proposal for an observation gap.
 
         Persists the source to BeingCraft immediately (durable across restart)
         but does NOT register into the SecurityToolRegistry until
@@ -210,7 +216,28 @@ class ToolsmithLoop:
         """
         failed_attempts = failed_attempts or []
         existing = self._existing_tool_names()
-        spec = await self._llm_propose_tool(observation, failed_attempts, existing)
+
+        if name and source:
+            clean_name = str(name).strip().lower()
+            if not _is_valid_tool_name(clean_name) or clean_name in existing:
+                logger.info("toolsmith_direct_authoring_rejected_name", name=clean_name)
+                return None
+            clean_source = source
+            if "```" in clean_source:
+                clean_source = re.sub(r"^`{3,}(?:python|py)?\s*\n?", "", clean_source.strip(), flags=re.IGNORECASE).strip()
+                clean_source = re.sub(r"\n?`{3,}\s*$", "", clean_source).strip()
+            ok, reason = _source_safety_lint(clean_source)
+            if not ok:
+                logger.info("toolsmith_direct_authoring_rejected_lint", name=clean_name, reason=reason)
+                return None
+            spec = {
+                "name": clean_name,
+                "source": clean_source,
+                "rationale": rationale or f"Custom authored tool {clean_name}",
+            }
+        else:
+            spec = await self._llm_propose_tool(observation, failed_attempts, existing)
+
         if spec is None:
             logger.info("toolsmith_no_novel_tool", existing_count=len(existing))
             return None
@@ -230,6 +257,23 @@ class ToolsmithLoop:
         self.authored.append(tool)
         logger.info("toolsmith_tool_authored", name=tool.name, confirmed=False)
         return tool
+
+    async def author_tool(
+        self,
+        observation: str,
+        failed_attempts: list[str] | None = None,
+        name: str | None = None,
+        source: str | None = None,
+        rationale: str | None = None,
+    ) -> AuthoredTool | None:
+        """Alias for author_tool_for_gap to support direct authoring / generation."""
+        return await self.author_tool_for_gap(
+            observation=observation,
+            failed_attempts=failed_attempts,
+            name=name,
+            source=source,
+            rationale=rationale,
+        )
 
     # ------------------------------------------------------------------
     async def confirm_and_register(
@@ -269,7 +313,18 @@ class ToolsmithLoop:
         tool.run_output = getattr(res, "stdout", "") or ""
 
         # Honest guard: only exit 0 + non-empty output counts as confirmed.
-        if tool.run_exit_code == 0 and tool.run_output.strip():
+        output_lower = tool.run_output.lower()
+        failure_markers = [
+            "connection refused",
+            "command not found",
+            "syntaxerror",
+            "traceback",
+            "usage:",
+            "error:",
+        ]
+        has_failure = any(marker in output_lower for marker in failure_markers)
+
+        if tool.run_exit_code == 0 and tool.run_output.strip() and not has_failure:
             tool.reproduced = True
             tool.confirmed_at = datetime.now(UTC).isoformat()
             tool.confirmed_workspace_id = workspace_id
@@ -284,7 +339,7 @@ class ToolsmithLoop:
             logger.info(
                 "toolsmith_tool_not_confirmed", name=tool.name,
                 exit_code=tool.run_exit_code,
-                reason="blocked" if tool.run_exit_code == 126 else "empty-or-failed",
+                reason="blocked" if tool.run_exit_code == 126 else ("failure-output" if has_failure else "empty-or-failed"),
             )
         return tool
 
@@ -424,3 +479,29 @@ class AuthoredToolAdapter:
                 bytes_received=len(stdout.encode("utf-8", errors="replace")),
             ),
         )
+
+
+# ---------------------------------------------------------------------------
+# Module-level convenience functions
+# ---------------------------------------------------------------------------
+
+async def author_tool(
+    observation: str,
+    craft: Any = None,
+    llm: Any = None,
+    registry: Any = None,
+    failed_attempts: list[str] | None = None,
+    name: str | None = None,
+    source: str | None = None,
+    rationale: str | None = None,
+) -> AuthoredTool | None:
+    """Convenience helper to author a tool using a ToolsmithLoop."""
+    loop = ToolsmithLoop(craft=craft, llm=llm, registry=registry)
+    return await loop.author_tool(
+        observation=observation,
+        failed_attempts=failed_attempts,
+        name=name,
+        source=source,
+        rationale=rationale,
+    )
+

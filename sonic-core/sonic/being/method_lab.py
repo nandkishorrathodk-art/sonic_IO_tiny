@@ -268,7 +268,7 @@ class MethodLab:
             )
             self.toolsmith.authored.append(probe)
             probe = await self.toolsmith.confirm_and_register(
-                probe, provider, workspace_id, timeout=timeout,
+                probe, provider, workspace_id, timeout=timeout, target=run_target,
             )
             technique.run_exit_code = probe.run_exit_code
             technique.reproduction_output = probe.run_output
@@ -286,9 +286,20 @@ class MethodLab:
                 )
                 technique.run_exit_code = getattr(res, "exit_code", None)
                 technique.reproduction_output = getattr(res, "stdout", "") or ""
+                output_lower = technique.reproduction_output.lower()
+                failure_markers = [
+                    "connection refused",
+                    "command not found",
+                    "syntaxerror",
+                    "traceback",
+                    "usage:",
+                    "error:",
+                ]
+                has_failure = any(marker in output_lower for marker in failure_markers)
                 technique.confirmed = (
                     technique.run_exit_code == 0
                     and technique.reproduction_output.strip() != ""
+                    and not has_failure
                 )
             except Exception as e:
                 logger.warning("method_lab_confirm_failed", name=technique.name, error=str(e))

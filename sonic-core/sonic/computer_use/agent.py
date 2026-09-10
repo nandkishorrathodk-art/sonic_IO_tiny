@@ -338,10 +338,10 @@ class ComputerUseAgent:
         target_str = targets["urls"][0] if targets["urls"] else (targets["hostnames"][0] if targets["hostnames"] else (targets["ips"][0] if targets["ips"] else ""))
 
         g_lower = goal.lower()
-        if any(w in g_lower for w in ("curl", "header", "http_client", "endpoint", "api")):
+        if any(w in g_lower for w in ("curl", "header", "endpoint", "api", "probe", "request")):
             dest = target_str or "target service"
             sub_goals = [
-                SubGoal(description=f"Send HTTP probe or curl -I request to {dest}"),
+                SubGoal(description=f"Send HTTP probe or request to {dest}"),
                 SubGoal(description="Analyze HTTP response headers and status code"),
                 SubGoal(description="Verify response data and record findings"),
             ]
@@ -360,7 +360,7 @@ class ComputerUseAgent:
                 SubGoal(description="Perform requested operation in application"),
                 SubGoal(description="Verify application state and complete task"),
             ]
-        elif any(w in g_lower for w in ("scan", "port", "nmap", "recon", "network")):
+        elif any(w in g_lower for w in ("scan", "port", "recon", "network", "service")):
             dest = target_str or "target host"
             sub_goals = [
                 SubGoal(description=f"Perform network reconnaissance and service discovery against {dest}"),
@@ -1315,18 +1315,6 @@ class ComputerUseAgent:
                     action_type = ComputerActionType.GUI_CLICK
                     target = re.sub(r'^(?:click|press)(?:\s+on)?\s+', '', cmd_str, flags=re.IGNORECASE).strip()
                     payload = {}
-                elif not any(c in cmd_str for c in ('|', '&&', '>', '<', ';', '$', '`', '-', '/')) and len(cmd_str.split()) > 7:
-                    # Long prose sentence with no shell syntax masquerading as a command
-                    cs_low = cmd_str.lower()
-                    if "port" in cs_low or "network" in cs_low or "connect" in cs_low:
-                        payload["command"] = "netstat -tuln || ss -tuln"
-                    elif "header" in cs_low or "curl" in cs_low or "http" in cs_low:
-                        dest = target if (target and target != default_file and not target.endswith(('.py', '.md', '.ts', '.js', '.sh'))) else "http://localhost"
-                        payload["command"] = f"curl -sI {dest}"
-                    elif "file" in cs_low or "dir" in cs_low or "list" in cs_low:
-                        payload["command"] = "ls -la"
-                    else:
-                        payload["command"] = "pwd"
                 else:
                     payload["command"] = cmd_str
 

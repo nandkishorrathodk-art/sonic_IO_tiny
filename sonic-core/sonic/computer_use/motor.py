@@ -167,7 +167,7 @@ class MotorReflexes:
             if code == 0 and out.strip():
                 for line in out.splitlines():
                     line_lower = line.lower()
-                    if any(b in line_lower for b in ("chrome", "chromium", "google chrome")):
+                    if any(b in line_lower for b in ("chrome", "chromium", "firefox", "browser", "web")):
                         count += 1
             if count == 0 and hasattr(self.computer, "status"):
                 try:
@@ -175,7 +175,7 @@ class MotorReflexes:
                     if hasattr(st, "open_applications"):
                         for app in st.open_applications:
                             line_lower = str(app).lower()
-                            if any(b in line_lower for b in ("chrome", "chromium", "google chrome")):
+                            if any(b in line_lower for b in ("chrome", "chromium", "firefox", "browser", "web")):
                                 count += 1
                 except Exception:
                     pass
@@ -193,7 +193,7 @@ class MotorReflexes:
         delay_ms: int = 25,
     ) -> str:
         """
-        Interacts with GTK file chooser dialogs (Chrome/Burp/Linux apps) by:
+        Interacts with GTK file chooser dialogs (Browsers, GUI applications, dialogs) by:
           1. Pressing Ctrl + L to expose the direct path entry field.
           2. Typing the target file path with natural human cadence.
           3. Pressing Return to confirm file selection.

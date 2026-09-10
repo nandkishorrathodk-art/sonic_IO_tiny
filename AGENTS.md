@@ -1776,3 +1776,47 @@ Per explicit user directive (*"is main koi bhi computer application ka name hai 
 - `test_phase6_curiosity_life_loop.py` (5 tests) — **PASSED**
 - `test_security_tool_registry.py` (6 tests) — **PASSED**
 
+## Phase 30 — Complete De-Puppeting, Dynamic Application Discovery & Test Hardening (DONE)
+Deep recheck and multi-agent refactoring to purge all remaining puppet heuristics, canned tool checks, and static binary queries:
+
+### 1. Dynamic Application Discovery Across Compute Providers
+- **`DockerComputerProvider`, `DaytonaComputerProvider`, `UnifiedComputerProvider`, `HeadlessComputerProvider` (`sonic/computer/`)**:
+  - Replaced static 11-binary and 7-binary loops (`for b in google-chrome-stable chromium ...`) with dynamic desktop entry discovery (`find /usr/share/applications ... -name '*.desktop'`) combined with PATH discovery and provider policy packages.
+  - Upgraded `tile_workstation()` to discover open windows dynamically via `wmctrl -l` while preserving standard 50/50 desktop split compatibility.
+  - Cleaned `ApplicationPolicy` default forbidden packages list, removing hardcoded vendor bans.
+
+### 2. Workstation Routes & Telemetry De-Puppeting
+- **`workstation.py` (`sonic/api/routes/workstation.py`)**:
+  - Excised leftover canned Burp Suite pre-installation checks and observations.
+  - Generalized process termination to dynamically target the requested application process (`pkill -f {shlex.quote(app)}`) instead of assuming terminal processes.
+  - Replaced hardcoded example application strings in fallback responses with generic tool/application prompts.
+- **`live.py` (`sonic/api/routes/live.py`)**:
+  - Added clean `proxy_url` configuration with backward-compatible alias support.
+- **`wire_telemetry.py` & `models.py` (`sonic/computer_use/`)**:
+  - Generalised network interceptor initialization to accept generic `interceptor` / `network_interceptor` parameters.
+  - Updated mission mode comments to reflect objective assessment rather than specific tools.
+
+### 3. Reflexes, Grounding & Parser De-Puppeting
+- **`motor.py` (`sonic/computer_use/motor.py`)**:
+  - Extended browser tab budget enforcement to match any browser dynamically (`chrome`, `chromium`, `firefox`, `browser`, `web`).
+  - Cleaned GTK file dialog docstrings.
+- **`grounding.py` (`sonic/computer_use/grounding.py`)**:
+  - Removed binary-specific launcher landmarks (`xfce4-terminal`) in favor of generic `"terminal"`.
+  - Cleaned crop toolbar docstrings.
+- **`agent.py` (`sonic/computer_use/agent.py`)**:
+  - Generalized intent-based goal decomposition keywords (removed tool-forcing `nmap`, `http_client`).
+  - Purged conversational prose guessing heuristic from the action parser.
+
+### 4. Comprehensive Verification (162 Passed, 0 Failures)
+- `test_agent_quality_improvements.py` (21 tests) — **PASSED**
+- `test_motor_reflexes_phase8.py` (7 tests) — **PASSED**
+- `test_workstation_desktop_browser_and_news.py` (6 tests) — **PASSED**
+- `test_human_motor_reflexes_and_hotkeys.py` (14 tests) — **PASSED**
+- `test_visual_grounding.py` (9 tests) — **PASSED**
+- `test_browser_tab_dedup_and_anti_loop.py` (4 tests) — **PASSED**
+- `test_security_tool_registry.py` (6 tests) — **PASSED**
+- `test_hacker_scratchpad_and_wire_telemetry.py` (14 tests) — **PASSED**
+- `test_phase13/test_computer_models_and_state.py` (2 tests) — **PASSED**
+- `test_module_robustness.py` (79 tests) — **PASSED**
+
+

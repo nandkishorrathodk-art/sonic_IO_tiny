@@ -1654,7 +1654,7 @@ def _extract_install_package(prompt: str) -> str:
 
     # 3. Known security tools mentioned in an install context
     if "install" in p_lower:
-        for tool in ("burpsuite", "chromium", "nmap", "ffuf", "sqlmap", "wireshark", "nikto", "metasploit"):
+        for tool in ("chromium", "nmap", "ffuf", "sqlmap", "wireshark", "nikto", "metasploit"):
             if tool in p_lower:
                 return tool
 
@@ -1696,13 +1696,31 @@ async def _run_autonomous_desktop_loop(
     observations: list[str] = []
 
     # 1. Window & Process Closing
-    if any(k in lower for k in ("close terminal", "kill terminal", "exit terminal", "close your terminal", "close window", "band karo", "close app", "close browser")):
+    if any(k in lower for k in ("close terminal", "kill terminal", "exit terminal", "close your terminal", "close window", "band karo", "close app", "close browser")) or re.search(r"\b(?:close|kill|exit|terminate)\s+(?:application|app|[a-z0-9_.-]+)", lower):
         if any(b in lower for b in ("browser", "chromium", "chrome")):
             kill_cmd = "pkill -9 chromium || pkill -9 chromium-browse || true"
             window_name = "Chromium Browser"
         else:
-            kill_cmd = "pkill -9 xfce4-terminal || killall xfce4-terminal || true"
-            window_name = "Terminal"
+            app = ""
+            match = re.search(
+                r"\b(?:close|kill|exit|terminate)\s+(?:the\s+)?(?:application\s+|app\s+)?([a-z0-9_.-]+)\b",
+                lower,
+            )
+            if match and match.group(1) not in ("app", "application", "window", "process", "it", "the"):
+                app = match.group(1)
+            if not app:
+                hindi_match = re.search(r"\b([a-z0-9_.-]+)\s+(?:ko\s+)?band karo\b", lower)
+                if hindi_match and hindi_match.group(1) not in ("app", "application", "window", "process", "it"):
+                    app = hindi_match.group(1)
+            if not app:
+                active = state.get("desktop", {}).get("active_window", "")
+                if active and active not in ("None", "Desktop"):
+                    app = active.split()[0].lower()
+            if not app or app in ("terminal", "console", "shell", "bash"):
+                app = "xfce4-terminal"
+
+            kill_cmd = f"pkill -f {shlex.quote(app)} || true"
+            window_name = "Terminal" if "terminal" in app else app.capitalize()
         res = await computer.terminal(desktop_id, kill_cmd, timeout=10, actor=tenant_id)
         state["desktop"]["active_window"] = "None"
         observations.append(f"Closed {window_name} on display :99 via `{kill_cmd}` (exit={res.exit_code}).")
@@ -1792,11 +1810,6 @@ async def _run_autonomous_desktop_loop(
             f"Launched Chromium browser on Daytona Graphical Desktop (Display :99) navigating to `{target_url}`.",
         )
         observations.append(f"Desktop GUI: Chromium browser launched on display :99 pointing to {target_url}.")
-        if "burp" in lower:
-            chk = await computer.terminal(desktop_id, "which burpsuite || true", timeout=10, actor=tenant_id)
-            if "burpsuite" in chk.stdout:
-                observations.append("Burp Suite Community Edition is already installed on the workstation (`/usr/local/bin/burpsuite`).")
-                _append_worklog(state, "action", "Burp Suite Pre-installed", "Verified Burp Suite is pre-installed at `/usr/local/bin/burpsuite` ready for interception.")
         return observations, None, False
 
     # 5. Autonomous Multi-Phase Security Recon & Bug Hunting Loop
@@ -2534,7 +2547,7 @@ async def _run_prompt_reasoning(tenant_id: str, session_id: str, prompt: str) ->
                 elif desktop_id:
                     fallback_response = (
                         f"I have inspected the live workstation desktop and terminal environment. "
-                        f"Ready to execute your instructions. You can ask me to launch tools (e.g. Chromium, Burp Suite, Nmap) "
+                        f"Ready to execute your instructions. You can ask me to launch applications and tools "
                         f"or perform security tasks directly."
                     )
                 else:

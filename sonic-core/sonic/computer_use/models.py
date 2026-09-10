@@ -167,7 +167,7 @@ class ComputerAutonomyLevel(StrEnum):
 
 class EngineeringMissionMode(StrEnum):
     ENGINEERING_MODE = "ENGINEERING_MODE"            # Source inspection, debug, edit, test, commit
-    SECURITY_RESEARCH_MODE = "SECURITY_RESEARCH_MODE"  # Recon, exploit test, browser, burp, evidence
+    SECURITY_RESEARCH_MODE = "SECURITY_RESEARCH_MODE"  # Recon, assessment, browser, evidence
     DEBUG_MODE = "DEBUG_MODE"                        # Focused bug reproduction, hypothesis testing
     GENERAL_ENGINEERING_MODE = "GENERAL_ENGINEERING_MODE"  # DevOps, QA, Cloud, Scripting
 

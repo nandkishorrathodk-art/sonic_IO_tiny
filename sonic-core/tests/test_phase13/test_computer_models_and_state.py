@@ -49,16 +49,20 @@ def test_application_policy_rules():
     # Allowed packages
     ok_nmap, _ = policy.is_package_allowed("nmap")
     ok_git, _ = policy.is_package_allowed("git")
+    ok_ffuf, _ = policy.is_package_allowed("ffuf")
     ok_burp, _ = policy.is_package_allowed("burpsuite")
 
     assert ok_nmap is True
     assert ok_git is True
+    assert ok_ffuf is True
     assert ok_burp is True
 
     # Forbidden packages
     bad_miner, reason = policy.is_package_allowed("cryptominer")
     bad_bot, _ = policy.is_package_allowed("ddos-bot")
+    bad_relay, _ = policy.is_package_allowed("tor-relay")
 
     assert bad_miner is False
     assert bad_bot is False
+    assert bad_relay is False
     assert "prohibited" in reason.lower()

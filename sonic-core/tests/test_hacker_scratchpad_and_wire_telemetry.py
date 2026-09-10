@@ -162,9 +162,9 @@ class TestWireTelemetryEngine:
         assert events[1]["status_code"] == 403
 
     @pytest.mark.asyncio
-    async def test_fetch_latest_from_burp_client(self):
-        mock_burp = MagicMock()
-        mock_burp.health_check = AsyncMock(return_value=True)
+    async def test_fetch_latest_from_network_interceptor(self):
+        mock_interceptor = MagicMock()
+        mock_interceptor.health_check = AsyncMock(return_value=True)
 
         mock_item_1 = MagicMock()
         mock_item_1.method = "POST"
@@ -173,9 +173,9 @@ class TestWireTelemetryEngine:
         mock_item_1.response_raw = 'HTTP/1.1 401 Unauthorized\r\nContent-Type: application/json\r\n\r\n{"error":"invalid token"}'
         mock_item_1.timestamp = "2026-09-07T12:00:00Z"
 
-        mock_burp.get_proxy_history = AsyncMock(return_value=[mock_item_1])
+        mock_interceptor.get_proxy_history = AsyncMock(return_value=[mock_item_1])
 
-        engine = WireTelemetryEngine(burp_client=mock_burp)
+        engine = WireTelemetryEngine(network_interceptor=mock_interceptor)
         events = await engine.fetch_latest_wire_events(limit=1)
 
         assert len(events) == 1
@@ -185,12 +185,12 @@ class TestWireTelemetryEngine:
         assert events[0]["response_body"] == '{"error":"invalid token"}'
 
     @pytest.mark.asyncio
-    async def test_fetch_burp_fallback_on_unresponsive(self):
-        mock_burp = MagicMock()
-        mock_burp.health_check = AsyncMock(return_value=False)
-        mock_burp.get_proxy_history = AsyncMock(side_effect=RuntimeError("Burp down"))
+    async def test_fetch_interceptor_fallback_on_unresponsive(self):
+        mock_interceptor = MagicMock()
+        mock_interceptor.health_check = AsyncMock(return_value=False)
+        mock_interceptor.get_proxy_history = AsyncMock(side_effect=RuntimeError("Interceptor down"))
 
-        engine = WireTelemetryEngine(burp_client=mock_burp)
+        engine = WireTelemetryEngine(interceptor=mock_interceptor)
         engine.record_wire_event("GET", "/local/fallback", 200, "fallback content")
 
         events = await engine.fetch_latest_wire_events(limit=1)

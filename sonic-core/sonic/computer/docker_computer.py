@@ -472,15 +472,51 @@ class DockerComputerProvider(ComputerProvider):
     async def tile_workstation(self, workspace_id: str) -> bool:
         """
         Executes wmctrl commands to tile windows side-by-side:
-        - Google Chrome: left half 0, 0, 640, 800 (wmctrl -r "Google Chrome" -e 0,0,0,640,800)
-        - Terminal: right half 640, 0, 640, 800 (wmctrl -r "Terminal" -e 0,640,0,640,800)
+        - Google Chrome / primary window: left half 0, 0, 640, 800 (wmctrl -r "Google Chrome" -e 0,0,0,640,800)
+        - Terminal / secondary window: right half 640, 0, 640, 800 (wmctrl -r "Terminal" -e 0,640,0,640,800)
+        Discovers open windows dynamically via wmctrl while maintaining compatibility
+        with direct wmctrl targeting.
         """
+        windows: list[tuple[str, str]] = []
+        code_l, out_l, _ = await self._docker_exec("DISPLAY=:99 wmctrl -l 2>/dev/null", timeout=5)
+        if code_l == 0 and out_l.strip():
+            for line in out_l.splitlines():
+                parts = line.split(maxsplit=3)
+                if len(parts) >= 4:
+                    win_id = parts[0]
+                    title = parts[3].strip()
+                    if title and title not in ("xfce4-panel", "Desktop"):
+                        windows.append((win_id, title))
+
+        browser_candidate = next(
+            (w for w in windows if any(k in w[1].lower() for k in ("chrome", "chromium", "firefox", "browser", "web"))),
+            None,
+        )
+        term_candidate = next(
+            (w for w in windows if any(k in w[1].lower() for k in ("terminal", "bash", "sh", "zsh", "console", "xterm"))),
+            None,
+        )
+
         code1, _, _ = await self._docker_exec('DISPLAY=:99 wmctrl -r "Google Chrome" -e 0,0,0,640,800')
         if code1 != 0:
             code1, _, _ = await self._docker_exec('DISPLAY=:99 wmctrl -r "Chromium" -e 0,0,0,640,800')
+        if code1 != 0 and browser_candidate:
+            code1, _, _ = await self._docker_exec(f'DISPLAY=:99 wmctrl -i -r "{browser_candidate[0]}" -e 0,0,0,640,800')
+
         code2, _, _ = await self._docker_exec('DISPLAY=:99 wmctrl -r "Terminal" -e 0,640,0,640,800')
         if code2 != 0:
             code2, _, _ = await self._docker_exec('DISPLAY=:99 wmctrl -r "xfce4-terminal" -e 0,640,0,640,800')
+        if code2 != 0 and term_candidate:
+            code2, _, _ = await self._docker_exec(f'DISPLAY=:99 wmctrl -i -r "{term_candidate[0]}" -e 0,640,0,640,800')
+
+        # If standard candidates were not matched and arbitrary windows are open, tile them flexibly
+        if code1 != 0 and windows:
+            fallback_left = windows[0]
+            code1, _, _ = await self._docker_exec(f'DISPLAY=:99 wmctrl -i -r "{fallback_left[0]}" -e 0,0,0,640,800')
+            if code2 != 0 and len(windows) > 1:
+                fallback_right = windows[1]
+                code2, _, _ = await self._docker_exec(f'DISPLAY=:99 wmctrl -i -r "{fallback_right[0]}" -e 0,640,0,640,800')
+
         return code1 == 0 or code2 == 0
 
     async def settle_screen(
@@ -640,15 +676,35 @@ class DockerComputerProvider(ComputerProvider):
         return code == 0
 
     async def application_list(self, workspace_id: str) -> list[str]:
-        code, out, _ = await self._docker_exec("for b in google-chrome-stable chromium chromium-browser xfce4-terminal thunar nmap xdotool wmctrl python3 bash git; do command -v \"$b\" 2>/dev/null; done", timeout=10)
-        apps = []
+        std_utils = list(dict.fromkeys([
+            "google-chrome-stable", "chromium", "chromium-browser", "xfce4-terminal",
+            "thunar", "nmap", "nuclei", "ffuf", "xdotool", "wmctrl", "python3", "bash",
+            "git", "curl", "wget", "code-server"
+        ] + self.app_policy.allowed_packages))
+        utils_str = " ".join(std_utils)
+        discovery_cmd = (
+            "find /usr/share/applications /usr/local/share/applications ~/.local/share/applications -name '*.desktop' 2>/dev/null | while read -r f; do "
+            "[ -f \"$f\" ] || continue; "
+            "b=$(basename \"$f\" .desktop); echo \"$b\"; "
+            "ex=$(grep -m1 -E '^Exec=' \"$f\" 2>/dev/null | cut -d= -f2- | awk '{print $1}'); "
+            "[ -n \"$ex\" ] && basename \"$ex\"; "
+            "done; "
+            "find /usr/local/bin -maxdepth 1 -type f 2>/dev/null | while read -r p; do [ -x \"$p\" ] && basename \"$p\"; done; "
+            f"for b in {utils_str}; do command -v \"$b\" 2>/dev/null; done; true"
+        )
+        code, out, _ = await self._docker_exec(discovery_cmd, timeout=10)
+        apps: list[str] = []
         if code == 0 and out.strip():
             for line in out.splitlines():
                 line = line.strip()
-                if line:
-                    app = line.split("/")[-1]
-                    if app and app not in apps:
-                        apps.append(app)
+                if not line:
+                    continue
+                app = line.rsplit("/", 1)[-1].strip()
+                if app.endswith(".desktop"):
+                    app = app[:-8]
+                app = app.strip("\"' ")
+                if app and app not in apps:
+                    apps.append(app)
         return apps
 
     async def launch_application(self, workspace_id: str, app_name: str, actor: str = "operator") -> bool:

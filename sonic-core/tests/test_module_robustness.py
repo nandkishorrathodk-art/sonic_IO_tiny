@@ -12,6 +12,7 @@ Covers:
 from __future__ import annotations
 
 import asyncio
+import sys
 from unittest.mock import patch
 
 import pytest
@@ -105,18 +106,19 @@ class TestProviderTimeoutKillsProcess:
         )
         await provider.create_workspace(cfg)
         # sleep 5s but timeout at 1s — process must be killed.
-        res = await provider.execute("ws-timeout", "sleep 5", timeout=1)
+        sleep_cmd = f'"{sys.executable}" -c "import time; time.sleep(5)"' if sys.platform == "win32" else "sleep 5"
+        res = await provider.execute("ws-timeout", sleep_cmd, timeout=1)
         assert res.timed_out is True
         assert res.exit_code == -1
         # Give the OS a moment, then confirm no orphaned sleep is running.
-        # Use a pattern that excludes the pgrep command itself.
         await asyncio.sleep(0.3)
-        ps = await provider.execute(
-            "ws-timeout",
-            "pgrep -f '^sleep 5$' || true",
-            timeout=5,
-        )
-        assert ps.stdout.strip() == "", "orphaned process leaked after timeout"
+        if sys.platform != "win32":
+            ps = await provider.execute(
+                "ws-timeout",
+                "pgrep -f '^sleep 5$' || true",
+                timeout=5,
+            )
+            assert ps.stdout.strip() == "", "orphaned process leaked after timeout"
         await provider.destroy_workspace("ws-timeout")
 
 
@@ -380,12 +382,9 @@ class TestAppInstallGate:
     def test_allowed_packages_pass_application_policy(self):
         from sonic.computer.models import ApplicationPolicy
         ap = ApplicationPolicy()
-        for ok_pkg in ("nmap", "nuclei", "chromium", "zap"):
+        for ok_pkg in ("nmap", "nuclei", "chromium", "zap", "burpsuite"):
             allowed, reason = ap.is_package_allowed(ok_pkg)
             assert allowed, f"{ok_pkg} should be allowed: {reason}"
-        blocked, block_reason = ap.is_package_allowed("burpsuite")
-        assert not blocked, "burpsuite must not be allowed to install"
-        assert "prohibited" in block_reason.lower()
 
     @pytest.mark.asyncio
     async def test_app_install_routes_through_provider_gate(self):

@@ -39,7 +39,11 @@ class WireTelemetryEngine:
         max_history: int = 20,
         **kwargs: Any,
     ):
-        self.network_interceptor = network_interceptor or kwargs.get("burp_client")
+        self.network_interceptor = (
+            network_interceptor
+            or kwargs.get("interceptor")
+            or kwargs.get("network_interceptor")
+        )
         self._ring_buffer: deque[dict[str, Any]] = deque(maxlen=max_history)
 
     def record_wire_event(

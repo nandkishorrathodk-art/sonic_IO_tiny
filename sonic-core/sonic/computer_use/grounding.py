@@ -166,7 +166,6 @@ _COMMON_UI_LANDMARKS: dict[str, tuple[float, float]] = {
     "terminal launcher": (0.038, 0.015),
     "terminal icon": (0.038, 0.015),
     "terminal": (0.038, 0.015),
-    "xfce4-terminal": (0.038, 0.015),
     "browser launcher": (0.060, 0.015),
     "chrome icon": (0.060, 0.015),
     "chrome": (0.060, 0.015),
@@ -449,7 +448,7 @@ def crop_toolbar_region(
     height: int = 800,
 ) -> Tuple[str, Tuple[int, int]]:
     """
-    Hierarchical micro-crop targeting of high-density UI toolbars (e.g. 14-18px Java Swing buttons in Burp Suite).
+    Hierarchical micro-crop targeting of high-density UI toolbars (e.g. dense GUI components, navigation bars, buttons).
 
     Args:
         screenshot_b64: Base64-encoded PNG screenshot of the desktop.

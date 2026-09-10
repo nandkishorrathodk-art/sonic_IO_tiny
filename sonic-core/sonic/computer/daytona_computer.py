@@ -1057,33 +1057,53 @@ class DaytonaComputerProvider(ComputerProvider):
         return processes
 
     async def application_list(self, workspace_id: str) -> list[str]:
-        """Lists installed applications in the sandbox by querying real binaries."""
+        """Lists installed applications in the sandbox by dynamically discovering desktop entries and real binaries."""
         apps: list[str] = []
+        std_utils = list(dict.fromkeys([
+            "xfce4-terminal", "code-server", "chromium", "git", "python3", "bash",
+            "curl", "wget", "nmap", "nuclei", "ffuf", "thunar", "xdotool", "wmctrl"
+        ] + self.app_policy.allowed_packages))
+        utils_str = " ".join(std_utils)
+        discovery_cmd = (
+            "find /usr/share/applications /usr/local/share/applications ~/.local/share/applications -name '*.desktop' 2>/dev/null | while read -r f; do "
+            "[ -f \"$f\" ] || continue; "
+            "b=$(basename \"$f\" .desktop); echo \"$b\"; "
+            "ex=$(grep -m1 -E '^Exec=' \"$f\" 2>/dev/null | cut -d= -f2- | awk '{print $1}'); "
+            "[ -n \"$ex\" ] && basename \"$ex\"; "
+            "done; "
+            "find /usr/local/bin -maxdepth 1 -type f 2>/dev/null | while read -r p; do [ -x \"$p\" ] && basename \"$p\"; done; "
+            f"for b in {utils_str}; do command -v \"$b\" 2>/dev/null; done; true"
+        )
+
+        def _parse_apps(raw: str) -> list[str]:
+            found: list[str] = []
+            for line in raw.splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                app_name = line.rsplit("/", 1)[-1].strip()
+                if app_name.endswith(".desktop"):
+                    app_name = app_name[:-8]
+                app_name = app_name.strip("\"' ")
+                if app_name and app_name not in found:
+                    found.append(app_name)
+            return found
+
         sandbox = await self._resolve_sandbox(workspace_id)
         if sandbox and hasattr(sandbox, "process"):
             try:
-                res = await sandbox.process.exec("which xfce4-terminal code-server chromium git python3 bash 2>/dev/null")
+                res = await sandbox.process.exec(discovery_cmd)
                 stdout = getattr(res, "result", "") or ""
-                for line in stdout.splitlines():
-                    line = line.strip()
-                    if line:
-                        app_name = line.split("/")[-1]
-                        if app_name and app_name not in apps:
-                            apps.append(app_name)
+                apps = _parse_apps(stdout)
                 if apps:
                     return apps
             except Exception:
                 pass
 
         try:
-            res = await self.terminal(workspace_id, "which xfce4-terminal code-server chromium git python3 bash 2>/dev/null")
+            res = await self.terminal(workspace_id, discovery_cmd)
             if res.exit_code == 0 and res.stdout:
-                for line in res.stdout.splitlines():
-                    line = line.strip()
-                    if line:
-                        app_name = line.split("/")[-1]
-                        if app_name and app_name not in apps:
-                            apps.append(app_name)
+                apps = _parse_apps(res.stdout)
                 if apps:
                     return apps
         except Exception:

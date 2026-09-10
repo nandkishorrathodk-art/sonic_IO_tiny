@@ -385,7 +385,8 @@ class SettingsUpdate(BaseModel):
     llm_api_key: str | None = None
     llm_model: str | None = None
     daytona_url: str | None = None
-    burp_url: str | None = None
+    proxy_url: str | None = None
+    burp_url: str | None = None  # Backward-compatible alias for proxy_url
     allowed_domains: list[str] | None = None
 
 
@@ -394,7 +395,8 @@ _runtime_config = {
     "llm_model": "Claude 3.5 Sonnet",
     "llm_api_key_set": False,
     "daytona_url": "http://localhost:3986",
-    "burp_url": "http://localhost:1337",
+    "proxy_url": "http://localhost:1337",
+    "burp_url": "http://localhost:1337",  # Alias for proxy_url
     "allowed_domains": ["*.example.com", "localhost", "127.0.0.1"],
 }
 
@@ -412,7 +414,7 @@ async def update_runtime_settings(
 ):
     """
     Update runtime settings (ADMIN ONLY).
-    Re-configures SwarmRunner with new LLM/Daytona/Burp credentials.
+    Re-configures SwarmRunner with new LLM/Daytona/proxy credentials.
     """
     from sonic.llm.providers.custom import CustomLLMProvider
     from sonic.swarm import get_swarm_runner
@@ -438,8 +440,10 @@ async def update_runtime_settings(
 
     if update.daytona_url is not None:
         _runtime_config["daytona_url"] = update.daytona_url
-    if update.burp_url is not None:
-        _runtime_config["burp_url"] = update.burp_url
+    proxy_setting = update.proxy_url if update.proxy_url is not None else update.burp_url
+    if proxy_setting is not None:
+        _runtime_config["proxy_url"] = proxy_setting
+        _runtime_config["burp_url"] = proxy_setting
     if update.allowed_domains is not None:
         _runtime_config["allowed_domains"] = update.allowed_domains
 

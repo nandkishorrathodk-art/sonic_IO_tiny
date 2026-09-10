@@ -552,11 +552,31 @@ class HeadlessComputeProvider(ComputerProvider, ComputeProvider):
         return []
 
     async def application_list(self, workspace_id: str) -> list[str]:
-        installed = []
-        for cmd in ["python3", "python", "git", "curl", "bash", "node", "npm"]:
+        installed: set[str] = set()
+
+        # 1. Desktop entries (if standard desktop directories exist)
+        desktop_dirs = [
+            Path("/usr/share/applications"),
+            Path("/usr/local/share/applications"),
+            Path.home() / ".local/share/applications",
+        ]
+        for d in desktop_dirs:
+            if d.is_dir():
+                try:
+                    for p in d.glob("*.desktop"):
+                        installed.add(p.stem)
+                except Exception:
+                    pass
+
+        # 2. Dynamic discovery of common utilities and policy-defined packages on PATH
+        probe_candidates = set(self.app_policy.allowed_packages) | {
+            "python3", "python", "git", "curl", "wget", "bash", "sh", "node", "npm", "zsh", "tmux"
+        }
+        for cmd in probe_candidates:
             if shutil.which(cmd):
-                installed.append(cmd)
-        return sorted(set(installed))
+                installed.add(cmd)
+
+        return sorted(installed)
 
     async def launch_application(self, workspace_id: str, app_name: str, actor: str = "operator") -> bool:
         logger.info("headless_launch_application_noop", app=app_name)

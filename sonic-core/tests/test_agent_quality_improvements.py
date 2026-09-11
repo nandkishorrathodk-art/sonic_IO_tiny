@@ -262,6 +262,25 @@ def test_target_injected_at_top_of_observation():
     assert "Do NOT run trivial commands like pwd" in system_prompt
 
 
+def test_observation_caps_huge_screen_and_files():
+    provider = DummyComputerProvider()
+    agent = ComputerUseAgent(computer_provider=provider)
+
+    # 10,000 char screen text and 500 files
+    huge_screen = "A" * 10000
+    huge_files = [f"file_{i}.txt" for i in range(500)]
+    obs = ComputerWorldObservation(
+        visible_text=huge_screen,
+        filesystem_files=huge_files,
+    )
+    _, obs_summary = agent._build_reasoning_context("test goal", obs, 1, "a.py", "b.py")
+
+    # Screen visible content must be capped to ~4000 chars
+    assert "Screen Visible Content: " + ("A" * 3997) + "..." in obs_summary
+    # Files must be capped to top 60 files + more files summary
+    assert "+440 more files" in obs_summary
+
+
 # ---------------------------------------------------------------------------
 # 7. Goal Decomposition Tests
 # ---------------------------------------------------------------------------

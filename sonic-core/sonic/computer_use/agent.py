@@ -684,13 +684,22 @@ class ComputerUseAgent:
 
         # Truthful observations: output UNKNOWN when missing or unavailable (no fake observations)
         screen_text = (observation.visible_text or "").strip() or "UNKNOWN"
+        if screen_text != "UNKNOWN" and len(screen_text) > 4000:
+            screen_text = screen_text[:3997] + "..."
         terminal_text = (observation.terminal_output or "").strip() or "UNKNOWN"
         workdir = getattr(observation, "working_directory", "") or "UNKNOWN"
         user_home = workdir.split("/workspace")[0] if ("/workspace" in workdir and workdir != "UNKNOWN") else workdir
         self._last_working_dir = workdir
         active_app = observation.active_application or "UNKNOWN"
         windows_str = ", ".join(observation.windows) if observation.windows else "UNKNOWN"
-        files_str = str(observation.filesystem_files) if (observation.filesystem_files is not None and len(observation.filesystem_files) > 0) else "UNKNOWN"
+        if observation.filesystem_files is not None and len(observation.filesystem_files) > 0:
+            raw_files = observation.filesystem_files
+            if len(raw_files) > 60:
+                files_str = f"{str(raw_files[:60])[:-1]}, ... +{len(raw_files) - 60} more files]"
+            else:
+                files_str = str(raw_files)
+        else:
+            files_str = "UNKNOWN"
         git_branch_str = observation.git_branch or "UNKNOWN"
         primary_file_str = primary_file or "UNKNOWN"
         test_file_str = test_file or "UNKNOWN"
@@ -1053,8 +1062,8 @@ class ComputerUseAgent:
         try:
             response = await self.llm_router.complete(request)
             self._last_thought_duration = round(time.perf_counter() - t_thought_start, 2)
-            content_str = response.content or ""
-            reasoning_str = response.reasoning_content or ""
+            content_str = getattr(response, "content", "") or ""
+            reasoning_str = getattr(response, "reasoning_content", "") or ""
 
             # Preserve genuine chain-of-thought/thinking tokens
             if reasoning_str:

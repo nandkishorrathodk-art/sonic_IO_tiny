@@ -26,6 +26,13 @@ from __future__ import annotations
 from typing import Any
 
 from sonic.evolution.codebase_evolver import CodebaseEvolver, EvolutionSummaryReport
+from sonic.evolution.evolution_journal import EvolutionJournal
+from sonic.evolution.goal_director import (
+    EvolutionGoal,
+    EvolutionGoalDirector,
+    GoalCategory,
+    GoalStatus,
+)
 from sonic.evolution.pipeline import EvolutionPipeline, EvolutionStage, ImprovementProposal
 from sonic.evolution.strategy import (
     DynamicStrategyEngine,
@@ -33,6 +40,7 @@ from sonic.evolution.strategy import (
     StrategyAdaptationPlan,
     TargetFeedbackSignal,
 )
+from sonic.evolution.version_tracker import VersionTracker
 from sonic.logger import get_logger
 
 logger = get_logger(__name__)
@@ -61,7 +69,8 @@ SONIC PRIMARY NORTH STAR MISSION & TRAINING DIRECTIVE (A-SEA)
 
 class EvolutionEngine:
     """
-    Coordinates closed-loop self-evolution and target-driven strategy adaptation.
+    Coordinates closed-loop self-evolution, goal-driven upgrades,
+    and target-driven strategy adaptation.
     """
 
     def __init__(
@@ -72,6 +81,9 @@ class EvolutionEngine:
         toolsmith: Any | None = None,
         lessons_ledger: Any | None = None,
         codebase_evolver: CodebaseEvolver | None = None,
+        version_tracker: VersionTracker | None = None,
+        journal: EvolutionJournal | None = None,
+        goal_director: EvolutionGoalDirector | None = None,
         north_star: str = CORE_NORTH_STAR_GOAL,
     ):
         self.north_star = north_star
@@ -86,6 +98,27 @@ class EvolutionEngine:
             codebase_evolver
             if codebase_evolver is not None
             else CodebaseEvolver(lessons_ledger=self.lessons_ledger, pipeline=self.pipeline)
+        )
+        self.version_tracker = (
+            version_tracker
+            if version_tracker is not None
+            else VersionTracker(repo_root=self.codebase_evolver.repo_root)
+        )
+        self.journal = (
+            journal
+            if journal is not None
+            else EvolutionJournal(repo_root=self.codebase_evolver.repo_root)
+        )
+        self.goal_director = (
+            goal_director
+            if goal_director is not None
+            else EvolutionGoalDirector(
+                repo_root=self.codebase_evolver.repo_root,
+                evolver=self.codebase_evolver,
+                version_tracker=self.version_tracker,
+                journal=self.journal,
+                lessons_ledger=self.lessons_ledger,
+            )
         )
 
     async def handle_target_failure(
@@ -198,5 +231,59 @@ class EvolutionEngine:
             push=push,
             test_paths=test_paths,
         )
+
+    def submit_evolution_goal(
+        self,
+        title: str,
+        description: str,
+        priority: int = 2,
+        category: GoalCategory | str = GoalCategory.LOGIC_IMPROVEMENT,
+        target_files: list[str] | None = None,
+        max_attempts: int = 3,
+    ) -> EvolutionGoal:
+        """Enqueues a high-level goal into the autonomous evolution queue."""
+        return self.goal_director.submit_goal(
+            title=title,
+            description=description,
+            priority=priority,
+            category=category,
+            target_files=target_files,
+            max_attempts=max_attempts,
+        )
+
+    def execute_evolution_goal(
+        self,
+        goal_id: str,
+        custom_patch: str | None = None,
+        auto_promote: bool = True,
+        push: bool = False,
+        test_paths: list[str] | None = None,
+    ) -> EvolutionSummaryReport:
+        """Executes an enqueued evolution goal through analysis, tests, and version bump."""
+        return self.goal_director.execute_goal(
+            goal_id=goal_id,
+            custom_patch=custom_patch,
+            auto_promote=auto_promote,
+            push=push,
+            test_paths=test_paths,
+        )
+
+    def run_evolution_queue(
+        self,
+        max_goals: int | None = None,
+        push: bool = False,
+    ) -> list[EvolutionSummaryReport]:
+        """Runs the continuous evolution loop, draining queued goals in priority order."""
+        return self.goal_director.run_continuous(max_goals=max_goals, push=push)
+
+    def get_evolution_status(self) -> dict[str, Any]:
+        """Returns comprehensive status of current version, queue depth, and journal metrics."""
+        return {
+            "current_version": self.version_tracker.current_version(),
+            "queued_goals": len(self.goal_director.list_goals(status=GoalStatus.QUEUED)),
+            "fitness_metrics": self.journal.fitness_metrics(),
+            "evolution_md_path": str(self.journal.evolution_md_path),
+        }
+
 
 

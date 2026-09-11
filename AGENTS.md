@@ -2047,6 +2047,30 @@ Integrated the high-performance Rust safety daemon (`sonic-kernel-rs`) with `Act
 - `sonic-core/tests/test_phase0_safety_kernel_and_broker.py` (6 tests) — **6 passed in 1.15s**.
 - Combined regression test suite (48 tests across Evolution, Strategy, Kernel, Broker, Traces) — **48 passed in 2.50s**.
 
+## Phase 39 — Advanced Autonomous Self-Evolution Director, Goal Queue & Live `evolution.md` Notes Logger (DONE)
+Transformed SONIC from a raw diff applier into an intelligent, goal-driven, version-progressing autonomous penetration architect self-evolution system:
+
+### 1. Persistent Semantic Version Tracker (`sonic/evolution/version_tracker.py`)
+- SQLite-backed semantic versioning (`evolution_versions` table in `sonic_data.db`).
+- Tracks milestones across `0.1.0` ➔ `0.1.1` (patch: bug fix/refactor) and `0.1.x` ➔ `0.2.0` (minor: capability add / major milestone).
+- Full audit history of version milestones, timestamps, commit hashes, and automated git tagging (`v0.1.1`, `v0.2.0`).
+
+### 2. Live `evolution.md` Notes Logger & Journal (`sonic/evolution/evolution_journal.py`)
+- **Live Markdown Logging**: Real-time automatic append to `evolution.md` at repository root for every file edit, bug fix, patch, task, or evolution cycle.
+- Documents: Goal ID, status badge, version advancement, category, files edited, diff metrics (+/- lines), test summary, and detailed notes/rationale.
+- **Durable Journal & Fitness**: SQLite `evolution_journal` table tracking fitness metrics (success rate, promotions, rollbacks, total cycles) and automated changelog generation between versions.
+
+### 3. Goal-Driven Autonomous Director (`sonic/evolution/goal_director.py`)
+- **Goal Queue Management**: Persistent SQLite queue (`evolution_goals`) supporting priorities (P1-P4), categories (bug fix, logic improvement, capability add, performance, refactor), and multi-attempt retries.
+- **Intelligent Codebase Analysis**: Scans intent, extracts keywords, maps to non-safety candidate files via AST/symbol extraction, and enforces fail-closed safety invariant verification.
+- **Closed-Loop Execution**: Staged execution via `CodebaseEvolver`, AST pre-flight verification, automated unit testing, security regression checks, version bump, and real-time `evolution.md` updating.
+- **Continuous Runner**: Drains queued goals in priority order autonomously without human intervention.
+
+### 4. Verification Baseline (100% Green)
+- `sonic-core/tests/test_advanced_evolution.py` (9 tests) — **9 passed in 3.00s**.
+- Full regression suite across Evolution, Kernel, Safety, and Broker (42 tests) — **42 passed in 4.56s**.
+
+
 
 
 

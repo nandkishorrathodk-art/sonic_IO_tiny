@@ -455,8 +455,57 @@ class CodebaseEvolver:
         5. Security regression verification
         6. Auto-commit & git push if auto_promote is active
         7. Rollback and lesson learning on any failure
-        8. Returns rich EvolutionSummaryReport
+        8. Automatically appends audit notes to evolution.md
+        9. Returns rich EvolutionSummaryReport
         """
+        report = self._evolve_impl(
+            target_component=target_component,
+            description=description,
+            code_diff=code_diff,
+            auto_promote=auto_promote,
+            push=push,
+            test_paths=test_paths,
+        )
+        self._log_to_evolution_md(report)
+        return report
+
+    def _log_to_evolution_md(self, report: EvolutionSummaryReport) -> None:
+        """Appends notes for this evolution cycle directly to evolution.md."""
+        try:
+            from sonic.evolution.evolution_journal import EvolutionJournal, JournalEntry
+            journal = EvolutionJournal(repo_root=self.repo_root)
+            st = "promoted" if report.stage == EvolutionStage.PROMOTED else (
+                "rolled_back" if report.stage == EvolutionStage.ROLLED_BACK else (
+                    "rejected" if report.stage == EvolutionStage.REJECTED else "manual"
+                )
+            )
+            journal.record_entry(JournalEntry(
+                entry_id=f"evo-{report.proposal_id}",
+                goal_id=report.proposal_id,
+                title=f"Patch: {report.target_component}",
+                category="codebase_evolution",
+                status=st,
+                version_before="current",
+                version_after="current",
+                files_affected=report.files_affected,
+                lines_added=report.lines_added,
+                lines_removed=report.lines_removed,
+                test_summary=f"Tests passed: {report.test_result.passed_tests}/{report.test_result.total_tests}" if report.test_result else "",
+                notes=report.description + (f"\nError: {report.error_reason}" if report.error_reason else ""),
+                commit_hash=report.git_commit_hash,
+            ))
+        except Exception as e:
+            logger.warning("failed_to_log_to_evolution_md", error=str(e))
+
+    def _evolve_impl(
+        self,
+        target_component: str,
+        description: str,
+        code_diff: str,
+        auto_promote: bool = True,
+        push: bool = False,
+        test_paths: list[str] | None = None,
+    ) -> EvolutionSummaryReport:
         proposal, reason = self.pipeline.submit_proposal(
             target_component=target_component,
             description=description,

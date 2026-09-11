@@ -220,3 +220,74 @@ class TestEvolutionEngine:
         assert proposal.stage == EvolutionStage.REJECTED
         assert "Forbidden" in proposal.stage_history[0][1]
 
+    def test_north_star_goal_registered_and_accessible(self):
+        evo = EvolutionEngine()
+        assert "CTF (Capture The Flag)" in evo.north_star
+        assert "Binary Exploitation & Pwn" in evo.north_star
+        assert "Precision Desktop Application Control" in evo.north_star
+        assert "Non-Puppet Empirical Verification" in evo.north_star
+
+
+class TestCTFStrategyFeedback:
+    def test_ctf_flag_detected_triggers_flag_triage(self):
+        engine = DynamicStrategyEngine()
+        sig = engine.analyze_feedback(stdout="Awesome! Here is your flag: ctf{byp4ss_succ3ssfu1}")
+        assert sig == TargetFeedbackSignal.FLAG_DISCOVERED
+        plan = engine.adapt_strategy(sig, target="http://ctf.local:8080")
+        assert plan.posture == StrategicPosture.FLAG_EXTRACTION_AND_TRIAGE
+        assert "flag" in plan.rationale.lower()
+        assert "avoid redundant scanning" in plan.avoid_directive.lower()
+
+    def test_binary_crash_triggers_exploit_payload_mutation(self):
+        engine = DynamicStrategyEngine()
+        sig = engine.analyze_feedback(stdout="Running binary...\nSegmentation fault (core dumped)", exit_code=139)
+        assert sig == TargetFeedbackSignal.BINARY_CRASH_OR_SEGFAULT
+        plan = engine.adapt_strategy(sig, target="./vuln_binary")
+        assert plan.posture == StrategicPosture.EXPLOIT_PAYLOAD_MUTATION
+        assert plan.synthesize_novel_method is True
+        assert plan.author_custom_tool is True
+
+    def test_crypto_error_triggers_oracle_analysis(self):
+        engine = DynamicStrategyEngine()
+        sig = engine.analyze_feedback(stdout="Traceback: Padding error in block 3: bad padding")
+        assert sig == TargetFeedbackSignal.CRYPTO_ORACLE_FAILURE
+        plan = engine.adapt_strategy(sig, target="http://crypto.challenge/decrypt")
+        assert plan.posture == StrategicPosture.CRYPTO_ORACLE_ANALYSIS
+        assert plan.synthesize_novel_method is True
+
+    def test_packed_binary_triggers_reverse_engineering_deobfuscation(self):
+        engine = DynamicStrategyEngine()
+        sig = engine.analyze_feedback(stdout="file info: ELF 64-bit LSB executable, x86-64, stripped binary, packed with UPX")
+        assert sig == TargetFeedbackSignal.BINARY_OBFUSCATION
+        plan = engine.adapt_strategy(sig, target="./challenge.bin")
+        assert plan.posture == StrategicPosture.REVERSE_ENGINEERING_DEOBFUSCATION
+        assert "unpack" in plan.action_mutation.lower()
+
+    def test_corrupt_header_triggers_forensic_repair(self):
+        engine = DynamicStrategyEngine()
+        sig = engine.analyze_feedback(stdout="Error: not a valid PNG file: corrupt header chunk")
+        assert sig == TargetFeedbackSignal.FORENSIC_CORRUPT_HEADER
+        plan = engine.adapt_strategy(sig, target="evidence.png")
+        assert plan.posture == StrategicPosture.FORENSIC_HEADER_REPAIR
+        assert "magic bytes" in plan.action_mutation.lower()
+
+
+class TestAgentAndBossEvolutionWiring:
+    def test_computer_use_agent_wired_to_evolution_engine_by_default(self):
+        from sonic.computer_use.agent import ComputerUseAgent
+        provider = _StubProvider()
+        agent = ComputerUseAgent(computer_provider=provider)
+        assert hasattr(agent, "evolution_engine")
+        assert agent.evolution_engine is not None
+        assert isinstance(agent.evolution_engine, EvolutionEngine)
+        assert "CTF (Capture The Flag)" in agent.evolution_engine.north_star
+
+    def test_boss_agent_wires_evolution_engine_to_subagent(self):
+        from sonic.computer_use.boss import BossAgent
+        provider = _StubProvider()
+        boss = BossAgent(computer_provider=provider, llm_router=_StubLLM(""))
+        assert hasattr(boss, "evolution_engine")
+        assert boss.evolution_engine is not None
+        assert isinstance(boss.evolution_engine, EvolutionEngine)
+
+

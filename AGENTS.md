@@ -2001,6 +2001,34 @@ Empowered SONIC with an autonomous, continuous codebase self-evolution engine ca
 - Full evolution suite (`test_codebase_evolution.py` + `test_evolution_strategy_and_engine.py` + `test_phase8_production_kernel_and_evolution.py` — 16 tests) — **16 passed in 2.21s**.
 - Security Regression Suite (`test_safety_sealed_policy.py` + `test_phase_plan6_safety_envelope.py` — 53 tests) — **53 passed in 2.09s**.
 
+## Phase 37 — Closed-Loop Evolution Wiring & North Star CTF Objective Integration (DONE)
+Resolved the audit findings regarding disconnected evolution engines and injected the system's core North Star objective across all capability and reasoning layers:
+
+### 1. Primary North Star Directive Injection
+- Formalized `CORE_NORTH_STAR_GOAL` across `EvolutionEngine` and `DynamicStrategyEngine`:
+  - **CTF Mastery**: Prioritizing autonomous vulnerability discovery and exploitation across Web (Auth bypass, SSRF, SQLi, IDOR, SSTI, Deserialization, Race Conditions), Binary Exploitation/Pwn (Buffer Overflow, ROP, Format Strings, Heap), Cryptography (Padding Oracles, Weak Keys, Keystream Reuse), Forensics (PCAP, Memory, File Repair), and Reverse Engineering (Ghidra, GDB, Decompilation).
+  - **Precision Desktop Control**: High visual and semantic interaction accuracy in Chromium, Burp Suite, Terminal, VS Code, and Ghidra.
+  - **Sub-Second Fast Reaction**: Rapid feedback loops, eliminating redundant polling, accelerated by native Rust perception and Cython graph search.
+  - **Empirical Non-Puppet Autonomy**: Zero canned scripts, zero macros; all findings and flags verified empirically in-sandbox.
+
+### 2. Multi-Domain CTF Target Feedback Signals (`sonic/evolution/strategy.py`)
+- Added specialized signal detection and adaptive postures to `DynamicStrategyEngine`:
+  - `FLAG_DISCOVERED`: Immediate detection of `flag{...}`, `ctf{...}`, `picoctf{...}`, `htb{...}` -> `FLAG_EXTRACTION_AND_TRIAGE` (halts redundant exploration and submits flag).
+  - `BINARY_CRASH_OR_SEGFAULT`: Detection of segmentation faults / core dumps -> `EXPLOIT_PAYLOAD_MUTATION` (inspects registers, determines RIP offset, authors targeted buffer/ROP probe).
+  - `CRYPTO_ORACLE_FAILURE`: Detection of padding/MAC errors -> `CRYPTO_ORACLE_ANALYSIS` (side-channel differential analysis).
+  - `BINARY_OBFUSCATION`: Detection of stripped/UPX-packed binaries -> `REVERSE_ENGINEERING_DEOBFUSCATION` (unpacking, syscall tracing, decompilation).
+  - `FORENSIC_CORRUPT_HEADER`: Detection of corrupt magic bytes -> `FORENSIC_HEADER_REPAIR` (hex byte repair via xxd, carving with binwalk).
+
+### 3. End-to-End Closed-Loop Wiring
+- **`ComputerUseAgent`**: Wired `self.evolution_engine` by default; connected failed/recovered actions in `execute_action` to `evolution_engine.handle_target_failure`; injected `_last_adapted_strategy` directly into `_build_reasoning_context` so the LLM acts on the evolved posture on the very next step.
+- **`BossAgent`**: Wired `self.evolution_engine` and forwards it to all dispatched subagents.
+- **`MissionDirector`**: Instantiates and connects `EvolutionEngine` to both `BossAgent` and `ComputerUseAgent`.
+- **`api/main.py`**: Connects `EvolutionEngine` to the Being Life Loop.
+
+### 4. Verification Baseline (100% Green)
+- Full regression suite (`test_codebase_evolution.py` + `test_evolution_strategy_and_engine.py` + `test_remediation_puppet_and_control.py` + `test_native_kernel_bridge.py` + `test_mission_trace_synthesis.py` + `test_phase8_production_kernel_and_evolution.py` — 55 tests) — **55 passed in 3.17s**.
+
+
 
 
 

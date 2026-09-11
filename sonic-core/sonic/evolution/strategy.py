@@ -46,6 +46,11 @@ class TargetFeedbackSignal(StrEnum):
     TARGET_SERVER_ERROR = "TARGET_SERVER_ERROR"
     TIMEOUT_UNRESPONSIVE = "TIMEOUT_UNRESPONSIVE"
     NOVEL_SURFACE_DETECTED = "NOVEL_SURFACE_DETECTED"
+    BINARY_CRASH_OR_SEGFAULT = "BINARY_CRASH_OR_SEGFAULT"
+    FLAG_DISCOVERED = "FLAG_DISCOVERED"
+    CRYPTO_ORACLE_FAILURE = "CRYPTO_ORACLE_FAILURE"
+    BINARY_OBFUSCATION = "BINARY_OBFUSCATION"
+    FORENSIC_CORRUPT_HEADER = "FORENSIC_CORRUPT_HEADER"
     UNKNOWN_FEEDBACK = "UNKNOWN_FEEDBACK"
 
 
@@ -58,6 +63,11 @@ class StrategicPosture(StrEnum):
     RATE_THROTTLING_AND_BACKOFF = "RATE_THROTTLING_AND_BACKOFF"# For 429 rate limit
     AUTONOMOUS_METHOD_INVENTION = "AUTONOMOUS_METHOD_INVENTION"# Trigger MethodLab
     CUSTOM_TOOL_AUTHORING = "CUSTOM_TOOL_AUTHORING"            # Trigger Toolsmith
+    EXPLOIT_PAYLOAD_MUTATION = "EXPLOIT_PAYLOAD_MUTATION"      # For binary crashes/segfaults
+    FLAG_EXTRACTION_AND_TRIAGE = "FLAG_EXTRACTION_AND_TRIAGE"  # For flag discovery
+    CRYPTO_ORACLE_ANALYSIS = "CRYPTO_ORACLE_ANALYSIS"          # For crypto oracle failures
+    REVERSE_ENGINEERING_DEOBFUSCATION = "REVERSE_ENGINEERING_DEOBFUSCATION"  # For stripped/packed binaries
+    FORENSIC_HEADER_REPAIR = "FORENSIC_HEADER_REPAIR"          # For corrupted file headers
 
 
 @dataclass
@@ -160,6 +170,26 @@ class DynamicStrategyEngine:
         if any(term in combined_lower for term in ("invalid syntax", "syntax error", "bad request", "400 bad request", "unrecognized option")):
             return TargetFeedbackSignal.PAYLOAD_SYNTAX_REJECTED
 
+        # 8. CTF Flag Detection (immediate capture signal)
+        if re.search(r"\b(?:flag|ctf|picoctf|htb)\{[^\}]+\}", stdout + stderr, re.IGNORECASE):
+            return TargetFeedbackSignal.FLAG_DISCOVERED
+
+        # 9. Binary Exploitation & Pwn (segfault / memory crash)
+        if any(term in combined_lower for term in ("segmentation fault", "core dumped", "sigsegv", "signal 11", "sigill", "illegal instruction")):
+            return TargetFeedbackSignal.BINARY_CRASH_OR_SEGFAULT
+
+        # 10. Cryptography Oracle Failures
+        if any(term in combined_lower for term in ("padding error", "bad padding", "decryption failed", "mac check failed", "invalid key length", "rsa key error")):
+            return TargetFeedbackSignal.CRYPTO_ORACLE_FAILURE
+
+        # 11. Reverse Engineering & Binary Packing
+        if any(term in combined_lower for term in ("stripped binary", "upx compressed", "ptrace: operation not permitted", "anti-debug")):
+            return TargetFeedbackSignal.BINARY_OBFUSCATION
+
+        # 12. Forensics & File Corruption
+        if any(term in combined_lower for term in ("not a valid png", "corrupt header", "magic bytes mismatch", "unrecognized archive", "damaged zip")):
+            return TargetFeedbackSignal.FORENSIC_CORRUPT_HEADER
+
         return TargetFeedbackSignal.UNKNOWN_FEEDBACK
 
     def adapt_strategy(
@@ -250,6 +280,66 @@ class DynamicStrategyEngine:
                 avoid_directive=f"Avoid unauthenticated access to protected endpoint {tgt}.",
                 synthesize_novel_method=True,
                 suggested_actions=["Inspect login/auth endpoint", "Check for guest/public credentials"],
+            )
+
+        if signal == TargetFeedbackSignal.FLAG_DISCOVERED:
+            return StrategyAdaptationPlan(
+                signal=signal,
+                posture=StrategicPosture.FLAG_EXTRACTION_AND_TRIAGE,
+                rationale=f"CTF Flag signature discovered in target output from {tgt}.",
+                action_mutation="Halt broad discovery. Extract and isolate the exact flag string, verify format, and submit immediately.",
+                avoid_directive="Avoid redundant scanning or exploration after flag has been discovered.",
+                synthesize_novel_method=False,
+                author_custom_tool=False,
+                suggested_actions=["Extract flag matching flag{...}", "Submit flag to verification engine"],
+            )
+
+        if signal == TargetFeedbackSignal.BINARY_CRASH_OR_SEGFAULT:
+            return StrategyAdaptationPlan(
+                signal=signal,
+                posture=StrategicPosture.EXPLOIT_PAYLOAD_MUTATION,
+                rationale=f"Target binary {tgt} crashed with segmentation fault or memory violation. Potential memory corruption / pwnable condition.",
+                action_mutation="Inspect crash state via gdb/dmesg, determine precise RIP/EIP offset using cyclic patterns, check binary protections (checksec), and author a reliable exploit probe.",
+                avoid_directive=f"Avoid sending arbitrary payload lengths to {tgt} without inspecting crash registers.",
+                synthesize_novel_method=True,
+                author_custom_tool=True,
+                suggested_actions=["Run checksec on binary", "Inspect core dump / crash registers with gdb", "Synthesize precise ROP/buffer payload via MethodLab"],
+            )
+
+        if signal == TargetFeedbackSignal.CRYPTO_ORACLE_FAILURE:
+            return StrategyAdaptationPlan(
+                signal=signal,
+                posture=StrategicPosture.CRYPTO_ORACLE_ANALYSIS,
+                rationale=f"Target {tgt} emitted cryptographic error (padding/MAC failure). Potential side-channel or padding oracle.",
+                action_mutation="Measure timing and error differentiation across bit-flipped ciphertexts. Author a targeted oracle solver.",
+                avoid_directive=f"Avoid sending random ciphertexts to {tgt} without differential analysis.",
+                synthesize_novel_method=True,
+                author_custom_tool=True,
+                suggested_actions=["Analyze padding oracle response differences", "Author custom decryption solver in Toolsmith"],
+            )
+
+        if signal == TargetFeedbackSignal.BINARY_OBFUSCATION:
+            return StrategyAdaptationPlan(
+                signal=signal,
+                posture=StrategicPosture.REVERSE_ENGINEERING_DEOBFUSCATION,
+                rationale=f"Target binary {tgt} is stripped, packed, or anti-debugging protected.",
+                action_mutation="Unpack executable (upx -d), run dynamic tracing (ltrace / strace), or load into Ghidra/radare2 for decompilation.",
+                avoid_directive=f"Avoid basic static strings analysis on packed binary {tgt}.",
+                synthesize_novel_method=False,
+                author_custom_tool=True,
+                suggested_actions=["Unpack binary", "Trace system calls with strace", "Decompile entrypoint in Ghidra"],
+            )
+
+        if signal == TargetFeedbackSignal.FORENSIC_CORRUPT_HEADER:
+            return StrategyAdaptationPlan(
+                signal=signal,
+                posture=StrategicPosture.FORENSIC_HEADER_REPAIR,
+                rationale=f"Target file {tgt} has corrupted magic bytes or unrecognized container structure.",
+                action_mutation="Inspect raw byte hex offset with xxd/hexdump, repair damaged magic bytes (e.g. PNG, ZIP, ELF header), and carve nested files with binwalk.",
+                avoid_directive=f"Avoid opening corrupted file {tgt} with standard viewers before byte repair.",
+                synthesize_novel_method=False,
+                author_custom_tool=True,
+                suggested_actions=["Inspect file magic bytes with xxd", "Repair container header", "Carve embedded data with binwalk"],
             )
 
         # Default fallback for unclassified or syntax failures: empower autonomous creation

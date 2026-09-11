@@ -151,6 +151,7 @@ class ComputerUseAgent:
         motor: MotorReflexes | None = None,
         wire_telemetry: WireTelemetryEngine | None = None,
         being_mind: Any | None = None,
+        evolution_engine: Any | None = None,
         **kwargs: Any,
     ):
         self.computer = computer_provider
@@ -179,6 +180,22 @@ class ComputerUseAgent:
         # reuse) and injects them into reasoning so the being does not forget
         # what it learned across missions. None = lessons not collected.
         self.lessons_ledger = lessons_ledger
+        # Optional Self-Evolution Engine: coordinates dynamic strategy, novel method invention,
+        # toolsmithing, cross-mission learning, and codebase evolution.
+        self.evolution_engine = evolution_engine
+        if self.evolution_engine is None:
+            try:
+                from sonic.evolution.engine import EvolutionEngine
+                from sonic.evolution.strategy import DynamicStrategyEngine
+                self.evolution_engine = EvolutionEngine(
+                    strategy_engine=DynamicStrategyEngine(),
+                    method_lab=self.method_lab,
+                    toolsmith=self.toolsmith,
+                    lessons_ledger=self.lessons_ledger,
+                )
+            except Exception as e:
+                logger.warning("lazy_evolution_engine_init_failed", error=str(e))
+        self._last_adapted_strategy: dict[str, Any] | None = None
         # Optional fail-closed safety envelope (PLAN Phase 6). Required in
         # self-host mode: the agent may NOT act autonomously without a policy.
         self.safety = safety
@@ -844,10 +861,23 @@ class ComputerUseAgent:
         active_sg_desc = active_sg.description if active_sg else goal
         checklist_str = self.checklist.render_prompt_markdown() if getattr(self, "checklist", None) else f"  Mission Goal: {goal}"
 
+        evolved_strategy_str = ""
+        if getattr(self, "_last_adapted_strategy", None):
+            plan = self._last_adapted_strategy
+            evolved_strategy_str = (
+                f"\n=== EVOLVED OFFENSIVE STRATEGY (Self-Evolution Engine) ===\n"
+                f"  Posture: {plan.get('posture')}\n"
+                f"  Rationale: {plan.get('rationale')}\n"
+                f"  Action Directive: {plan.get('action_mutation')}\n"
+                f"  AVOID Directive: {plan.get('avoid_directive')}\n"
+                f"=== END EVOLVED STRATEGY ===\n"
+            )
+
         cognitive_block = (
             "=== SITUATION FACTS ===\n"
             f"  {facts_str}\n"
             f"Failure log:\n{failure_str}\n"
+            f"{evolved_strategy_str}"
             f"Active sub-goal: {active_sg_desc}\n"
             f"Steps taken so far: {len(self.traces)}\n"
             f"Strategy A state: {strat_a_state.value if strat_a_state != StrategyState.EXHAUSTED else 'EXHAUSTED — pivot needed'}\n"
@@ -2834,6 +2864,23 @@ class ComputerUseAgent:
             else:
                 if status in (ActionExecutionStatus.COMPLETED, ActionExecutionStatus.SUCCESS):
                     status = ActionExecutionStatus.FAILED
+
+        # Closed-loop Target Feedback to Self-Evolution Engine
+        if status in (ActionExecutionStatus.FAILED, ActionExecutionStatus.RECOVERED) and getattr(self, "evolution_engine", None) is not None:
+            try:
+                target_str = target_resource or primary_target or "target"
+                evo_result = await self.evolution_engine.handle_target_failure(
+                    raw_output=actual_obs_str,
+                    exit_code=exit_code if exit_code is not None else 1,
+                    target=str(target_str),
+                    current_approach=f"{action_type.value if hasattr(action_type, 'value') else action_type} on {target_str}",
+                    goal=getattr(self, "current_goal", "") or "",
+                    provider=self.computer,
+                    workspace_id=workspace_id,
+                )
+                self._last_adapted_strategy = evo_result
+            except Exception as e:
+                logger.warning("evolution_engine_failure_dispatch_failed", error=str(e))
 
         # Automatic Hacker Scratchpad loot/token extraction
         if hasattr(self, "scratchpad") and self.scratchpad:

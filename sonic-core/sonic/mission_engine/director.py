@@ -502,6 +502,14 @@ class MissionDirector:
             from sonic.being.lessons import LessonsLedger
             obj_tenant = getattr(state.objective, "tenant_id", "default") if hasattr(state, "objective") else "default"
             lessons_ledger = LessonsLedger(tenant_id=obj_tenant, agent_id="computer-use-agent")
+            from sonic.evolution.engine import EvolutionEngine
+            from sonic.evolution.strategy import DynamicStrategyEngine
+            evolution_engine = EvolutionEngine(
+                strategy_engine=DynamicStrategyEngine(),
+                method_lab=method_lab,
+                toolsmith=toolsmith,
+                lessons_ledger=lessons_ledger,
+            )
 
             workspace_root = "/home/sonic/workspace"
             if getattr(state, "objective", None) and getattr(state.objective, "scope", None):
@@ -525,6 +533,10 @@ class MissionDirector:
                         tenant_id=mission.tenant_id,
                         max_phases=3,
                         sub_agent_steps=6,
+                        toolsmith=toolsmith,
+                        method_lab=method_lab,
+                        lessons_ledger=lessons_ledger,
+                        evolution_engine=evolution_engine,
                     )
                     report = await boss.run(
                         workspace_id=ws.workspace_id,
@@ -548,6 +560,7 @@ class MissionDirector:
                     toolsmith=toolsmith,
                     method_lab=method_lab,
                     lessons_ledger=lessons_ledger,
+                    evolution_engine=evolution_engine,
                 )
                 mission_steps = getattr(self, "max_actions", getattr(agent, "max_actions", 25))
                 traces = await agent.run_mission(

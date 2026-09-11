@@ -124,6 +124,14 @@ async def _maybe_start_being_life_loop(settings):
         )
         from sonic.being.lessons import LessonsLedger
         lessons_ledger = LessonsLedger(tenant_id=tenant_id, agent_id=being.being_id)
+        from sonic.evolution.engine import EvolutionEngine
+        from sonic.evolution.strategy import DynamicStrategyEngine
+        evolution_engine = EvolutionEngine(
+            strategy_engine=DynamicStrategyEngine(),
+            method_lab=method_lab,
+            toolsmith=toolsmith,
+            lessons_ledger=lessons_ledger,
+        )
         agent = ComputerUseAgent(
             computer_provider=provider, llm_router=router,
             security_tools=security_registry.as_dict(),
@@ -137,6 +145,8 @@ async def _maybe_start_being_life_loop(settings):
             method_lab=method_lab,
             # Wire the lessons ledger so cross-mission lessons compound across sessions.
             lessons_ledger=lessons_ledger,
+            # Wire the self-evolution engine for dynamic strategy adaptation and codebase upgrades.
+            evolution_engine=evolution_engine,
             # Wire the being's persistent mind (mood) into reasoning — the LLM
             # actually sees curiosity_drive/focus/satiety when choosing actions.
             being_mind=get_being_store().get_mind(being.being_id),

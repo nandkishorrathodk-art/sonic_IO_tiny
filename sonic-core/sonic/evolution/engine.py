@@ -37,6 +37,27 @@ from sonic.logger import get_logger
 
 logger = get_logger(__name__)
 
+CORE_NORTH_STAR_GOAL = """
+================================================================================
+SONIC PRIMARY NORTH STAR MISSION & TRAINING DIRECTIVE (A-SEA)
+================================================================================
+1. Autonomous Mastery in CTF (Capture The Flag) Challenges:
+   - Web Exploitation: SSRF, SQLi, Auth Bypass, IDOR, SSTI, Deserialization, Race Conditions.
+   - Binary Exploitation & Pwn: Buffer Overflow, ROP, Format Strings, Heap, Shellcode.
+   - Cryptography: Padding Oracles, Weak Primes, Keystream Reuse, PRNG flaws.
+   - Forensics & PCAP: Memory Dumps, Network Captures, File Carving, Steganography.
+   - Reverse Engineering: Ghidra, GDB, Decompilation, Unpacking, Patching.
+2. Precision Desktop Application Control:
+   - Operating Chromium, Burp Suite, Terminal, VS Code / code-server, Ghidra, and Linux GUI with high visual and semantic accuracy.
+3. Fast Reaction & Sub-Second Latency Cadence:
+   - Eliminating redundant polling, using native Rust perception and Cython graph traversal for fast reaction action.
+4. Non-Puppet Empirical Verification:
+   - No scripted puppet theater; no success-by-decree; all flags and exploits must be empirically confirmed in-sandbox.
+5. Continuous Codebase Self-Evolution:
+   - Continuously upgrading tools, agents, heuristics, and logic while respecting the tamper-evident safety envelope.
+================================================================================
+"""
+
 
 class EvolutionEngine:
     """
@@ -51,7 +72,9 @@ class EvolutionEngine:
         toolsmith: Any | None = None,
         lessons_ledger: Any | None = None,
         codebase_evolver: CodebaseEvolver | None = None,
+        north_star: str = CORE_NORTH_STAR_GOAL,
     ):
+        self.north_star = north_star
         self.pipeline = pipeline if pipeline is not None else EvolutionPipeline()
         self.strategy_engine = (
             strategy_engine if strategy_engine is not None else DynamicStrategyEngine()

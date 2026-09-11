@@ -489,6 +489,13 @@ class CustomLLMProvider(LLMProvider):
 
         if self._openai_client:
             # Use official SDK
+            extra_body: dict[str, Any] = dict(request.extra_body)
+            reasoning_models = ("gpt-oss", "deepseek-r1", "deepseek-reasoner", "reasoning", "o1", "o3")
+            if request.reasoning_effort:
+                extra_body["reasoning_effort"] = request.reasoning_effort
+            elif any(rm in model.lower() for rm in reasoning_models):
+                extra_body.setdefault("reasoning_effort", "high")
+
             kwargs: dict[str, Any] = {
                 "model": model,
                 "messages": messages,
@@ -496,6 +503,8 @@ class CustomLLMProvider(LLMProvider):
                 "temperature": request.temperature,
                 "top_p": request.top_p,
             }
+            if extra_body:
+                kwargs["extra_body"] = extra_body
             if tools:
                 kwargs["tools"] = tools
             if request.stop_sequences:
@@ -534,8 +543,20 @@ class CustomLLMProvider(LLMProvider):
                 total_tokens=response.usage.total_tokens if response.usage else 0,
             )
 
+            # Extract reasoning_content / chain-of-thought
+            reasoning_content = (
+                getattr(choice.message, "reasoning_content", None)
+                or getattr(choice.message, "reasoning", None)
+                or (choice.message.model_dump().get("reasoning_content") if hasattr(choice.message, "model_dump") else None)
+                or ""
+            )
+            content = choice.message.content or ""
+            if not content and reasoning_content:
+                content = reasoning_content
+
             return LLMResponse(
-                content=choice.message.content or "",
+                content=content,
+                reasoning_content=reasoning_content,
                 model=model,
                 provider=self.provider_name,
                 tool_calls=tool_calls,
@@ -561,6 +582,13 @@ class CustomLLMProvider(LLMProvider):
             "max_tokens": request.max_tokens,
             "temperature": request.temperature,
         }
+        reasoning_models = ("gpt-oss", "deepseek-r1", "deepseek-reasoner", "reasoning", "o1", "o3")
+        if request.reasoning_effort:
+            payload["reasoning_effort"] = request.reasoning_effort
+        elif any(rm in model.lower() for rm in reasoning_models):
+            payload["reasoning_effort"] = "high"
+        if request.extra_body:
+            payload.update(request.extra_body)
         if tools:
             payload["tools"] = tools
 
@@ -577,6 +605,12 @@ class CustomLLMProvider(LLMProvider):
             data = resp.json()
 
         choice = data["choices"][0]
+        msg = choice.get("message", {})
+        content = msg.get("content") or ""
+        reasoning_content = msg.get("reasoning_content") or msg.get("reasoning") or ""
+        if not content and reasoning_content:
+            content = reasoning_content
+
         usage_data = data.get("usage", {})
         usage = TokenUsage(
             prompt_tokens=usage_data.get("prompt_tokens", 0),
@@ -585,7 +619,8 @@ class CustomLLMProvider(LLMProvider):
         )
 
         return LLMResponse(
-            content=choice["message"].get("content", ""),
+            content=content,
+            reasoning_content=reasoning_content,
             model=model,
             provider=self.provider_name,
             usage=usage,
@@ -730,13 +765,17 @@ class CustomLLMProvider(LLMProvider):
             )
 
             async for chunk in stream:
-                if chunk.choices and chunk.choices[0].delta.content:
-                    yield LLMChunk(content=chunk.choices[0].delta.content)
-                if chunk.choices and chunk.choices[0].finish_reason:
-                    yield LLMChunk(
-                        is_final=True,
-                        finish_reason=chunk.choices[0].finish_reason,
-                    )
+                if chunk.choices:
+                    delta = chunk.choices[0].delta
+                    c_text = delta.content or ""
+                    r_text = getattr(delta, "reasoning_content", None) or getattr(delta, "reasoning", None) or ""
+                    if c_text or r_text:
+                        yield LLMChunk(content=c_text, reasoning_content=r_text)
+                    if chunk.choices[0].finish_reason:
+                        yield LLMChunk(
+                            is_final=True,
+                            finish_reason=chunk.choices[0].finish_reason,
+                        )
         else:
             # httpx streaming fallback
             messages = self._to_openai_messages(request)
@@ -747,6 +786,14 @@ class CustomLLMProvider(LLMProvider):
                 "temperature": request.temperature,
                 "stream": True,
             }
+            reasoning_models = ("gpt-oss", "deepseek-r1", "deepseek-reasoner", "reasoning", "o1", "o3")
+            if request.reasoning_effort:
+                payload["reasoning_effort"] = request.reasoning_effort
+            elif any(rm in model.lower() for rm in reasoning_models):
+                payload["reasoning_effort"] = "high"
+            if request.extra_body:
+                payload.update(request.extra_body)
+
             async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
                 async with client.stream(
                     "POST",
@@ -762,8 +809,10 @@ class CustomLLMProvider(LLMProvider):
                             data = json.loads(line[6:])
                             if data.get("choices"):
                                 delta = data["choices"][0].get("delta", {})
-                                if delta.get("content"):
-                                    yield LLMChunk(content=delta["content"])
+                                c_text = delta.get("content") or ""
+                                r_text = delta.get("reasoning_content") or delta.get("reasoning") or ""
+                                if c_text or r_text:
+                                    yield LLMChunk(content=c_text, reasoning_content=r_text)
                                 if data["choices"][0].get("finish_reason"):
                                     yield LLMChunk(
                                         is_final=True,

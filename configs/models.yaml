@@ -98,6 +98,11 @@ providers:
         cost_per_1k_input: 0.0003
         cost_per_1k_output: 0.0006
         capabilities: [vision, fast_tasks]
+      - id: openai/gpt-oss-20b
+        speed_tier: fast
+        cost_per_1k_input: 0.0005
+        cost_per_1k_output: 0.0015
+        capabilities: [reasoning, coding, planning, tool_use, thinking]
 
   claude:
     name: Anthropic Claude
@@ -164,13 +169,13 @@ routing_rules:
     description: 'High-level planning, task decomposition, strategy'
     provider: nvidia
     model: moonshotai/kimi-k3
-    fallback: [nvidia/nemotron-3.5-lightning-30b-a3b, openrouter/deepseek/deepseek-r1, claude/claude-3-5-sonnet-20241022]
+    fallback: [nvidia/openai/gpt-oss-20b, nvidia/nemotron-3.5-lightning-30b-a3b, openrouter/deepseek/deepseek-r1, claude/claude-3-5-sonnet-20241022]
 
   reasoning:
     description: 'Code analysis, dataflow tracing, pattern matching'
     provider: nvidia
     model: moonshotai/kimi-k3
-    fallback: [nvidia/nemotron-3.5-lightning-30b-a3b, openrouter/deepseek/deepseek-r1, claude/claude-3-5-sonnet-20241022]
+    fallback: [nvidia/openai/gpt-oss-20b, nvidia/nemotron-3.5-lightning-30b-a3b, openrouter/deepseek/deepseek-r1, claude/claude-3-5-sonnet-20241022]
 
   fast_recon:
     description: 'Quick reconnaissance, asset discovery, tech detection'
@@ -182,19 +187,19 @@ routing_rules:
     description: 'Code generation, fix generation, test writing'
     provider: nvidia
     model: moonshotai/kimi-k3
-    fallback: [nvidia/nemotron-3.5-lightning-30b-a3b, deepseek/deepseek-reasoner, claude/claude-3-5-sonnet-20241022]
+    fallback: [nvidia/openai/gpt-oss-20b, nvidia/nemotron-3.5-lightning-30b-a3b, deepseek/deepseek-reasoner, claude/claude-3-5-sonnet-20241022]
 
   verification:
     description: 'Evidence checking, confidence scoring, FP filtering'
     provider: nvidia
     model: moonshotai/kimi-k3
-    fallback: [nvidia/nemotron-3.5-lightning-30b-a3b, openai/gpt-4o, claude/claude-3-5-sonnet-20241022]
+    fallback: [nvidia/openai/gpt-oss-20b, nvidia/nemotron-3.5-lightning-30b-a3b, openai/gpt-4o, claude/claude-3-5-sonnet-20241022]
 
   hypothesis:
     description: 'Novel bug class ideation, creative reasoning'
     provider: nvidia
     model: moonshotai/kimi-k3
-    fallback: [nvidia/nemotron-3-nano-omni-30b-a3b-reasoning, openrouter/deepseek/deepseek-r1]
+    fallback: [nvidia/openai/gpt-oss-20b, nvidia/nemotron-3-nano-omni-30b-a3b-reasoning, openrouter/deepseek/deepseek-r1]
 
   classification:
     description: 'Quick labeling, triage, categorization'
@@ -212,7 +217,7 @@ routing_rules:
     description: 'Autonomous computer vision and desktop interaction'
     provider: nvidia
     model: moonshotai/kimi-k3
-    fallback: [meta/llama-3.2-11b-vision-instruct, openrouter/openai/gpt-4o, claude/claude-3-5-sonnet-20241022]
+    fallback: [nvidia/openai/gpt-oss-20b, meta/llama-3.2-11b-vision-instruct, openrouter/openai/gpt-4o, claude/claude-3-5-sonnet-20241022]
 
 # ---- Global Fallback Chain ----
 # If the preferred provider for a task fails, try these in order

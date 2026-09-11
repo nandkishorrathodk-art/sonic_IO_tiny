@@ -840,21 +840,17 @@ class ComputerUseAgent:
             f"Steps taken so far: {len(self.traces)}\n"
             f"Strategy A state: {strat_a_state.value if strat_a_state != StrategyState.EXHAUSTED else 'EXHAUSTED — pivot needed'}\n"
             "=== END FACTS ===\n\n"
-            "Mandatory Cognitive Reasoning Fields to address:\n"
+            "Cognitive Reasoning Dimensions (synthesize freely into your autonomous THOUGHT):\n"
             "- WHAT DO I KNOW?: Verified facts from observations\n"
             "- WHAT DO I NOT KNOW?: Target unknowns and pending discoveries\n"
             "- WHAT FAILED?: Recent failure or NONE\n"
             "- WHY DID IT FAIL?: Root cause analysis or NONE\n"
             "- WHAT HYPOTHESIS DOES THIS SUPPORT/DISPROVE?: Evidence correlation\n"
             "- WHAT IS THE HIGHEST-INFORMATION NEXT ACTION?: Optimal next action to gain maximal ground truth\n"
-            "=== AUTONOMOUS TARGET-FIRST REASONING ===\n"
-            "Based on the objective and situation facts, reason through:\n"
-            "  1. TARGET FOCUS: What is the fastest, most effective way to understand or reach this target?\n"
-            "  2. CREATION OVER SCRIPTS: What code, query, or interaction should I create right now?\n"
-            "  3. NO TOOL FORCING: You are completely tool-neutral. You are NOT required to run canned scanners (nmap, nuclei, etc.) or follow a scripted sequence. Author your own script, test directly with curl/python, inspect files, or interact via GUI/browser.\n"
-            "  4. EPISTEMIC STATE: What do you concretely know vs what is still unknown about this target?\n"
-            "  5. ADAPTATION: If something failed — WHY, and what alternate path reaches the target faster?\n"
-            "Choose your next action accordingly.\n"
+            "=== AUTONOMOUS COGNITIVE FREEDOM ===\n"
+            "HOW you think is completely up to you. Do NOT robotically fill out bullet points or rigid forms.\n"
+            "Think naturally, deeply, and strategically in your own voice in your THOUGHT block.\n"
+            "Reflect on what you previously thought, what the latest observation revealed, and where to probe next.\n"
         )
 
         scratchpad_hud = ""
@@ -927,6 +923,8 @@ class ComputerUseAgent:
             obs_summary += f"{strategy_tracking_block}{cognitive_block}"
 
         obs_summary += f"Actions taken so far:\n{history_text or '(none — this is the first action)'}\n"
+        if getattr(self, "_last_thought", "") and len(self.traces) > 0:
+            obs_summary += f"\nYour Immediate Prior Thought was:\n\"{self._last_thought[:400]}\"\n"
 
         # Inject extracted targets prominently at the VERY TOP so the model
         # sees the actual target URL/IP/host/repo/endpoint before anything else.
@@ -1006,9 +1004,15 @@ class ComputerUseAgent:
         start_idx = max(0, len(self.history) - window)
         for i, h in enumerate(self.history[start_idx:], start_idx + 1):
             result_text = h.get("result", "?")
+            thought = h.get("thought", "").strip()
+            action_text = h.get("action", "?")
             if len(result_text) > self._MAX_RESULT_LENGTH:
                 result_text = result_text[:self._MAX_RESULT_LENGTH - 3] + "..."
-            lines.append(f"  {i}. {h.get('action', '?')} -> {result_text}")
+            entry = f"  {i}. {action_text} -> {result_text}"
+            if thought:
+                thought_preview = thought if len(thought) <= 300 else thought[:297] + "..."
+                entry += f" | Thought: {thought_preview}"
+            lines.append(entry)
         return "\n".join(lines)
 
     async def _llm_choose_action(
@@ -1042,20 +1046,30 @@ class ComputerUseAgent:
                 Message(role=MessageRole.USER, content=user_text, images=images),
             ],
             task_type="reasoning",
+            max_tokens=8192,
+            reasoning_effort="high",
         )
         t_thought_start = time.perf_counter()
         try:
             response = await self.llm_router.complete(request)
             self._last_thought_duration = round(time.perf_counter() - t_thought_start, 2)
-            content_str = response.content
-            action_idx = content_str.find("ACTION:")
-            if action_idx != -1:
+            content_str = response.content or ""
+            reasoning_str = response.reasoning_content or ""
+
+            # Preserve genuine chain-of-thought/thinking tokens
+            if reasoning_str:
+                self._last_thought = reasoning_str.strip(" *_\n\r\t")
+            elif "ACTION:" in content_str:
+                action_idx = content_str.find("ACTION:")
                 self._last_thought = content_str[:action_idx].strip(" *_\n\r\t")
             else:
                 t_match = re.search(r'(?:\*{1,2}|_)?\b(?:THOUGHT|REASONING)\b(?:\*{1,2}|_)?:\s*(.*?)(?=(?:\*{1,2}|_)?\b(?:ACTION|TARGET|PAYLOAD|EXPECTED)\b(?:\*{1,2}|_)?\:|$)', content_str, re.DOTALL | re.IGNORECASE)
                 self._last_thought = t_match.group(1).strip(" *_\n\r\t") if t_match else content_str.strip()
+
+            # If content_str is empty but reasoning_str contains ACTION, parse from reasoning_str
+            parse_target_str = content_str if ("ACTION:" in content_str or not reasoning_str) else reasoning_str
             action_type, target, payload, expected = self._parse_llm_action(
-                content_str, primary_file
+                parse_target_str, primary_file
             )
 
             # If the LLM hallucinated example.com/example.org but the user specified a real target,
@@ -2737,8 +2751,9 @@ class ComputerUseAgent:
                 "exit_code": action_exit_code,
             }
         # Record into the reasoning history so the next LLM call sees what was
-        # done and how it turned out — the basis for adaptive (non-scripted) action.
+        # done, what was thought, and how it turned out — enabling true cognitive continuity.
         self.history.append({
+            "thought": getattr(self, "_last_thought", ""),
             "action": f"{action_type.value} {target_resource}",
             "result": actual_obs_str,
         })

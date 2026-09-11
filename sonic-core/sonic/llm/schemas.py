@@ -98,6 +98,8 @@ class LLMRequest(BaseModel):
     tools: list[ToolDefinition] | None = None
     stop_sequences: list[str] | None = None
     stream: bool = False
+    reasoning_effort: str | None = None  # e.g., "high", "medium", "low" for reasoning models
+    extra_body: dict[str, Any] = Field(default_factory=dict)
 
     # SONIC-REDA metadata
     task_type: str | None = None  # e.g., "planning", "reasoning", "fast_recon"
@@ -134,6 +136,7 @@ class LLMResponse(BaseModel):
     Every provider maps their response into this format.
     """
     content: str = ""
+    reasoning_content: str = ""  # Chain-of-thought/thinking tokens from reasoning models
     model: str = ""
     provider: ProviderName = ProviderName.CLAUDE
     role: MessageRole = MessageRole.ASSISTANT
@@ -154,6 +157,7 @@ class LLMChunk(BaseModel):
     Used with async generators for real-time output.
     """
     content: str = ""
+    reasoning_content: str = ""
     role: MessageRole | None = None
     tool_calls: list[ToolCall] = Field(default_factory=list)
     finish_reason: str | None = None

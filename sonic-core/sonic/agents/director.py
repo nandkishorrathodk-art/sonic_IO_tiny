@@ -25,6 +25,8 @@ All execution goes through: Director → Queue → Worker → Agent.
 
 from __future__ import annotations
 
+import asyncio
+import inspect
 import json
 import uuid
 from datetime import UTC, datetime
@@ -884,6 +886,67 @@ Create 3-6 initial tasks. Start with recon."""
                 logger.warning("task_dispatch_failed", task_id=task.id, error=str(e))
 
         return dispatchable
+
+    async def run_engagement_loop(
+        self,
+        engagement_id: str,
+        worker_fn: Any,
+        max_iterations: int = 50,
+    ) -> dict[str, Any]:
+        """
+        Execute dispatchable tasks to graph completion using provided worker_fn.
+
+        Args:
+            engagement_id: The active engagement ID.
+            worker_fn: Async or sync callable taking (task_payload: dict) and returning result dict.
+            max_iterations: Safety limit on dispatch rounds.
+
+        Returns:
+            Dictionary with execution summary (completed, failed, findings, state summary).
+        """
+        state = self._states.get(engagement_id)
+        graph = self._graphs.get(engagement_id)
+        if not state or not graph:
+            return {"error": f"Engagement {engagement_id} not found"}
+
+        completed = 0
+        failed = 0
+        all_findings: list[dict[str, Any]] = []
+
+        for _iteration in range(max_iterations):
+            dispatchable = self.get_dispatchable_tasks(engagement_id)
+            if not dispatchable:
+                if graph.is_complete():
+                    break
+                if not graph.get_running_tasks():
+                    # No running tasks and no dispatchable tasks, graph is either blocked or finished
+                    break
+                await asyncio.sleep(0.02)
+                continue
+
+            for task_payload in dispatchable:
+                tid = task_payload.get("task_id", "")
+                try:
+                    res = worker_fn(task_payload)
+                    if inspect.isawaitable(res):
+                        res = await res
+                    await self.on_task_completed(engagement_id, tid, res or {})
+                    completed += 1
+                    if isinstance(res, dict) and "findings" in res and isinstance(res["findings"], list):
+                        all_findings.extend(res["findings"])
+                except Exception as exc:
+                    logger.warning("director_worker_task_failed", task_id=tid, error=str(exc))
+                    await self.on_task_failed(engagement_id, tid, error=str(exc))
+                    failed += 1
+
+        return {
+            "engagement_id": engagement_id,
+            "completed": completed,
+            "failed": failed,
+            "findings": all_findings,
+            "graph_complete": graph.is_complete(),
+            "state_summary": state.summary(),
+        }
 
     # ============================================
     # Research Helper Methods (Phase 6)

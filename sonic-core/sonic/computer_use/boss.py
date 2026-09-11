@@ -24,6 +24,16 @@ from typing import Any, Callable, Optional
 
 import structlog
 
+from sonic.agents.replan import (
+    ReplanEngine,
+    ReplanTrigger,
+)
+from sonic.agents.task_graph import (
+    TaskGraph,
+    TaskNode,
+    TaskPriority,
+    TaskStatus,
+)
 from sonic.computer_use.models_boss import (
     BossReport,
     BossThinking,
@@ -81,9 +91,69 @@ class BossAgent:
         self._sub_agent_count: int = 0
         self._interrupted: bool = False
 
+        # DAG & Replan Engine
+        self.task_graph = TaskGraph(
+            engagement_id=f"boss-{self.tenant_id}",
+            tenant_id=self.tenant_id,
+            max_total_tasks=100,
+        )
+        self.replan_engine = ReplanEngine()
+
     def interrupt(self) -> None:
         """Signal the Boss to stop orchestration."""
         self._interrupted = True
+
+    def _sync_phase_to_graph(self, phase: Phase) -> None:
+        """Register phase sub-missions into TaskGraph DAG."""
+        for sub in phase.sub_missions:
+            if sub.id in self.task_graph._tasks:
+                continue
+            valid_deps = [
+                d for d in sub.depends_on
+                if d in self.task_graph._tasks
+            ]
+            priority = TaskPriority.HIGH if sub.priority > 1 else TaskPriority.MEDIUM
+            tn = TaskNode(
+                id=sub.id,
+                name=sub.goal[:60],
+                agent_type="dynamic",
+                task_payload={"goal": sub.goal, "max_steps": sub.max_steps},
+                depends_on=valid_deps,
+                priority=priority,
+                engagement_id=self.task_graph.engagement_id,
+                tenant_id=self.task_graph.tenant_id,
+            )
+            try:
+                self.task_graph.add_task(tn)
+            except Exception as exc:
+                logger.debug("task_graph_add_skipped", sub_id=sub.id, error=str(exc))
+
+    def _detect_sub_mission_trigger(self, result: SubMissionResult) -> ReplanTrigger | None:
+        """Inspect sub-mission outcome to determine if replanning is warranted."""
+        if not result.success:
+            return ReplanTrigger.AGENT_FAILURE
+
+        combined_text = (
+            result.findings_summary + " " + " ".join(result.key_discoveries)
+        ).lower()
+
+        # High confidence finding detection
+        vuln_keywords = (
+            "sqli", "sql injection", "xss", "rce", "cve", "bypass",
+            "unauthorized", "vulnerability", "vulnerable", "exploit confirmed",
+        )
+        if any(vk in combined_text for vk in vuln_keywords):
+            return ReplanTrigger.NEW_HIGH_CONFIDENCE_FINDING
+
+        # Attack surface discovery
+        surface_keywords = (
+            "endpoint", "endpoints", "parameter", "parameters", "subdomain",
+            "form", "route", "login page", "api url",
+        )
+        if any(sk in combined_text for sk in surface_keywords):
+            return ReplanTrigger.NEW_ATTACK_SURFACE
+
+        return None
 
     # ------------------------------------------------------------------
     # Main orchestration loop
@@ -139,6 +209,7 @@ class BossAgent:
             )
 
         self.phases.append(first_phase)
+        self._sync_phase_to_graph(first_phase)
 
         # Execute phases
         for phase_idx in range(self.max_phases):
@@ -162,6 +233,12 @@ class BossAgent:
                 if self._interrupted or (callable(interrupt_check) and interrupt_check()):
                     break
 
+                # Check TaskGraph dependency readiness
+                tg_task = self.task_graph.get_task(sub_mission.id)
+                if tg_task and tg_task.status == TaskStatus.BLOCKED:
+                    logger.info("boss_sub_mission_blocked_in_graph", sub_id=sub_mission.id)
+                    continue
+
                 # Check dependencies
                 if sub_mission.depends_on:
                     deps_met = all(
@@ -173,6 +250,11 @@ class BossAgent:
                         continue
 
                 sub_mission.status = "RUNNING"
+                if tg_task:
+                    try:
+                        self.task_graph.mark_running(sub_mission.id)
+                    except Exception:
+                        pass
                 self._sub_agent_count += 1
 
                 await self._emit(phase_callback, "sub_dispatch", {
@@ -189,6 +271,17 @@ class BossAgent:
                 self.all_traces.extend(result.traces)
 
                 sub_mission.status = "COMPLETED" if result.success else "FAILED"
+                if tg_task:
+                    try:
+                        if result.success:
+                            self.task_graph.mark_completed(sub_mission.id, {
+                                "findings": result.key_discoveries,
+                                "summary": result.findings_summary,
+                            })
+                        else:
+                            self.task_graph.mark_failed(sub_mission.id, result.findings_summary)
+                    except Exception:
+                        pass
 
                 await self._emit(phase_callback, "sub_report", {
                     "sub_mission_id": sub_mission.id,
@@ -199,6 +292,21 @@ class BossAgent:
                     "actions_taken": result.actions_taken,
                     "duration_seconds": result.duration_seconds,
                 })
+
+                # Replan trigger evaluation on SubAgent result
+                trigger = self._detect_sub_mission_trigger(result)
+                if trigger:
+                    trigger_msg = f"⚡ Boss Replan Trigger: {trigger.value.upper()} detected from SubAgent findings. Adjusting tactical priorities."
+                    await self._emit(phase_callback, "boss_thinking", {
+                        "phase": current_phase.phase_number,
+                        "thinking_type": "reaction_planning",
+                        "content": trigger_msg,
+                    })
+                    self.thinking_log.append(BossThinking(
+                        phase=current_phase.phase_number,
+                        thinking_type="reaction_planning",
+                        content=trigger_msg,
+                    ))
 
             current_phase.status = "COMPLETED"
             current_phase.completed_at = self._now()
@@ -230,6 +338,7 @@ class BossAgent:
                 )
                 if next_phase and next_phase.sub_missions:
                     self.phases.append(next_phase)
+                    self._sync_phase_to_graph(next_phase)
                 else:
                     logger.info("boss_agent_no_more_phases")
                     break

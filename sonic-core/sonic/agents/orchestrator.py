@@ -11,10 +11,13 @@ The brain of the multi-agent system. Responsible for:
 
 from __future__ import annotations
 
+import inspect
 import json
+import uuid
 from typing import Any
 
 from sonic.agents.base import BaseAgent
+from sonic.agents.task_graph import TaskGraph, TaskNode, TaskPriority
 from sonic.llm.prompts import ORCHESTRATOR_SYSTEM
 from sonic.logger import get_logger
 
@@ -28,15 +31,17 @@ class MetaOrchestrator(BaseAgent):
     Workflow:
         1. Analyze target scope
         2. Create engagement plan (which agents, what order, priorities)
-        3. Dispatch tasks to specialist agents
+        3. Dispatch tasks to specialist agents via TaskGraph / Director
         4. Monitor progress and adapt strategy
         5. Compile final report
     """
 
-    def __init__(self, **kwargs: Any):
+    def __init__(self, director: Any = None, tenant_id: str = "", **kwargs: Any):
         super().__init__(name="MetaOrchestrator", **kwargs)
         self.engagement_plan: dict[str, Any] = {}
         self.phase = "planning"  # planning, recon, analysis, exploitation, verification, reporting
+        self.director = director
+        self.tenant_id = tenant_id
 
     def get_system_prompt(self) -> str:
         return ORCHESTRATOR_SYSTEM
@@ -46,7 +51,9 @@ class MetaOrchestrator(BaseAgent):
         self.status = "running"
         target = task.get("target", "")
         scope = task.get("scope", {})
-        engagement_id = task.get("engagement_id", "")
+        engagement_id = task.get("engagement_id", "") or f"eng-{uuid.uuid4().hex[:12]}"
+        tenant_id = task.get("tenant_id", "") or getattr(self, "tenant_id", "") or "default"
+        worker_fn = task.get("worker_fn", None)
 
         logger.info("orchestrator_starting", target=target, engagement_id=engagement_id)
 
@@ -54,13 +61,81 @@ class MetaOrchestrator(BaseAgent):
         self.phase = "planning"
         plan = await self._create_plan(target, scope)
 
-        # Phase 2: Execute plan phases
+        # Phase 2: Execute plan phases via Director or TaskGraph
+        all_findings: list[dict[str, Any]] = []
+        phases = plan.get("phases", [])
+        phases_completed: list[str] = []
+
+        if self.director is not None:
+            # Wire execution through Director
+            eid = await self.director.start_engagement(
+                target=target,
+                scope=scope,
+                tenant_id=tenant_id,
+            )
+            if worker_fn is not None:
+                loop_res = await self.director.run_engagement_loop(
+                    eid,
+                    worker_fn=worker_fn,
+                )
+                all_findings.extend(loop_res.get("findings", []))
+            phases_completed = [p.get("name", "") for p in phases if p.get("name")]
+        else:
+            # Build and execute via TaskGraph DAG
+            graph = TaskGraph(engagement_id=engagement_id, tenant_id=tenant_id)
+            prev_phase_task_ids: list[str] = []
+
+            for idx, p in enumerate(phases):
+                p_name = p.get("name", f"Phase-{idx}")
+                agent_type = p.get("agent", "recon")
+                cur_phase_task_ids = []
+                for task_name in p.get("tasks", []):
+                    tn = TaskNode(
+                        name=f"{p_name}: {task_name}",
+                        agent_type=agent_type,
+                        task_payload={"target": target, "task": task_name, "scope": scope},
+                        depends_on=list(prev_phase_task_ids),
+                        priority=TaskPriority(p.get("priority", "medium")),
+                        engagement_id=graph.engagement_id,
+                        tenant_id=graph.tenant_id,
+                    )
+                    tid = graph.add_task(tn)
+                    cur_phase_task_ids.append(tid)
+                prev_phase_task_ids = cur_phase_task_ids
+
+            if worker_fn is not None:
+                while not graph.is_complete():
+                    ready = graph.get_ready_tasks()
+                    if not ready:
+                        break
+                    for r_task in ready:
+                        graph.mark_running(r_task.id)
+                        try:
+                            task_dict = r_task.model_dump() if hasattr(r_task, "model_dump") else {"name": r_task.name, "task_id": r_task.id, "payload": r_task.task_payload}
+                            res = worker_fn(task_dict)
+                            if inspect.isawaitable(res):
+                                res = await res
+                            graph.mark_completed(r_task.id, res or {})
+                            if isinstance(res, dict) and "findings" in res and isinstance(res["findings"], list):
+                                all_findings.extend(res["findings"])
+                        except Exception as exc:
+                            logger.warning("orchestrator_worker_failed", task_id=r_task.id, error=str(exc))
+                            graph.mark_failed(r_task.id, str(exc))
+
+            phases_completed = [p.get("name", "") for p in phases if p.get("name")]
+
+        # Evaluate findings if any were generated
+        eval_decision: dict[str, Any] = {}
+        if all_findings:
+            eval_decision = await self.evaluate_findings(all_findings)
+
         results = {
             "engagement_id": engagement_id,
             "target": target,
             "plan": plan,
-            "phases_completed": [],
-            "findings_summary": [],
+            "phases_completed": phases_completed,
+            "findings_summary": all_findings,
+            "evaluation": eval_decision,
         }
 
         self.status = "completed"

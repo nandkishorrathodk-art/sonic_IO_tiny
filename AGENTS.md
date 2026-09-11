@@ -1856,5 +1856,57 @@ Addressed computer-use gaps, logic flaws, and plane separation invariants:
 ### 5. Verified Test Matrix (176 Passed, 0 Failures)
 - All 176 unit and integration tests across modified suites pass 100% cleanly.
 
+## Phase 32 — Boss Agent & Multi-SubAgent Autonomous Orchestration (DONE)
+Eliminated the flat single-agent reactive loop (`observe() -> LLM 1 action -> execute -> repeat`) and replaced it with a hierarchical Boss Agent and SubAgent worker orchestration system:
+
+### 1. Boss Agent Architecture (`sonic/computer_use/boss.py`)
+- **Strategic Decomposition:** Decomposes complex user penetration testing objectives into structured phases and focused sub-missions.
+- **SubAgent Worker Dispatch:** Dispatches dedicated `ComputerUseAgent` workers for each sub-mission, each with a focused goal, bounded step budget, and inherited `SealedActionPolicy` safety envelope.
+- **Report & Trace Aggregation:** Aggregates findings and execution traces across all workers to drive reaction planning and next-phase formulation.
+- **Final Report Synthesis:** Synthesizes structured deliverables (`BossReport`) backed by real in-sandbox reproduction.
+- **Data Models (`sonic/computer_use/models_boss.py`):** `SubMission`, `SubMissionResult`, `Phase`, `BossThinking`, `BossReport`.
+
+### 2. Workstation API & Mission Director Routing
+- **`workstation.py`**: Added `_is_complex_or_multi_part_objective()` to route complex tasks to `BossAgent`, while maintaining fast single-action execution for simple terminal commands (`pwd`, `hostname`).
+- **Real-Time Worklog Streaming**: Streams 6 distinct event types (`boss_thinking`, `sub_dispatch`, `sub_step`, `sub_report`, `phase_complete`, `boss_report`) into the workstation timeline with live thinking durations.
+- **`director.py`**: Wired `BossAgent` into Phase 3 (ENGINEERING) of `MissionDirector.coordinate()` with trace stashing.
+
+---
+
+## Phase 33 — Unified DAG TaskGraph & ReplanEngine Wiring (DONE)
+Wired the previously unintegrated and stubbed cognitive architecture components (`TaskGraph`, `ReplanEngine`, `MetaOrchestrator`, `Director`) into a cohesive, DAG-driven autonomous execution pipeline matching the Antigravity thinking loop:
+
+### 1. Event-Driven Director Execution Engine (`sonic/agents/director.py`)
+- Implemented `run_engagement_loop(engagement_id, worker_fn, max_iterations=50)`:
+  - Fetches dispatchable tasks via `get_dispatchable_tasks()`.
+  - Dispatches tasks to `worker_fn`, handles async results, and updates cognitive state via `on_task_completed()`.
+  - Cascades task failures and blocked states via `on_task_failed()`.
+  - Automatically evaluates predictions, checks contradictions, and triggers replanning until `graph.is_complete()`.
+
+### 2. MetaOrchestrator Execution (`sonic/agents/orchestrator.py`)
+- Replaced the legacy planning-only stub with end-to-end execution:
+  - Converts engagement plans into a `TaskGraph` DAG with topological phase dependencies.
+  - Executes tasks via `Director.run_engagement_loop()` or directly through `TaskGraph.get_ready_tasks()`.
+  - Ingests outputs, calls `evaluate_findings()`, and returns real `phases_completed` and `findings_summary`.
+
+### 3. BossAgent TaskGraph DAG & ReplanEngine Triggers (`sonic/computer_use/boss.py`)
+- **DAG Task Graph Integration:** Integrated `sonic.agents.task_graph.TaskGraph` under the hood. Sub-missions are registered as `TaskNode` objects with dependency validation, Kahn's cycle detection, and topological readiness checks.
+- **Dynamic ReplanEngine Triggers:** Integrated `sonic.agents.replan.ReplanEngine` trigger evaluation on sub-agent completions:
+  - `NEW_ATTACK_SURFACE`: Discovered URLs, query parameters, hidden forms, and routes.
+  - `NEW_HIGH_CONFIDENCE_FINDING`: Confirmed vulnerabilities (SQLi, XSS, RCE, IDOR, etc.).
+  - `AGENT_FAILURE`: Worker failures and execution timeouts.
+- Detected triggers emit real-time `boss_thinking` reaction entries and dynamically mutate the task graph for follow-up testing.
+
+### 4. Comprehensive Test Verification (100% Green)
+- `test_dag_and_replan_orchestration.py` (7 tests) — **PASSED**
+- `test_boss_agent.py` (10 tests) — **PASSED**
+- `test_workstation_boss_integration.py` (4 tests) — **PASSED**
+- `test_phase5/` (27 tests: TaskGraph, ReplanEngine, Recovery) — **PASSED**
+- `test_phase6/` (26 tests: Epistemic awareness, Predictions, Contradictions) — **PASSED**
+- `test_round3_computer_agents_fixes.py` (12 tests) — **PASSED**
+- `test_workstation_desktop_browser_and_news.py` (16 tests) — **PASSED**
+- **Regression Suite Total: 102 passed, 0 failures (100% GREEN).**
+
+
 
 

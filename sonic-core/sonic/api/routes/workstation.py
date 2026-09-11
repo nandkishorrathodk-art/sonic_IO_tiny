@@ -1692,6 +1692,28 @@ def _is_action_prompt(prompt: str) -> bool:
     return True
 
 
+def _is_complex_or_multi_part_objective(prompt: str) -> bool:
+    """Check if an objective requires Boss Agent multi-phase orchestration."""
+    p_lower = prompt.lower().strip()
+    # Explicit orchestrator keywords
+    if any(k in p_lower for k in ("subagent", "sub-agent", "phase", "deep dive", "orchestrat", "boss")):
+        return True
+    # Security assessments, audits, vulnerabilities, multi-task goals
+    complex_keywords = (
+        "find", "audit", "investigate", "test for", "vulnerability", "sqli",
+        "sql injection", "xss", "recon", "reconnaissance", "attack surface",
+        "enumerate", "penetration", "exploit", "assess", "scan and",
+        "check all", "analyze", "deep dive",
+    )
+    if any(k in p_lower for k in complex_keywords):
+        return True
+    # Multi-part objectives with 'and', 'then', or multiple commands
+    if (" and " in p_lower or " then " in p_lower or "\n" in prompt or ";" in prompt) and len(prompt.split()) > 4:
+        return True
+    return False
+
+
+
 _NON_INSTALL_WORDS = {
     "karo", "it", "them", "this", "that", "app", "application", "package", "tools", "tool",
     "usko", "isko", "unko", "inhe", "unhe", "please", "pls", "kar", "do", "karna", "then",
@@ -1752,244 +1774,8 @@ async def _run_autonomous_desktop_loop(
     tenant_id: str,
     prompt: str,
 ) -> tuple[list[str], str | None, bool]:
-    """Execute a bounded, explicit action sequence in the real Daytona desktop.
-
-    The model is used for explanation, never as a source of fabricated command
-    output. Actions are executed in the live Daytona sandbox and every result comes
-    directly from the remote sandbox PTY.
-    """
-    computer = get_daytona_computer()
-    lower = prompt.lower()
-    observations: list[str] = []
-
-    # 1. Window & Process Closing
-    if any(k in lower for k in ("close terminal", "kill terminal", "exit terminal", "close your terminal", "close window", "band karo", "close app", "close browser")) or re.search(r"\b(?:close|kill|exit|terminate)\s+(?:application|app|[a-z0-9_.-]+)", lower):
-        if any(b in lower for b in ("browser", "chromium", "chrome")):
-            kill_cmd = "pkill -9 chromium || pkill -9 chromium-browse || true"
-            window_name = "Chromium Browser"
-        else:
-            app = ""
-            match = re.search(
-                r"\b(?:close|kill|exit|terminate)\s+(?:the\s+)?(?:application\s+|app\s+)?([a-z0-9_.-]+)\b",
-                lower,
-            )
-            if match and match.group(1) not in ("app", "application", "window", "process", "it", "the"):
-                app = match.group(1)
-            if not app:
-                hindi_match = re.search(r"\b([a-z0-9_.-]+)\s+(?:ko\s+)?band karo\b", lower)
-                if hindi_match and hindi_match.group(1) not in ("app", "application", "window", "process", "it"):
-                    app = hindi_match.group(1)
-            if not app:
-                active = state.get("desktop", {}).get("active_window", "")
-                if active and active not in ("None", "Desktop"):
-                    app = active.split()[0].lower()
-            if not app or app in ("terminal", "console", "shell", "bash"):
-                app = "xfce4-terminal"
-
-            kill_cmd = f"pkill -f {shlex.quote(app)} || true"
-            window_name = "Terminal" if "terminal" in app else app.capitalize()
-        res = await computer.terminal(desktop_id, kill_cmd, timeout=10, actor=tenant_id)
-        state["desktop"]["active_window"] = "None"
-        observations.append(f"Closed {window_name} on display :99 via `{kill_cmd}` (exit={res.exit_code}).")
-        _append_worklog(state, "action", f"Closed {window_name}", f"Agent executed `{kill_cmd}` to close the active application on Daytona Graphical Desktop.")
-        return observations, None, False
-
-    # 2. Application / package installation
-    if "install" in lower:
-        package = _extract_install_package(prompt)
-        if package:
-            allowed, reason = ApplicationPolicy().is_package_allowed(package)
-            if not allowed:
-                message = f"Installation blocked by the sandbox package policy: {reason}"
-                _append_worklog(state, "error", "Package installation blocked", message)
-                return observations, message, True
-            ok, output = await computer.install_application(desktop_id, package, actor=tenant_id)
-            result_text = (output or "(package manager returned no output)").strip()[:8000]
-            observations.append(f"install {package}: exit={'0' if ok else 'non-zero'}\n{result_text}")
-            _append_worklog(
-                state,
-                "action" if ok else "error",
-                f"Install {package}",
-                f"Real Daytona package-manager result:\n{result_text}",
-            )
-            verify = await computer.terminal(
-                desktop_id,
-                f"dpkg-query -W -f='${{Status}}' -- {shlex.quote(package)} 2>/dev/null || true",
-                actor=tenant_id,
-            )
-            verify_text = (verify.stdout + ("\n" + verify.stderr if verify.stderr else "")).strip()[:4000]
-            observations.append(f"verify {package}: exit={verify.exit_code}\n{verify_text}")
-            _append_worklog(state, "action", f"Verify {package}", f"Real package verification:\n{verify_text or '(no package status returned)'}")
-            if not ok:
-                return observations, f"The real Daytona package installation failed for `{package}`. See the terminal result above; no success was claimed.", True
-            return observations, None, False
-
-    # 3. Explicit terminal command execution
-    command = _extract_terminal_command(prompt)
-    if command:
-        risk = get_scope_checker().classify_command_risk(command)
-        verdict = get_scope_checker().check_action(command, risk)
-        if verdict == SafetyVerdict.BLOCKED:
-            message = f"Terminal command blocked by safety policy — destructive operation detected ({risk.value}); no command was executed."
-            _append_worklog(state, "error", "Terminal command blocked", message)
-            return observations, message, True
-        if verdict == SafetyVerdict.NEEDS_APPROVAL:
-            message = f"Terminal command classified as {risk.value} (intrusive) — requires operator approval; no command was executed."
-            _append_worklog(state, "error", "Terminal command needs approval", message)
-            return observations, message, True
-        result = await computer.terminal(desktop_id, command, timeout=120, actor=tenant_id)
-        output = (result.stdout + ("\n" + result.stderr if result.stderr else "")).strip()[:8000]
-        _append_worklog(
-            state,
-            "command",
-            command,
-            output,
-            command=command,
-            output=output,
-            exit_code=result.exit_code,
-            duration_seconds=getattr(result, "duration_seconds", 0.0),
-        )
-        return observations, None, False
-
-    # 4. Web Browsing on Desktop
-    app_name, target_url = _detect_requested_app(prompt)
-    if app_name == "chromium" and not any(k in lower for k in ("bug", "recon", "scan", "rce", "exploit", "pentest", "vulnerab")):
-        target_url = target_url or "https://www.google.com"
-
-        # Launch GUI browser in X11 graphical desktop
-        browser_launch_cmd = f"DISPLAY=:99 chromium --no-sandbox --disable-dev-shm-usage --disable-gpu --disable-quic --no-first-run --no-default-browser-check {shlex.quote(target_url)} >/dev/null 2>&1 &"
-        await computer.terminal(desktop_id, browser_launch_cmd, timeout=15, actor=tenant_id)
-
-        try:
-            await computer.gui_action(
-                desktop_id,
-                GUIAction(action=GUIActionType.OPEN_APP, app_name=f"Chromium ({target_url})"),
-                actor=tenant_id,
-            )
-        except Exception:
-            pass
-
-        state["desktop"]["active_window"] = f"Chromium - {target_url}"
-        _append_worklog(
-            state,
-            "action",
-            "Browser Launched on Desktop",
-            f"Launched Chromium browser on Daytona Graphical Desktop (Display :99) navigating to `{target_url}`.",
-        )
-        observations.append(f"Desktop GUI: Chromium browser launched on display :99 pointing to {target_url}.")
-        return observations, None, False
-
-    # 5. Autonomous Multi-Phase Security Recon & Bug Hunting Loop
-    target = _extract_target_url_or_domain(prompt, state)
-    is_security_recon = any(k in lower for k in ("bug", "recon", "scan", "test", "check", "try", "karo", "dhundo", "bounty", "vulnerability", "audit", "opensea", "rce", "xss", "sqli", "pentest"))
-
-    if is_security_recon:
-        # Step A: Sandbox Environment Verification
-        env_cmd = "whoami; pwd; uname -a"
-        env_res = await computer.terminal(desktop_id, env_cmd, timeout=30, actor=tenant_id)
-        env_out = (env_res.stdout + ("\n" + env_res.stderr if env_res.stderr else "")).strip()
-        observations.append(f"Workstation Sandbox Environment:\n{env_out}")
-        _append_worklog(state, "action", "Sandbox Environment Verified", f"`{env_cmd}`\n{env_out}")
-
-        # Step B: Multi-Phase Deep Security Assessment
-        if target:
-            target_clean = re.sub(r"^https?://", "", target).strip("/")
-            target_clean = re.sub(r"[^a-zA-Z0-9.:-]", "", target_clean)
-            if target_clean:
-                target_url = shlex.quote(f"https://{target_clean}")
-                recon_steps = [
-                    (
-                        f"Phase 1: DNS & Infrastructure Mapping ({target_clean})",
-                        f"dig +short A {target_clean} && dig +short CNAME {target_clean} && dig +short TXT {target_clean} | head -n 8",
-                    ),
-                    (
-                        f"Phase 2: Port & Service Discovery ({target_clean})",
-                        f"nmap -sV -Pn -p 80,443 --open --max-retries 1 {target_clean} 2>/dev/null || true",
-                    ),
-                    (
-                        f"Phase 3: HTTP Security Headers & Transport ({target_clean})",
-                        f"curl -s -I -L --max-time 10 {target_url} | head -n 35",
-                    ),
-                    (
-                        f"Phase 4: CORS & HTTP Method Probe ({target_clean})",
-                        f"curl -s -I -X OPTIONS -H \"Origin: https://attacker.com\" --max-time 10 {target_url} | head -n 25",
-                    ),
-                    (
-                        f"Phase 5: Client-Side JS Chunks & Endpoint Discovery ({target_clean})",
-                        f"curl -s -L --max-time 10 {target_url} | grep -oE 'https?://[a-zA-Z0-9./_=-]+\\.js' | head -n 15 || true",
-                    ),
-                    (
-                        f"Phase 6: GraphQL & API Introspection Probe ({target_clean})",
-                        f"curl -s -I --max-time 10 {shlex.quote(f'https://{target_clean}/graphql')} 2>/dev/null | head -n 15 && curl -s -I --max-time 10 {shlex.quote(f'https://{target_clean}/api/v2')} 2>/dev/null | head -n 15 || true",
-                    ),
-                    (
-                        f"Phase 7: Security Policy & Responsible Disclosure ({target_clean})",
-                        f"curl -s -I --max-time 10 {shlex.quote(f'https://{target_clean}/.well-known/security.txt')} 2>/dev/null | head -n 20 && curl -s --max-time 10 {shlex.quote(f'https://{target_clean}/robots.txt')} | head -n 25 || true",
-                    ),
-                ]
-                for title, cmd in recon_steps:
-                    res = await computer.terminal(desktop_id, cmd, timeout=40, actor=tenant_id)
-                    out = (res.stdout + ("\n" + res.stderr if res.stderr else "")).strip()
-                    if out:
-                        observations.append(f"{title} [`{cmd}`]: exit={res.exit_code}\n{out[:4000]}")
-                        _append_worklog(state, "action", title, f"`{cmd}`\nReal Daytona output:\n{out[:4000]}")
-                        # Auto-record evidence into state with SHA-256 custody digest
-                        ev_payload = {
-                            "tool": title,
-                            "target": target_clean,
-                            "command": cmd,
-                            "exit_code": res.exit_code,
-                            "output": out[:4000],
-                        }
-                        ev_digest = hashlib.sha256(json.dumps(ev_payload, sort_keys=True).encode("utf-8")).hexdigest()
-                        state.setdefault("evidence", []).append({
-                            "id": f"ev-{uuid.uuid4().hex[:8]}",
-                            "title": title,
-                            "target": target_clean,
-                            "severity": "INFORMATIONAL",
-                            "verified": True,
-                            "sha256": ev_digest,
-                            "output": out[:4000],
-                            "captured_at": _timestamp(),
-                        })
-        else:
-            # General workspace inspection
-            ws_cmd = "ls -la /home/daytona 2>/dev/null || ls -la"
-            ws_res = await computer.terminal(desktop_id, ws_cmd, timeout=30, actor=tenant_id)
-            ws_out = (ws_res.stdout + ("\n" + ws_res.stderr if ws_res.stderr else "")).strip()
-            observations.append(f"Workspace Directory:\n{ws_out[:3000]}")
-            _append_worklog(state, "action", "Workspace Files Listed", f"`{ws_cmd}`\n{ws_out[:3000]}")
-
-        return observations, None, False
-
-    # 6. General GUI Application Launch (Terminal, Editor, Files)
-    detected_app, app_args = _detect_requested_app(prompt)
-    if detected_app:
-        launch_cmd = f"DISPLAY=:99 {detected_app} {app_args} >/dev/null 2>&1 &"
-        await computer.terminal(desktop_id, launch_cmd, timeout=15, actor=tenant_id)
-        try:
-            await computer.gui_action(
-                desktop_id,
-                GUIAction(action=GUIActionType.OPEN_APP, app_name=detected_app),
-                actor=tenant_id,
-            )
-        except Exception:
-            pass
-        state["desktop"]["active_window"] = detected_app
-        observations.append(f"Desktop GUI: Opened {detected_app} on display :99.")
-        _append_worklog(state, "action", f"Opened {detected_app}", f"Agent opened `{detected_app}` on the Daytona Linux graphical desktop.")
-        return observations, None, False
-
-    # 7. General workspace inspection
-    if any(term in lower for term in ("inspect", "list files", "show files", "workspace")):
-        for command in ("pwd", "ls -la /home/daytona 2>/dev/null || ls -la", "git -C /home/sonic/workspace status --short 2>/dev/null || true"):
-            result = await computer.terminal(desktop_id, command, timeout=60, actor=tenant_id)
-            output = (result.stdout + ("\n" + result.stderr if result.stderr else "")).strip()[:6000]
-            observations.append(f"{command}: exit={result.exit_code}\n{output}")
-            _append_worklog(state, "action" if result.exit_code == 0 else "error", "Desktop Inspection Step", f"`{command}`\nReal Daytona result:\n{output or '(no output)'}")
-        return observations, None, False
-
-    return observations, None, False
+    """DEPRECATED / REMOVED: All autonomous operations now flow exclusively through ComputerUseAgent."""
+    return [], None, False
 
 
 def _is_research_prompt(prompt: str) -> bool:
@@ -2434,133 +2220,6 @@ async def _run_prompt_reasoning(tenant_id: str, session_id: str, prompt: str) ->
                         ws_root = "/root" if os.environ.get("SONIC_USE_DAYTONA_CLOUD") != "1" else "/home/daytona"
                         safety_policy = seal_default(workspace_root=ws_root)
 
-                        agent = ComputerUseAgent(
-                            computer_provider=computer,
-                            autonomy_level=ComputerAutonomyLevel.L3_AUTONOMOUS,
-                            mode=EngineeringMissionMode.GENERAL_ENGINEERING_MODE,
-                            max_actions=50,
-                            llm_router=llm_router,
-                            tenant_id=tenant_id,
-                            safety=safety_policy,
-                            self_host=True,
-                            enable_llm_decomposition=True,
-                        )
-
-                        _append_worklog(state, "action", "Agent Visual Computer Use",
-                            f"Starting autonomous visual computer use for: {prompt[:100]}")
-
-                        async def _on_step(trace):
-                            step_type = "action" if trace.status in ("COMPLETED", "SUCCESS", "RECOVERED", "VERIFIED") else "error"
-                            state["current_action"] = f"Step {trace.step_index}: {trace.action_type.value} on {trace.target_resource}"
-                            
-                            # Real unmocked Thought emission matching Devin timeline
-                            if getattr(trace, "thought", ""):
-                                t_dur = getattr(trace, "thought_duration_seconds", 0.0) or getattr(trace, "duration_seconds", 0.0)
-                                _append_worklog(
-                                    state,
-                                    "thought",
-                                    "Thinking",
-                                    trace.thought,
-                                    duration_seconds=t_dur if t_dur > 0 else None,
-                                )
-
-                            # Real unmocked Action emission matching Devin timeline
-                            action_val = trace.action_type.value if hasattr(trace.action_type, "value") else str(trace.action_type)
-                            if action_val == "TERMINAL_EXEC":
-                                cmd = ""
-                                if trace.payload:
-                                    p_data = {}
-                                    try:
-                                        import json
-                                        p_data = json.loads(trace.payload) if str(trace.payload).startswith("{") else {}
-                                    except Exception:
-                                        try:
-                                            import ast
-                                            p_data = ast.literal_eval(trace.payload)
-                                        except Exception:
-                                            pass
-                                    cmd = p_data.get("command", "") if isinstance(p_data, dict) else ""
-                                if not cmd:
-                                    cmd = trace.target_resource
-                                _append_worklog(
-                                    state, "command", cmd, trace.actual_observation,
-                                    command=cmd, output=trace.actual_observation,
-                                    duration_seconds=getattr(trace, "duration_seconds", 0),
-                                    exit_code=getattr(trace, "exit_code", None) if getattr(trace, "exit_code", None) is not None else (0 if trace.status in ("COMPLETED", "SUCCESS", "VERIFIED") else 1),
-                                )
-                            elif action_val == "FILE_READ":
-                                _append_worklog(
-                                    state, "read", f"Read {trace.target_resource}", trace.actual_observation,
-                                    file=trace.target_resource,
-                                    duration_seconds=getattr(trace, "duration_seconds", 0),
-                                )
-                            elif action_val == "FILE_WRITE":
-                                _append_worklog(
-                                    state, "write", f"Write {trace.target_resource}", trace.actual_observation,
-                                    file=trace.target_resource,
-                                    duration_seconds=getattr(trace, "duration_seconds", 0),
-                                )
-                            else:
-                                _append_worklog(
-                                    state, step_type,
-                                    f"Step {trace.step_index}: {action_val}",
-                                    f"Target: {trace.target_resource}\nResult: {trace.actual_observation}\nStatus: {trace.status}",
-                                    duration_seconds=getattr(trace, "duration_seconds", 0),
-                                )
-
-                            # Auto-synthesize Evidence and Graph Memory nodes from discoveries
-                            obs_text = trace.actual_observation or ""
-                            has_discovery = any(k in obs_text.lower() for k in ("open", "http", "200 ok", "discovered", "vulnerability", "port", "https://"))
-                            is_valid_success = (
-                                trace.status in ("COMPLETED", "SUCCESS", "RECOVERED", "VERIFIED")
-                                and not any(k in obs_text.lower() for k in ("exit 125", "exit 126", "exit 1", "blocked fail-closed", "command blocked"))
-                            )
-                            if has_discovery and trace.target_resource and is_valid_success:
-                                import hashlib
-                                ev_id = f"ev-{uuid.uuid4().hex[:8]}"
-                                sha256_hash = hashlib.sha256(obs_text.encode("utf-8")).hexdigest()
-                                
-                                # Add to session evidence
-                                if "evidence" not in state:
-                                    state["evidence"] = []
-                                state["evidence"].append({
-                                    "id": ev_id,
-                                    "title": f"{trace.action_type.value}: {trace.target_resource}",
-                                    "target": trace.target_resource,
-                                    "severity": "INFORMATIONAL",
-                                    "verified": True,
-                                    "sha256": sha256_hash,
-                                    "output": obs_text[:3000],
-                                    "captured_at": datetime.now(UTC).isoformat(),
-                                })
-
-                                # Add to persistent Graph Memory
-                                try:
-                                    from sonic.memory.router import get_smart_memory
-                                    from sonic.memory.schemas import AssetNode, FindingNode, FindingSeverity, RelationshipType
-                                    mem = await get_smart_memory()
-                                    target_clean = trace.target_resource.replace("https://", "").replace("http://", "").split("/")[0].split(":")[0]
-                                    if target_clean and len(target_clean) > 2:
-                                        asset_uid = f"asset-{target_clean}"
-                                        await mem.create_node(AssetNode(uid=asset_uid, value=target_clean, asset_type="domain", tenant_id=tenant_id))
-                                        finding_uid = f"finding-{sha256_hash[:8]}"
-                                        await mem.create_node(FindingNode(
-                                            uid=finding_uid,
-                                            title=f"{trace.action_type.value}: {trace.target_resource}",
-                                            description=obs_text[:200],
-                                            vulnerability_class="observation",
-                                            severity=FindingSeverity.INFO,
-                                            tenant_id=tenant_id,
-                                        ))
-                                        await mem.create_relationship(
-                                            from_label="Finding", from_uid=finding_uid,
-                                            to_label="Asset", to_uid=asset_uid,
-                                            rel_type=RelationshipType.DISCOVERED_ON.value,
-                                            tenant_id=tenant_id,
-                                        )
-                                except Exception as mem_err:
-                                    logger.debug("workstation_graph_memory_update_failed", error=str(mem_err))
-
                         state["interrupted"] = False
 
                         # Enhance goal with target context from session history if not directly in prompt
@@ -2577,58 +2236,325 @@ async def _run_prompt_reasoning(tenant_id: str, session_id: str, prompt: str) ->
                             if not any(u in prompt for u in dedup_urls):
                                 effective_goal += f"\n[Contextual Target URL in scope: {dedup_urls[0]}]"
 
-                        traces = await agent.run_mission(
-                            workspace_id=desktop_id,
-                            goal=effective_goal,
-                            steps=agent.max_actions,
-                            step_callback=_on_step,
-                            interrupt_check=lambda: bool(state.get("interrupted")),
-                        )
-
-                        # Final summary
-                        succeeded = sum(1 for t in traces if t.status in ("SUCCESS", "RECOVERED"))
-                        failed = sum(1 for t in traces if t.status == "FAILED")
-                        blocked = sum(1 for t in traces if t.status == "BLOCKED")
-                        if state.get("interrupted"):
-                            state["status"] = "PAUSED"
-                            state["current_action"] = "Agent paused by user."
-                            summary_msg = f"Autonomous computer-use paused by user ({succeeded} actions completed, {len(traces)} total steps)."
-                        else:
-                            state["status"] = "IDLE"
-                            state["current_action"] = "Ready when you are."
-                            if getattr(agent, "goal_reached", False):
-                                summary_msg = f"Goal successfully achieved and verified on Daytona desktop ({succeeded} actions completed)."
+                        async def _record_step_trace(trace: Any) -> None:
+                            if isinstance(trace, dict):
+                                step_index = trace.get("step_index", 1)
+                                action_val = str(trace.get("action_type", ""))
+                                target_resource = str(trace.get("target") or trace.get("target_resource") or "")
+                                thought = str(trace.get("thought") or "")
+                                actual_observation = str(trace.get("observation") or trace.get("actual_observation") or "")
+                                trace_status = str(trace.get("status", "COMPLETED"))
+                                duration_seconds = trace.get("duration_seconds", 0)
+                                exit_code = trace.get("exit_code")
+                                payload = trace.get("payload", "")
                             else:
-                                summary_msg = (
-                                    f"Autonomous run concluded: {succeeded} steps succeeded, {failed} failed "
-                                    f"({len(traces)} total steps). Goal may still be in progress — send next command to continue."
+                                step_index = getattr(trace, "step_index", 1)
+                                act_type = getattr(trace, "action_type", "")
+                                action_val = act_type.value if hasattr(act_type, "value") else str(act_type)
+                                target_resource = getattr(trace, "target_resource", "")
+                                thought = getattr(trace, "thought", "")
+                                actual_observation = getattr(trace, "actual_observation", "") or ""
+                                trace_status = getattr(trace, "status", "COMPLETED")
+                                duration_seconds = getattr(trace, "duration_seconds", 0)
+                                exit_code = getattr(trace, "exit_code", None)
+                                payload = getattr(trace, "payload", "")
+
+                            step_type = "action" if trace_status in ("COMPLETED", "SUCCESS", "RECOVERED", "VERIFIED") else "error"
+                            state["current_action"] = f"Step {step_index}: {action_val} on {target_resource}"
+
+                            # Real unmocked Thought emission matching Devin timeline
+                            if thought:
+                                t_dur = duration_seconds if (duration_seconds and duration_seconds > 0) else None
+                                _append_worklog(
+                                    state,
+                                    "thought",
+                                    "Thinking",
+                                    thought,
+                                    duration_seconds=t_dur,
                                 )
-                        state["thought_summary"] = summary_msg
-                        _append_worklog(
-                            state, "response",
-                            "SONIC Response",
-                            summary_msg,
-                        )
-                        _persist_workstation_state()
-                        return
+
+                            # Real unmocked Action emission matching Devin timeline
+                            if action_val == "TERMINAL_EXEC":
+                                cmd = ""
+                                if payload:
+                                    p_data = {}
+                                    try:
+                                        p_data = json.loads(payload) if str(payload).startswith("{") else {}
+                                    except Exception:
+                                        try:
+                                            import ast
+                                            p_data = ast.literal_eval(payload)
+                                        except Exception:
+                                            pass
+                                    cmd = p_data.get("command", "") if isinstance(p_data, dict) else ""
+                                if not cmd:
+                                    cmd = target_resource
+                                _append_worklog(
+                                    state, "command", cmd, actual_observation,
+                                    command=cmd, output=actual_observation,
+                                    duration_seconds=duration_seconds,
+                                    exit_code=exit_code if exit_code is not None else (0 if trace_status in ("COMPLETED", "SUCCESS", "VERIFIED") else 1),
+                                )
+                            elif action_val == "FILE_READ":
+                                _append_worklog(
+                                    state, "read", f"Read {target_resource}", actual_observation,
+                                    file=target_resource,
+                                    duration_seconds=duration_seconds,
+                                )
+                            elif action_val == "FILE_WRITE":
+                                _append_worklog(
+                                    state, "write", f"Write {target_resource}", actual_observation,
+                                    file=target_resource,
+                                    duration_seconds=duration_seconds,
+                                )
+                            elif action_val in ("SCREENSHOT", "BROWSER_SCREENSHOT"):
+                                _append_worklog(
+                                    state, "screenshot", "Desktop Screenshot", actual_observation or "Captured desktop screenshot",
+                                    image=actual_observation if (actual_observation and actual_observation.startswith("data:image")) else None,
+                                    duration_seconds=duration_seconds,
+                                )
+                            else:
+                                _append_worklog(
+                                    state, step_type,
+                                    f"Step {step_index}: {action_val}",
+                                    f"Target: {target_resource}\nResult: {actual_observation}\nStatus: {trace_status}",
+                                    duration_seconds=duration_seconds,
+                                )
+
+                            # Auto-synthesize Evidence and Graph Memory nodes from discoveries
+                            obs_text = actual_observation or ""
+                            has_discovery = any(k in obs_text.lower() for k in ("open", "http", "200 ok", "discovered", "vulnerability", "port", "https://"))
+                            is_valid_success = (
+                                trace_status in ("COMPLETED", "SUCCESS", "RECOVERED", "VERIFIED")
+                                and not any(k in obs_text.lower() for k in ("exit 125", "exit 126", "exit 1", "blocked fail-closed", "command blocked"))
+                            )
+                            if has_discovery and target_resource and is_valid_success:
+                                import hashlib
+                                ev_id = f"ev-{uuid.uuid4().hex[:8]}"
+                                sha256_hash = hashlib.sha256(obs_text.encode("utf-8")).hexdigest()
+
+                                # Add to session evidence
+                                if "evidence" not in state:
+                                    state["evidence"] = []
+                                state["evidence"].append({
+                                    "id": ev_id,
+                                    "title": f"{action_val}: {target_resource}",
+                                    "target": target_resource,
+                                    "severity": "INFORMATIONAL",
+                                    "verified": True,
+                                    "sha256": sha256_hash,
+                                    "output": obs_text[:3000],
+                                    "captured_at": datetime.now(UTC).isoformat(),
+                                })
+
+                                # Add to persistent Graph Memory
+                                try:
+                                    from sonic.memory.router import get_smart_memory
+                                    from sonic.memory.schemas import AssetNode, FindingNode, FindingSeverity, RelationshipType
+                                    mem = await get_smart_memory()
+                                    target_clean = target_resource.replace("https://", "").replace("http://", "").split("/")[0].split(":")[0]
+                                    if target_clean and len(target_clean) > 2:
+                                        asset_uid = f"asset-{target_clean}"
+                                        await mem.create_node(AssetNode(uid=asset_uid, value=target_clean, asset_type="domain", tenant_id=tenant_id))
+                                        finding_uid = f"finding-{sha256_hash[:8]}"
+                                        await mem.create_node(FindingNode(
+                                            uid=finding_uid,
+                                            title=f"{action_val}: {target_resource}",
+                                            description=obs_text[:200],
+                                            vulnerability_class="observation",
+                                            severity=FindingSeverity.INFO,
+                                            tenant_id=tenant_id,
+                                        ))
+                                        await mem.create_relationship(
+                                            from_label="Finding", from_uid=finding_uid,
+                                            to_label="Asset", to_uid=asset_uid,
+                                            rel_type=RelationshipType.DISCOVERED_ON.value,
+                                            tenant_id=tenant_id,
+                                        )
+                                except Exception as mem_err:
+                                    logger.debug("workstation_graph_memory_update_failed", error=str(mem_err))
+
+                        if _is_complex_or_multi_part_objective(prompt):
+                            from sonic.computer_use.boss import BossAgent
+
+                            boss = BossAgent(
+                                computer_provider=computer,
+                                llm_router=llm_router,
+                                safety=safety_policy,
+                                security_tools=getattr(computer, "security_tools", None),
+                                tenant_id=tenant_id,
+                                max_phases=3,
+                                sub_agent_steps=5,
+                            )
+
+                            _append_worklog(
+                                state, "action", "Boss Agent Orchestration",
+                                f"Starting multi-phase orchestration for: {prompt[:100]}",
+                            )
+
+                            async def _on_boss_event(event_type: str, data: dict) -> None:
+                                data = data or {}
+                                if event_type == "boss_thinking":
+                                    content = data.get("content", "")
+                                    _append_worklog(
+                                        state,
+                                        "thought",
+                                        f"Boss Thinking ({data.get('thinking_type', 'Planning')})",
+                                        content,
+                                    )
+                                elif event_type == "sub_dispatch":
+                                    _append_worklog(
+                                        state,
+                                        "action",
+                                        f"Dispatching SubAgent #{data.get('sub_agent_number')}",
+                                        f"Goal: {data.get('goal')}\nMax Steps: {data.get('max_steps')}",
+                                    )
+                                elif event_type == "sub_step":
+                                    trace_data = data.get("trace", {})
+                                    await _record_step_trace(trace_data)
+                                elif event_type == "sub_report":
+                                    _append_worklog(
+                                        state,
+                                        "info",
+                                        f"SubAgent #{data.get('sub_agent_number')} Report",
+                                        data.get("findings_summary", ""),
+                                    )
+                                elif event_type == "phase_complete":
+                                    _append_worklog(
+                                        state,
+                                        "info",
+                                        f"Phase {data.get('phase_number')} Complete ({data.get('name')})",
+                                        f"Completed {data.get('results_count')} sub-missions ({data.get('success_count')} succeeded)",
+                                    )
+                                elif event_type == "boss_report":
+                                    _append_worklog(
+                                        state,
+                                        "response",
+                                        "SONIC Boss Report",
+                                        data.get("findings_summary", ""),
+                                    )
+                                _persist_workstation_state()
+
+                            report = await boss.run(
+                                workspace_id=desktop_id,
+                                objective=effective_goal,
+                                phase_callback=_on_boss_event,
+                                interrupt_check=lambda: bool(state.get("interrupted")),
+                            )
+                            summary_msg = report.findings_summary
+
+                            if state.get("interrupted"):
+                                state["status"] = "PAUSED"
+                                state["current_action"] = "Agent paused by user."
+                            else:
+                                state["status"] = "IDLE"
+                                state["current_action"] = "Ready when you are."
+
+                            state["thought_summary"] = summary_msg
+                            if not any(item.get("title") == "SONIC Boss Report" for item in state.get("worklog", [])):
+                                _append_worklog(
+                                    state,
+                                    "response",
+                                    "SONIC Boss Report",
+                                    summary_msg,
+                                )
+                            _persist_workstation_state()
+                            return
+                        else:
+                            agent = ComputerUseAgent(
+                                computer_provider=computer,
+                                autonomy_level=ComputerAutonomyLevel.L3_AUTONOMOUS,
+                                mode=EngineeringMissionMode.GENERAL_ENGINEERING_MODE,
+                                max_actions=8,
+                                llm_router=llm_router,
+                                tenant_id=tenant_id,
+                                safety=safety_policy,
+                                self_host=True,
+                                enable_llm_decomposition=False,
+                            )
+
+                            _append_worklog(
+                                state, "action", "Agent Visual Computer Use",
+                                f"Starting autonomous visual computer use for: {prompt[:100]}",
+                            )
+
+                            async def _on_step(trace):
+                                await _record_step_trace(trace)
+
+                            traces = await agent.run_mission(
+                                workspace_id=desktop_id,
+                                goal=effective_goal,
+                                steps=agent.max_actions,
+                                step_callback=_on_step,
+                                interrupt_check=lambda: bool(state.get("interrupted")),
+                            )
+
+                            # Final summary
+                            succeeded = sum(1 for t in traces if t.status in ("SUCCESS", "RECOVERED"))
+                            failed = sum(1 for t in traces if t.status == "FAILED")
+                            blocked = sum(1 for t in traces if t.status == "BLOCKED")
+                            if state.get("interrupted"):
+                                state["status"] = "PAUSED"
+                                state["current_action"] = "Agent paused by user."
+                                summary_msg = f"Autonomous computer-use paused by user ({succeeded} actions completed, {len(traces)} total steps)."
+                            else:
+                                state["status"] = "IDLE"
+                                state["current_action"] = "Ready when you are."
+                                # Dynamic synthesis from real traces
+                                summary_msg = ""
+                                if traces:
+                                    findings_summary = "\n".join(
+                                        f"- Action: {t.action_type.value} on {t.target_resource} -> Output: {t.actual_observation[:300]}"
+                                        for t in traces if t.actual_observation
+                                    )
+                                    synth_prompt = (
+                                        f"User asked: '{prompt}'\n\n"
+                                        f"Autonomous actions executed and real workstation observations:\n"
+                                        f"{findings_summary or 'No output produced.'}\n\n"
+                                        f"Provide an authentic, clear response directly answering the user's objective based strictly on the real observations above."
+                                    )
+                                    try:
+                                        from sonic.llm.schemas import LLMRequest, Message, MessageRole
+                                        s_req = LLMRequest(
+                                            messages=[
+                                                Message(role=MessageRole.SYSTEM, content="You are SONIC, an autonomous systems and security architect. Summarize the verified findings and actions taken accurately and concisely in the user's language."),
+                                                Message(role=MessageRole.USER, content=synth_prompt),
+                                            ],
+                                            task_type="reasoning",
+                                            max_tokens=600,
+                                        )
+                                        s_resp = await llm_router.complete(s_req)
+                                        summary_msg = s_resp.content.strip()
+                                    except Exception as s_err:
+                                        logger.warning("workstation_synthesis_failed", error=str(s_err))
+
+                                if not summary_msg:
+                                    if getattr(agent, "goal_reached", False):
+                                        summary_msg = f"Goal successfully achieved on workstation ({succeeded} actions completed)."
+                                    elif traces:
+                                        summary_msg = f"Completed {succeeded} actions ({failed} failed):\n" + "\n".join(
+                                            f"• {t.action_type.value} on {t.target_resource}: {t.actual_observation[:120]}"
+                                            for t in traces if t.actual_observation
+                                        )
+                                    else:
+                                        summary_msg = "No actions were required or executed for this objective."
+
+                            state["thought_summary"] = summary_msg
+                            _append_worklog(
+                                state, "response",
+                                "SONIC Response",
+                                summary_msg,
+                            )
+                            _persist_workstation_state()
+                            return
                     except Exception as agent_err:
                         logger.warning("visual_computer_use_failed", error=str(agent_err))
-                        _append_worklog(state, "error", "Visual Computer Use Error",
-                            f"Agent-driven execution failed: {agent_err}. Falling back to chat.")
-                        # Fall through to regular LLM chat / fast path
-
-                action_observations, action_message, action_blocked = await _run_autonomous_desktop_loop(
-                    state, desktop_id, tenant_id, prompt
-                )
-                if action_observations:
-                    desktop_context += "\n\n--- Real Daytona Sandbox Execution Results ---\n" + "\n\n".join(action_observations)
-                if action_message and action_blocked:
-                    state["thought_summary"] = action_message
-                    _append_worklog(state, "response", "SONIC Response", action_message)
-                    state["status"] = "BLOCKED"
-                    state["current_action"] = "Execution blocked — review the real sandbox result"
-                    _persist_workstation_state()
-                    return
+                        _append_worklog(state, "error", "Execution Error",
+                            f"Agent execution encountered an error: {agent_err}")
+                        state["status"] = "ERROR"
+                        state["current_action"] = "Execution error"
+                        _persist_workstation_state()
+                        return
         else:
             if _is_action_prompt(prompt):
                 notice = (

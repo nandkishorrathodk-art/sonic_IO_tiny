@@ -230,3 +230,105 @@ def test_director_knowledge_summary_reflects_stashed_traces():
     s = director.get_knowledge_summary(state.mission_id)
     assert any("found SQLi" in k for k in s.what_we_know)
     assert s.confidence == 1.0
+
+
+def test_director_coordinate_boss_agent_integration():
+    """Verify BossAgent is orchestrated for autonomous/complex missions and its traces stashed."""
+    import asyncio
+    from unittest.mock import AsyncMock, patch
+    from sonic.mission_engine.director import MissionDirector
+    from sonic.computer_use.models_boss import BossReport
+
+    class _StubComputer:
+        async def create(self, **kw): return type("W", (), {"id": "ws-boss-1", "workspace_id": "ws-boss-1"})()
+        compute = type("C", (), {})()
+
+    director = MissionDirector(computer_provider=_StubComputer())
+    state = asyncio.run(director.create_mission(
+        tenant_id="tenant-boss",
+        goal="Audit and remediate multi-step vulnerability in auth service",
+    ))
+
+    sub_traces = [
+        _trace(ComputerActionType.FILE_READ, "auth/jwt.py", obs="inspected token parser"),
+        _trace(ComputerActionType.FILE_WRITE, "auth/jwt.py", obs="patched algorithm verification"),
+        _trace(ComputerActionType.GIT_COMMIT, "main", obs="commit 123456"),
+    ]
+    fake_report = BossReport(
+        objective=state.objective.goal,
+        status="COMPLETE",
+        all_traces=sub_traces,
+        total_sub_agents=2,
+        total_actions=3,
+        total_phases=2,
+        findings_summary="Vulnerability patched and committed across 2 phases.",
+    )
+
+    with patch("sonic.computer_use.boss.BossAgent.run", new=AsyncMock(return_value=fake_report)) as mock_boss_run, \
+         patch("sonic.agents.browser_agent.BrowserAgent.launch", new=AsyncMock()):
+        final_state = asyncio.run(director.coordinate(state.mission_id))
+        assert mock_boss_run.called
+        # Check that traces were stashed and reflect all SubAgent actions
+        stashed = getattr(final_state, "_last_traces", [])
+        assert len(stashed) == 3
+        summary = director.get_knowledge_summary(state.mission_id)
+        assert any("patched algorithm verification" in k for k in summary.what_we_know)
+        delivs = asyncio.run(director.finalize(state.mission_id))
+        assert len(delivs) >= 2
+
+
+def test_director_coordinate_boss_agent_fallback_on_empty():
+    """Verify fallback to ComputerUseAgent when BossAgent returns no traces."""
+    import asyncio
+    from unittest.mock import AsyncMock, patch
+    from sonic.mission_engine.director import MissionDirector
+    from sonic.computer_use.models_boss import BossReport
+
+    class _StubComputer:
+        async def create(self, **kw): return type("W", (), {"id": "ws-fallback-1", "workspace_id": "ws-fallback-1"})()
+        compute = type("C", (), {})()
+
+    director = MissionDirector(computer_provider=_StubComputer())
+    state = asyncio.run(director.create_mission(
+        tenant_id="tenant-fallback",
+        goal="Investigate and remediate auth bug",
+    ))
+
+    empty_report = BossReport(
+        objective=state.objective.goal,
+        status="COMPLETE",
+        all_traces=[],
+    )
+    fallback_traces = [
+        _trace(ComputerActionType.FILE_READ, "service.py", obs="single agent fallback run"),
+    ]
+
+    with patch("sonic.computer_use.boss.BossAgent.run", new=AsyncMock(return_value=empty_report)) as mock_boss_run, \
+         patch("sonic.computer_use.agent.ComputerUseAgent.run_mission", new=AsyncMock(return_value=fallback_traces)) as mock_cua_run, \
+         patch("sonic.agents.browser_agent.BrowserAgent.launch", new=AsyncMock()):
+        final_state = asyncio.run(director.coordinate(state.mission_id))
+        assert mock_boss_run.called
+        assert mock_cua_run.called
+        stashed = getattr(final_state, "_last_traces", [])
+        assert len(stashed) == 1
+        assert "single agent fallback run" in stashed[0].actual_observation
+
+
+def test_director_stash_traces_direct():
+    """Verify self.stash_traces(mission_id, traces) stores all SubAgent traces."""
+    from sonic.mission_engine.director import MissionDirector
+    import asyncio
+
+    class _StubComputer:
+        async def create(self, **kw): return type("W", (), {"id": "ws-1"})()
+        compute = type("C", (), {})()
+
+    director = MissionDirector(computer_provider=_StubComputer())
+    state = asyncio.run(director.create_mission(tenant_id="t", goal="test"))
+    traces = [
+        _trace(ComputerActionType.SECURITY_TOOL, "nmap", obs="subagent 1"),
+        _trace(ComputerActionType.FILE_WRITE, "patch.py", obs="subagent 2"),
+    ]
+    director.stash_traces(state.mission_id, traces)
+    assert getattr(state, "_last_traces") == traces
+

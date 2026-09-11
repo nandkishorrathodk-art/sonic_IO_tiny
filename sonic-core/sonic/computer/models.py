@@ -103,6 +103,10 @@ class ComputerWorkspace(BaseModel):
     created_at: str = Field(default_factory=_now)
     last_active_at: str = Field(default_factory=_now)
 
+    @property
+    def workspace_id(self) -> str:
+        return self.id
+
 
 class ComputerSession(BaseModel):
     """An active user or agent interaction session attached to a ComputerWorkspace."""

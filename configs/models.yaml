@@ -7,7 +7,7 @@
 
 # Default provider and model when no task-specific rule matches
 default_provider: nvidia
-default_model: moonshotai/kimi-k3
+default_model: meta/llama-3.2-11b-vision-instruct
 
 # ---- Provider Definitions ----
 providers:
@@ -78,6 +78,16 @@ providers:
     base_url_env: NVIDIA_BASE_URL
     base_url: https://integrate.api.nvidia.com/v1
     models:
+      - id: meta/llama-3.2-11b-vision-instruct
+        speed_tier: fast
+        cost_per_1k_input: 0.0003
+        cost_per_1k_output: 0.0006
+        capabilities: [reasoning, coding, planning, vision, tool_use, multimodal]
+      - id: openai/gpt-oss-20b
+        speed_tier: fast
+        cost_per_1k_input: 0.0005
+        cost_per_1k_output: 0.0015
+        capabilities: [reasoning, coding, planning, tool_use, thinking]
       - id: moonshotai/kimi-k3
         speed_tier: fast
         cost_per_1k_input: 0.0005
@@ -93,16 +103,6 @@ providers:
         cost_per_1k_input: 0.0005
         cost_per_1k_output: 0.001
         capabilities: [reasoning, coding, architecture]
-      - id: meta/llama-3.2-11b-vision-instruct
-        speed_tier: fast
-        cost_per_1k_input: 0.0003
-        cost_per_1k_output: 0.0006
-        capabilities: [vision, fast_tasks]
-      - id: openai/gpt-oss-20b
-        speed_tier: fast
-        cost_per_1k_input: 0.0005
-        cost_per_1k_output: 0.0015
-        capabilities: [reasoning, coding, planning, tool_use, thinking]
 
   claude:
     name: Anthropic Claude
@@ -168,56 +168,56 @@ routing_rules:
   planning:
     description: 'High-level planning, task decomposition, strategy'
     provider: nvidia
-    model: moonshotai/kimi-k3
-    fallback: [nvidia/openai/gpt-oss-20b, nvidia/nemotron-3.5-lightning-30b-a3b, openrouter/deepseek/deepseek-r1, claude/claude-3-5-sonnet-20241022]
+    model: meta/llama-3.2-11b-vision-instruct
+    fallback: [nvidia/openai/gpt-oss-20b, groq/llama-3.3-70b-versatile, openrouter/deepseek/deepseek-r1, claude/claude-3-5-sonnet-20241022]
 
   reasoning:
     description: 'Code analysis, dataflow tracing, pattern matching'
     provider: nvidia
-    model: moonshotai/kimi-k3
-    fallback: [nvidia/openai/gpt-oss-20b, nvidia/nemotron-3.5-lightning-30b-a3b, openrouter/deepseek/deepseek-r1, claude/claude-3-5-sonnet-20241022]
+    model: meta/llama-3.2-11b-vision-instruct
+    fallback: [nvidia/openai/gpt-oss-20b, groq/llama-3.3-70b-versatile, openrouter/deepseek/deepseek-r1, claude/claude-3-5-sonnet-20241022]
 
   fast_recon:
     description: 'Quick reconnaissance, asset discovery, tech detection'
     provider: nvidia
-    model: nvidia/nemotron-3.5-lightning-30b-a3b
+    model: meta/llama-3.2-11b-vision-instruct
     fallback: [groq/llama-3.3-70b-versatile, openai/gpt-4o-mini, grok/grok-3]
 
   coding:
     description: 'Code generation, fix generation, test writing'
     provider: nvidia
-    model: moonshotai/kimi-k3
-    fallback: [nvidia/openai/gpt-oss-20b, nvidia/nemotron-3.5-lightning-30b-a3b, deepseek/deepseek-reasoner, claude/claude-3-5-sonnet-20241022]
+    model: meta/llama-3.2-11b-vision-instruct
+    fallback: [nvidia/openai/gpt-oss-20b, deepseek/deepseek-reasoner, claude/claude-3-5-sonnet-20241022]
 
   verification:
     description: 'Evidence checking, confidence scoring, FP filtering'
     provider: nvidia
-    model: moonshotai/kimi-k3
-    fallback: [nvidia/openai/gpt-oss-20b, nvidia/nemotron-3.5-lightning-30b-a3b, openai/gpt-4o, claude/claude-3-5-sonnet-20241022]
+    model: meta/llama-3.2-11b-vision-instruct
+    fallback: [nvidia/openai/gpt-oss-20b, openai/gpt-4o, claude/claude-3-5-sonnet-20241022]
 
   hypothesis:
     description: 'Novel bug class ideation, creative reasoning'
     provider: nvidia
-    model: moonshotai/kimi-k3
-    fallback: [nvidia/openai/gpt-oss-20b, nvidia/nemotron-3-nano-omni-30b-a3b-reasoning, openrouter/deepseek/deepseek-r1]
+    model: meta/llama-3.2-11b-vision-instruct
+    fallback: [nvidia/openai/gpt-oss-20b, openrouter/deepseek/deepseek-r1]
 
   classification:
     description: 'Quick labeling, triage, categorization'
     provider: nvidia
-    model: nvidia/nemotron-3.5-lightning-30b-a3b
+    model: meta/llama-3.2-11b-vision-instruct
     fallback: [groq/llama-3.3-70b-versatile, openai/gpt-4o-mini]
 
   vision:
     description: 'Multimodal vision, desktop screenshot parsing, visual UI grounding'
     provider: nvidia
-    model: moonshotai/kimi-k3
-    fallback: [meta/llama-3.2-11b-vision-instruct, openrouter/openai/gpt-4o, claude/claude-3-5-sonnet-20241022]
+    model: meta/llama-3.2-11b-vision-instruct
+    fallback: [openrouter/openai/gpt-4o, claude/claude-3-5-sonnet-20241022]
 
   computer_use:
     description: 'Autonomous computer vision and desktop interaction'
     provider: nvidia
-    model: moonshotai/kimi-k3
-    fallback: [nvidia/openai/gpt-oss-20b, meta/llama-3.2-11b-vision-instruct, openrouter/openai/gpt-4o, claude/claude-3-5-sonnet-20241022]
+    model: meta/llama-3.2-11b-vision-instruct
+    fallback: [nvidia/openai/gpt-oss-20b, openrouter/openai/gpt-4o, claude/claude-3-5-sonnet-20241022]
 
 # ---- Global Fallback Chain ----
 # If the preferred provider for a task fails, try these in order

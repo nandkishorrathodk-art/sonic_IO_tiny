@@ -526,3 +526,81 @@ async def test_headless_browser_screenshot_without_navigate():
     assert "https://current.page.com/profile" in trace.actual_observation
     assert mock_browser.screenshot.called
     assert not mock_browser.navigate.called
+
+
+# ---------------------------------------------------------------------------
+# 14. Resilient Action Parsing & Model Autonomy Tests
+# ---------------------------------------------------------------------------
+
+def test_parse_llm_action_extracts_from_answer_prefix():
+    text = (
+        "THOUGHT: I should inspect disk space\n"
+        "**Answer:** TERMINAL_EXEC, TARGET: df, PAYLOAD: {\"command\": \"df -h\"}\n"
+        "EXPECTED: Disk usage\n"
+    )
+    act_type, target, payload, expected = ComputerUseAgent._parse_llm_action(text, "README.md")
+    assert act_type == ComputerActionType.TERMINAL_EXEC
+    assert payload.get("command") == "df -h"
+
+
+def test_parse_llm_action_detects_freeform_goal_completion():
+    text = (
+        "The system hostname is: `8e8d478afea9`\n\n"
+        "The disk space information is as follows:\n"
+        "- The root filesystem (`/`) is using 4% of its available space.\n"
+        "All requested information has been successfully gathered."
+    )
+    from sonic.computer_use.agent import _GOAL_COMPLETE_SENTINEL
+    act_type, target, payload, expected = ComputerUseAgent._parse_llm_action(text, "README.md")
+    assert expected == _GOAL_COMPLETE_SENTINEL
+    assert target == "goal-complete"
+
+
+def test_parse_llm_action_extracts_markdown_code_block():
+    text = (
+        "To check system hostname and disk space, execute:\n"
+        "```bash\n"
+        "hostname && df -h\n"
+        "```\n"
+    )
+    act_type, target, payload, expected = ComputerUseAgent._parse_llm_action(text, "README.md")
+    assert act_type == ComputerActionType.TERMINAL_EXEC
+    assert payload.get("command") == "hostname && df -h"
+
+
+def test_parse_llm_action_robust_json_with_trailing_commentary():
+    text = (
+        "ACTION: TERMINAL_EXEC\n"
+        "TARGET: hostname\n"
+        "PAYLOAD: {\"command\": \"hostname\"}\n\nThis will execute the hostname command.\n"
+        "EXPECTED: Hostname displayed\n"
+    )
+    act_type, target, payload, expected = ComputerUseAgent._parse_llm_action(text, "README.md")
+    assert act_type == ComputerActionType.TERMINAL_EXEC
+    assert payload.get("command") == "hostname"
+
+
+@pytest.mark.asyncio
+async def test_terminal_action_repeat_blocked_and_tracked():
+    provider = DummyComputerProvider()
+    agent = ComputerUseAgent(computer_provider=provider)
+    
+    # Execute first terminal action
+    await agent.execute_action(
+        "ws-1",
+        ComputerActionType.TERMINAL_EXEC,
+        "hostname",
+        {"command": "hostname"},
+        "get hostname",
+    )
+    assert len(agent._recent_action_signatures) == 1
+    assert agent._recent_action_signatures[0] == ("TERMINAL_EXEC", "hostname", "{'command': 'hostname'}")
+
+    # Second identical action must be blocked
+    rejection = agent._is_trivial_or_repeated_action(
+        ComputerActionType.TERMINAL_EXEC,
+        "hostname",
+        {"command": "hostname"},
+    )
+    assert rejection is not None
+    assert "BLOCKED: exact repeat" in rejection

@@ -470,6 +470,16 @@ class MissionDirector:
             security_registry = get_default_registry(
                 ComputerAsComputeProvider(self.computer)
             )
+            sec_tools = security_registry.as_dict()
+            provider = self.computer
+            mission = state
+
+            # Ensure ws has workspace_id attribute
+            if not hasattr(ws, "workspace_id"):
+                try:
+                    setattr(ws, "workspace_id", getattr(ws, "id", str(ws)))
+                except Exception:
+                    pass
 
             from sonic.agents.browser_agent import BrowserAgent
             from sonic.being.toolsmith import ToolsmithLoop
@@ -501,27 +511,54 @@ class MissionDirector:
                         break
             safety_policy = seal_default(workspace_root=workspace_root)
 
-            agent = ComputerUseAgent(
-                computer_provider=self.computer,
-                llm_router=self.model_router,
-                security_tools=security_registry.as_dict(),
-                autonomy_level=self.autonomy_level,
-                mode=EngineeringMissionMode.ENGINEERING_MODE,
-                browser=browser,
-                safety=safety_policy,
-                toolsmith=toolsmith,
-                method_lab=method_lab,
-                lessons_ledger=lessons_ledger,
-            )
-            mission_steps = getattr(self, "max_actions", getattr(agent, "max_actions", 25))
-            traces = await agent.run_mission(
-                workspace_id=ws.id,
-                goal=state.objective.goal,
-                steps=mission_steps,
-            )
+            # Check if the mission objective is complex or multi-step (or if autonomy_level >= L3_AUTONOMOUS)
+            traces = []
+            if self._is_complex_or_autonomous(mission.objective, getattr(state, "current_plan", None)):
+                try:
+                    from sonic.computer_use.boss import BossAgent
+
+                    boss = BossAgent(
+                        computer_provider=provider,
+                        llm_router=self.model_router,
+                        safety=safety_policy,
+                        security_tools=sec_tools,
+                        tenant_id=mission.tenant_id,
+                        max_phases=3,
+                        sub_agent_steps=6,
+                    )
+                    report = await boss.run(
+                        workspace_id=ws.workspace_id,
+                        objective=mission.objective,
+                    )
+                    traces = report.all_traces
+                except Exception as e:
+                    logger.warning("boss_agent_coordination_fallback", mission_id=mission_id, error=str(e))
+                    traces = []
+
+            # If BossAgent run produces traces, use them; if it returns empty, fall back gracefully to single ComputerUseAgent.
+            if not traces:
+                agent = ComputerUseAgent(
+                    computer_provider=self.computer,
+                    llm_router=self.model_router,
+                    security_tools=sec_tools,
+                    autonomy_level=self.autonomy_level,
+                    mode=EngineeringMissionMode.ENGINEERING_MODE,
+                    browser=browser,
+                    safety=safety_policy,
+                    toolsmith=toolsmith,
+                    method_lab=method_lab,
+                    lessons_ledger=lessons_ledger,
+                )
+                mission_steps = getattr(self, "max_actions", getattr(agent, "max_actions", 25))
+                traces = await agent.run_mission(
+                    workspace_id=ws.workspace_id,
+                    goal=getattr(mission.objective, "goal", str(mission.objective)),
+                    steps=mission_steps,
+                )
+
             # Stash traces so get_knowledge_summary / re-finalize can derive
             # honest artifacts without re-running the agent.
-            object.__setattr__(state, "_last_traces", traces)
+            self.stash_traces(mission_id, traces)
 
             # Record Resource Consumption derived from actual execution
             num_traces = len(traces)
@@ -761,3 +798,41 @@ class MissionDirector:
     def _record_event(self, mission_id: str, event_type: str, payload: dict[str, Any]) -> None:
         evt = MissionEvent(mission_id=mission_id, event_type=event_type, payload=payload)
         self.events.setdefault(mission_id, []).append(evt)
+
+    def stash_traces(self, mission_id: str, traces: list[Any]) -> None:
+        """Stash traces on the mission state for artifact synthesis and knowledge derivation."""
+        state = self._require_mission(mission_id)
+        object.__setattr__(state, "_last_traces", list(traces))
+
+    def _is_complex_or_autonomous(self, objective: Any, plan: Any = None) -> bool:
+        """Check if mission objective is complex/multi-step or autonomy_level >= L3_AUTONOMOUS."""
+        from sonic.computer_use.models import ComputerAutonomyLevel
+
+        autonomy_ranks = {
+            ComputerAutonomyLevel.L0_MANUAL: 0,
+            ComputerAutonomyLevel.L1_ASSISTED: 1,
+            ComputerAutonomyLevel.L2_SUPERVISED_AUTONOMOUS: 2,
+            ComputerAutonomyLevel.L3_AUTONOMOUS: 3,
+            "L0_MANUAL": 0,
+            "L1_ASSISTED": 1,
+            "L2_SUPERVISED_AUTONOMOUS": 2,
+            "L3_AUTONOMOUS": 3,
+        }
+        level_rank = autonomy_ranks.get(self.autonomy_level, 3 if "L3" in str(self.autonomy_level) else 0)
+        if level_rank >= 3:
+            return True
+
+        goal_str = getattr(objective, "goal", str(objective)).lower()
+        complex_markers = (
+            " and ", " then ", ";", "\n", "step", "phase",
+            "remediate", "investigate", "reproduce", "exploit",
+            "audit", "recon", "verify", "patch", "multi-step",
+            "multistep", "end-to-end", "pipeline",
+        )
+        if any(m in goal_str for m in complex_markers):
+            return True
+        if len(goal_str.split()) > 6:
+            return True
+        if plan and getattr(plan, "milestones", None) and len(plan.milestones) > 1:
+            return True
+        return False

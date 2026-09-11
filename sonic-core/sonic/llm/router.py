@@ -110,7 +110,18 @@ class ModelRouter:
                       If None, reads from os.environ.
         """
         import os
-        env = env_vars or dict(os.environ)
+        env = dict(os.environ)
+        try:
+            from sonic.config import get_settings
+            settings = get_settings()
+            for k, v in settings.model_dump().items():
+                uk = k.upper()
+                if uk not in env and v:
+                    env[uk] = str(v)
+        except Exception:
+            pass
+        if env_vars:
+            env.update(env_vars)
 
         config_path = Path(config_path)
         if not config_path.exists():

@@ -496,12 +496,16 @@ class CustomLLMProvider(LLMProvider):
             elif any(rm in model.lower() for rm in reasoning_models):
                 extra_body.setdefault("reasoning_effort", "high")
 
+            eff_top_p = request.top_p
+            if "kimi" in model.lower() or "moonshotai" in model.lower():
+                eff_top_p = 0.95
+
             kwargs: dict[str, Any] = {
                 "model": model,
                 "messages": messages,
                 "max_tokens": request.max_tokens,
                 "temperature": request.temperature,
-                "top_p": request.top_p,
+                "top_p": eff_top_p,
             }
             if extra_body:
                 kwargs["extra_body"] = extra_body
@@ -576,11 +580,15 @@ class CustomLLMProvider(LLMProvider):
         tools: list[dict] | None,
     ) -> LLMResponse:
         """Fallback: raw HTTP request for OpenAI-compatible APIs."""
+        eff_top_p = request.top_p
+        if "kimi" in model.lower() or "moonshotai" in model.lower():
+            eff_top_p = 0.95
         payload: dict[str, Any] = {
             "model": model,
             "messages": messages,
             "max_tokens": request.max_tokens,
             "temperature": request.temperature,
+            "top_p": eff_top_p,
         }
         reasoning_models = ("gpt-oss", "deepseek-r1", "deepseek-reasoner", "reasoning", "o1", "o3")
         if request.reasoning_effort:

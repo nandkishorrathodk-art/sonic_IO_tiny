@@ -16,6 +16,7 @@ from sonic.api.routes.workstation import (
     _clean_rss_titles,
     _detect_requested_app,
     _is_action_prompt,
+    _is_complex_or_multi_part_objective,
 )
 from sonic.auth.google_auth import create_jwt_token
 from sonic.auth.models import User, UserRole
@@ -214,5 +215,180 @@ def test_grounded_conversational_responses():
     status_res = _generate_grounded_workstation_response("status", "s1", state, "ws-123", "context")
     assert "SONIC Workstation Status Report" in status_res
     assert "ws-123" in status_res
+
+
+def test_is_complex_or_multi_part_objective():
+    """Proves _is_complex_or_multi_part_objective accurately distinguishes complex from simple goals."""
+    # Orchestrator keywords
+    assert _is_complex_or_multi_part_objective("deploy subagent for recon") is True
+    assert _is_complex_or_multi_part_objective("start sub-agent worker") is True
+    assert _is_complex_or_multi_part_objective("phase 1 recon") is True
+    assert _is_complex_or_multi_part_objective("take a deep dive into logs") is True
+    assert _is_complex_or_multi_part_objective("orchestrate system review") is True
+    assert _is_complex_or_multi_part_objective("call boss agent") is True
+
+    # Security keywords
+    assert _is_complex_or_multi_part_objective("find all open ports") is True
+    assert _is_complex_or_multi_part_objective("audit authentication endpoints") is True
+    assert _is_complex_or_multi_part_objective("investigate anomalous traffic") is True
+    assert _is_complex_or_multi_part_objective("test for sqli vulnerabilities") is True
+    assert _is_complex_or_multi_part_objective("perform recon on target.local") is True
+    assert _is_complex_or_multi_part_objective("scan and map attack surface") is True
+
+    # Multi-part objectives with 'and', 'then', newline, semicolon (> 4 words)
+    assert _is_complex_or_multi_part_objective("check open ports and running services") is True
+    assert _is_complex_or_multi_part_objective("list active files then examine permissions") is True
+    assert _is_complex_or_multi_part_objective("cd /var/log\ncat auth.log | tail -n 20") is True
+    assert _is_complex_or_multi_part_objective("pwd; ls -la; cat README.md") is True
+
+    # Simple single-agent objectives
+    assert _is_complex_or_multi_part_objective("pwd") is False
+    assert _is_complex_or_multi_part_objective("ls -la") is False
+    assert _is_complex_or_multi_part_objective("uname -a") is False
+    assert _is_complex_or_multi_part_objective("cat test.txt") is False
+    assert _is_complex_or_multi_part_objective("touch newfile.py") is False
+
+
+@pytest.mark.asyncio
+async def test_run_prompt_reasoning_routes_complex_to_boss_agent(monkeypatch):
+    """Proves complex prompt routes to BossAgent, emits all worklog events, and sets IDLE status."""
+    from unittest.mock import AsyncMock, MagicMock
+    from sonic.api.routes.workstation import _get_or_create_session, _run_prompt_reasoning
+    from sonic.computer_use.models_boss import BossReport
+
+    tenant_id = "test-tenant-boss"
+    session_id = "boss-session-1"
+    state = _get_or_create_session(tenant_id, session_id)
+    state["desktop"]["workspace_id"] = "ws-test-boss"
+
+    mock_computer = MagicMock()
+    mock_screen = MagicMock(desktop_state="LIVE", width=1280, height=800, visible_text="", detected_controls=[])
+    mock_term = MagicMock(stdout="/home/daytona")
+    mock_inv = MagicMock(stdout="file1.txt")
+    mock_computer.screenshot = AsyncMock(return_value=mock_screen)
+    mock_computer.terminal = AsyncMock(side_effect=[mock_term, mock_inv])
+    monkeypatch.setattr("sonic.api.routes.workstation.get_daytona_computer", lambda: mock_computer)
+
+    boss_inst = MagicMock()
+    captured_callback = {}
+
+    async def fake_boss_run(workspace_id, objective, phase_callback=None, interrupt_check=None):
+        captured_callback["cb"] = phase_callback
+        if phase_callback:
+            # Emit each event type as specified
+            await phase_callback("boss_thinking", {"thinking_type": "Planning", "content": "Analyzing attack vectors"})
+            await phase_callback("sub_dispatch", {"sub_agent_number": 1, "goal": "Enumerate web ports", "max_steps": 5})
+            await phase_callback("sub_step", {
+                "sub_agent_number": 1,
+                "trace": {
+                    "step_index": 1,
+                    "action_type": "TERMINAL_EXEC",
+                    "target": "nmap -p 80,443 target.local",
+                    "payload": '{"command": "nmap -p 80,443 target.local"}',
+                    "thought": "Let's check open ports",
+                    "observation": "80/tcp open http",
+                    "status": "COMPLETED",
+                    "duration_seconds": 1.2,
+                    "exit_code": 0,
+                },
+            })
+            await phase_callback("sub_report", {"sub_agent_number": 1, "findings_summary": "Discovered open port 80"})
+            await phase_callback("phase_complete", {"phase_number": 1, "name": "Recon", "results_count": 1, "success_count": 1})
+            await phase_callback("boss_report", {"findings_summary": "Comprehensive assessment completed with open port 80 found."})
+
+        return BossReport(
+            objective=objective,
+            status="COMPLETE",
+            findings_summary="Comprehensive assessment completed with open port 80 found.",
+            total_phases=1,
+            total_sub_agents=1,
+            total_actions=1,
+            duration_seconds=3.5,
+        )
+
+    boss_inst.run = AsyncMock(side_effect=fake_boss_run)
+    mock_boss_cls = MagicMock(return_value=boss_inst)
+    monkeypatch.setattr("sonic.computer_use.boss.BossAgent", mock_boss_cls)
+
+    complex_prompt = "audit and find all vulnerabilities on target.local"
+    await _run_prompt_reasoning(tenant_id, session_id, complex_prompt)
+
+    # Verify BossAgent was initialized with max_phases=3, sub_agent_steps=5
+    mock_boss_cls.assert_called_once()
+    _, kwargs = mock_boss_cls.call_args
+    assert kwargs.get("max_phases") == 3
+    assert kwargs.get("sub_agent_steps") == 5
+    assert kwargs.get("tenant_id") == tenant_id
+
+    # Verify boss.run called
+    boss_inst.run.assert_called_once()
+
+    # Verify state updates: thought_summary and IDLE status
+    assert state["status"] == "IDLE"
+    assert "Comprehensive assessment completed" in state["thought_summary"]
+
+    # Verify worklog entries generated by phase_callback
+    worklog = state.get("worklog", [])
+    titles = [w.get("title") for w in worklog]
+    types = [w.get("type") for w in worklog]
+
+    assert any(t == "Boss Thinking (Planning)" for t in titles)
+    assert any(t == "thought" for t in types)
+    assert any(t == "Dispatching SubAgent #1" for t in titles)
+    assert any(t == "command" for t in types)
+    assert any(t == "SubAgent #1 Report" for t in titles)
+    assert any("Phase 1 Complete" in (t or "") for t in titles)
+    assert any(t == "SONIC Boss Report" for t in titles)
+
+
+@pytest.mark.asyncio
+async def test_run_prompt_reasoning_routes_simple_to_computer_use_agent(monkeypatch):
+    """Proves simple prompt routes to ComputerUseAgent instead of BossAgent."""
+    from unittest.mock import AsyncMock, MagicMock
+    from sonic.api.routes.workstation import _get_or_create_session, _run_prompt_reasoning
+
+    tenant_id = "test-tenant-simple"
+    session_id = "simple-session-1"
+    state = _get_or_create_session(tenant_id, session_id)
+    state["desktop"]["workspace_id"] = "ws-test-simple"
+
+    mock_computer = MagicMock()
+    mock_screen = MagicMock(desktop_state="LIVE", width=1280, height=800, visible_text="", detected_controls=[])
+    mock_term = MagicMock(stdout="/root")
+    mock_inv = MagicMock(stdout="file.txt")
+    mock_computer.screenshot = AsyncMock(return_value=mock_screen)
+    mock_computer.terminal = AsyncMock(side_effect=[mock_term, mock_inv])
+    monkeypatch.setattr("sonic.api.routes.workstation.get_daytona_computer", lambda: mock_computer)
+
+    agent_inst = MagicMock()
+    agent_inst.max_actions = 8
+    mock_trace = MagicMock(
+        step_index=1,
+        action_type=MagicMock(value="TERMINAL_EXEC"),
+        target_resource="pwd",
+        thought="",
+        actual_observation="/root",
+        status="COMPLETED",
+        duration_seconds=0.1,
+        exit_code=0,
+        payload='{"command": "pwd"}',
+    )
+    agent_inst.run_mission = AsyncMock(return_value=[mock_trace])
+    agent_inst.goal_reached = True
+    mock_agent_cls = MagicMock(return_value=agent_inst)
+    monkeypatch.setattr("sonic.computer_use.agent.ComputerUseAgent", mock_agent_cls)
+
+    mock_boss_cls = MagicMock()
+    monkeypatch.setattr("sonic.computer_use.boss.BossAgent", mock_boss_cls)
+
+    simple_prompt = "pwd"
+    await _run_prompt_reasoning(tenant_id, session_id, simple_prompt)
+
+    # BossAgent should NOT have been called
+    mock_boss_cls.assert_not_called()
+    # ComputerUseAgent should have been called
+    mock_agent_cls.assert_called_once()
+    assert state["status"] == "IDLE"
+
 
 

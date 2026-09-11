@@ -51,7 +51,7 @@ def extract_bbox_midpoint(
                 if max(x1, y1, x2, y2) <= 1.0:
                     mid_x = int(((x1 + x2) / 2.0) * width)
                     mid_y = int(((y1 + y2) / 2.0) * height)
-                elif is_normalized_1000 or (is_normalized_1000 is None and (max(x1, y1, x2, y2) > width or max(x1, y1, x2, y2) > height)):
+                elif is_normalized_1000 or (is_normalized_1000 is not False and max(x1, y1, x2, y2) <= 1000):
                     mid_x = int(((x1 + x2) / 2.0 / 1000.0) * width)
                     mid_y = int(((y1 + y2) / 2.0 / 1000.0) * height)
                 else:
@@ -87,7 +87,7 @@ def extract_bbox_midpoint(
         if max(x1, y1, x2, y2) <= 1.0:
             mid_x = int(((x1 + x2) / 2.0) * width)
             mid_y = int(((y1 + y2) / 2.0) * height)
-        elif is_normalized_1000 or (match is not None and max(x1, y1, x2, y2) <= 1000) or max(x1, y1, x2, y2) > width or max(x1, y1, x2, y2) > height:
+        elif is_normalized_1000 or (is_normalized_1000 is not False and max(x1, y1, x2, y2) <= 1000):
             # Model grounding bounding box tags or normalized scale use [0, 1000]
             mid_x = int(((x1 + x2) / 2.0 / 1000.0) * width)
             mid_y = int(((y1 + y2) / 2.0 / 1000.0) * height)
@@ -246,8 +246,6 @@ _COMMON_UI_LANDMARKS: dict[str, tuple[float, float]] = {
     "terminal window": (0.500, 0.500),
 
     # Common dialog & web buttons
-    "submit button": (0.500, 0.600),
-    "submit": (0.500, 0.600),
     "login button": (0.500, 0.580),
     "login": (0.500, 0.580),
     "sign in button": (0.500, 0.580),
@@ -347,11 +345,9 @@ def resolve_ui_target(
         if key == clean_query:
             return int(norm_x * width), int(norm_y * height)
 
-    for key, (norm_x, norm_y) in _COMMON_UI_LANDMARKS.items():
-        if len(key) >= 4 and (
-            re.search(r'\b' + re.escape(key) + r'\b', clean_query)
-            or re.search(r'\b' + re.escape(clean_query) + r'\b', key)
-        ):
+    sorted_landmarks = sorted(_COMMON_UI_LANDMARKS.items(), key=lambda kv: len(kv[0]), reverse=True)
+    for key, (norm_x, norm_y) in sorted_landmarks:
+        if re.search(r'\b' + re.escape(key) + r'\b', clean_query):
             return int(norm_x * width), int(norm_y * height)
 
     return None
@@ -399,11 +395,9 @@ async def resolve_ui_target_async(
         if key == clean_query:
             return int(norm_x * width), int(norm_y * height)
 
-    for key, (norm_x, norm_y) in _COMMON_UI_LANDMARKS.items():
-        if len(key) >= 4 and (
-            re.search(r'\b' + re.escape(key) + r'\b', clean_query)
-            or re.search(r'\b' + re.escape(clean_query) + r'\b', key)
-        ):
+    sorted_landmarks = sorted(_COMMON_UI_LANDMARKS.items(), key=lambda kv: len(kv[0]), reverse=True)
+    for key, (norm_x, norm_y) in sorted_landmarks:
+        if re.search(r'\b' + re.escape(key) + r'\b', clean_query):
             return int(norm_x * width), int(norm_y * height)
 
     return None

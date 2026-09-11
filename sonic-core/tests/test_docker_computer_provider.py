@@ -2,10 +2,13 @@
 Unit tests for DockerComputerProvider (Native Workstation Engine).
 """
 
-import pytest
+import os
 import shutil
 import subprocess
-from sonic.computer.docker_computer import DockerComputerProvider
+from unittest.mock import AsyncMock
+import pytest
+from sonic.computer.daytona_computer import DaytonaComputerProvider
+from sonic.computer.docker_computer import DockerComputerProvider, _get_display
 from sonic.computer.models import GUIAction, GUIActionType
 
 
@@ -82,3 +85,72 @@ async def test_docker_computer_provider_files_and_apps():
         # Test list applications
         apps = await provider.application_list(ws_id)
         assert len(apps) > 0
+
+
+@pytest.mark.no_live_infra
+def test_docker_computer_display_resolution(monkeypatch):
+    """Proves dynamic display resolution helper checks environment and defaults to :99."""
+    monkeypatch.delenv("DISPLAY", raising=False)
+    provider = DockerComputerProvider()
+    assert _get_display() == ":99"
+    assert provider._get_display("ws-1") == ":99"
+
+    monkeypatch.setenv("DISPLAY", ":42")
+    assert _get_display() == ":42"
+    assert provider._get_display("ws-1") == ":42"
+
+
+@pytest.mark.no_live_infra
+@pytest.mark.asyncio
+async def test_docker_computer_launch_application_quoting(monkeypatch):
+    """Proves launch_application uses shlex.split and quotes each part individually."""
+    monkeypatch.delenv("DISPLAY", raising=False)
+    provider = DockerComputerProvider()
+    provider._docker_exec = AsyncMock(return_value=(0, "", ""))
+
+    success = await provider.launch_application("ws-1", "chromium https://target.local")
+    assert success is True
+    provider._docker_exec.assert_called_once()
+    called_cmd = provider._docker_exec.call_args[0][0]
+    expected_spawn = "DISPLAY=:99 nohup chromium https://target.local >/dev/null 2>&1 &"
+    assert called_cmd == expected_spawn
+
+    # Also test an argument with spaces / special characters that requires escaping
+    provider._docker_exec.reset_mock()
+    success2 = await provider.launch_application("ws-1", "chromium 'https://target.local/path with spaces'")
+    assert success2 is True
+    called_cmd2 = provider._docker_exec.call_args[0][0]
+    expected_spawn2 = "DISPLAY=:99 nohup chromium 'https://target.local/path with spaces' >/dev/null 2>&1 &"
+    assert called_cmd2 == expected_spawn2
+
+
+@pytest.mark.no_live_infra
+@pytest.mark.asyncio
+async def test_daytona_computer_display_and_launch_quoting(monkeypatch):
+    """Proves DaytonaComputerProvider uses :0 default, checks DISPLAY, and quotes launch arguments."""
+    from sonic.sandbox.provider import ExecResult
+
+    monkeypatch.delenv("DISPLAY", raising=False)
+    provider = DaytonaComputerProvider(api_key="")
+    assert provider._get_display("ws-1") == ":0"
+
+    monkeypatch.setenv("DISPLAY", ":1")
+    assert provider._get_display("ws-1") == ":1"
+
+    provider.terminal = AsyncMock(return_value=ExecResult(command="", exit_code=0, stdout="", stderr=""))
+    success = await provider.launch_application("ws-1", "chromium https://target.local")
+    assert success is True
+    provider.terminal.assert_called_once()
+    called_cmd = provider.terminal.call_args[0][1]
+    expected_spawn = "DISPLAY=:1 nohup chromium https://target.local >/dev/null 2>&1 &"
+    assert called_cmd == expected_spawn
+
+    # Also test special characters quoting
+    provider.terminal.reset_mock()
+    success2 = await provider.launch_application("ws-1", "chromium 'https://target.local/search?q=1&v=2'")
+    assert success2 is True
+    called_cmd2 = provider.terminal.call_args[0][1]
+    expected_spawn2 = "DISPLAY=:1 nohup chromium 'https://target.local/search?q=1&v=2' >/dev/null 2>&1 &"
+    assert called_cmd2 == expected_spawn2
+
+

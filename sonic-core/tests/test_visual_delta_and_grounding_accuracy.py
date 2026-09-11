@@ -19,7 +19,7 @@ def test_extract_bbox_midpoint_formats():
     assert extract_bbox_midpoint([350, 450], width=1280, height=800) == (350, 450)
 
     # 4-element raw pixel box [x1, y1, x2, y2]
-    mid_raw = extract_bbox_midpoint([100, 200, 300, 400], width=1280, height=800)
+    mid_raw = extract_bbox_midpoint([100, 200, 300, 400], width=1280, height=800, is_normalized_1000=False)
     assert mid_raw == (200, 300)
 
     # 4-element model grounding tag <|box_start|>(200, 100, 400, 300)<|box_end|> normalized [0, 1000]

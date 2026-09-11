@@ -126,11 +126,13 @@ class GUIAction(BaseModel):
     # human press-move-release gesture.
     x2: int | None = None
     y2: int | None = None
+    button: int = 1
     text: str | None = None
     key: str | None = None
     window_id: str | None = None
     app_name: str | None = None
     scroll_delta: int = 0
+    delay_ms: int = 25
 
 
 class ScreenObservation(BaseModel):

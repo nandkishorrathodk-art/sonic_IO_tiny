@@ -99,3 +99,44 @@ def test_unprovisioned_workstation_endpoints_degrade_gracefully(client, auth_hea
     res_tree = client.get("/workstation/tree?session_id=unprov-test", headers=auth_headers)
     assert res_tree.status_code == 200
     assert res_tree.json()["files"] == []
+
+
+def test_workstation_desktop_tile_route(client, auth_headers):
+    """Proves POST /workstation/desktop/tile calls tile_workstation and returns {"tiled": True}."""
+    res = client.post("/workstation/desktop/tile", headers=auth_headers, json={"desktop_id": "test-ws"})
+    assert res.status_code == 200
+    assert res.json() == {"tiled": True}
+
+
+def test_workstation_desktop_action_open_app_policy(client, auth_headers):
+    """Proves /workstation/desktop/action validates app_name against app_policy for OPEN_APP."""
+    # Forbidden package rejected with 403
+    res_forbidden = client.post(
+        "/workstation/desktop/action",
+        headers=auth_headers,
+        json={"action": "open_app", "target": "cryptominer --gpu"},
+    )
+    assert res_forbidden.status_code == 403
+    assert "blocked by security policy" in res_forbidden.json()["detail"].lower()
+
+    # Allowed package passes policy check
+    res_allowed = client.post(
+        "/workstation/desktop/action",
+        headers=auth_headers,
+        json={"action": "open_app", "target": "chromium https://target.local"},
+    )
+    assert res_allowed.status_code == 200
+    assert res_allowed.json()["status"] == "success"
+
+
+def test_workstation_desktop_gui_action_open_app_policy(client, auth_headers):
+    """Proves /workstation/desktop/gui-action validates app_name against app_policy for OPEN_APP."""
+    # Forbidden package rejected with 403
+    res_forbidden = client.post(
+        "/workstation/desktop/gui-action",
+        headers=auth_headers,
+        json={"action": "OPEN_APP", "app_name": "tor-relay"},
+    )
+    assert res_forbidden.status_code == 403
+    assert "blocked by security policy" in res_forbidden.json()["detail"].lower()
+

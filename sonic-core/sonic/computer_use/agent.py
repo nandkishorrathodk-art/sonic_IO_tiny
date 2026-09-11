@@ -257,6 +257,8 @@ class ComputerUseAgent:
         self._replan_count: int = 0
         self._last_navigated_url: str = ""
         self._recent_action_signatures: list[tuple[str, str, str]] = []
+        self._last_action_output: dict[str, Any] = {}
+        self._last_gui_action_result: dict[str, Any] = {}
         self.checklist: SubGoalChecklist | None = None
 
     def interrupt(self) -> None:
@@ -418,21 +420,38 @@ class ComputerUseAgent:
         # last_exec or terminal probe.
         if not hasattr(self, "_last_action_output"):
             self._last_action_output: dict[str, Any] = {}
+        if not hasattr(self, "_last_gui_action_result"):
+            self._last_gui_action_result: dict[str, Any] = {}
         try:
             last_out = self._last_action_output
             terminal_output = ""
             if last_out and last_out.get("stdout", "").strip():
                 cmd_display = last_out.get("command", "")[:80]
                 stdout_text = last_out["stdout"].strip()
-                stderr_text = (last_out.get("stderr") or "").strip()
-                exit_code = last_out.get("exit_code", 0)
-                parts = [f"$ {cmd_display}" if cmd_display else ""]
-                parts.append(stdout_text[:2000])
-                if stderr_text:
-                    parts.append(f"STDERR: {stderr_text[:500]}")
-                if exit_code != 0:
-                    parts.append(f"(exit code {exit_code})")
-                terminal_output = _safe_str("\n".join(p for p in parts if p))
+                # Ensure terminal_output is never polluted with GUI clicks/actions
+                # (e.g. $ {'x': 640, 'y': 400}\nClicked at (640, 400))
+                is_gui_pollution = (
+                    cmd_display.startswith("{'")
+                    or cmd_display.startswith('{"')
+                    or "clicked at" in stdout_text.lower()
+                    or "clicked" in stdout_text.lower()
+                    or "typed " in stdout_text.lower()
+                    or "pressed key" in stdout_text.lower()
+                    or "focused window" in stdout_text.lower()
+                    or "screenshot captured" in stdout_text.lower()
+                    or ("'x':" in cmd_display and "'y':" in cmd_display)
+                    or ('"x":' in cmd_display and '"y":' in cmd_display)
+                )
+                if not is_gui_pollution:
+                    stderr_text = (last_out.get("stderr") or "").strip()
+                    exit_code = last_out.get("exit_code", 0)
+                    parts = [f"$ {cmd_display}" if cmd_display else ""]
+                    parts.append(stdout_text[:2000])
+                    if stderr_text:
+                        parts.append(f"STDERR: {stderr_text[:500]}")
+                    if exit_code != 0:
+                        parts.append(f"(exit code {exit_code})")
+                    terminal_output = _safe_str("\n".join(p for p in parts if p))
             if not terminal_output:
                 last_exec = getattr(self.computer, "_last_exec", None)
                 if last_exec is not None and last_exec[2].strip():
@@ -1217,9 +1236,18 @@ class ComputerUseAgent:
         payload_str = fields.get("PAYLOAD", "{}")
         import json
         try:
-            payload = json.loads(payload_str) if payload_str.startswith("{") else {"command": payload_str}
+            payload = json.loads(payload_str) if payload_str.startswith("{") else (
+                {"text": payload_str.strip('"\' ')}
+                if action_type in (ComputerActionType.GUI_TYPE, ComputerActionType.BROWSER_TYPE)
+                else {"command": payload_str}
+            )
         except Exception:
-            payload = {"command": payload_str} if action_type == ComputerActionType.TERMINAL_EXEC else {}
+            if action_type in (ComputerActionType.GUI_TYPE, ComputerActionType.BROWSER_TYPE):
+                payload = {"text": payload_str.strip('"\' ')}
+            elif action_type == ComputerActionType.TERMINAL_EXEC:
+                payload = {"command": payload_str}
+            else:
+                payload = {}
 
         if action_type == ComputerActionType.TOOL_AUTHOR:
             if "source" not in payload and "SOURCE" in fields:
@@ -1245,9 +1273,10 @@ class ComputerUseAgent:
             if "path" not in payload and target:
                 payload["path"] = target
 
-        if action_type == ComputerActionType.BROWSER_TYPE:
-            if "command" in payload and "text" not in payload:
-                payload["text"] = payload["command"]
+        if action_type in (ComputerActionType.GUI_TYPE, ComputerActionType.BROWSER_TYPE):
+            # GUI and browser typing is strictly for text inputs, not shell commands.
+            # Do NOT map payload["command"] into payload["text"].
+            pass
 
         if action_str in ("PYTHON", "PYTHON_EXEC", "PYTHON3"):
             py_code = payload.get("code") or payload.get("command") or target or ""
@@ -1683,6 +1712,33 @@ class ComputerUseAgent:
                     resolved_x=res_coords[0],
                     resolved_y=res_coords[1],
                 )
+            else:
+                target = target_resource
+                actual_obs_str = f"Target UI element '{target}' could not be resolved from visual grounding. Re-observing screen."
+                status = ActionExecutionStatus.BLOCKED
+                logger.warning(
+                    "action_blocked_unresolved_visual_grounding",
+                    action=action_type.value,
+                    target=target,
+                )
+                trace = ComputerDecisionTrace(
+                    step_index=self.action_counter,
+                    action_type=action_type,
+                    target_resource=target_resource,
+                    payload=str(payload),
+                    predicted_outcome=predicted_outcome,
+                    actual_observation=actual_obs_str,
+                    expected_observation=predicted_outcome,
+                    info_gain=0.0,
+                    recovery_attempted=False,
+                    status=status,
+                    thought=getattr(self, "_last_thought", ""),
+                    duration_seconds=round(time.perf_counter() - t_start, 3),
+                    thought_duration_seconds=getattr(self, "_last_thought_duration", 0.0),
+                )
+                self.traces.append(trace)
+                self.history.append({"action": f"{action_type.value} {target_resource}", "result": actual_obs_str})
+                return trace
 
         # ----- Coordinate bounds validation -----
         # GUI coordinate actions are validated against the last observed screen
@@ -1801,7 +1857,7 @@ class ComputerUseAgent:
                         actual_obs_str = f"Right-clicked at ({x}, {y})"
 
             elif action_type == ComputerActionType.GUI_TYPE:
-                text = payload.get("text", "")
+                text = str(payload.get("text") or payload.get("value") or payload.get("input") or "")
                 pre_screen_b64 = getattr(self, "_last_screenshot_b64", "")
                 obs_after = None
                 if hasattr(self, "motor") and self.motor:
@@ -2157,7 +2213,6 @@ class ComputerUseAgent:
                 selector = str(payload.get("selector") or target_resource or "").strip(" *_\n\r\t`\"'")
                 text = (
                     payload.get("text")
-                    or payload.get("command")
                     or payload.get("value")
                     or payload.get("query")
                     or payload.get("input")
@@ -2193,11 +2248,48 @@ class ComputerUseAgent:
 
             elif action_type == ComputerActionType.BROWSER_SCREENSHOT:
                 if self.browser is not None:
-                    snap = await self.browser.navigate(
-                        getattr(self._last_browser_snapshot, "url", "about:blank")
-                    ) if self._last_browser_snapshot else await self.browser.navigate("about:blank")
-                    self._last_browser_snapshot = snap
-                    actual_obs_str = f"Screenshot captured: {getattr(snap, 'url', '')}"
+                    snap = None
+                    if hasattr(self.browser, "screenshot") and callable(self.browser.screenshot):
+                        snap = await self.browser.screenshot()
+                    elif hasattr(self.browser, "_page") and self.browser._page:
+                        try:
+                            screenshot_bytes = await self.browser._page.screenshot(full_page=True, type="png")
+                            screenshot_b64 = base64.b64encode(screenshot_bytes).decode("utf-8")
+                            url = self.browser._page.url or ""
+                            title = await self.browser._page.title()
+                            from sonic.agents.browser_agent import PageSnapshot
+                            snap = PageSnapshot(
+                                url=url,
+                                title=title,
+                                status_code=getattr(self._last_browser_snapshot, "status_code", 200),
+                                html_content=await self.browser._page.content() if hasattr(self.browser._page, "content") else "",
+                                screenshot_b64=screenshot_b64,
+                            )
+                        except Exception as e:
+                            logger.debug("browser_page_screenshot_error", error=str(e))
+                    elif hasattr(self.browser, "current_page_state"):
+                        try:
+                            url, title = await self.browser.current_page_state()
+                            if self._last_browser_snapshot:
+                                snap = self._last_browser_snapshot
+                            else:
+                                from sonic.agents.browser_agent import PageSnapshot
+                                snap = PageSnapshot(url=url, title=title, status_code=200, html_content="", screenshot_b64="")
+                        except Exception:
+                            snap = self._last_browser_snapshot
+                    else:
+                        snap = self._last_browser_snapshot
+
+                    if snap is not None:
+                        self._last_browser_snapshot = snap
+                        b64 = getattr(snap, "screenshot_b64", "")
+                        if b64:
+                            self._last_screenshot_b64 = b64
+                        url_str = getattr(snap, "url", "") or (getattr(self._last_browser_snapshot, "url", "") if self._last_browser_snapshot else "")
+                        actual_obs_str = f"Screenshot captured: {url_str}"
+                    else:
+                        url_str = getattr(self._last_browser_snapshot, "url", "") if self._last_browser_snapshot else ""
+                        actual_obs_str = f"Screenshot captured: {url_str}"
                 else:
                     screen = await self.computer.screenshot(workspace_id)
                     self._update_screen_dims(screen)
@@ -2622,13 +2714,28 @@ class ComputerUseAgent:
         )
         self.traces.append(trace)
         # Store the real action output so observe() reads real terminal data
-        # instead of a dummy probe. This is provider-agnostic.
-        self._last_action_output = {
-            "command": str(payload)[:200] if payload else "",
-            "stdout": actual_obs_str[:2000],
-            "stderr": "",
-            "exit_code": action_exit_code,
-        }
+        # instead of a dummy probe. Strictly for sandbox command executions (TERMINAL_EXEC, SECURITY_TOOL).
+        # GUI and Browser actions must NOT write into _last_action_output!
+        if action_type in (ComputerActionType.TERMINAL_EXEC, ComputerActionType.SECURITY_TOOL):
+            cmd_display = ""
+            if isinstance(payload, dict):
+                cmd_display = str(payload.get("command") or payload.get("tool") or payload.get("tool_name") or "")
+            elif payload:
+                cmd_display = str(payload)
+            self._last_action_output = {
+                "command": cmd_display[:200],
+                "stdout": actual_obs_str[:2000],
+                "stderr": "",
+                "exit_code": action_exit_code,
+            }
+        else:
+            self._last_gui_action_result = {
+                "action_type": action_type.value if hasattr(action_type, "value") else str(action_type),
+                "target": target_resource,
+                "payload": payload,
+                "observation": actual_obs_str,
+                "exit_code": action_exit_code,
+            }
         # Record into the reasoning history so the next LLM call sees what was
         # done and how it turned out — the basis for adaptive (non-scripted) action.
         self.history.append({
@@ -2680,15 +2787,46 @@ class ComputerUseAgent:
         self.recovery_events += 1
         logger.warning("computer_recovery_triggered", action=failed_action_type, error=error_context)
 
-        # Recovery strategy 1: Restart display service if GUI failed
+        # Recovery strategy 1: Non-destructive desktop recovery for GUI actions
         if failed_action_type in [
             ComputerActionType.APP_LAUNCH, ComputerActionType.GUI_CLICK,
             ComputerActionType.GUI_DOUBLE_CLICK, ComputerActionType.GUI_TYPE,
             ComputerActionType.GUI_KEYPRESS, ComputerActionType.GUI_MOVE,
             ComputerActionType.GUI_SCROLL,
         ]:
-            await self.computer.service_action(workspace_id, "xvfb", "restart")
-            return "Restarted Xvfb and refreshed display session"
+            # Only restart Xvfb if there is an explicit display connection failure
+            err_lower = (error_context or "").lower()
+            if any(term in err_lower for term in (
+                "display connection", "cannot open display", "x server died",
+                "display failure", "failed to connect to display", "connection refused by server",
+            )):
+                await self.computer.service_action(workspace_id, "xvfb", "restart")
+                return "Restarted Xvfb and refreshed display session"
+
+            # Non-destructive recovery:
+            # 1. Send Escape key to dismiss blocking modals/dialogs
+            try:
+                await self.computer.gui_action(
+                    workspace_id,
+                    GUIAction(action=GUIActionType.KEYPRESS, key="Escape"),
+                )
+            except Exception:
+                pass
+
+            # 2. Try to re-focus the active application window (APP_FOCUS)
+            try:
+                if hasattr(self.computer, "status"):
+                    comp_status = await self.computer.status(workspace_id)
+                    active_app = getattr(comp_status, "active_application", None)
+                    if active_app and str(active_app).lower() not in ("desktop", "none", ""):
+                        await self.computer.gui_action(
+                            workspace_id,
+                            GUIAction(action=GUIActionType.SELECT_WINDOW, app_name=active_app),
+                        )
+            except Exception:
+                pass
+
+            return "Refreshed desktop focus and dismissed modal overlays"
 
         # Recovery strategy 2: Restore workspace snapshot or re-verify file
         if failed_action_type == ComputerActionType.FILE_READ:

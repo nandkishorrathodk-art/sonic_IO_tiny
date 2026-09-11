@@ -1819,4 +1819,42 @@ Deep recheck and multi-agent refactoring to purge all remaining puppet heuristic
 - `test_phase13/test_computer_models_and_state.py` (2 tests) — **PASSED**
 - `test_module_robustness.py` (79 tests) — **PASSED**
 
+## Phase 31 — Plane Separation, Non-Destructive Desktop Recovery & Motor/Grounding Hardening (DONE)
+Addressed computer-use gaps, logic flaws, and plane separation invariants:
+
+### 1. Pure Observation & Execution Plane Separation
+- **`agent.py` (`sonic/computer_use/agent.py`)**:
+  - `_last_action_output` is strictly restricted to sandbox command execution (`TERMINAL_EXEC`, `SECURITY_TOOL`).
+  - Introduced `_last_gui_action_result` for all desktop application interactions.
+  - In `observe()`, defensive filters prevent GUI clicks or serialized coordinate dictionaries (`$ {'x': 640, 'y': 400}`) from polluting `terminal_output`.
+  - In `_parse_llm_action` and `execute_action` for `BROWSER_TYPE` / `GUI_TYPE`: eliminated mapping of shell commands into typed keystrokes.
+  - Grounding resolution failure (`None`) returns `ActionExecutionStatus.BLOCKED` with informative diagnostics, preventing blind clicks at `(0, 0)`.
+
+### 2. Non-Destructive GUI Recovery & Headless Browser Fix
+- **Safe Recovery (`agent.py`)**:
+  - Replaced unconditional `xvfb restart` (which killed all active desktop apps) with non-destructive desktop recovery: sends `Escape` key to dismiss blocking modals and refocuses the active application window.
+- **Headless Browser Screenshot (`agent.py` & `browser_agent.py`)**:
+  - Replaced `navigate()` call during `BROWSER_SCREENSHOT` with genuine `browser.screenshot()`, preserving page DOM state and avoiding accidental reloads.
+
+### 3. Motor Reflexes & Visual Grounding Precision
+- **`models.py` & `motor.py` (`sonic/computer/models.py`, `sonic/computer_use/motor.py`)**:
+  - Added `delay_ms: int = 25` and `button: int = 1` to `GUIAction`, ensuring typing delays are preserved through `gui_action` fallbacks.
+  - `enforce_tab_budget`: ensures browser window is focused prior to issuing `hotkey_close_tab`, and increased inter-close delay to 150ms.
+  - `handle_gtk_file_dialog`: added 300ms window mapping delay before firing `Ctrl+L`.
+- **`grounding.py` (`sonic/computer_use/grounding.py`)**:
+  - Fixed `extract_bbox_midpoint` normalization check: coordinates `0 <= val <= 1000` are correctly scaled on high-resolution screens (e.g. 1920x1080).
+  - Cleaned duplicate keys and constrained landmark matching to whole-word boundaries.
+
+### 4. Application Quoting & Workstation API Endpoints
+- **`docker_computer.py` & `daytona_computer.py`**:
+  - In `launch_application`: used `shlex.split()` to isolate binary from arguments, ensuring commands like `chromium https://target` launch with arguments intact.
+  - Added dynamic display resolution `_get_display()`.
+- **`workstation.py` (`sonic/api/routes/workstation.py`)**:
+  - Exposed `POST /workstation/desktop/tile` wrapping `comp.tile_workstation()`.
+  - Added `ApplicationPolicy` validation on `OPEN_APP` actions in `/workstation/desktop/action` and `/workstation/desktop/gui-action`.
+
+### 5. Verified Test Matrix (176 Passed, 0 Failures)
+- All 176 unit and integration tests across modified suites pass 100% cleanly.
+
+
 

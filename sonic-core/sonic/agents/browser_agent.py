@@ -297,6 +297,34 @@ class BrowserAgent:
             "screenshot_proof": screenshot_b64,
         }
 
+    async def screenshot(self) -> PageSnapshot:
+        """Capture screenshot and current page state without navigating or reloading."""
+        if self._using_playwright and self._page:
+            try:
+                title = await self._page.title()
+                html = await self._page.content()
+                screenshot = await self._page.screenshot(full_page=True, type="png")
+                screenshot_b64 = base64.b64encode(screenshot).decode("utf-8")
+                url = self._page.url or ""
+                cookies = await self._context.cookies() if self._context else []
+                return PageSnapshot(
+                    url=url,
+                    title=title,
+                    status_code=200,
+                    html_content=html[:50000],
+                    screenshot_b64=screenshot_b64,
+                    cookies=[{"name": c["name"], "value": c["value"], "domain": c["domain"]} for c in cookies],
+                )
+            except Exception as e:
+                logger.debug("browser_screenshot_failed", error=str(e))
+        return PageSnapshot(
+            url="",
+            title="",
+            status_code=0,
+            html_content="",
+            screenshot_b64="",
+        )
+
     async def close(self) -> None:
         """Close browser and cleanup. Safe to call even if launch failed."""
         # Close the page/context before stopping playwright so the browser

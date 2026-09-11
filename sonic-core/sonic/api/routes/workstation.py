@@ -97,9 +97,15 @@ class ExecuteCommandRequest(BaseModel):
 class DesktopActionRequest(BaseModel):
     action: str  # click, double_click, type, keypress, move, open_app, close_app
     target: str | None = None
+    app_name: str | None = None
     coordinates: tuple[int, int] | None = None
     text: str | None = None
     key: str | None = None
+    session_id: str | None = "default"
+
+
+class DesktopTileRequest(BaseModel):
+    desktop_id: str | None = None
     session_id: str | None = "default"
 
 
@@ -1104,6 +1110,17 @@ async def execute_desktop_action(
         raise HTTPException(status_code=400, detail=f"Unsupported desktop action: {req.action}") from exc
 
     comp = get_daytona_computer()
+
+    if action_type == GUIActionType.OPEN_APP:
+        app_name = (req.app_name or req.target or "").strip()
+        if not app_name:
+            raise HTTPException(status_code=400, detail="Desktop OPEN_APP action requires app_name")
+        if hasattr(comp, "app_policy") and comp.app_policy:
+            res = comp.app_policy.is_package_allowed(app_name)
+            allowed, reason = res if isinstance(res, tuple) else (bool(res), "Forbidden by application policy")
+            if not allowed:
+                raise HTTPException(status_code=403, detail=f"Application '{app_name}' is blocked by security policy: {reason}")
+
     workspace_id = _session_workspace_id(user, req.session_id or "default")
     if not workspace_id:
         # No provisioned workstation: report success with a NO_DISPLAY
@@ -1138,7 +1155,7 @@ async def execute_desktop_action(
         y=y,
         text=req.text,
         key=req.key,
-        app_name=req.target,
+        app_name=req.app_name or req.target,
     )
     obs = await comp.gui_action(workspace_id=workspace_id, action=gui_act, actor=user.email)
     state = _get_or_create_session(user.email, req.session_id or "default")
@@ -1195,14 +1212,25 @@ async def dispatch_workstation_gui_action(
 ):
     """Dispatches real interactive mouse/keyboard/app actions directly into the desktop for human takeover."""
     comp = get_daytona_computer()
-    target_id = _session_workspace_id(user, session_id)
-    if not target_id:
-        raise HTTPException(status_code=400, detail="No active desktop session.")
 
     try:
         action_type = GUIActionType(req.action.upper())
     except ValueError:
         raise HTTPException(status_code=400, detail=f"Unsupported action type: {req.action}")
+
+    if action_type == GUIActionType.OPEN_APP:
+        app_name = (req.app_name or "").strip()
+        if not app_name:
+            raise HTTPException(status_code=400, detail="Desktop OPEN_APP action requires app_name")
+        if hasattr(comp, "app_policy") and comp.app_policy:
+            res = comp.app_policy.is_package_allowed(app_name)
+            allowed, reason = res if isinstance(res, tuple) else (bool(res), "Forbidden by application policy")
+            if not allowed:
+                raise HTTPException(status_code=403, detail=f"Application '{app_name}' is blocked by security policy: {reason}")
+
+    target_id = _session_workspace_id(user, session_id)
+    if not target_id:
+        raise HTTPException(status_code=400, detail="No active desktop session.")
 
     action_obj = GUIAction(
         action=action_type,
@@ -1215,6 +1243,28 @@ async def dispatch_workstation_gui_action(
     )
     obs = await comp.gui_action(workspace_id=target_id, action=action_obj, actor=user.email)
     return obs.model_dump()
+
+
+@router.post("/workstation/desktop/tile")
+async def tile_workstation_desktop(
+    req: DesktopTileRequest | None = None,
+    session_id: str = Query("default"),
+    desktop_id: str | None = Query(None),
+    user: User = Depends(require_operator),
+):
+    """Tiles desktop windows side-by-side (50/50 browser and terminal)."""
+    comp = get_daytona_computer()
+    target_session = (req.session_id if req and req.session_id else None) or session_id or "default"
+    desktop_id = (
+        (req.desktop_id if req and req.desktop_id else None)
+        or desktop_id
+        or _session_workspace_id(user, target_session)
+    )
+    if not desktop_id:
+        raise HTTPException(status_code=400, detail="No active desktop session.")
+
+    await comp.tile_workstation(desktop_id)
+    return {"tiled": True}
 
 
 @router.get("/workstation/desktop/stream")

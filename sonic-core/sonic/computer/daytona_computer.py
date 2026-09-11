@@ -53,11 +53,20 @@ from sonic.sandbox.provider import ExecResult
 logger = get_logger(__name__)
 
 
+def _get_display(workspace_id: str | None = None) -> str:
+    """Check if environment has DISPLAY, default to :0 for Daytona."""
+    return os.environ.get("DISPLAY") or ":0"
+
+
 class DaytonaComputerProvider(ComputerProvider):
     """
     Daytona-backed Graphical Computer Provider.
     Authoritative remote Linux workstation powered by Daytona Cloud.
     """
+
+    def _get_display(self, workspace_id: str | None = None) -> str:
+        """Check if environment has DISPLAY, default to :0 for Daytona."""
+        return _get_display(workspace_id)
 
     def __init__(
         self,
@@ -526,9 +535,10 @@ class DaytonaComputerProvider(ComputerProvider):
         sandbox = await self._resolve_sandbox(workspace_id)
 
         # Query real open windows using wmctrl
+        disp = self._get_display(workspace_id)
         open_windows: list[str] = []
         try:
-            wm_res = await self.terminal(workspace_id, "DISPLAY=:0 wmctrl -l")
+            wm_res = await self.terminal(workspace_id, f"DISPLAY={disp} wmctrl -l")
             if wm_res.exit_code == 0 and wm_res.stdout:
                 for line in wm_res.stdout.splitlines():
                     parts = line.split(maxsplit=3)
@@ -541,7 +551,7 @@ class DaytonaComputerProvider(ComputerProvider):
 
         active_app = "Desktop"
         try:
-            act_res = await self.terminal(workspace_id, "DISPLAY=:0 xdotool getactivewindow getwindowname 2>/dev/null")
+            act_res = await self.terminal(workspace_id, f"DISPLAY={disp} xdotool getactivewindow getwindowname 2>/dev/null")
             if act_res.exit_code == 0 and act_res.stdout and act_res.stdout.strip():
                 active_app = act_res.stdout.strip()
             else:
@@ -632,14 +642,15 @@ class DaytonaComputerProvider(ComputerProvider):
 
             if not b64:
                 try:
+                    disp = self._get_display(workspace_id)
                     scr_cmd = (
-                        "DISPLAY=:0 import -window root /tmp/sonic_screen.png 2>/dev/null && "
-                        "(LOC=$(DISPLAY=:0 xdotool getmouselocation --shell 2>/dev/null); "
-                        "if [ $? -eq 0 ] && [ -n \"$LOC\" ]; then eval \"$LOC\"; "
-                        "DISPLAY=:0 convert /tmp/sonic_screen.png -stroke black -strokewidth 1 -fill '#00ffcc' "
-                        "-draw \"polygon $X,$Y $(($X+15)),$(($Y+12)) $(($X+9)),$(($Y+12)) $(($X+14)),$(($Y+22)) $(($X+10)),$(($Y+24)) $(($X+5)),$(($Y+14)) $(($X)),$(($Y+18))\" "
-                        "/tmp/sonic_screen.png 2>/dev/null || true; fi) && "
-                        "base64 -w0 /tmp/sonic_screen.png"
+                        f"DISPLAY={disp} import -window root /tmp/sonic_screen.png 2>/dev/null && "
+                        f"(LOC=$(DISPLAY={disp} xdotool getmouselocation --shell 2>/dev/null); "
+                        f"if [ $? -eq 0 ] && [ -n \"$LOC\" ]; then eval \"$LOC\"; "
+                        f"DISPLAY={disp} convert /tmp/sonic_screen.png -stroke black -strokewidth 1 -fill '#00ffcc' "
+                        f"-draw \"polygon $X,$Y $(($X+15)),$(($Y+12)) $(($X+9)),$(($Y+12)) $(($X+14)),$(($Y+22)) $(($X+10)),$(($Y+24)) $(($X+5)),$(($Y+14)) $(($X)),$(($Y+18))\" "
+                        f"/tmp/sonic_screen.png 2>/dev/null || true; fi) && "
+                        f"base64 -w0 /tmp/sonic_screen.png"
                     )
                     res = await sandbox.process.exec(scr_cmd)
                     if res.exit_code == 0 and res.result and len(res.result.strip()) > 100:
@@ -705,8 +716,9 @@ class DaytonaComputerProvider(ComputerProvider):
         if not texts:
             try:
                 # Fallback to real X11 window titles via wmctrl / xdotool
+                disp = self._get_display()
                 res = await sandbox.process.exec(
-                    "DISPLAY=:0 wmctrl -l 2>/dev/null || DISPLAY=:0 xdotool search --onlyvisible --name '' getwindowname 2>/dev/null"
+                    f"DISPLAY={disp} wmctrl -l 2>/dev/null || DISPLAY={disp} xdotool search --onlyvisible --name '' getwindowname 2>/dev/null"
                 )
                 if res.exit_code == 0 and res.result:
                     for line in res.result.splitlines():
@@ -802,35 +814,37 @@ class DaytonaComputerProvider(ComputerProvider):
                 elif action_type == GUIActionType.KEYPRESS and action.key:
                     await cu.keyboard.press(action.key)
             else:
-                # Direct X11 dispatch via xdotool on DISPLAY=:0
+                # Direct X11 dispatch via xdotool on DISPLAY={disp}
+                disp = self._get_display(workspace_id)
                 if action_type in [GUIActionType.CLICK, GUIActionType.DOUBLE_CLICK]:
                     repeat = " --repeat 2" if action_type == GUIActionType.DOUBLE_CLICK else ""
-                    await sandbox.process.exec(f"DISPLAY=:0 xdotool mousemove {action.x} {action.y} click{repeat} 1")
+                    await sandbox.process.exec(f"DISPLAY={disp} xdotool mousemove {action.x} {action.y} click{repeat} 1")
                 elif action_type == GUIActionType.RIGHT_CLICK:
-                    await sandbox.process.exec(f"DISPLAY=:0 xdotool mousemove {action.x} {action.y} click 3")
+                    await sandbox.process.exec(f"DISPLAY={disp} xdotool mousemove {action.x} {action.y} click 3")
                 elif action_type == GUIActionType.MOVE:
-                    await sandbox.process.exec(f"DISPLAY=:0 xdotool mousemove {action.x} {action.y}")
+                    await sandbox.process.exec(f"DISPLAY={disp} xdotool mousemove {action.x} {action.y}")
                 elif action_type == GUIActionType.DRAG:
                     sx, sy, dx, dy = action.x, action.y, action.x2, action.y2
                     if sx is not None and sy is not None and dx is not None and dy is not None:
-                        await sandbox.process.exec(f"DISPLAY=:0 xdotool mousemove {sx} {sy} mousedown 1 mousemove {dx} {dy} mouseup 1")
+                        await sandbox.process.exec(f"DISPLAY={disp} xdotool mousemove {sx} {sy} mousedown 1 mousemove {dx} {dy} mouseup 1")
                 elif action_type == GUIActionType.TYPE and action.text:
                     safe_text = shlex.quote(action.text)
-                    await sandbox.process.exec(f"DISPLAY=:0 xdotool type --clearmodifiers {safe_text}")
+                    await sandbox.process.exec(f"DISPLAY={disp} xdotool type --clearmodifiers {safe_text}")
                 elif action_type == GUIActionType.KEYPRESS and action.key:
                     safe_key = shlex.quote(action.key)
-                    await sandbox.process.exec(f"DISPLAY=:0 xdotool key {safe_key}")
+                    await sandbox.process.exec(f"DISPLAY={disp} xdotool key {safe_key}")
 
             # Common handlers for SCROLL, APPS, WINDOWS
+            disp = self._get_display(workspace_id)
             if action_type == GUIActionType.SCROLL:
                 delta = getattr(action, 'scroll_delta', -3)
                 x = action.x or 640
                 y = action.y or 400
                 button = 4 if delta > 0 else 5
                 clicks = abs(delta)
-                cmd_parts = [f"DISPLAY=:0 xdotool mousemove {x} {y}"]
+                cmd_parts = [f"DISPLAY={disp} xdotool mousemove {x} {y}"]
                 for _ in range(clicks):
-                    cmd_parts.append(f"DISPLAY=:0 xdotool click {button}")
+                    cmd_parts.append(f"DISPLAY={disp} xdotool click {button}")
                 scroll_cmd = " && ".join(cmd_parts)
                 await sandbox.process.exec(scroll_cmd)
 
@@ -840,17 +854,20 @@ class DaytonaComputerProvider(ComputerProvider):
                     raw_name = raw_name.split("\n")[0].strip(" *_\n\r\t`\"'")
                 clean_app = raw_name.strip()
                 if clean_app:
-                    self._active_windows[workspace_id] = clean_app
+                    parts = shlex.split(clean_app)
+                    binary = parts[0] if parts else clean_app
+                    self._active_windows[workspace_id] = binary
                     try:
-                        wm_check = await sandbox.process.exec("DISPLAY=:0 wmctrl -l")
-                        is_already_open = wm_check.result and clean_app.lower() in wm_check.result.lower()
+                        wm_check = await sandbox.process.exec(f"DISPLAY={disp} wmctrl -l")
+                        is_already_open = wm_check.result and binary.lower() in wm_check.result.lower()
                         if is_already_open:
-                            await sandbox.process.exec(f"DISPLAY=:0 (wmctrl -a {shlex.quote(clean_app)} 2>/dev/null || xdotool search --onlyvisible --class {shlex.quote(clean_app)} windowactivate 2>/dev/null) || true")
+                            await sandbox.process.exec(f"DISPLAY={disp} (wmctrl -a {shlex.quote(binary)} 2>/dev/null || xdotool search --onlyvisible --class {shlex.quote(binary)} windowactivate 2>/dev/null) || true")
                         else:
-                            spawn_cmd = f"DISPLAY=:0 nohup {shlex.quote(clean_app)} >/dev/null 2>&1 &"
+                            spawn_cmd = f"DISPLAY={disp} nohup {' '.join(shlex.quote(p) for p in parts)} >/dev/null 2>&1 &"
                             await sandbox.process.exec(spawn_cmd)
                     except Exception:
-                        await sandbox.process.exec(f"DISPLAY=:0 nohup {shlex.quote(clean_app)} >/dev/null 2>&1 &")
+                        spawn_cmd = f"DISPLAY={disp} nohup {' '.join(shlex.quote(p) for p in parts)} >/dev/null 2>&1 &"
+                        await sandbox.process.exec(spawn_cmd)
 
             elif action_type == GUIActionType.CLOSE_APP and action.app_name:
                 raw_name = action.app_name.strip(" *_\n\r\t`\"'")
@@ -864,7 +881,7 @@ class DaytonaComputerProvider(ComputerProvider):
                 if title:
                     safe = shlex.quote(title)
                     await sandbox.process.exec(
-                        f"DISPLAY=:0 (wmctrl -a {safe} 2>/dev/null || "
+                        f"DISPLAY={disp} (wmctrl -a {safe} 2>/dev/null || "
                         f"xdotool search --name {safe} windowactivate 2>/dev/null) || true"
                     )
                     self._active_windows[workspace_id] = title
@@ -1112,10 +1129,29 @@ class DaytonaComputerProvider(ComputerProvider):
         return apps
 
     async def launch_application(self, workspace_id: str, app_name: str, actor: str = "operator") -> bool:
-        """Launches a GUI application on display :0."""
-        self._active_windows[workspace_id] = app_name
-        result = await self.terminal(workspace_id, f"DISPLAY=:0 {app_name} &")
+        """Launches a GUI application."""
+        clean_app = (app_name or "").strip()
+        if not clean_app:
+            return False
+        parts = shlex.split(clean_app)
+        if not parts:
+            return False
+        if hasattr(self, "app_policy") and self.app_policy:
+            allowed, _ = self.app_policy.is_package_allowed(parts[0])
+            if not allowed:
+                return False
+        disp = self._get_display(workspace_id)
+        spawn = f"DISPLAY={disp} nohup {' '.join(shlex.quote(p) for p in parts)} >/dev/null 2>&1 &"
+        self._active_windows[workspace_id] = parts[0]
+        result = await self.terminal(workspace_id, spawn)
         return result.exit_code == 0
+
+    async def tile_workstation(self, workspace_id: str) -> bool:
+        """Executes wmctrl commands to tile windows side-by-side."""
+        disp = self._get_display(workspace_id)
+        code1 = await self.terminal(workspace_id, f'DISPLAY={disp} wmctrl -r "Google Chrome" -e 0,0,0,640,800')
+        code2 = await self.terminal(workspace_id, f'DISPLAY={disp} wmctrl -r "Terminal" -e 0,640,0,640,800')
+        return code1.exit_code == 0 or code2.exit_code == 0
 
     async def close(self) -> None:
         """Close the underlying Daytona SDK client (releases its aiohttp session)."""

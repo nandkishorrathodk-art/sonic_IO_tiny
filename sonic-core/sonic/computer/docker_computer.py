@@ -52,8 +52,17 @@ from sonic.sandbox.provider import ExecResult
 logger = get_logger(__name__)
 
 
+def _get_display(workspace_id: str | None = None) -> str:
+    """Check if environment has DISPLAY, default to :99 if running docker Xvfb."""
+    return os.environ.get("DISPLAY") or ":99"
+
+
 class DockerComputerProvider(ComputerProvider):
     """Native Docker-based Workstation Provider for SONIC A-SEA."""
+
+    def _get_display(self, workspace_id: str | None = None) -> str:
+        """Check if environment has DISPLAY, default to :99 if running docker Xvfb."""
+        return _get_display(workspace_id)
 
     def __init__(
         self,
@@ -317,11 +326,12 @@ class DockerComputerProvider(ComputerProvider):
             )
 
         ws.status = ComputerWorkspaceStatus.RUNNING
+        disp = self._get_display(workspace_id)
         active_window = "Desktop"
         open_windows: list[str] = ["Desktop", "Terminal"]
 
         # Check real open windows via wmctrl
-        code, out, _ = await self._docker_exec("DISPLAY=:99 wmctrl -l 2>/dev/null", timeout=5)
+        code, out, _ = await self._docker_exec(f"DISPLAY={disp} wmctrl -l 2>/dev/null", timeout=5)
         if code == 0 and out.strip():
             for line in out.splitlines():
                 parts = line.split(maxsplit=3)
@@ -331,7 +341,7 @@ class DockerComputerProvider(ComputerProvider):
                         open_windows.append(title)
 
         # Check active window via xdotool
-        code, out, _ = await self._docker_exec("DISPLAY=:99 xdotool getactivewindow getwindowname 2>/dev/null", timeout=5)
+        code, out, _ = await self._docker_exec(f"DISPLAY={disp} xdotool getactivewindow getwindowname 2>/dev/null", timeout=5)
         if code == 0 and out.strip():
             active_window = out.strip()
         else:
@@ -366,12 +376,13 @@ class DockerComputerProvider(ComputerProvider):
         if self._last_screenshot is not None and (now - self._last_screenshot_time) < 2.0:
             return self._last_screenshot
 
+        disp = self._get_display(workspace_id)
         scr_cmd = (
-            "DISPLAY=:99 scrot -o /tmp/sonic_screen.png 2>/dev/null || "
-            "DISPLAY=:99 import -window root /tmp/sonic_screen.png 2>/dev/null; "
-            "base64 -w0 /tmp/sonic_screen.png 2>/dev/null && "
-            "echo '___ACTIVE_WINDOW___' && "
-            "DISPLAY=:99 xdotool getactivewindow getwindowname 2>/dev/null || true"
+            f"DISPLAY={disp} scrot -o /tmp/sonic_screen.png 2>/dev/null || "
+            f"DISPLAY={disp} import -window root /tmp/sonic_screen.png 2>/dev/null; "
+            f"base64 -w0 /tmp/sonic_screen.png 2>/dev/null && "
+            f"echo '___ACTIVE_WINDOW___' && "
+            f"DISPLAY={disp} xdotool getactivewindow getwindowname 2>/dev/null || true"
         )
         code, out, _ = await self._docker_exec(scr_cmd, timeout=15)
         b64 = ""
@@ -411,46 +422,50 @@ class DockerComputerProvider(ComputerProvider):
         actor: str = "operator",
     ) -> ScreenObservation:
         atype = action.action
+        disp = self._get_display(workspace_id)
 
         if atype in (GUIActionType.CLICK, GUIActionType.DOUBLE_CLICK):
             repeat = 2 if atype == GUIActionType.DOUBLE_CLICK else 1
             if action.x is not None and action.y is not None:
-                await self._docker_exec(f"DISPLAY=:99 xdotool mousemove {action.x} {action.y} click --repeat {repeat} 1")
+                await self._docker_exec(f"DISPLAY={disp} xdotool mousemove {action.x} {action.y} click --repeat {repeat} 1")
             else:
-                await self._docker_exec(f"DISPLAY=:99 xdotool click --repeat {repeat} 1")
+                await self._docker_exec(f"DISPLAY={disp} xdotool click --repeat {repeat} 1")
 
         elif atype == GUIActionType.RIGHT_CLICK:
             if action.x is not None and action.y is not None:
-                await self._docker_exec(f"DISPLAY=:99 xdotool mousemove {action.x} {action.y} click 3")
+                await self._docker_exec(f"DISPLAY={disp} xdotool mousemove {action.x} {action.y} click 3")
             else:
-                await self._docker_exec("DISPLAY=:99 xdotool click 3")
+                await self._docker_exec(f"DISPLAY={disp} xdotool click 3")
 
         elif atype == GUIActionType.MOVE and action.x is not None and action.y is not None:
-            await self._docker_exec(f"DISPLAY=:99 xdotool mousemove {action.x} {action.y}")
+            await self._docker_exec(f"DISPLAY={disp} xdotool mousemove {action.x} {action.y}")
 
         elif atype == GUIActionType.DRAG:
             sx, sy = action.x or 0, action.y or 0
             dx = action.x2 if action.x2 is not None else sx
             dy = action.y2 if action.y2 is not None else sy
-            await self._docker_exec(f"DISPLAY=:99 xdotool mousemove {sx} {sy} mousedown 1 mousemove {dx} {dy} mouseup 1")
+            await self._docker_exec(f"DISPLAY={disp} xdotool mousemove {sx} {sy} mousedown 1 mousemove {dx} {dy} mouseup 1")
 
         elif atype == GUIActionType.TYPE and action.text:
             safe_text = shlex.quote(action.text)
-            await self._docker_exec(f"DISPLAY=:99 xdotool type --delay 25 --clearmodifiers {safe_text}")
+            await self._docker_exec(f"DISPLAY={disp} xdotool type --delay 25 --clearmodifiers {safe_text}")
 
         elif atype == GUIActionType.KEYPRESS and action.key:
             safe_key = shlex.quote(action.key)
-            await self._docker_exec(f"DISPLAY=:99 xdotool key {safe_key}")
+            await self._docker_exec(f"DISPLAY={disp} xdotool key {safe_key}")
 
         elif atype == GUIActionType.SCROLL:
             btn = 5 if action.scroll_delta < 0 else 4
             times = abs(action.scroll_delta) if action.scroll_delta != 0 else 3
-            await self._docker_exec(f"DISPLAY=:99 xdotool click --repeat {times} {btn}")
+            await self._docker_exec(f"DISPLAY={disp} xdotool click --repeat {times} {btn}")
 
         elif atype == GUIActionType.OPEN_APP and action.app_name:
             clean_app = action.app_name.strip()
-            spawn = f"DISPLAY=:99 nohup {shlex.quote(clean_app)} >/dev/null 2>&1 &"
-            await self._docker_exec(spawn)
+            parts = shlex.split(clean_app) if clean_app else []
+            if parts:
+                spawn = f"DISPLAY={disp} nohup {' '.join(shlex.quote(p) for p in parts)} >/dev/null 2>&1 &"
+                await self._docker_exec(spawn)
+                self._active_windows[workspace_id] = parts[0]
 
         elif atype == GUIActionType.CLOSE_APP and action.app_name:
             await self._docker_exec(f"pkill -f -- {shlex.quote(action.app_name)}")
@@ -459,7 +474,7 @@ class DockerComputerProvider(ComputerProvider):
             target = action.window_id or action.app_name
             if target:
                 await self._docker_exec(
-                    f"DISPLAY=:99 (wmctrl -i -a {shlex.quote(target)} 2>/dev/null || "
+                    f"DISPLAY={disp} (wmctrl -i -a {shlex.quote(target)} 2>/dev/null || "
                     f"wmctrl -a {shlex.quote(target)} 2>/dev/null || "
                     f"xdotool search --name {shlex.quote(target)} windowactivate 2>/dev/null) || true"
                 )
@@ -477,8 +492,9 @@ class DockerComputerProvider(ComputerProvider):
         Discovers open windows dynamically via wmctrl while maintaining compatibility
         with direct wmctrl targeting.
         """
+        disp = self._get_display(workspace_id)
         windows: list[tuple[str, str]] = []
-        code_l, out_l, _ = await self._docker_exec("DISPLAY=:99 wmctrl -l 2>/dev/null", timeout=5)
+        code_l, out_l, _ = await self._docker_exec(f"DISPLAY={disp} wmctrl -l 2>/dev/null", timeout=5)
         if code_l == 0 and out_l.strip():
             for line in out_l.splitlines():
                 parts = line.split(maxsplit=3)
@@ -497,25 +513,25 @@ class DockerComputerProvider(ComputerProvider):
             None,
         )
 
-        code1, _, _ = await self._docker_exec('DISPLAY=:99 wmctrl -r "Google Chrome" -e 0,0,0,640,800')
+        code1, _, _ = await self._docker_exec(f'DISPLAY={disp} wmctrl -r "Google Chrome" -e 0,0,0,640,800')
         if code1 != 0:
-            code1, _, _ = await self._docker_exec('DISPLAY=:99 wmctrl -r "Chromium" -e 0,0,0,640,800')
+            code1, _, _ = await self._docker_exec(f'DISPLAY={disp} wmctrl -r "Chromium" -e 0,0,0,640,800')
         if code1 != 0 and browser_candidate:
-            code1, _, _ = await self._docker_exec(f'DISPLAY=:99 wmctrl -i -r "{browser_candidate[0]}" -e 0,0,0,640,800')
+            code1, _, _ = await self._docker_exec(f'DISPLAY={disp} wmctrl -i -r "{browser_candidate[0]}" -e 0,0,0,640,800')
 
-        code2, _, _ = await self._docker_exec('DISPLAY=:99 wmctrl -r "Terminal" -e 0,640,0,640,800')
+        code2, _, _ = await self._docker_exec(f'DISPLAY={disp} wmctrl -r "Terminal" -e 0,640,0,640,800')
         if code2 != 0:
-            code2, _, _ = await self._docker_exec('DISPLAY=:99 wmctrl -r "xfce4-terminal" -e 0,640,0,640,800')
+            code2, _, _ = await self._docker_exec(f'DISPLAY={disp} wmctrl -r "xfce4-terminal" -e 0,640,0,640,800')
         if code2 != 0 and term_candidate:
-            code2, _, _ = await self._docker_exec(f'DISPLAY=:99 wmctrl -i -r "{term_candidate[0]}" -e 0,640,0,640,800')
+            code2, _, _ = await self._docker_exec(f'DISPLAY={disp} wmctrl -i -r "{term_candidate[0]}" -e 0,640,0,640,800')
 
         # If standard candidates were not matched and arbitrary windows are open, tile them flexibly
         if code1 != 0 and windows:
             fallback_left = windows[0]
-            code1, _, _ = await self._docker_exec(f'DISPLAY=:99 wmctrl -i -r "{fallback_left[0]}" -e 0,0,0,640,800')
+            code1, _, _ = await self._docker_exec(f'DISPLAY={disp} wmctrl -i -r "{fallback_left[0]}" -e 0,0,0,640,800')
             if code2 != 0 and len(windows) > 1:
                 fallback_right = windows[1]
-                code2, _, _ = await self._docker_exec(f'DISPLAY=:99 wmctrl -i -r "{fallback_right[0]}" -e 0,640,0,640,800')
+                code2, _, _ = await self._docker_exec(f'DISPLAY={disp} wmctrl -i -r "{fallback_right[0]}" -e 0,640,0,640,800')
 
         return code1 == 0 or code2 == 0
 
@@ -708,9 +724,21 @@ class DockerComputerProvider(ComputerProvider):
         return apps
 
     async def launch_application(self, workspace_id: str, app_name: str, actor: str = "operator") -> bool:
-        action = GUIAction(action=GUIActionType.OPEN_APP, app_name=app_name)
-        await self.gui_action(workspace_id, action, actor=actor)
-        return True
+        clean_app = (app_name or "").strip()
+        if not clean_app:
+            return False
+        parts = shlex.split(clean_app)
+        if not parts:
+            return False
+        if hasattr(self, "app_policy") and self.app_policy:
+            allowed, _ = self.app_policy.is_package_allowed(parts[0])
+            if not allowed:
+                return False
+        disp = self._get_display(workspace_id)
+        spawn = f"DISPLAY={disp} nohup {' '.join(shlex.quote(p) for p in parts)} >/dev/null 2>&1 &"
+        self._active_windows[workspace_id] = parts[0]
+        code, _, _ = await self._docker_exec(spawn)
+        return code == 0
 
     async def close_application(self, workspace_id: str, app_name: str, actor: str = "operator") -> bool:
         action = GUIAction(action=GUIActionType.CLOSE_APP, app_name=app_name)

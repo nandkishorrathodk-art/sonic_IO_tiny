@@ -88,7 +88,7 @@ class MotorReflexes:
 
         if hasattr(self.computer, "gui_action"):
             await self.computer.gui_action(
-                workspace_id, GUIAction(action=GUIActionType.TYPE, text=text)
+                workspace_id, GUIAction(action=GUIActionType.TYPE, text=text, delay_ms=delay_ms)
             )
             return f"typed: {text}"
         elif hasattr(self.computer, "terminal"):
@@ -181,9 +181,18 @@ class MotorReflexes:
                     pass
 
         excess = max(0, count - max_tabs)
+        if excess > 0:
+            focus_browser_cmd = (
+                "DISPLAY=:99 wmctrl -a 'Chrome' 2>/dev/null || "
+                "DISPLAY=:99 wmctrl -a 'Chromium' 2>/dev/null || "
+                "DISPLAY=:99 xdotool search --class 'google-chrome' windowactivate --sync 2>/dev/null || true"
+            )
+            await self._exec_cmd(focus_browser_cmd, workspace_id)
+            await asyncio.sleep(0.05)
+
         for _ in range(excess):
             await self.hotkey_close_tab(workspace_id)
-            await asyncio.sleep(0.02)
+            await asyncio.sleep(0.15)
         return excess
 
     async def handle_gtk_file_dialog(
@@ -198,6 +207,7 @@ class MotorReflexes:
           2. Typing the target file path with natural human cadence.
           3. Pressing Return to confirm file selection.
         """
+        await asyncio.sleep(0.3)
         await self._send_hotkey(workspace_id, "ctrl+l")
         await asyncio.sleep(0.1)
         await self.human_type(workspace_id, file_path, delay_ms=delay_ms)
@@ -235,9 +245,14 @@ class MotorReflexes:
         # Stage 3: Physical mouse move and click (dispatch exactly once)
         if hasattr(self.computer, "gui_action"):
             try:
+                act_type = GUIActionType.RIGHT_CLICK if button == 3 else GUIActionType.CLICK
+                try:
+                    action_obj = GUIAction(action=act_type, x=x, y=y, button=button)
+                except TypeError:
+                    action_obj = GUIAction(action=act_type, x=x, y=y)
                 await self.computer.gui_action(
                     workspace_id,
-                    GUIAction(action=GUIActionType.CLICK, x=x, y=y),
+                    action_obj,
                 )
             except Exception:
                 click_cmd = f"DISPLAY=:99 xdotool mousemove {x} {y} click {button}"

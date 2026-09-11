@@ -75,6 +75,10 @@ class BossAgent:
         tenant_id: str = "default",
         max_phases: int = 5,
         sub_agent_steps: int = 5,
+        browser: Any = None,
+        toolsmith: Any = None,
+        method_lab: Any = None,
+        lessons_ledger: Any = None,
     ):
         self.computer = computer_provider
         self.llm_router = llm_router
@@ -83,6 +87,10 @@ class BossAgent:
         self.tenant_id = tenant_id
         self.max_phases = max_phases
         self.sub_agent_steps = sub_agent_steps
+        self.browser = browser
+        self.toolsmith = toolsmith
+        self.method_lab = method_lab
+        self.lessons_ledger = lessons_ledger
 
         # State
         self.phases: list[Phase] = []
@@ -90,6 +98,7 @@ class BossAgent:
         self.all_traces: list[Any] = []
         self._sub_agent_count: int = 0
         self._interrupted: bool = False
+        self._accumulated_context: list[str] = []
 
         # DAG & Replan Engine
         self.task_graph = TaskGraph(
@@ -129,7 +138,11 @@ class BossAgent:
                 logger.debug("task_graph_add_skipped", sub_id=sub.id, error=str(exc))
 
     def _detect_sub_mission_trigger(self, result: SubMissionResult) -> ReplanTrigger | None:
-        """Inspect sub-mission outcome to determine if replanning is warranted."""
+        """Inspect sub-mission outcome to determine if replanning is warranted.
+
+        Covers full security domain taxonomy (web, API, binary/pwn, network, crypto, CTF flags)
+        with negation guards so phrases like 'not vulnerable to sqli' do not falsely trigger.
+        """
         if not result.success:
             return ReplanTrigger.AGENT_FAILURE
 
@@ -137,21 +150,46 @@ class BossAgent:
             result.findings_summary + " " + " ".join(result.key_discoveries)
         ).lower()
 
-        # High confidence finding detection
-        vuln_keywords = (
-            "sqli", "sql injection", "xss", "rce", "cve", "bypass",
-            "unauthorized", "vulnerability", "vulnerable", "exploit confirmed",
-        )
-        if any(vk in combined_text for vk in vuln_keywords):
-            return ReplanTrigger.NEW_HIGH_CONFIDENCE_FINDING
+        if not combined_text.strip():
+            return None
 
-        # Attack surface discovery
-        surface_keywords = (
-            "endpoint", "endpoints", "parameter", "parameters", "subdomain",
-            "form", "route", "login page", "api url",
+        vuln_patterns = (
+            # Web & API
+            r"\bsqli\b", r"\bsql injection\b", r"\bxss\b", r"\brce\b", r"\bcve-\d{4}-\d+\b",
+            r"\bssrf\b", r"\bidor\b", r"\bbola\b", r"\bdeserializ", r"\bprototype pollution\b",
+            r"\bpath traversal\b", r"\blfi\b", r"\brfi\b",
+            r"\bauth(?:entication)? bypass\b", r"\bunauthorized access\b",
+            # Binary & Systems
+            r"\bbuffer overflow\b", r"\bmemory corruption\b", r"\brop chain\b",
+            r"\bformat string\b", r"\buse[- ]after[- ]free\b", r"\bheap overflow\b",
+            r"\bprivilege escalation\b", r"\broot shell\b",
+            # Crypto & Secrets
+            r"\bpadding oracle\b", r"\bweak key\b", r"\bprivate key leak\b",
+            r"\bcredential leak\b", r"\bhardcoded secret\b",
+            # Flags & Exploit Confirmation
+            r"\bflag\{[^\}]+\}", r"\bctf\{[^\}]+\}", r"\bhtb\{[^\}]+\}",
+            r"\bexploit confirmed\b", r"\bvulnerability confirmed\b",
         )
-        if any(sk in combined_text for sk in surface_keywords):
-            return ReplanTrigger.NEW_ATTACK_SURFACE
+
+        negation_prefix = r"(?:not|no|never|failed to|unsuccessful|immune to|false positive)\s+(?:\w+\s+){0,3}"
+
+        for pat in vuln_patterns:
+            matches = list(re.finditer(pat, combined_text, flags=re.IGNORECASE))
+            for m in matches:
+                start_idx = m.start()
+                preceding_text = combined_text[max(0, start_idx - 40):start_idx]
+                if re.search(negation_prefix + r"$", preceding_text, flags=re.IGNORECASE):
+                    continue
+                return ReplanTrigger.NEW_HIGH_CONFIDENCE_FINDING
+
+        surface_patterns = (
+            r"\bopen port\b", r"\blistening port\b", r"\bdiscovered service\b",
+            r"\bendpoint\b", r"\broute\b", r"\bsubdomain\b", r"\bapi url\b",
+            r"\blogin page\b", r"\bexported symbol\b", r"\bhidden directory\b",
+        )
+        for sp in surface_patterns:
+            if re.search(sp, combined_text, flags=re.IGNORECASE):
+                return ReplanTrigger.NEW_ATTACK_SURFACE
 
         return None
 
@@ -377,24 +415,34 @@ class BossAgent:
         """
         t_start = time.perf_counter()
 
-        prompt = f"""You are a Boss Agent orchestrator. Your job is to analyze the user's objective and break it into focused, independent sub-tasks that can be assigned to separate worker agents.
+        prompt = f"""You are the Boss Agent of an Autonomous Self-Evolving Penetration Architect (A-SEA).
+Your job is to analyze the user's objective from first principles and decompose it into focused, independent sub-missions for worker agents.
 
 USER OBJECTIVE: {objective}
 
-Analyze this objective deeply. Think about:
-1. What information do you need first? (reconnaissance / discovery)
-2. What are the independent sub-tasks that can be done?
-3. What is the logical order? (what depends on what?)
-4. How many workers do you need? (2-5 workers per phase, no more)
+Apply target-agnostic first-principles reasoning:
+1. DOMAIN & MODALITY TRIAGE:
+   Identify the primary target type:
+   - [BINARY / REVERSE ENGINEERING / PWN]: Local ELF/PE file, firmware, disassembly, checksec, debugging (gdb), memory corruption, ROP.
+   - [NETWORK / INFRASTRUCTURE]: IP/CIDR, open ports, routing, protocols (SSH, SMB, RPC, DNS), daemons.
+   - [API / MICROSERVICE / HEADLESS]: REST, GraphQL, auth tokens, schemas, parameters (CLI / curl / python probes, zero GUI overhead).
+   - [CRYPTOGRAPHY]: Ciphers, hashes, padding oracle, key recovery, entropy.
+   - [FORENSICS / DATA]: Memory dumps, pcaps, logs, file carving (tshark, volatility).
+   - [WEB APPLICATION]: HTTP requests, cookies, DOM (use browser only when visual interaction/client JS is genuinely required).
+
+2. METHODOLOGY:
+   - Do NOT force or assume web tools (Chromium, Burp Suite, ffuf) if the target is a binary, network service, or headless API.
+   - Each worker must receive a clear, operational task tailored to the specific target modality.
 
 Respond with EXACTLY this JSON format (no extra text):
 {{
-  "thinking": "Your strategic analysis of the objective - what needs to be done and why",
-  "phase_name": "Short name for this phase (e.g., Reconnaissance, Testing, Analysis)",
+  "domain": "BINARY | NETWORK | API | CRYPTO | FORENSICS | WEB",
+  "thinking": "First-principles analysis: target architecture, hypotheses, and strategy",
+  "phase_name": "Domain-appropriate phase name (e.g., Static Binary Analysis, Service Enumeration, Schema Discovery)",
   "sub_missions": [
     {{
-      "goal": "Clear, focused goal for this worker agent. Be specific about what to do and what to report back.",
-      "max_steps": 3,
+      "goal": "Clear, focused goal for this worker agent with concrete inputs and expected observations.",
+      "max_steps": 4,
       "priority": 1
     }}
   ]
@@ -464,18 +512,70 @@ Rules:
         )
 
     def _fallback_decomposition(self, objective: str) -> Phase:
-        """Heuristic fallback when LLM decomposition fails."""
-        return Phase(
-            phase_number=1,
-            name="Direct Execution",
-            thinking=f"LLM decomposition unavailable. Executing objective directly: {objective}",
-            sub_missions=[
+        """Robust deterministic domain fallback when LLM decomposition fails."""
+        obj_lower = objective.lower()
+        sub_missions: list[SubMission] = []
+
+        # Heuristic 1: Detect binary / reverse engineering target
+        if any(ext in obj_lower for ext in (".bin", ".elf", ".exe", ".so", "binary", "firmware", "reverse", "disassemble", "pwn")):
+            sub_missions = [
                 SubMission(
-                    goal=objective,
-                    max_steps=self.sub_agent_steps,
+                    goal=f"Inspect target binary file and environment (file, checksec, strings, objdump) for: {objective}",
+                    max_steps=min(self.sub_agent_steps, 5),
+                    priority=2,
+                ),
+                SubMission(
+                    goal=f"Execute dynamic analysis and debugging (gdb, ltrace, strace) for: {objective}",
+                    max_steps=max(self.sub_agent_steps, 6),
                     priority=1,
                 ),
-            ],
+            ]
+        # Heuristic 2: Detect network / infrastructure target
+        elif any(net in obj_lower for net in ("ip", "subnet", "cidr", "port", "nmap", "scan", "network", "host")):
+            sub_missions = [
+                SubMission(
+                    goal=f"Perform host discovery and service port enumeration for: {objective}",
+                    max_steps=min(self.sub_agent_steps, 5),
+                    priority=2,
+                ),
+                SubMission(
+                    goal=f"Inspect discovered services and test protocol interactions for: {objective}",
+                    max_steps=max(self.sub_agent_steps, 6),
+                    priority=1,
+                ),
+            ]
+        # Heuristic 3: Default 2-stage discovery + execution pipeline with expanded budget
+        else:
+            sub_missions = [
+                SubMission(
+                    goal=f"Initial discovery and environment orientation for: {objective}",
+                    max_steps=min(self.sub_agent_steps, 5),
+                    priority=2,
+                ),
+                SubMission(
+                    goal=f"Execute core actions and verify completion for: {objective}",
+                    max_steps=max(self.sub_agent_steps * 2, 8),
+                    priority=1,
+                ),
+            ]
+
+        thinking_text = (
+            f"LLM strategic decomposition unavailable; activated deterministic domain fallback pipeline "
+            f"with {len(sub_missions)} structured sub-tasks."
+        )
+
+        self.thinking_log.append(BossThinking(
+            phase=1,
+            thinking_type="strategic_decomposition",
+            content=thinking_text,
+            duration_seconds=0.0,
+        ))
+
+        return Phase(
+            phase_number=1,
+            name="Deterministic Pipeline (Fallback)",
+            thinking=thinking_text,
+            sub_missions=sub_missions,
         )
 
     # ------------------------------------------------------------------
@@ -514,6 +614,10 @@ Rules:
                 tenant_id=self.tenant_id,
                 agent_id=f"sub-agent-{self._sub_agent_count}",
                 enable_llm_decomposition=False,
+                browser=self.browser,
+                toolsmith=self.toolsmith,
+                method_lab=self.method_lab,
+                lessons_ledger=self.lessons_ledger,
             )
 
             # Step callback to stream SubAgent actions to UI
@@ -534,9 +638,15 @@ Rules:
                         },
                     })
 
+            # Forward accumulated discoveries so SubAgents aren't context-starved
+            sub_goal = sub_mission.goal
+            if self._accumulated_context:
+                recent_ctx = "; ".join(self._accumulated_context[-3:])
+                sub_goal = f"{sub_mission.goal} [Prior Discoveries: {recent_ctx}]"
+
             traces = await agent.run_mission(
                 workspace_id=workspace_id,
-                goal=sub_mission.goal,
+                goal=sub_goal,
                 steps=sub_mission.max_steps,
                 step_callback=_sub_step_callback,
             )
@@ -550,6 +660,10 @@ Rules:
 
             # Extract key discoveries
             key_discoveries = self._extract_key_discoveries(traces)
+            if key_discoveries:
+                self._accumulated_context.extend(key_discoveries)
+            elif findings_summary and len(findings_summary.strip()) > 10:
+                self._accumulated_context.append(findings_summary[:120])
 
             succeeded = sum(
                 1 for t in traces
@@ -557,12 +671,24 @@ Rules:
             )
             total = len(traces)
 
+            has_goal_complete = any(
+                getattr(t, "expected_observation", "") == "GOAL_COMPLETE"
+                or getattr(t, "actual_observation", "") == "GOAL_COMPLETE"
+                or "goal-complete" in getattr(t, "target_resource", "").lower()
+                for t in traces
+            )
+            last_trace = traces[-1] if traces else None
+            last_succeeded = last_trace and str(last_trace.status) in ("COMPLETED", "SUCCESS", "VERIFIED")
+            success_ratio = (succeeded / total) if total > 0 else 0.0
+
+            is_successful = has_goal_complete or (last_succeeded and success_ratio >= 0.5) or (succeeded > 0 and total == 1)
+
             return SubMissionResult(
                 sub_mission_id=sub_mission.id,
                 goal=sub_mission.goal,
                 traces=traces,
                 findings_summary=findings_summary,
-                success=succeeded > 0,
+                success=is_successful,
                 key_discoveries=key_discoveries,
                 actions_taken=total,
                 duration_seconds=duration,

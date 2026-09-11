@@ -198,7 +198,8 @@ class ComputerUseAgent:
         if compact_mode is not None:
             self._compact_mode = compact_mode
         elif llm_router is not None:
-            model_name = (getattr(llm_router, "default_model", "") or "").lower()
+            raw_model = getattr(llm_router, "default_model", "")
+            model_name = raw_model.lower() if isinstance(raw_model, str) else ""
             self._compact_mode = any(
                 tag in model_name
                 for tag in ("7b", "8b", "11b", "3b", "1b", "small", "mini", "tiny")
@@ -571,16 +572,18 @@ class ComputerUseAgent:
         primary_file = code_files[0] if code_files else (target_files[0] if target_files else "")
         test_file = test_files[0] if test_files else ""
 
-        # Direct Terminal Command Goal (operator-pinned command, not reasoning).
-        goal_lower = goal.lower()
-        if any(term_kw in goal_lower for term_kw in ["run command", "terminal:", "exec:", "bash"]):
-            cmd = goal.split(":", 1)[1].strip() if ":" in goal else "pytest"
-            return (
-                ComputerActionType.TERMINAL_EXEC,
-                "terminal-command",
-                {"command": cmd},
-                f"Executed command '{cmd}' in sandbox PTY",
-            )
+        # Direct operator pinned command with explicit syntax: "terminal: <cmd>" or "exec: <cmd>"
+        goal_stripped = goal.strip()
+        goal_lower = goal_stripped.lower()
+        if (goal_lower.startswith("terminal:") or goal_lower.startswith("exec:")) and ":" in goal_stripped:
+            cmd = goal_stripped.split(":", 1)[1].strip()
+            if cmd:
+                return (
+                    ComputerActionType.TERMINAL_EXEC,
+                    "terminal-command",
+                    {"command": cmd},
+                    f"Executed command '{cmd}' in sandbox PTY",
+                )
 
         if self.llm_router is not None:
             return await self._llm_choose_action(goal, observation, step_index, primary_file, test_file)
@@ -1143,6 +1146,17 @@ class ComputerUseAgent:
         s = s.strip(" *_\n\r\t`\"'.,:;")
         return s.lower()
 
+    @classmethod
+    def _resolve_app_binary(cls, target: str) -> str:
+        """Dynamically sanitize application name to an OS-safe launch binary without any hardcoded app names."""
+        norm = cls._normalize_app_name(target)
+        if not norm:
+            return ""
+        # Strip all whitespace to form standard Linux binary name (e.g. "burp suite" -> "burpsuite")
+        no_spaces = re.sub(r'\s+', '', norm)
+        clean = re.sub(r'[^a-zA-Z0-9_\-\.]', '', no_spaces)
+        return clean or norm.split()[0]
+
     @staticmethod
     def _parse_llm_action(
         text: str, default_file: str
@@ -1368,9 +1382,9 @@ class ComputerUseAgent:
         if extracted:
             payload = extracted
         elif action_type in (ComputerActionType.GUI_TYPE, ComputerActionType.BROWSER_TYPE):
-            payload = {"text": payload_str.strip('"\' ')}
+            payload = {"text": payload_str.strip('"\' ')} if payload_str.strip() not in ("{}", "") else {}
         elif action_type == ComputerActionType.TERMINAL_EXEC:
-            payload = {"command": payload_str.strip('"\' ')}
+            payload = {"command": payload_str.strip('"\' ')} if payload_str.strip() not in ("{}", "") else {}
         else:
             payload = {}
 
@@ -1429,6 +1443,8 @@ class ComputerUseAgent:
             raw_cmd = payload.get("command") or fields.get("COMMAND")
             if not raw_cmd or str(raw_cmd).lower() in ("none", "null", ""):
                 payload["command"] = target if target and target != default_file and not target.startswith("{") else "true"
+            else:
+                payload["command"] = raw_cmd
             if payload.get("command"):
                 cmd_str = str(payload["command"]).strip()
                 cmd_str = re.sub(r'^(?:[a-zA-Z0-9_\-\.]+(?:-terminal)?,?\s*)?(?:command|cmd)\s*=\s*', '', cmd_str)
@@ -1440,11 +1456,11 @@ class ComputerUseAgent:
                 # Handle phrases like "No specific target is needed for this command."
                 if any(phrase in cmd_str.lower() for phrase in ("no specific", "not needed", "n/a", "none", "no target")):
                     cmd_str = "uname -m"
-                # Handle "X or Y command" (e.g. "netstat or ss" -> "which netstat && netstat -tuln || ss -tuln")
+                # Handle "X or Y command" (e.g. "python3 or python" -> "which python3 && python3 || python")
                 m_or = re.match(r'^([a-zA-Z0-9_-]+)\s+or\s+([a-zA-Z0-9_-]+)(?:\s+command)?$', cmd_str, re.IGNORECASE)
                 if m_or:
                     cmd1, cmd2 = m_or.group(1), m_or.group(2)
-                    cmd_str = f"which {cmd1} && {cmd1} -tuln || {cmd2} -tuln"
+                    cmd_str = f"which {cmd1} && {cmd1} || {cmd2}"
                 else:
                     # Strip trailing " command" or " commands"
                     cmd_str = re.sub(r'\s+commands?$', '', cmd_str, flags=re.IGNORECASE)
@@ -1834,12 +1850,15 @@ class ComputerUseAgent:
                     )
                 grounding_fn = _ground
 
+            # When operating with a live screen screenshot, strictly require visual perception
+            # and forbid falling back to arbitrary mock percentage clicks.
             res_coords = await resolve_ui_target_async(
                 query=target_resource,
                 screenshot_b64=self._last_screenshot_b64,
                 width=self._screen_width,
                 height=self._screen_height,
                 grounding_fn=grounding_fn,
+                allow_landmarks=not bool(self._last_screenshot_b64),
             )
             if res_coords is not None:
                 payload["x"], payload["y"] = res_coords
@@ -1921,11 +1940,11 @@ class ComputerUseAgent:
                 else:
                     x = int(payload.get("x", 0))
                     y = int(payload.get("y", 0))
+                    pre_screen_b64 = getattr(self, "_last_screenshot_b64", "")
                     if self._last_screenshot_b64:
                         self._last_screenshot_b64 = draw_action_marker(
                             self._last_screenshot_b64, (x, y), label="CLICK", color="#00ffcc"
                         )
-                    pre_screen_b64 = getattr(self, "_last_screenshot_b64", "")
                     obs_after = await self.computer.gui_action(
                         workspace_id,
                         GUIAction(action=GUIActionType.CLICK, x=x, y=y),
@@ -1949,11 +1968,11 @@ class ComputerUseAgent:
                 else:
                     x = int(payload.get("x", 0))
                     y = int(payload.get("y", 0))
+                    pre_screen_b64 = getattr(self, "_last_screenshot_b64", "")
                     if self._last_screenshot_b64:
                         self._last_screenshot_b64 = draw_action_marker(
                             self._last_screenshot_b64, (x, y), label="DOUBLE_CLICK", color="#ffaa00"
                         )
-                    pre_screen_b64 = getattr(self, "_last_screenshot_b64", "")
                     obs_after = await self.computer.gui_action(
                         workspace_id,
                         GUIAction(action=GUIActionType.DOUBLE_CLICK, x=x, y=y),
@@ -1977,11 +1996,11 @@ class ComputerUseAgent:
                 else:
                     x = int(payload.get("x", 0))
                     y = int(payload.get("y", 0))
+                    pre_screen_b64 = getattr(self, "_last_screenshot_b64", "")
                     if self._last_screenshot_b64:
                         self._last_screenshot_b64 = draw_action_marker(
                             self._last_screenshot_b64, (x, y), label="RIGHT_CLICK", color="#ff3366"
                         )
-                    pre_screen_b64 = getattr(self, "_last_screenshot_b64", "")
                     obs_after = await self.computer.gui_action(
                         workspace_id,
                         GUIAction(action=GUIActionType.RIGHT_CLICK, x=x, y=y),
@@ -2095,19 +2114,15 @@ class ComputerUseAgent:
                 else:
                     if "\n" in app_name:
                         app_name = app_name.split("\n")[0].strip(" *_\n\r\t`\"'")
-                    words = app_name.split()
-                    if words and words[0].lower() in ("the", "a", "an") and len(words) > 1:
-                        app_name = words[1]
-                    elif words:
-                        app_name = words[0]
-                    await self.computer.gui_action(workspace_id, GUIAction(action=GUIActionType.OPEN_APP, app_name=app_name))
+                    app_bin = self._resolve_app_binary(app_name)
+                    await self.computer.gui_action(workspace_id, GUIAction(action=GUIActionType.OPEN_APP, app_name=app_bin))
                     import asyncio as _asyncio
                     await _asyncio.sleep(1.0)
                     screen = await self.computer.screenshot(workspace_id)
                     self._last_screenshot_b64 = getattr(screen, "screenshot_base64", "")
                     self._update_screen_dims(screen)
-                    active_w = getattr(screen, "active_window", "") or app_name
-                    actual_obs_str = f"Launched and focused {app_name} (active window: {active_w})"
+                    active_w = getattr(screen, "active_window", "") or app_bin
+                    actual_obs_str = f"Launched and focused {app_bin} (active window: {active_w})"
 
             elif action_type == ComputerActionType.APP_CLOSE:
                 raw_app = payload.get("app_name") or target_resource
@@ -2119,13 +2134,9 @@ class ComputerUseAgent:
                 else:
                     if "\n" in app_name:
                         app_name = app_name.split("\n")[0].strip(" *_\n\r\t`\"'")
-                    words = app_name.split()
-                    if words and words[0].lower() in ("the", "a", "an") and len(words) > 1:
-                        app_name = words[1]
-                    elif words:
-                        app_name = words[0]
-                    await self.computer.gui_action(workspace_id, GUIAction(action=GUIActionType.CLOSE_APP, app_name=app_name))
-                    actual_obs_str = f"Closed {app_name}"
+                    app_bin = self._resolve_app_binary(app_name)
+                    await self.computer.gui_action(workspace_id, GUIAction(action=GUIActionType.CLOSE_APP, app_name=app_bin))
+                    actual_obs_str = f"Closed {app_bin}"
 
             elif action_type == ComputerActionType.APP_FOCUS:
                 raw_app = payload.get("app_name") or target_resource

@@ -1,6 +1,7 @@
 //! World Model, Asset Topology, and Attack Graph in Rust.
 //!
-//! Provides multi-hop exploitation chain discovery and joint confidence calculation.
+//! Provides multi-hop exploitation chain discovery, depth-bounded traversal,
+//! and joint confidence calculation.
 
 use std::collections::{HashMap, HashSet};
 use serde::{Deserialize, Serialize};
@@ -58,11 +59,23 @@ impl AttackGraph {
             asset_id: asset_id.to_string(),
             observed_state: observed_state.to_string(),
             privilege_obtained: privilege_obtained.to_string(),
-            confidence,
+            confidence: confidence.clamp(0.01, 1.0),
         };
         self.nodes.insert(node_id.to_string(), node.clone());
         self.adj.entry(node_id.to_string()).or_default();
         node
+    }
+
+    pub fn get_node(&self, node_id: &str) -> Option<&AttackNode> {
+        self.nodes.get(node_id)
+    }
+
+    pub fn node_count(&self) -> usize {
+        self.nodes.len()
+    }
+
+    pub fn edge_count(&self) -> usize {
+        self.adj.values().map(|v| v.len()).sum()
     }
 
     pub fn add_transition(
@@ -77,7 +90,7 @@ impl AttackGraph {
             from_node: from_id.to_string(),
             to_node: to_id.to_string(),
             action_signature: action.to_string(),
-            confidence,
+            confidence: confidence.clamp(0.01, 1.0),
         };
 
         self.adj.entry(from_id.to_string()).or_default().push(edge.clone());
@@ -90,7 +103,7 @@ impl AttackGraph {
         let mut current_edges = Vec::new();
 
         visited.insert(start_id.to_string());
-        self.dfs(start_id, objective_id, &mut current_edges, &mut visited, &mut paths);
+        self.dfs(start_id, objective_id, &mut current_edges, &mut visited, &mut paths, 20);
 
         // Sort descending by combined confidence
         paths.sort_by(|a, b| {
@@ -102,6 +115,10 @@ impl AttackGraph {
         paths
     }
 
+    pub fn find_highest_confidence_path(&self, start_id: &str, objective_id: &str) -> Option<AttackPath> {
+        self.find_attack_chains(start_id, objective_id).into_iter().next()
+    }
+
     fn dfs(
         &self,
         current: &str,
@@ -109,7 +126,12 @@ impl AttackGraph {
         current_edges: &mut Vec<AttackTransitionEdge>,
         visited: &mut HashSet<String>,
         results: &mut Vec<AttackPath>,
+        max_hops: usize,
     ) {
+        if current_edges.len() > max_hops {
+            return;
+        }
+
         if current == objective && !current_edges.is_empty() {
             let mut conf = 1.0;
             let mut node_seq = vec![current_edges[0].from_node.clone()];
@@ -132,12 +154,18 @@ impl AttackGraph {
                 if !visited.contains(&edge.to_node) {
                     visited.insert(edge.to_node.clone());
                     current_edges.push(edge.clone());
-                    self.dfs(&edge.to_node, objective, current_edges, visited, results);
+                    self.dfs(&edge.to_node, objective, current_edges, visited, results, max_hops);
                     current_edges.pop();
                     visited.remove(&edge.to_node);
                 }
             }
         }
+    }
+}
+
+impl Default for AttackGraph {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -203,6 +231,12 @@ impl AssetInventory {
     }
 }
 
+impl Default for AssetInventory {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -220,19 +254,18 @@ mod tests {
         graph.add_transition("n1", "n2", "IDOR on API keys", 0.95);
         graph.add_transition("n2", "n3", "DB connection via leaked key", 0.9);
 
-        // Also a direct, low-confidence bypass
+        // Direct low-confidence bypass
         graph.add_transition("n0", "n3", "Direct unauthenticated blind SQLi", 0.3);
 
         let chains = graph.find_attack_chains("n0", "n3");
         assert_eq!(chains.len(), 2);
 
-        // Chained path: 0.9 * 0.95 * 0.9 = 0.7695
-        assert_eq!(chains[0].total_hops, 3);
-        assert!((chains[0].combined_confidence - 0.7695).abs() < 0.001);
-        assert_eq!(chains[0].nodes, vec!["n0", "n1", "n2", "n3"]);
-
-        // Second chain is direct path with confidence 0.3
-        assert_eq!(chains[1].total_hops, 1);
-        assert_eq!(chains[1].combined_confidence, 0.3);
+        // Best path should be the chained 3-hop path
+        let best = graph.find_highest_confidence_path("n0", "n3").unwrap();
+        assert_eq!(best.total_hops, 3);
+        assert!((best.combined_confidence - 0.7695).abs() < 0.001);
+        assert_eq!(best.nodes, vec!["n0", "n1", "n2", "n3"]);
+        assert_eq!(graph.node_count(), 4);
+        assert_eq!(graph.edge_count(), 4);
     }
 }

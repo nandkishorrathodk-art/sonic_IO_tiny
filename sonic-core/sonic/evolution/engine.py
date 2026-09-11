@@ -25,6 +25,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from sonic.evolution.codebase_evolver import CodebaseEvolver, EvolutionSummaryReport
 from sonic.evolution.pipeline import EvolutionPipeline, EvolutionStage, ImprovementProposal
 from sonic.evolution.strategy import (
     DynamicStrategyEngine,
@@ -49,6 +50,7 @@ class EvolutionEngine:
         method_lab: Any | None = None,
         toolsmith: Any | None = None,
         lessons_ledger: Any | None = None,
+        codebase_evolver: CodebaseEvolver | None = None,
     ):
         self.pipeline = pipeline if pipeline is not None else EvolutionPipeline()
         self.strategy_engine = (
@@ -57,6 +59,11 @@ class EvolutionEngine:
         self.method_lab = method_lab
         self.toolsmith = toolsmith
         self.lessons_ledger = lessons_ledger
+        self.codebase_evolver = (
+            codebase_evolver
+            if codebase_evolver is not None
+            else CodebaseEvolver(lessons_ledger=self.lessons_ledger, pipeline=self.pipeline)
+        )
 
     async def handle_target_failure(
         self,
@@ -141,4 +148,32 @@ class EvolutionEngine:
             description=description,
             code_diff=code_diff,
         )
+
+    def evolve_codebase(
+        self,
+        target_component: str,
+        description: str,
+        code_diff: str,
+        auto_promote: bool = True,
+        push: bool = False,
+        test_paths: list[str] | None = None,
+    ) -> EvolutionSummaryReport:
+        """
+        Executes end-to-end continuous codebase self-evolution:
+        1. Enforces safety envelope immutability (blocks modifications to safety kernel).
+        2. Validates AST / syntax pre-flight.
+        3. Staged patch application with zero-corrupt atomic rollback snapshot.
+        4. Runs component unit tests & security regression suite.
+        5. Auto-promotes (git commit + optional git push) without human approval if tests pass 100%.
+        6. Generates and returns a structured EvolutionSummaryReport.
+        """
+        return self.codebase_evolver.evolve(
+            target_component=target_component,
+            description=description,
+            code_diff=code_diff,
+            auto_promote=auto_promote,
+            push=push,
+            test_paths=test_paths,
+        )
+
 

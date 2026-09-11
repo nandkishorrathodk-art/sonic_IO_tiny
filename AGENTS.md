@@ -1907,6 +1907,102 @@ Wired the previously unintegrated and stubbed cognitive architecture components 
 - `test_workstation_desktop_browser_and_news.py` (16 tests) — **PASSED**
 - **Regression Suite Total: 102 passed, 0 failures (100% GREEN).**
 
+## Phase 34 — Elimination of Scripted Puppets, Fake Coordinates & Canned Workflows (DONE)
+Eliminated RPA-style scripted workflows, hardcoded application maps, brittle fake UI coordinates, and web-only checklist assumptions across SONIC's computer use and orchestration engine:
+
+### 1. Strict Perception Grounding & Anti-Puppet Defense
+- **`grounding.py` & `agent.py` (`sonic/computer_use/grounding.py`, `sonic/computer_use/agent.py`)**:
+  - Added `allow_landmarks: bool = True` to `resolve_ui_target()` and `resolve_ui_target_async()`.
+  - In live computer-use execution (`self._last_screenshot_b64 != ""`), `allow_landmarks` is strictly `False`.
+  - The engine never falls back to guessing arbitrary normalized screen percentages from `_COMMON_UI_LANDMARKS` (e.g. `connect wallet`, `submit button`, `cart`, `devtools`).
+  - Unresolvable visual queries return `None` cleanly; `ComputerUseAgent.execute_action()` catches this as `ActionExecutionStatus.BLOCKED` and triggers re-observation/replanning instead of blind-clicking.
+  - Fixed `mid_y` scaling calculation in `extract_bbox_midpoint` for normalized `[0, 1000]` bounding boxes.
+
+### 2. Generic Dynamic Application Resolution & Sandbox Cleanups
+- **`agent.py` (`sonic/computer_use/agent.py`)**:
+  - Deleted `_CANONICAL_APP_MAP` (the hardcoded dictionary mapping application names to binaries).
+  - Implemented 100% dynamic, generic Linux binary sanitization in `_resolve_app_binary()`.
+  - Fixed visual delta verification by recording `pre_screen_b64` before drawing red action crosshair markers.
+  - In command parsing, eliminated hardcoded `-tuln` listening socket flag injection on alternative commands (`which X && X || Y`).
+  - Prevented default payload strings (`"{}"`) from corrupting terminal commands.
+- **`daytona_computer.py` (`sonic/computer/daytona_computer.py`)**:
+  - Removed artificial block on `burpsuite` package installation, standardizing enforcement under the centralized `ApplicationPolicy`.
+
+### 3. Target-Agnostic First-Principles Planning & Decomposition
+- **`boss.py` (`sonic/computer_use/boss.py`)**:
+  - **Upgraded `_strategic_decomposition()`**: Replaced the generic web-biased prompt with a Target-Agnostic First-Principles Prompt featuring explicit target triage (Binary/Pwn, Network, Headless API, Cryptography, Forensics, Web).
+  - Eliminates automatic presumption of web tools (`Chromium`, `Burp Suite`, `ffuf`) when assessing binaries or headless services.
+  - **Upgraded `_fallback_decomposition()`**: Replaced single-worker collapse (5-step budget overload) with a target-aware multi-task fallback pipeline (inspection/triage + execution) and recorded thinking in `self.thinking_log`.
+
+### 4. Comprehensive & Negation-Aware Replan Engine
+- **`boss.py` (`sonic/computer_use/boss.py`)**:
+  - Replaced narrow 10-keyword tuple in `_detect_sub_mission_trigger()` with a comprehensive offensive security taxonomy covering SSRF, IDOR/BOLA, deserialization, prototype pollution, buffer overflow, ROP chains, format strings, crypto padding oracles, and CTF flag patterns (`flag{...}`, `ctf{...}`).
+  - Added regex negation guards (`(?<!not\s)(?<!no\s)(?<!failed to\s)...`) ensuring that negative observations (e.g. *"Target is not vulnerable to SQLi"*, *"Bypass failed"*) do NOT trigger false-positive replan events.
+
+### 5. Verified Test Baseline (100% Green)
+- `test_remediation_puppet_and_control.py` (12 tests) — **PASSED**
+- Visual Grounding Suites (`test_visual_grounding.py`, `test_vision_grounding_speed_and_accuracy.py`, `test_visual_delta_and_grounding_accuracy.py`, `test_motor_reflexes_phase8.py` — 23 tests) — **PASSED**
+- Core Regression Suite (Phases 1 to 7 + AI Human Being + Safety Envelope — 93 tests) — **PASSED (0 failures)**.
+
+## Phase 35 — Native Rust Kernel Solidification & Real IPC Accelerator (DONE)
+Solidified and transitioned `sonic-kernel-rs` from an isolated simulation prototype into a real, high-performance native security and perception engine:
+
+### 1. Robust Typed Error Architecture (`sonic-kernel-rs/src/error.rs`)
+- Created `KernelError` and `KernelResult<T>` replacing silent boolean returns and unhandled panics (`PolicyViolation`, `TamperDetected`, `InvalidStateTransition`, `BudgetExhausted`, `RateLimitExceeded`, `EgressBlocked`, `LockPoisoned`, `SerializationError`).
+
+### 2. Native CIDR Egress Filter & Safety Kernel Hardening (`sonic-kernel-rs/src/safety/mod.rs`)
+- Implemented standard library bitmask CIDR matching (`is_ip_in_cidr`) enforcing RFC-1918 private ranges (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, `127.0.0.0/8`) and AWS/GCP cloud metadata (`169.254.169.254/32`, `metadata.google.internal`) on all `SECURITY_TOOL` and `BROWSER_NAVIGATE` targets.
+- Added in-kernel sliding 60-second rate limiter window enforcing `max_actions_per_minute`.
+- Expanded destructive command protection to catch `dd if=`, `> /dev/sd*`, `chmod -R 777 /`, `reboot`, `shutdown`, `init 0`.
+- Hardened path traversal checks (`..`, `/etc`, `/root`, `/proc`, `/sys`, `/var/run/docker.sock`).
+
+### 3. Zero-Allocation Perception Engine (`sonic-kernel-rs/src/perception/mod.rs`)
+- Replaced per-frame regex compilation with static `std::sync::OnceLock<Regex>` for inputs, buttons, links (`<a>`), forms (`<form>`), textareas, selects, and text.
+- Added CTF flag detection (`flag{...}`, `ctf{...}`) directly in DOM perception yielding immediate `flag_captured` page state.
+
+### 4. Concurrency & Anti-Poison Blackboard (`sonic-kernel-rs/src/kernel/mod.rs`)
+- Migrated `Blackboard` to `RwLock<HashMap<String, String>>` with `.unwrap_or_else(|poisoned| poisoned.into_inner())` poison resilience.
+- Added typed JSON serialize/deserialize helpers (`post_json`, `get_json`).
+- Added numerical stability guards (NaN/infinity clamping) to `InformationGainCostScheduler`.
+
+### 5. Empirical Behavioral Divergence Specialist (`sonic-kernel-rs/src/specialists/mod.rs`)
+- Replaced mock `simulate_probe` with real empirical evaluation (`evaluate_probe`) measuring length deltas, behavioral divergence, and automated secret/flag extraction via regex.
+- Expanded specialist domain coverage: `Pwn`, `Crypto`, `Network`, `Forensics`, `Auth`, `Api`, `Logic`, `Web`.
+
+### 6. JSON-RPC 2.0 Daemon & Python IPC Bridge (`sonic-kernel-rs/src/ipc.rs`, `sonic-core/sonic/kernel/native_bridge.py`)
+- Added `--daemon` / `--json` stdio JSON-RPC interface to `sonic-kernel` (`health`, `authorize`, `fuse_perception`, `compute_custody_hash`, `verify_finding`, `evaluate_probe`).
+- Built Python client `NativeKernelClient` in `sonic-core/sonic/kernel/native_bridge.py` allowing `sonic-core` to invoke the native Rust kernel at sub-millisecond speeds with graceful fallback.
+
+### 7. Verification Baseline (100% Green)
+- `cargo test` in Docker (`sonic-rust-dev:latest`): **26 passed, 0 failed (100% GREEN)**.
+- `sonic-kernel` native execution: All 10 phases + JSON-RPC stdio queries verified.
+- Python test suite: `test_native_kernel_bridge.py` (4 tests) + `test_remediation_puppet_and_control.py` (12 tests) **16 passed in 1.55s**.
+
+## Phase 36 — Continuous Codebase Self-Evolution Engine (`CodebaseEvolver` & CLI Runner) (DONE)
+Empowered SONIC with an autonomous, continuous codebase self-evolution engine capable of patching bugs, upgrading logic, and optimizing non-safety modules with zero-corrupt atomic rollbacks, automated test verification, and auto-promotion (git commit + push) without manual human approval:
+
+### 1. Guarded Codebase Evolver (`sonic-core/sonic/evolution/codebase_evolver.py`)
+- **Safety Envelope Invariant Gate**: Strict fail-closed check against `_PROTECTED_COMPONENTS` (`sonic/safety`, `sonic/kernel/action_broker`, `sonic/safety/sealed`, `sonic/safety/action_policy`, `sonic/sandbox/egress`, `sonic-kernel-rs/src/safety`). Any attempt to tamper with or loosen safety envelopes is immediately rejected with a critical security violation audit log (`EvolutionStage.REJECTED`).
+- **AST & Syntax Pre-Flight**: Pre-parses Python code with `ast.parse()` to catch syntax errors before any file is touched on disk.
+- **Atomic Snapshot & Zero-Corrupt Rollback**: Maintains in-memory snapshots of all touched files; if unit tests or security regression tests fail, files are restored to their exact pre-evolution state and an `[AVOID]` lesson is recorded in `LessonsLedger`.
+- **Automated Verification Pipeline**: Automatically executes component unit tests (`pytest`) and security regression tests (`test_p0_security_hardening.py`, `test_safety_sealed_policy.py`). Requires 100% green exit code to proceed.
+- **Structured Evolution Summary Report**: Generates a rich, tamper-evident Markdown report with proposal ID, target component, diff metrics (+/- lines), AST verification status, test execution results (passed/failed/duration), and git provenance.
+- **Autonomous Promotion & Git Push**: When `auto_promote=True` and tests pass 100%, changes are automatically committed to git (`evo(<id>): <desc>`) and optionally pushed to remote origin without requiring human operator approval.
+
+### 2. Dedicated CLI Runners
+- **Python CLI Runner (`sonic-core/sonic/evolution/cli.py`)**:
+  - `python -m sonic.evolution.cli patch --target <path> --diff <patch> --desc <desc> --auto-promote --push`
+  - `python -m sonic.evolution.cli status`: displays evolver status and list of protected safety components.
+- **SONIC Power CLI Subcommand (`sonic-cli/sonic_cli/commands/evolution.py`)**:
+  - `sonic evolution patch --target <path> --desc <desc> --auto-promote --push`
+
+### 3. Verification Baseline (100% Green)
+- `sonic-core/tests/test_codebase_evolution.py` (5 tests) — **5 passed in 0.69s**.
+- Full evolution suite (`test_codebase_evolution.py` + `test_evolution_strategy_and_engine.py` + `test_phase8_production_kernel_and_evolution.py` — 16 tests) — **16 passed in 2.21s**.
+- Security Regression Suite (`test_safety_sealed_policy.py` + `test_phase_plan6_safety_envelope.py` — 53 tests) — **53 passed in 2.09s**.
+
+
+
 
 
 

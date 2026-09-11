@@ -1,4 +1,6 @@
 //! Hardened Verification Lab and Cryptographic Chain of Custody in Rust.
+//!
+//! Enforces empirical reproduction, behavioral deltas, and cryptographic integrity.
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -10,6 +12,18 @@ impl CustodyChain {
         let mut hasher = Sha256::new();
         hasher.update(data);
         format!("{:x}", hasher.finalize())
+    }
+
+    /// Constant-time comparison of two hexadecimal hashes to prevent timing attacks.
+    pub fn constant_time_eq(a: &str, b: &str) -> bool {
+        if a.len() != b.len() {
+            return false;
+        }
+        let mut result = 0u8;
+        for (byte_a, byte_b) in a.bytes().zip(b.bytes()) {
+            result |= byte_a ^ byte_b;
+        }
+        result == 0
     }
 }
 
@@ -54,17 +68,17 @@ impl VerificationLab {
             );
         }
 
-        // 4. Custody hash validation
+        // 4. Custody hash validation using constant-time check
         let actual_hash = CustodyChain::compute_hash(probe_obs.as_bytes());
-        if actual_hash != expected_custody_hash {
+        if !CustodyChain::constant_time_eq(&actual_hash, expected_custody_hash) {
             rejections.push(format!(
                 "Custody integrity failed: Stored hash '{}' does not match payload content.",
                 expected_custody_hash
             ));
         }
 
-        // 5. Impact assessment
-        if impact_consequence.is_none() || impact_consequence.unwrap().trim().is_empty() {
+        // 5. Impact assessment (safe idiomatic Option handling)
+        if impact_consequence.map_or(true, |c| c.trim().is_empty()) {
             rejections.push("Impact assessment failed: No concrete CIA impact proven.".to_string());
         }
 

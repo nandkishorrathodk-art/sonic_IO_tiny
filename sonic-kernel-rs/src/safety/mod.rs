@@ -1,9 +1,11 @@
 //! Safety Kernel and Sealed Action Policy in Rust.
 //!
 //! Provides compile-time memory safety, tamper-evident SHA-256 seal checking,
-//! scope enforcement, and zero host escape.
+//! scope enforcement, network egress CIDR protection, rate limiting, and zero host escape.
 
 use std::collections::HashSet;
+use std::net::Ipv4Addr;
+use std::time::Instant;
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -29,6 +31,43 @@ impl SafetyAuthorization {
     pub fn is_allowed(&self) -> bool {
         self.verdict == KernelVerdict::Allow
     }
+}
+
+/// Helper: checks if an IPv4 address falls within a given CIDR notation string (e.g. "10.0.0.0/8").
+pub fn is_ip_in_cidr(ip: Ipv4Addr, cidr: &str) -> bool {
+    if let Some((network_str, prefix_len_str)) = cidr.split_once('/') {
+        if let (Ok(net_ip), Ok(prefix_len)) = (
+            network_str.trim().parse::<Ipv4Addr>(),
+            prefix_len_str.trim().parse::<u32>(),
+        ) {
+            if prefix_len <= 32 {
+                let mask = if prefix_len == 0 {
+                    0u32
+                } else {
+                    (!0u32).checked_shl(32 - prefix_len).unwrap_or(0)
+                };
+                let net_u32 = u32::from(net_ip) & mask;
+                let ip_u32 = u32::from(ip) & mask;
+                return net_u32 == ip_u32;
+            }
+        }
+    }
+    false
+}
+
+/// Helper: extracts the bare host/IP from URLs or host:port strings.
+pub fn extract_host_from_target(target: &str) -> String {
+    let s = target.trim();
+    let s = if let Some(stripped) = s.strip_prefix("http://") {
+        stripped
+    } else if let Some(stripped) = s.strip_prefix("https://") {
+        stripped
+    } else {
+        s
+    };
+    let s = s.split('/').next().unwrap_or(s);
+    let s = s.split(':').next().unwrap_or(s);
+    s.trim_matches('[').trim_matches(']').to_lowercase()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -125,9 +164,16 @@ impl SealedPolicy {
             );
         }
 
-        // Path confinement for file operations
+        // 1. Path confinement for file operations
         if action_type == "FILE_READ" || action_type == "FILE_WRITE" {
-            if target.contains("..") || target.starts_with("/etc") || target.starts_with("/root") {
+            let normalized = target.replace('\\', "/");
+            if normalized.contains("..")
+                || normalized.starts_with("/etc")
+                || normalized.starts_with("/root")
+                || normalized.starts_with("/proc")
+                || normalized.starts_with("/sys")
+                || normalized.starts_with("/var/run/docker.sock")
+            {
                 return (
                     KernelVerdict::Deny,
                     format!("Path '{}' escapes workspace root confinement.", target),
@@ -135,13 +181,56 @@ impl SealedPolicy {
             }
         }
 
-        // Destructive command protection
+        // 2. Destructive command protection
         if action_type == "TERMINAL_EXEC" {
-            if target.contains("rm -rf /") || target.contains(":(){ :|:& };:") || target.contains("mkfs") {
+            let lower = target.to_lowercase();
+            if lower.contains("rm -rf /")
+                || lower.contains(":(){ :|:& };:")
+                || lower.contains("mkfs")
+                || lower.contains("dd if=")
+                || lower.contains("> /dev/sd")
+                || lower.contains("chmod -r 777 /")
+                || lower.contains("shutdown")
+                || lower.contains("reboot")
+                || lower.contains("init 0")
+            {
                 return (
                     KernelVerdict::Deny,
                     "Catastrophic/destructive command blocked.".to_string(),
                 );
+            }
+        }
+
+        // 3. Network Egress Filtering (SECURITY_TOOL and BROWSER_NAVIGATE)
+        if action_type == "SECURITY_TOOL" || action_type == "BROWSER_NAVIGATE" {
+            let host = extract_host_from_target(target);
+
+            // Check if explicitly allowlisted
+            if !self.security_tool_targets.contains(&host) && !self.security_tool_targets.contains(target) {
+                // Check localhost & cloud metadata hostnames
+                if host == "localhost"
+                    || host == "127.0.0.1"
+                    || host == "::1"
+                    || host == "metadata.google.internal"
+                    || host == "instance-data"
+                {
+                    return (
+                        KernelVerdict::Deny,
+                        format!("Egress blocked: target host '{}' is restricted loopback or cloud metadata.", host),
+                    );
+                }
+
+                // Check IP against CIDR blocks
+                if let Ok(ip) = host.parse::<Ipv4Addr>() {
+                    for cidr in &self.blocked_networks {
+                        if is_ip_in_cidr(ip, cidr) {
+                            return (
+                                KernelVerdict::Deny,
+                                format!("Egress blocked: target IP '{}' is within restricted CIDR '{}'.", ip, cidr),
+                            );
+                        }
+                    }
+                }
             }
         }
 
@@ -154,6 +243,7 @@ pub struct SafetyKernel {
     pub enforce_isolated_sandbox: bool,
     pub tenant_id: String,
     audit_log: Vec<SafetyAuthorization>,
+    action_timestamps: Vec<Instant>,
 }
 
 impl SafetyKernel {
@@ -163,6 +253,7 @@ impl SafetyKernel {
             enforce_isolated_sandbox: enforce_sandbox,
             tenant_id: tenant_id.to_string(),
             audit_log: Vec::new(),
+            action_timestamps: Vec::new(),
         }
     }
 
@@ -189,8 +280,31 @@ impl SafetyKernel {
             return auth;
         }
 
-        // 2. Policy Evaluation
+        // 2. Sliding Window Rate Limiting (60-second window)
+        self.action_timestamps.retain(|t| t.elapsed().as_secs() < 60);
+        if self.action_timestamps.len() as u32 >= self.policy.max_actions_per_minute {
+            let auth = SafetyAuthorization {
+                verdict: KernelVerdict::Deny,
+                reason: format!(
+                    "Rate limit exceeded: {} actions recorded in the last 60s (max {}).",
+                    self.action_timestamps.len(),
+                    self.policy.max_actions_per_minute
+                ),
+                action_type: action_type.to_string(),
+                timestamp: now_ts,
+                seal_intact: self.policy.verify_seal(),
+                audit_id,
+            };
+            self.audit_log.push(auth.clone());
+            return auth;
+        }
+
+        // 3. Policy Evaluation
         let (verdict, reason) = self.policy.evaluate(action_type, target);
+        if verdict == KernelVerdict::Allow {
+            self.action_timestamps.push(Instant::now());
+        }
+
         let auth = SafetyAuthorization {
             verdict,
             reason,
@@ -247,5 +361,50 @@ mod tests {
         let auth = kernel.authorize("FILE_READ", "/etc/shadow", true);
         assert_eq!(auth.verdict, KernelVerdict::Deny);
         assert!(auth.reason.contains("escapes workspace root"));
+
+        let auth_traversal = kernel.authorize("FILE_READ", "../../../etc/passwd", true);
+        assert_eq!(auth_traversal.verdict, KernelVerdict::Deny);
+    }
+
+    #[test]
+    fn test_network_egress_cidr_blocked() {
+        let mut kernel = SafetyKernel::new("tenant-a", "/home/sonic/workspace", true);
+
+        // RFC-1918 Private ranges & AWS/GCP metadata blocked
+        let blocked_targets = vec![
+            "http://127.0.0.1:8080/admin",
+            "http://localhost:3000",
+            "http://10.0.0.5:8000/api",
+            "http://172.16.1.100/debug",
+            "http://192.168.1.1/setup",
+            "http://169.254.169.254/latest/meta-data",
+            "http://metadata.google.internal/computeMetadata/v1",
+        ];
+
+        for t in blocked_targets {
+            let auth = kernel.authorize("SECURITY_TOOL", t, true);
+            assert_eq!(auth.verdict, KernelVerdict::Deny, "Target '{}' should be blocked", t);
+            assert!(auth.reason.contains("Egress blocked"), "Reason should mention egress: {}", auth.reason);
+        }
+
+        // Public authorized target allowed
+        let public_auth = kernel.authorize("SECURITY_TOOL", "https://authorized-ctf.example.com/api", true);
+        assert_eq!(public_auth.verdict, KernelVerdict::Allow);
+    }
+
+    #[test]
+    fn test_rate_limiter_exceeded() {
+        let mut kernel = SafetyKernel::new("tenant-a", "/home/sonic/workspace", true);
+        kernel.policy.max_actions_per_minute = 3;
+        kernel.policy.seal(); // Reseal after modifying rate limit
+
+        assert_eq!(kernel.authorize("TERMINAL_EXEC", "ls", true).verdict, KernelVerdict::Allow);
+        assert_eq!(kernel.authorize("TERMINAL_EXEC", "whoami", true).verdict, KernelVerdict::Allow);
+        assert_eq!(kernel.authorize("TERMINAL_EXEC", "pwd", true).verdict, KernelVerdict::Allow);
+
+        // 4th action exceeds rate limit of 3
+        let blocked = kernel.authorize("TERMINAL_EXEC", "date", true);
+        assert_eq!(blocked.verdict, KernelVerdict::Deny);
+        assert!(blocked.reason.contains("Rate limit exceeded"));
     }
 }

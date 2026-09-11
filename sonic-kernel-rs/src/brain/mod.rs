@@ -4,7 +4,7 @@
 //! The Research Brain has ZERO tool execution handles. It only consumes
 //! the World Model state and emits an ExperimentPlan.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -13,6 +13,7 @@ pub enum HypothesisStatus {
     Active,
     Confirmed,
     Falsified,
+    Disputed,
     Expired,
 }
 
@@ -47,10 +48,10 @@ impl Hypothesis {
     pub fn update_confidence(&mut self, delta: f32, evidence: &str, is_supporting: bool) {
         if is_supporting {
             self.supporting_evidence.push(evidence.to_string());
-            self.confidence = (self.confidence + delta).min(0.99);
+            self.confidence = (self.confidence + delta).clamp(0.01, 0.99);
         } else {
             self.contradicting_evidence.push(evidence.to_string());
-            self.confidence = (self.confidence - delta).max(0.01);
+            self.confidence = (self.confidence - delta).clamp(0.01, 0.99);
         }
 
         let total = self.supporting_evidence.len() + self.contradicting_evidence.len();
@@ -60,6 +61,8 @@ impl Hypothesis {
             self.status = HypothesisStatus::Confirmed;
         } else if self.confidence <= 0.15 {
             self.status = HypothesisStatus::Falsified;
+        } else if self.status == HypothesisStatus::Confirmed && self.confidence < 0.70 {
+            self.status = HypothesisStatus::Disputed;
         }
     }
 }
@@ -170,6 +173,12 @@ impl HypothesisEngine {
     }
 }
 
+impl Default for HypothesisEngine {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Experiment {
     pub experiment_id: String,
@@ -203,8 +212,6 @@ pub struct DecisionEngine {
     failures: HashMap<String, u32>,
     dead_ends: HashSet<String>,
 }
-
-use std::collections::HashSet;
 
 impl DecisionEngine {
     pub fn new(threshold: u32) -> Self {
@@ -278,10 +285,19 @@ impl ResearchBrain {
 
         let ranked = hypothesis_engine.rank_by_value();
         if let Some(top) = ranked.first() {
-            let spec = if top.vulnerability_class.contains("auth") || top.vulnerability_class.contains("idor") {
+            let c_lower = top.vulnerability_class.to_lowercase();
+            let spec = if c_lower.contains("pwn") || c_lower.contains("binary") || c_lower.contains("buffer") || c_lower.contains("rop") {
+                "pwn"
+            } else if c_lower.contains("crypto") || c_lower.contains("cipher") || c_lower.contains("hash") {
+                "crypto"
+            } else if c_lower.contains("network") || c_lower.contains("port") || c_lower.contains("sniff") {
+                "network"
+            } else if c_lower.contains("auth") || c_lower.contains("idor") || c_lower.contains("jwt") || c_lower.contains("session") {
                 "auth"
-            } else if top.vulnerability_class.contains("api") {
+            } else if c_lower.contains("api") || c_lower.contains("graphql") || c_lower.contains("rest") {
                 "api"
+            } else if c_lower.contains("forensic") || c_lower.contains("stego") {
+                "forensics"
             } else {
                 "web"
             };
@@ -362,5 +378,15 @@ mod tests {
         assert!(!plan.goal_satisfied);
         assert!(plan.experiment.is_some());
         assert_eq!(plan.specialist_type, "auth");
+    }
+
+    #[test]
+    fn test_pwn_specialist_dispatch() {
+        let brain = ResearchBrain::new("t1");
+        let mut engine = HypothesisEngine::new();
+        engine.create_hypothesis_pair("Stack buffer overflow in parse_header", None, "BinaryPwn", "/bin/target", 5.0);
+
+        let plan = brain.plan_next_step(&engine, false, 0);
+        assert_eq!(plan.specialist_type, "pwn");
     }
 }

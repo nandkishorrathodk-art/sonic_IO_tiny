@@ -57,7 +57,8 @@ def extract_bbox_midpoint(
                 else:
                     mid_x = int((x1 + x2) / 2.0)
                     mid_y = int((y1 + y2) / 2.0)
-                return min(max(0, mid_x), width), min(max(0, mid_y), height)
+                mid_pt = (min(max(0, mid_x), width), min(max(0, mid_y), height))
+                return None if mid_pt == (0, 0) else mid_pt
             elif len(bbox_response) >= 2:
                 x, y = float(bbox_response[0]), float(bbox_response[1])
                 if max(x, y) <= 1.0:
@@ -68,7 +69,8 @@ def extract_bbox_midpoint(
                     py = int((y / 1000.0) * height)
                 else:
                     px, py = int(x), int(y)
-                return min(max(0, px), width), min(max(0, py), height)
+                pt = (min(max(0, px), width), min(max(0, py), height))
+                return None if pt == (0, 0) else pt
         except (ValueError, TypeError):
             pass
 
@@ -94,7 +96,8 @@ def extract_bbox_midpoint(
         else:
             mid_x = int((x1 + x2) / 2.0)
             mid_y = int((y1 + y2) / 2.0)
-        return min(max(0, mid_x), width), min(max(0, mid_y), height)
+        mid_pt = (min(max(0, mid_x), width), min(max(0, mid_y), height))
+        return None if mid_pt == (0, 0) else mid_pt
 
     elif len(numbers) >= 2:
         x, y = numbers[0], numbers[1]
@@ -107,7 +110,8 @@ def extract_bbox_midpoint(
         else:
             px = int(x)
             py = int(y)
-        return min(max(0, px), width), min(max(0, py), height)
+        pt = (min(max(0, px), width), min(max(0, py), height))
+        return None if pt == (0, 0) else pt
 
     return None
 
@@ -308,13 +312,16 @@ def resolve_ui_target(
     width: int = 1280,
     height: int = 800,
     grounding_fn: Optional[Any] = None,
+    allow_landmarks: bool = True,
 ) -> Optional[Tuple[int, int]]:
     """Resolves a natural language UI target query to absolute screen coordinates (x, y).
 
     Resolution pipeline:
     1. Direct numeric coordinate check (if query is already "640,400").
     2. Dynamic Multimodal Grounding Function (vision LLM / ShowUI / OS-Atlas) if provided.
-    3. Heuristic / Semantic Landmark Dictionary for standard workstation desktop elements.
+    3. Heuristic / Semantic Landmark Dictionary (only if allow_landmarks=True).
+       When operating with live perception, allow_landmarks=False prevents blind clicks
+       on arbitrary mock percentages when visual resolution fails.
     """
     if not query:
         return None
@@ -340,7 +347,10 @@ def resolve_ui_target(
         except Exception as exc:
             logger.warning("grounding_fn_resolution_failed", query=query, error=str(exc))
 
-    # 3. Landmark & Semantic Matching (Exact first, then whole-word boundary)
+    # 3. Landmark & Semantic Matching (Strictly gated by allow_landmarks)
+    if not allow_landmarks:
+        return None
+
     for key, (norm_x, norm_y) in _COMMON_UI_LANDMARKS.items():
         if key == clean_query:
             return int(norm_x * width), int(norm_y * height)
@@ -359,6 +369,7 @@ async def resolve_ui_target_async(
     width: int = 1280,
     height: int = 800,
     grounding_fn: Optional[Any] = None,
+    allow_landmarks: bool = True,
 ) -> Optional[Tuple[int, int]]:
     """Asynchronous variant of resolve_ui_target supporting coroutine grounding functions."""
     if not query:
@@ -390,7 +401,10 @@ async def resolve_ui_target_async(
         except Exception as exc:
             logger.warning("grounding_fn_async_resolution_failed", query=query, error=str(exc))
 
-    # 3. Landmark & Semantic Matching (Exact first, then whole-word boundary)
+    # 3. Landmark & Semantic Matching (Strictly gated by allow_landmarks)
+    if not allow_landmarks:
+        return None
+
     for key, (norm_x, norm_y) in _COMMON_UI_LANDMARKS.items():
         if key == clean_query:
             return int(norm_x * width), int(norm_y * height)

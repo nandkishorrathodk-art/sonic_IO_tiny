@@ -306,3 +306,63 @@ def evolution_history(
                     f"{e.get('candidate_score', 0):.2f}",
                 )
             console.print(table)
+
+
+@app.command(name="patch")
+def evolution_patch(
+    target: str = typer.Option(..., "--target", help="Target component file relative to repo root"),
+    desc: str = typer.Option(..., "--desc", help="Description of upgrade, bugfix, or enhancement"),
+    diff_file: str = typer.Option(None, "--diff-file", help="Path to patch or replacement code file"),
+    diff: str = typer.Option(None, "--diff", help="Raw diff or code string"),
+    auto_promote: bool = typer.Option(True, "--auto-promote/--no-auto-promote", help="Auto-commit on test pass"),
+    push: bool = typer.Option(False, "--push", help="Git push to origin on promotion"),
+    summary_out: str = typer.Option(None, "--summary-out", help="Path to save markdown summary"),
+):
+    """🧬 Apply a codebase self-evolution patch with automated testing, auto-commit, and git push."""
+    from pathlib import Path
+    try:
+        from sonic.evolution.codebase_evolver import CodebaseEvolver, EvolutionSummaryReport
+    except ImportError:
+        console.print("[red]sonic-core package not found in current environment.[/red]")
+        raise typer.Exit(code=1)
+
+    diff_content = ""
+    if diff_file:
+        p = Path(diff_file)
+        if not p.exists():
+            console.print(f"[red]Diff file not found: {diff_file}[/red]")
+            raise typer.Exit(code=1)
+        diff_content = p.read_text(encoding="utf-8", errors="replace")
+    elif diff:
+        diff_content = diff
+    else:
+        console.print("[red]Error: Must specify either --diff-file or --diff[/red]")
+        raise typer.Exit(code=1)
+
+    console.print(Panel(
+        f"[bold cyan]🧬 SONIC CODEBASE SELF-EVOLUTION RUNNER[/bold cyan]\n"
+        f"[bold]Target:[/bold] {target}\n"
+        f"[bold]Description:[/bold] {desc}\n"
+        f"[bold]Auto-Promote:[/bold] {auto_promote}\n"
+        f"[bold]Git Push:[/bold] {push}",
+        border_style="cyan"
+    ))
+
+    evolver = CodebaseEvolver()
+    report: EvolutionSummaryReport = evolver.evolve(
+        target_component=target,
+        description=desc,
+        code_diff=diff_content,
+        auto_promote=auto_promote,
+        push=push,
+    )
+
+    md = report.to_markdown()
+    console.print(md)
+
+    if summary_out:
+        out_p = Path(summary_out)
+        out_p.parent.mkdir(parents=True, exist_ok=True)
+        out_p.write_text(md, encoding="utf-8")
+        console.print(f"[green]Summary saved to {summary_out}[/green]")
+

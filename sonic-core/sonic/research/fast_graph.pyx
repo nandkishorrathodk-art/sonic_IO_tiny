@@ -176,3 +176,16 @@ cdef class FastAttackGraphCython:
         paths.sort(key=lambda p: (p.total_hops, -p.compound_confidence))
         return paths
 
+
+FastAttackGraph = FastAttackGraphCython
+
+
+def fast_shortest_path(object graph, str start_id, str target_id):
+    cdef FastAttackGraphCython fast = FastAttackGraphCython(graph)
+    return fast.shortest_path(start_id, target_id)
+
+
+def fast_find_all_paths(object graph, str start_id, str target_id):
+    cdef FastAttackGraphCython fast = FastAttackGraphCython(graph)
+    return fast.find_all_paths(start_id, target_id)
+

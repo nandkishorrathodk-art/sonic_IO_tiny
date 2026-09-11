@@ -4,12 +4,24 @@
 
 use sonic_kernel::{
     AssetInventory, AttackGraph, Blackboard, CustodyChain, EpisodicMemory, EvolutionPipeline,
-    HypothesisEngine, InformationGainCostScheduler, KernelVerdict, LessonType, LessonsLedger,
-    MissionBudget, MissionKernel, MissionState, PerceptionFusion, ResearchBrain, SafetyKernel,
-    SpecialistType, SpecialistWorker, VerificationLab,
+    HypothesisEngine, InformationGainCostScheduler, IpcServer, KernelVerdict, LessonType,
+    LessonsLedger, MissionBudget, MissionKernel, MissionState, PerceptionFusion, ResearchBrain,
+    SafetyKernel, SpecialistType, SpecialistWorker, VerificationLab,
 };
 
 fn main() {
+    let args: Vec<String> = std::env::args().collect();
+    if args.iter().any(|a| a == "--daemon" || a == "--json") {
+        let tenant = std::env::var("SONIC_TENANT_ID").unwrap_or_else(|_| "tenant-default".to_string());
+        let workspace = std::env::var("SONIC_WORKSPACE_ROOT").unwrap_or_else(|_| "/home/sonic/workspace".to_string());
+        let mut server = IpcServer::new(&tenant, &workspace);
+        if let Err(e) = server.run_stdio_loop() {
+            eprintln!("JSON-RPC daemon error: {}", e);
+            std::process::exit(1);
+        }
+        return;
+    }
+
     println!("================================================================================");
     println!("  SONIC v2 — AI Human Pentester (Native Rust Research Kernel)                   ");
     println!("================================================================================");
@@ -34,6 +46,11 @@ fn main() {
     let sandbox_probe = safety.authorize("TERMINAL_EXEC", "nmap -sV -p 80,443 target", true);
     println!("    [Safety Gate Test] Sandbox execution: Verdict={:?}", sandbox_probe.verdict);
     assert_eq!(sandbox_probe.verdict, KernelVerdict::Allow);
+
+    // Test CIDR egress protection
+    let metadata_probe = safety.authorize("SECURITY_TOOL", "http://169.254.169.254/latest/meta-data", true);
+    println!("    [Safety Gate Test] Cloud metadata egress: Verdict={:?}, Reason={}", metadata_probe.verdict, metadata_probe.reason);
+    assert_eq!(metadata_probe.verdict, KernelVerdict::Deny);
 
     // 2. Initialize World Model & Attack Graph
     println!("\n[2] Initializing World Model & Attack Graph...");
@@ -96,7 +113,7 @@ fn main() {
     println!("    Generated Counter-Hypothesis : Mandatory Falsification Anchor Active");
 
     // 5. Brain Reasoning Cycle (Decoupled Epistemic Planning)
-    mission.transition_to(MissionState::Planning);
+    let _ = mission.transition_checked(MissionState::Planning);
     println!("\n[5] Brain Reasoning Cycle (Zero Tool Handles)...");
     let plan = brain.plan_next_step(&hyp_engine, false, mission.findings_count);
     println!("    Generated Plan ID    : {}", plan.plan_id);
@@ -111,6 +128,7 @@ fn main() {
             <body>
                 <input name="user_id" value="1042" />
                 <button>Update Profile</button>
+                <a href="/logout">Sign Out</a>
             </body>
         </html>
     "#;
@@ -172,14 +190,18 @@ fn main() {
 
     // 8.5. Subordinated Specialist & 4-Tier Memory
     println!("\n[8.5] Subordinated Specialist Execution & Procedural Lessons...");
-    let spec_result = SpecialistWorker::simulate_probe(
+    let spec_result = SpecialistWorker::evaluate_probe(
         SpecialistType::Auth,
         "exp-idor-001",
         &h1,
         baseline_obs,
         probe_obs,
     );
-    println!("    Specialist Probe     : Status={}, Divergence Detected={}", spec_result.status, spec_result.behavioral_difference_detected);
+    println!("    Specialist Probe     : Status={}, Divergence Detected={}, Flag/Secret={}",
+        spec_result.status,
+        spec_result.behavioral_difference_detected,
+        spec_result.secret_or_flag_detected
+    );
 
     let mut episodic = EpisodicMemory::new();
     episodic.record("SECURITY_TOOL", "/api/v1/users/profile", probe_obs, true);
@@ -207,9 +229,9 @@ fn main() {
     assert!(!evil_accepted);
 
     // 10. Finalize Mission
-    mission.transition_to(MissionState::Verifying);
-    mission.transition_to(MissionState::Reporting);
-    mission.transition_to(MissionState::Completed);
+    let _ = mission.transition_checked(MissionState::Verifying);
+    let _ = mission.transition_checked(MissionState::Reporting);
+    let _ = mission.transition_checked(MissionState::Completed);
     println!("\n[10] Mission Successfully Completed!");
     println!("     Final State: {:?}", mission.state);
     println!("     Verified Findings Count: {}", mission.findings_count);

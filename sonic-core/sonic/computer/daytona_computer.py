@@ -1179,10 +1179,6 @@ class DaytonaComputerProvider(ComputerProvider):
         allowed, reason = self.app_policy.is_package_allowed(package_name)
         if not allowed:
             return False, reason
-        pkg = package_name.strip().lower()
-        if pkg in ("burpsuite", "burp"):
-            return False, "Burp Suite installation is disabled; the workstation is an Application Desktop."
-
         safe_package = shlex.quote(package_name.strip())
         res = await self.terminal(workspace_id, f"sudo apt-get update && sudo apt-get install -y -- {safe_package}", actor=actor)
         return (res.exit_code == 0, res.stdout or res.stderr)

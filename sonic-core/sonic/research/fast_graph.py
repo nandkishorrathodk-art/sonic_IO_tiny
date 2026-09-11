@@ -121,9 +121,14 @@ class FastAttackGraph:
                 compound_confidence=1.0,
             )
 
+        n: cython.int = self.n_nodes
+        visited: list[bool] = [False] * n
+        parent_u: list[int] = [-1] * n
+        parent_edge: list[Any] = [None] * n
+        parent_conf: list[float] = [0.0] * n
+
+        visited[s] = True
         queue: list[int] = [s]
-        parent: dict[int, tuple[int, AttackEdge, float]] = {}
-        visited: set[int] = {s}
         head: cython.int = 0
         found: bool = False
         adj = self.adj
@@ -137,9 +142,11 @@ class FastAttackGraph:
                 break
 
             for v, edge, conf in adj[u]:
-                if v not in visited:
-                    visited.add(v)
-                    parent[v] = (u, edge, conf)
+                if not visited[v]:
+                    visited[v] = True
+                    parent_u[v] = u
+                    parent_edge[v] = edge
+                    parent_conf[v] = conf
                     queue.append(v)
 
         if not found:
@@ -152,10 +159,10 @@ class FastAttackGraph:
         compound_conf: cython.float = 1.0
 
         while curr != s:
-            p_u, e, c = parent[curr]
-            rev_edges.append(e)
+            p_u = parent_u[curr]
+            rev_edges.append(parent_edge[curr])
             rev_nodes.append(self.node_list[curr])
-            compound_conf *= c
+            compound_conf *= parent_conf[curr]
             curr = p_u
 
         rev_edges.reverse()

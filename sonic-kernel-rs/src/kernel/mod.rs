@@ -1,10 +1,12 @@
 //! Central Kernel, Mission Lifecycle FSM, 5D Budget Engine, Scheduler, and Event Bus in Rust.
 
 use std::collections::{BinaryHeap, HashMap};
-use std::sync::Mutex;
+use std::sync::RwLock;
 use std::time::Instant;
-use serde::{Deserialize, Serialize};
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use uuid::Uuid;
+
+use crate::error::{KernelError, KernelResult};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum MissionState {
@@ -72,6 +74,10 @@ impl BudgetTracker {
         self.experiments_consumed += count;
     }
 
+    pub fn consume_tokens(&mut self, tokens: u64) {
+        self.tokens_consumed += tokens;
+    }
+
     pub fn is_exhausted(&self) -> (bool, String) {
         let elapsed = self.start_time.elapsed().as_secs_f32();
         if elapsed >= self.budget.time_limit_seconds {
@@ -128,8 +134,7 @@ impl MissionKernel {
         false
     }
 
-    pub fn transition_to(&mut self, next: MissionState) -> bool {
-        // Strict FSM state transition validation
+    pub fn transition_checked(&mut self, next: MissionState) -> KernelResult<()> {
         let valid = match (self.state, next) {
             (MissionState::Created, MissionState::Scoped | MissionState::Blocked | MissionState::Cancelled) => true,
             (MissionState::Scoped, MissionState::Planning | MissionState::Blocked | MissionState::Cancelled) => true,
@@ -144,10 +149,17 @@ impl MissionKernel {
 
         if valid {
             self.state = next;
-            true
+            Ok(())
         } else {
-            false
+            Err(KernelError::InvalidStateTransition {
+                current: format!("{:?}", self.state),
+                attempted: format!("{:?}", next),
+            })
         }
+    }
+
+    pub fn transition_to(&mut self, next: MissionState) -> bool {
+        self.transition_checked(next).is_ok()
     }
 
     pub fn check_budget(&mut self) -> bool {
@@ -155,9 +167,9 @@ impl MissionKernel {
         if exhausted {
             if self.state == MissionState::Researching || self.state == MissionState::Planning {
                 if self.findings_count > 0 {
-                    self.transition_to(MissionState::Verifying);
+                    let _ = self.transition_to(MissionState::Verifying);
                 } else {
-                    self.transition_to(MissionState::Completed);
+                    let _ = self.transition_to(MissionState::Completed);
                 }
             }
             return false;
@@ -213,8 +225,16 @@ impl InformationGainCostScheduler {
         risk: f32,
     ) -> String {
         let tid = format!("task-{}", &Uuid::new_v4().to_string()[..8]);
-        let denominator = (cost * time * risk).max(0.01);
-        let score = (info_gain * impact * confidence) / denominator;
+        let safe_cost = cost.max(0.01);
+        let safe_time = time.max(0.01);
+        let safe_risk = risk.max(0.01);
+        let denominator = (safe_cost * safe_time * safe_risk).max(0.001);
+        let raw_score = (info_gain.max(0.0) * impact.max(0.0) * confidence.max(0.0)) / denominator;
+        let score = if raw_score.is_nan() || raw_score.is_infinite() {
+            0.0
+        } else {
+            raw_score
+        };
 
         self.queue.push(ScheduledTask {
             task_id: tid.clone(),
@@ -224,6 +244,18 @@ impl InformationGainCostScheduler {
         });
 
         tid
+    }
+
+    pub fn peek_next(&self) -> Option<&ScheduledTask> {
+        self.queue.peek()
+    }
+
+    pub fn len(&self) -> usize {
+        self.queue.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.queue.is_empty()
     }
 
     pub fn pop_next(&mut self) -> Option<ScheduledTask> {
@@ -243,31 +275,65 @@ impl InformationGainCostScheduler {
             self.active_count -= 1;
         }
     }
+
+    pub fn clear(&mut self) {
+        self.queue.clear();
+        self.active_count = 0;
+    }
 }
 
 pub struct Blackboard {
-    entries: Mutex<HashMap<String, String>>,
+    entries: RwLock<HashMap<String, String>>,
 }
 
 impl Blackboard {
     pub fn new() -> Self {
         Self {
-            entries: Mutex::new(HashMap::new()),
+            entries: RwLock::new(HashMap::new()),
         }
     }
 
     pub fn post(&self, key: &str, value: &str) {
-        if let Ok(mut lock) = self.entries.lock() {
-            lock.insert(key.to_string(), value.to_string());
-        }
+        let mut lock = self.entries.write().unwrap_or_else(|poisoned| poisoned.into_inner());
+        lock.insert(key.to_string(), value.to_string());
+    }
+
+    pub fn post_json<T: Serialize>(&self, key: &str, value: &T) -> KernelResult<()> {
+        let serialized = serde_json::to_string(value)
+            .map_err(|e| KernelError::SerializationError(e.to_string()))?;
+        self.post(key, &serialized);
+        Ok(())
     }
 
     pub fn get(&self, key: &str) -> Option<String> {
-        if let Ok(lock) = self.entries.lock() {
-            lock.get(key).cloned()
-        } else {
-            None
-        }
+        let lock = self.entries.read().unwrap_or_else(|poisoned| poisoned.into_inner());
+        lock.get(key).cloned()
+    }
+
+    pub fn get_json<T: DeserializeOwned>(&self, key: &str) -> Option<T> {
+        let raw = self.get(key)?;
+        serde_json::from_str(&raw).ok()
+    }
+
+    pub fn contains(&self, key: &str) -> bool {
+        let lock = self.entries.read().unwrap_or_else(|poisoned| poisoned.into_inner());
+        lock.contains_key(key)
+    }
+
+    pub fn remove(&self, key: &str) -> Option<String> {
+        let mut lock = self.entries.write().unwrap_or_else(|poisoned| poisoned.into_inner());
+        lock.remove(key)
+    }
+
+    pub fn count(&self) -> usize {
+        let lock = self.entries.read().unwrap_or_else(|poisoned| poisoned.into_inner());
+        lock.len()
+    }
+}
+
+impl Default for Blackboard {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -303,6 +369,19 @@ mod tests {
     }
 
     #[test]
+    fn test_transition_checked_error_reporting() {
+        let mut kernel = MissionKernel::new("https://target.local", "Audit", "t1", None);
+        let res = kernel.transition_checked(MissionState::Reporting);
+        assert!(res.is_err());
+        if let Err(KernelError::InvalidStateTransition { current, attempted }) = res {
+            assert_eq!(current, "Created");
+            assert_eq!(attempted, "Reporting");
+        } else {
+            panic!("Expected InvalidStateTransition error");
+        }
+    }
+
+    #[test]
     fn test_priority_scheduler_ordering() {
         let mut scheduler = InformationGainCostScheduler::new(2);
 
@@ -311,15 +390,33 @@ mod tests {
         // High value: info_gain=5, cost=1
         let high_id = scheduler.enqueue("IDOR probe", "auth", 5.0, 4.0, 3.0, 1.0, 1.0, 1.0);
 
+        assert_eq!(scheduler.len(), 2);
+        assert_eq!(scheduler.peek_next().unwrap().task_id, high_id);
+
         let first = scheduler.pop_next().unwrap();
         assert_eq!(first.task_id, high_id);
     }
 
     #[test]
-    fn test_blackboard_coordination() {
+    fn test_blackboard_typed_json_and_concurrency() {
         let bb = Blackboard::new();
         bb.post("token", "secret123");
         assert_eq!(bb.get("token").unwrap(), "secret123");
-        assert!(bb.get("nonexistent").is_none());
+        assert!(bb.contains("token"));
+
+        #[derive(Serialize, Deserialize, PartialEq, Debug)]
+        struct Finding {
+            id: String,
+            severity: String,
+        }
+
+        let f = Finding {
+            id: "f-01".to_string(),
+            severity: "critical".to_string(),
+        };
+
+        bb.post_json("finding_1", &f).unwrap();
+        let loaded: Option<Finding> = bb.get_json("finding_1");
+        assert_eq!(loaded, Some(f));
     }
 }

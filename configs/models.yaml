@@ -174,7 +174,7 @@ routing_rules:
   reasoning:
     description: 'Code analysis, dataflow tracing, pattern matching'
     provider: nvidia
-    model: meta/llama-3.2-11b-vision-instruct
+    model: moonshotai/kimi-k3
     fallback: [nvidia/openai/gpt-oss-20b, groq/llama-3.3-70b-versatile, openrouter/deepseek/deepseek-r1, claude/claude-3-5-sonnet-20241022]
 
   fast_recon:
@@ -210,13 +210,13 @@ routing_rules:
   vision:
     description: 'Multimodal vision, desktop screenshot parsing, visual UI grounding'
     provider: nvidia
-    model: meta/llama-3.2-11b-vision-instruct
+    model: moonshotai/kimi-k3
     fallback: [openrouter/openai/gpt-4o, claude/claude-3-5-sonnet-20241022]
 
   computer_use:
     description: 'Autonomous computer vision and desktop interaction'
     provider: nvidia
-    model: meta/llama-3.2-11b-vision-instruct
+    model: moonshotai/kimi-k3
     fallback: [nvidia/openai/gpt-oss-20b, openrouter/openai/gpt-4o, claude/claude-3-5-sonnet-20241022]
 
 # ---- Global Fallback Chain ----

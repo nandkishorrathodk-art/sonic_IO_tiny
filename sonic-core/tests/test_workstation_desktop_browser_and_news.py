@@ -140,3 +140,79 @@ def test_workstation_desktop_gui_action_open_app_policy(client, auth_headers):
     assert res_forbidden.status_code == 403
     assert "blocked by security policy" in res_forbidden.json()["detail"].lower()
 
+
+def test_is_action_prompt_conversational_greetings():
+    """Proves conversational greetings and questions are NOT routed to visual ComputerUseAgent."""
+    conversational_inputs = [
+        "hi sonic",
+        "hi sonic ?",
+        "hello sonic",
+        "hey sonic",
+        "who are you",
+        "what can you do",
+        "status",
+        "kya kar rahe ho",
+        "kaun ho tum",
+        "who are you?",
+        "what can you do?",
+        "status?",
+    ]
+    for prompt in conversational_inputs:
+        assert _is_action_prompt(prompt) is False, f"Expected '{prompt}' to be False"
+
+
+def test_list_workstation_sessions_ignores_non_dict(client, auth_headers):
+    """Proves list_workstation_sessions safely skips non-dict keys in _tenant_workstations without 500 crash."""
+    from sonic.api.routes.workstation import _tenant_workstations
+
+    email = "engineer@company.com"
+    if email not in _tenant_workstations:
+        _tenant_workstations[email] = {}
+    
+    # Inject non-dict keys that previously caused AttributeError: 'str' object has no attribute 'get'
+    _tenant_workstations[email]["tenant_id"] = "tenant-alpha"
+    _tenant_workstations[email]["workspace_type"] = "daytona_cloud"
+
+    res = client.get("/workstation/sessions", headers=auth_headers)
+    assert res.status_code == 200
+    data = res.json()
+    assert isinstance(data, list)
+    # Ensure none of the returned entries are the string keys
+    returned_sids = [s["session_id"] for s in data]
+    assert "tenant_id" not in returned_sids
+    assert "workspace_type" not in returned_sids
+
+
+def test_workstation_prompt_eliminates_puppet_queued_status(client, auth_headers):
+    """Proves prompt submission sets dynamic Thinking status instead of puppet 'Reasoning queued'."""
+    res = client.post(
+        "/workstation/prompt",
+        headers=auth_headers,
+        json={"prompt": "check open ports and running services", "session_id": "test-puppet-check"},
+    )
+    assert res.status_code == 200
+    data = res.json()
+    state = data.get("state", {})
+    action = state.get("current_action", "")
+    assert "Reasoning queued" not in action
+    assert action.startswith("Thinking: check open ports")
+    assert data.get("reasoning") != "queued"
+
+
+def test_grounded_conversational_responses():
+    """Proves _generate_grounded_workstation_response generates informative content for questions/greetings."""
+    from sonic.api.routes.workstation import _generate_grounded_workstation_response
+
+    state = {"status": "IDLE", "current_action": "Ready when you are."}
+    who_res = _generate_grounded_workstation_response("who are you", "s1", state, "", "context")
+    assert "SONIC" in who_res
+    assert "Penetration Architect" in who_res
+
+    what_res = _generate_grounded_workstation_response("what can you do", "s1", state, "", "context")
+    assert "Terminal & Shell Execution" in what_res
+
+    status_res = _generate_grounded_workstation_response("status", "s1", state, "ws-123", "context")
+    assert "SONIC Workstation Status Report" in status_res
+    assert "ws-123" in status_res
+
+

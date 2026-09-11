@@ -694,6 +694,8 @@ async def list_workstation_sessions(user: User = Depends(require_auth)):
 
     result = []
     for sid, sdata in tenant_sessions.items():
+        if not isinstance(sdata, dict):
+            continue
         result.append({
             "session_id": sid,
             "mission_name": sdata.get("mission_name") or "New conversation",
@@ -1474,7 +1476,7 @@ async def start_workstation_mission(
     })
     state["mission_name"] = req.objective.strip()
     state["status"] = "RUNNING"
-    state["current_action"] = "Mission queued for target-sandbox preflight."
+    state["current_action"] = "Starting mission target-sandbox preflight..."
     _mission_event(state, "mission", "Mission accepted", req.objective.strip(), mission_id=mission_id, workspace_id=target_id)
     asyncio.create_task(_run_mission_preflight(user.email, session_id, mission_id))
     return {"status": "queued", "mission": mission}
@@ -1656,19 +1658,34 @@ def _is_action_prompt(prompt: str) -> bool:
     """Return True for any substantive prompt that should go through the real
     ComputerUseAgent action loop.
 
-    Only bare greetings with no further instruction are excluded — everything else is treated as
-    an actionable intent so the agent can reason about it using the real
-    sandbox.  Previously most prompts fell through to the LLM chat path which
-    hallucinated fake terminal output instead of executing real commands.
+    Only bare greetings and conversational queries with no actionable desktop
+    instruction are excluded — everything else is treated as an actionable intent so
+    the agent can reason about it using the real sandbox. Conversational questions
+    and status requests flow to the conversational response handler rather than
+    triggering an autonomous 50-step visual ComputerUseAgent loop.
     """
     lower = prompt.strip().lower()
     if not lower:
         return False
 
-    # Filter out ONLY bare greetings with no further instruction
-    _GREETINGS = {"hi", "hello", "hey", "ping", "sup", "yo", "ok", "okay", "hm", "hmm"}
-    _GREETING_PHRASES = {"hello how are you", "hi how are you", "hey how are you", "how are you", "how do you do"}
-    if lower in _GREETINGS or lower in _GREETING_PHRASES:
+    # Filter out bare greetings and conversational queries
+    _GREETINGS = {
+        "hi", "hello", "hey", "ping", "sup", "yo", "ok", "okay", "hm", "hmm", "status",
+    }
+    _GREETING_PHRASES = {
+        "hello how are you", "hi how are you", "hey how are you", "how are you", "how do you do",
+        "hi sonic", "hi sonic ?", "hello sonic", "hey sonic",
+        "who are you", "what can you do", "status", "kya kar rahe ho", "kaun ho tum",
+        "tum kaun ho", "aap kaun ho", "kya chal raha hai", "kya hal hai", "kya haal hai",
+        "what is sonic", "who is sonic", "tell me about yourself",
+    }
+    cleaned = re.sub(r"[\s?!.,;]+$", "", lower).strip()
+    if (
+        lower in _GREETINGS
+        or lower in _GREETING_PHRASES
+        or cleaned in _GREETINGS
+        or cleaned in _GREETING_PHRASES
+    ):
         return False
 
     # Everything else is actionable — let ComputerUseAgent decide what to do
@@ -2250,6 +2267,95 @@ async def _run_parallel_research_swarm(
     _persist_workstation_state()
 
 
+def _generate_grounded_workstation_response(
+    prompt: str,
+    session_id: str,
+    state: dict[str, Any],
+    desktop_id: str,
+    desktop_context: str,
+    action_observations: list[str] | None = None,
+) -> str:
+    """Generate a high-quality, grounded conversational or workstation status response
+    used when LLM providers are unconfigured, timed out, or unavailable.
+    """
+    if action_observations:
+        obs_summary = "\n\n".join(action_observations)
+        return (
+            f"**Desktop Action Completed:**\n\n"
+            f"{obs_summary}\n\n"
+            f"*The Daytona graphical workstation and terminal are synchronized with these results.*"
+        )
+
+    lower = prompt.strip().lower()
+    cleaned = re.sub(r"[\s?!.,;]+$", "", lower).strip()
+
+    if cleaned in {
+        "who are you", "kaun ho tum", "tum kaun ho", "aap kaun ho",
+        "tell me about yourself", "what is sonic", "who is sonic",
+    }:
+        return (
+            "I am **SONIC** (Autonomous Self-Evolving Penetration Architect), an AI offensive security agent "
+            "and autonomous cyber workstation operator. I can inspect desktop & terminal environments, "
+            "execute authorized security assessments, discover and test attack hypotheses, and run "
+            "security tooling in sandboxed environments."
+        )
+
+    if cleaned in {
+        "what can you do", "kya kar sakte ho", "help", "commands",
+    }:
+        return (
+            "I can assist with the following operations on your Daytona workstation:\n\n"
+            "- **Terminal & Shell Execution:** Run security tools (nmap, nuclei, ffuf, curl), navigate repositories, and inspect code.\n"
+            "- **Browser Interaction:** Navigate websites, test web applications, and extract intelligence.\n"
+            "- **Desktop Application Management:** Launch allowed graphical and terminal apps.\n"
+            "- **Autonomous Security Missions:** Formulate attack plans, collect tamper-evident evidence, and update graph memory.\n\n"
+            "Provide an objective or ask me to inspect your workstation to begin."
+        )
+
+    if cleaned in {
+        "status", "kya kar rahe ho", "kya chal raha hai", "system status",
+    }:
+        status_val = state.get("status", "IDLE")
+        curr_act = state.get("current_action", "Ready when you are.")
+        ws_info = f"Active Daytona sandbox `{desktop_id}`" if desktop_id else "No desktop provisioned (API mode)"
+        branch = state.get("git_branch") or "main"
+        target = state.get("active_target") or state.get("target_sandbox", {}).get("target") or "None set"
+        return (
+            f"**SONIC Workstation Status Report:**\n\n"
+            f"- **System State:** `{status_val}`\n"
+            f"- **Current Action:** {curr_act}\n"
+            f"- **Session ID:** `{session_id}`\n"
+            f"- **Workstation:** {ws_info}\n"
+            f"- **Git Branch:** `{branch}`\n"
+            f"- **Active Target:** `{target}`\n\n"
+            f"Ready for your instructions."
+        )
+
+    if cleaned in {
+        "hi", "hello", "hey", "hi sonic", "hello sonic", "hey sonic", "yo", "sup",
+        "namaste", "salaam",
+    }:
+        return (
+            "Hello! SONIC is online and connected to your workstation session. "
+            "How can I assist with your objective or security operations today?"
+        )
+
+    if desktop_id:
+        return (
+            f"I have inspected the live workstation desktop and terminal environment for session `{session_id}`.\n\n"
+            f"Observation context:\n> {desktop_context[:300]}...\n\n"
+            f"Ready to execute your instructions. You can ask me to launch applications, run terminal commands, "
+            f"or conduct security operations directly."
+        )
+
+    return (
+        f"Objective received: '{prompt}'.\n\n"
+        f"Workstation analysis completed for session `{session_id}`. "
+        f"To execute live shell commands, network scans, or launch applications on the Linux desktop, "
+        f"provision a Daytona workstation from the Computer tab."
+    )
+
+
 async def _run_prompt_reasoning(tenant_id: str, session_id: str, prompt: str) -> None:
     """Resolve an objective asynchronously so a slow provider cannot block the UI request."""
     state = _get_or_create_session(tenant_id, session_id)
@@ -2314,18 +2420,13 @@ async def _run_prompt_reasoning(tenant_id: str, session_id: str, prompt: str) ->
                             ComputerAutonomyLevel,
                             EngineeringMissionMode,
                         )
-                        from sonic.llm.providers.custom import CustomLLMProvider
+                        from sonic.config import CONFIGS_DIR
+                        from sonic.llm.router import ModelRouter
 
-                        agent_api_key = os.environ.get("SONIC_AGENT_API_KEY") or os.environ.get("NVIDIA_API_KEY", "")
-                        agent_base_url = os.environ.get("SONIC_AGENT_BASE_URL") or os.environ.get("NVIDIA_BASE_URL", "https://integrate.api.nvidia.com/v1")
-                        agent_provider_name = os.environ.get("SONIC_AGENT_PROVIDER", "nvidia")
-                        model_to_use = os.environ.get("SONIC_AGENT_MODEL", "meta/llama-3.2-90b-vision-instruct")
-                        llm = CustomLLMProvider(
-                            name=agent_provider_name,
-                            base_url=agent_base_url,
-                            api_key=agent_api_key,
-                            default_model=model_to_use,
-                        )
+                        config_path = Path("configs/models.yaml")
+                        if not config_path.exists() and (CONFIGS_DIR / "models.yaml").exists():
+                            config_path = CONFIGS_DIR / "models.yaml"
+                        llm_router = ModelRouter.from_config(config_path)
 
                         from sonic.execution.capability_router import CapabilityRouter
                         computer = CapabilityRouter.resolve_provider(computer, "agent")
@@ -2338,7 +2439,7 @@ async def _run_prompt_reasoning(tenant_id: str, session_id: str, prompt: str) ->
                             autonomy_level=ComputerAutonomyLevel.L3_AUTONOMOUS,
                             mode=EngineeringMissionMode.GENERAL_ENGINEERING_MODE,
                             max_actions=50,
-                            llm_router=llm,
+                            llm_router=llm_router,
                             tenant_id=tenant_id,
                             safety=safety_policy,
                             self_host=True,
@@ -2536,48 +2637,48 @@ async def _run_prompt_reasoning(tenant_id: str, session_id: str, prompt: str) ->
                 )
                 _append_worklog(state, "info", "Workstation Notice", notice)
 
-        nvidia_key = os.environ.get("NVIDIA_API_KEY")
-        nvidia_url = os.environ.get("NVIDIA_BASE_URL", "https://integrate.api.nvidia.com/v1")
-        if not nvidia_key:
-            # High quality grounded synthesis without LLM
-            fallback_response = ""
-            if action_observations:
-                obs_summary = "\n\n".join(action_observations)
-                fallback_response = (
-                    f"**Desktop Action Completed:**\n\n"
-                    f"{obs_summary}\n\n"
-                    f"*The Daytona graphical workstation and terminal are synchronized with these results.*"
-                )
-            elif desktop_id:
-                fallback_response = (
-                    f"Task received and processed in the Daytona workstation.\n"
-                    f"Observation: {desktop_context[:300]}"
-                )
-            else:
-                fallback_response = (
-                    f"Objective received: '{prompt}'.\n\n"
-                    f"Workstation analysis completed for session `{session_id}`. "
-                    f"To execute live shell commands, network scans, or launch applications on the Linux desktop, provision a Daytona workstation from the Computer tab."
-                )
+        # Wire ModelRouter instead of hardcoded Nvidia provider
+        from sonic.config import CONFIGS_DIR
+        from sonic.llm.router import ModelRouter
+
+        config_path = Path("configs/models.yaml")
+        if not config_path.exists() and (CONFIGS_DIR / "models.yaml").exists():
+            config_path = CONFIGS_DIR / "models.yaml"
+        router = ModelRouter.from_config(config_path)
+
+        has_ready_provider = any(router._is_provider_ready(p) for p in router.providers)
+        if not has_ready_provider:
+            # Generate grounded informative response without hanging or failing
+            fallback_response = _generate_grounded_workstation_response(
+                prompt=prompt,
+                session_id=session_id,
+                state=state,
+                desktop_id=desktop_id,
+                desktop_context=desktop_context,
+                action_observations=action_observations,
+            )
             state["thought_summary"] = fallback_response
             _append_worklog(state, "response", "SONIC Response", fallback_response)
         else:
-            model_to_use = "meta/llama-3.2-11b-vision-instruct"
-            llm = CustomLLMProvider(
-                name="nvidia",
-                base_url=nvidia_url,
-                api_key=nvidia_key,
-                default_model=model_to_use,
-            )
             system_prompt = WORKSTATION_CHAT_SYSTEM
             messages = [
                 Message(role=MessageRole.SYSTEM, content=system_prompt),
-                Message(role=MessageRole.USER, content=f"Operator Objective:\n{prompt}\n\nWorkstation Context & Real Terminal Output:\n{desktop_context}"),
+                Message(
+                    role=MessageRole.USER,
+                    content=f"Operator Objective:\n{prompt}\n\nWorkstation Context & Real Terminal Output:\n{desktop_context}",
+                ),
             ]
             try:
                 llm_res = await asyncio.wait_for(
-                    llm.complete(LLMRequest(messages=messages, max_tokens=900, temperature=0.2)),
-                    timeout=60,
+                    router.complete(
+                        LLMRequest(
+                            messages=messages,
+                            max_tokens=900,
+                            temperature=0.2,
+                            task_type="reasoning",
+                        )
+                    ),
+                    timeout=25,
                 )
                 if llm_res and llm_res.content:
                     state["thought_summary"] = llm_res.content
@@ -2586,25 +2687,14 @@ async def _run_prompt_reasoning(tenant_id: str, session_id: str, prompt: str) ->
                     raise RuntimeError("LLM returned empty content")
             except Exception as llm_call_err:
                 logger.warning("workstation_llm_call_fallback", error=str(llm_call_err))
-                fallback_response = ""
-                if action_observations:
-                    obs_summary = "\n\n".join(action_observations)
-                    fallback_response = (
-                        f"**Desktop Action Completed:**\n\n"
-                        f"{obs_summary}\n\n"
-                        f"*The cyber workstation and terminal are synchronized with these results.*"
-                    )
-                elif desktop_id:
-                    fallback_response = (
-                        f"I have inspected the live workstation desktop and terminal environment. "
-                        f"Ready to execute your instructions. You can ask me to launch applications and tools "
-                        f"or perform security tasks directly."
-                    )
-                else:
-                    fallback_response = (
-                        f"Objective received: '{prompt}'.\n\n"
-                        f"Workstation analysis completed for session `{session_id}`."
-                    )
+                fallback_response = _generate_grounded_workstation_response(
+                    prompt=prompt,
+                    session_id=session_id,
+                    state=state,
+                    desktop_id=desktop_id,
+                    desktop_context=desktop_context,
+                    action_observations=action_observations,
+                )
                 state["thought_summary"] = fallback_response
                 _append_worklog(state, "response", "SONIC Response", fallback_response)
     except Exception as general_err:
@@ -2613,13 +2703,21 @@ async def _run_prompt_reasoning(tenant_id: str, session_id: str, prompt: str) ->
         state["thought_summary"] = err_msg
         _append_worklog(state, "error", "Execution Failed", err_msg)
     finally:
-        if not action_blocked:
-            state["status"] = "IDLE"
-            state["current_action"] = "Idle — Ready for next task"
-        else:
+        if state.get("interrupted"):
+            state["status"] = "PAUSED"
+            state["current_action"] = "Agent paused by user."
+        elif action_blocked:
             state["status"] = "BLOCKED"
-            if not state.get("current_action") or state["current_action"].startswith("Idle"):
+            if (
+                not state.get("current_action")
+                or state["current_action"].startswith("Idle")
+                or "Thinking" in state["current_action"]
+                or "Reasoning" in state["current_action"]
+            ):
                 state["current_action"] = "Execution blocked — check workstation logs"
+        else:
+            state["status"] = "IDLE"
+            state["current_action"] = "Ready when you are."
         _persist_workstation_state()
 
 
@@ -2634,7 +2732,7 @@ async def send_workstation_prompt(
     prompt_text = (req.prompt or "").strip()
     state["mission_name"] = prompt_text or "New conversation"
     state["status"] = "RUNNING"
-    state["current_action"] = f"Reasoning queued: {prompt_text}"
+    state["current_action"] = f"Thinking: {prompt_text}" if prompt_text else "Thinking..."
     _append_worklog(
         state,
         "action",
@@ -2670,20 +2768,21 @@ async def send_workstation_prompt(
             "events": [],
         })
         state["status"] = "RUNNING"
-        state["current_action"] = "Autonomous mission queued for evidence-based discovery."
+        state["current_action"] = "Executing autonomous mission for evidence-based discovery..."
         _mission_event(state, "mission", "Autonomous mission accepted", prompt_text, mission_id=mission_id, workspace_id=target_id)
         asyncio.create_task(_run_mission_preflight(user.email, session_id, mission_id))
-        return {"status": "accepted", "reasoning": "mission_queued", "message": "Autonomous mission queued for the scoped target.", "state": state}
+        return {"status": "accepted", "reasoning": "mission_started", "message": "Autonomous mission accepted for the scoped target.", "state": state}
 
     # Never hold the HTTP request open on an external LLM.  The dashboard can
     # refresh workstation state while this task records the real result.
     asyncio.create_task(_run_prompt_reasoning(user.email, session_id, prompt_text))
     return {
         "status": "accepted",
-        "reasoning": "queued",
+        "reasoning": "in_progress",
         "message": f"Objective '{prompt_text}' accepted for autonomous reasoning.",
         "state": state,
     }
+
 
 
 # ---------------------------------------------------------------------------

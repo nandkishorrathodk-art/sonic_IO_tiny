@@ -87,3 +87,100 @@ export interface CommandResult {
   output: string;
   execution_environment?: string;
 }
+
+export interface SessionItem {
+  session_id: string;
+  mission_name: string;
+  status: string;
+  git_branch: string;
+  log_count?: number;
+  last_action?: string;
+}
+
+/**
+ * Normalizes raw responses from /workstation/sessions.
+ * Handles arrays, wrapped objects ({ sessions: [...] }, { data: [...] }),
+ * empty values, and malformed items without throwing.
+ */
+export function normalizeSessionList(raw: unknown): SessionItem[] {
+  if (!raw) return [];
+  let list: unknown[] = [];
+
+  if (Array.isArray(raw)) {
+    list = raw;
+  } else if (typeof raw === "object" && raw !== null) {
+    const obj = raw as Record<string, unknown>;
+    if (Array.isArray(obj.sessions)) {
+      list = obj.sessions;
+    } else if (Array.isArray(obj.data)) {
+      list = obj.data;
+    } else {
+      return [];
+    }
+  } else {
+    return [];
+  }
+
+  return list
+    .filter((item): item is Record<string, unknown> => Boolean(item && typeof item === "object"))
+    .map((item, idx) => ({
+      session_id: typeof item.session_id === "string" && item.session_id.trim()
+        ? item.session_id.trim()
+        : `session-${idx}`,
+      mission_name: typeof item.mission_name === "string" && item.mission_name.trim()
+        ? item.mission_name.trim()
+        : "Unprovisioned Workstation",
+      status: typeof item.status === "string" && item.status.trim()
+        ? item.status.trim()
+        : "IDLE",
+      git_branch: typeof item.git_branch === "string" ? item.git_branch : "",
+      log_count: typeof item.log_count === "number" ? item.log_count : 0,
+      last_action: typeof item.last_action === "string" ? item.last_action : "Ready when you are.",
+    }));
+}
+
+/**
+ * Sanitizes current_action to eliminate puppet strings ("Reasoning queued", "queued"),
+ * ensures that if status is IDLE, PAUSED, BLOCKED, or COMPLETED, no spinner text is returned,
+ * and preserves real in-progress actions.
+ */
+export function sanitizeCurrentAction(
+  action?: string | null,
+  status?: string | null,
+  loading?: boolean
+): string | undefined {
+  // If state is not RUNNING and not loading, or if explicitly idle/finished:
+  const normalizedStatus = (status || "").toUpperCase();
+  if (
+    normalizedStatus === "IDLE" ||
+    normalizedStatus === "PAUSED" ||
+    normalizedStatus === "BLOCKED" ||
+    normalizedStatus === "COMPLETED" ||
+    normalizedStatus === "ERROR"
+  ) {
+    return undefined;
+  }
+
+  if (normalizedStatus !== "RUNNING" && !loading) {
+    return undefined;
+  }
+
+  const raw = (action || "").trim();
+  if (!raw) {
+    return loading || normalizedStatus === "RUNNING" ? "Autonomous reasoning in progress..." : undefined;
+  }
+
+  const lower = raw.toLowerCase();
+  // Strip puppet strings / queued text / idle text
+  if (
+    lower.includes("queued") ||
+    lower.includes("reasoning queued") ||
+    lower.startsWith("idle") ||
+    lower.startsWith("ready")
+  ) {
+    return normalizedStatus === "RUNNING" || loading ? "Autonomous reasoning in progress..." : undefined;
+  }
+
+  return raw;
+}
+

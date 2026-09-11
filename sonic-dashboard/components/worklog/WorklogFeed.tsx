@@ -37,6 +37,7 @@ interface WorklogFeedProps {
   worklog: WorklogItem[];
   currentAction?: string;
   loading: boolean;
+  status?: string;
   onSendPrompt: (prompt: string, mode: Mode) => Promise<void>;
   onInterrupt?: () => Promise<void> | void;
   onSelectFile?: (filePath: string) => void;
@@ -50,6 +51,7 @@ export function WorklogFeed({
   worklog,
   currentAction,
   loading,
+  status,
   onSendPrompt,
   onInterrupt,
   onSelectFile,
@@ -65,13 +67,56 @@ export function WorklogFeed({
   const worklogEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
+  const displayItems: WorklogItem[] = worklog || [];
+
+  const normalizedStatus = (status || "").toUpperCase();
+  const isFinished =
+    normalizedStatus === "IDLE" ||
+    normalizedStatus === "PAUSED" ||
+    normalizedStatus === "BLOCKED" ||
+    normalizedStatus === "COMPLETED" ||
+    normalizedStatus === "ERROR" ||
+    (!loading && normalizedStatus !== "RUNNING");
+
+  // Check if the latest item in the worklog feed is a finished response
+  const lastItem = displayItems.length > 0 ? displayItems[displayItems.length - 1] : null;
+  const lastIsResponse = Boolean(
+    lastItem && (lastItem.type === "response" || lastItem.title === "SONIC Response")
+  );
+
+  // If state is finished OR if the actual response is already shown at the bottom and status is not RUNNING,
+  // do not render any spinner!
+  const shouldShowAction = !isFinished && !(lastIsResponse && normalizedStatus !== "RUNNING");
+
+  const cleanActionText = (() => {
+    if (!shouldShowAction) return undefined;
+    const text = (currentAction || "").trim();
+    if (!text) {
+      return loading || normalizedStatus === "RUNNING"
+        ? "Autonomous reasoning in progress..."
+        : undefined;
+    }
+    const lower = text.toLowerCase();
+    if (
+      lower.includes("queued") ||
+      lower.includes("reasoning queued") ||
+      lower.startsWith("idle") ||
+      lower.startsWith("ready")
+    ) {
+      return normalizedStatus === "RUNNING" || loading
+        ? "Autonomous reasoning in progress..."
+        : undefined;
+    }
+    return text;
+  })();
+
   useEffect(() => {
     worklogEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [worklog, currentAction]);
+  }, [worklog, cleanActionText]);
 
   const handleSubmit = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
-    if (!promptText.trim() || loading) return;
+    if (!promptText.trim() || (loading && normalizedStatus === "RUNNING")) return;
     const text = promptText;
     setPromptText("");
     await onSendPrompt(text, activeMode);
@@ -92,8 +137,6 @@ export function WorklogFeed({
     textareaRef.current?.focus();
   };
 
-  const displayItems: WorklogItem[] = worklog || [];
-
   // Find the index of the last response item to display follow-ups underneath
   let lastResponseIdx = -1;
   for (let i = displayItems.length - 1; i >= 0; i--) {
@@ -102,6 +145,7 @@ export function WorklogFeed({
       break;
     }
   }
+
 
   return (
     <div className="flex flex-col h-full bg-ink-900 text-slate-200 overflow-hidden font-sans">
@@ -408,15 +452,16 @@ export function WorklogFeed({
           })
         )}
 
-        {/* Real-time active action spinner matching Devin (Checking page CSS...) */}
-        {currentAction && (
+        {/* Real-time active action spinner */}
+        {cleanActionText && (
           <div className="pt-2 pb-1 flex items-center gap-2.5 text-xs text-secondary-400 pl-1 animate-fade-in-up">
             <div className="w-3.5 h-3.5 rounded-full border-2 border-secondary-400 border-t-transparent animate-spin shrink-0" />
             <span className="text-secondary-300 font-mono font-medium text-[11.5px]">
-              {currentAction}
+              {cleanActionText}
             </span>
           </div>
         )}
+
 
         <div ref={worklogEndRef} />
       </div>
@@ -478,7 +523,7 @@ export function WorklogFeed({
             </div>
 
             <div className="flex items-center gap-1.5">
-              {loading && onInterrupt && (
+              {(loading || normalizedStatus === "RUNNING") && onInterrupt && (
                 <button
                   type="button"
                   onClick={onInterrupt}
@@ -492,17 +537,18 @@ export function WorklogFeed({
 
               <button
                 type="submit"
-                disabled={!promptText.trim() || loading}
+                disabled={!promptText.trim() || (loading && normalizedStatus === "RUNNING")}
                 className="w-7 h-7 rounded-lg bg-secondary-600 hover:bg-secondary-500 disabled:opacity-40 disabled:hover:bg-secondary-600 text-white flex items-center justify-center transition shadow-glow cursor-pointer"
                 title="Send instruction"
               >
-                {loading ? (
+                {loading && normalizedStatus === "RUNNING" ? (
                   <div className="w-3.5 h-3.5 rounded-full border-2 border-white border-t-transparent animate-spin" />
                 ) : (
                   <Send className="w-3.5 h-3.5" />
                 )}
               </button>
             </div>
+
           </div>
         </form>
       </div>

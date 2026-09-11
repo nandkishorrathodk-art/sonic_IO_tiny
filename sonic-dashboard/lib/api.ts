@@ -1,6 +1,7 @@
 // SONIC-REDA — Unified API Client
 
 import { getAuthToken, ensureAuthToken } from "./auth";
+import { SessionItem, normalizeSessionList } from "../types/workstation";
 
 function resolveApiBase(): string {
   // Explicit env override wins: prod docker-compose passes http://sonic-core:8000;
@@ -79,15 +80,14 @@ export const api = {
   getWorkstationState: (sessionId = "default") =>
     apiClient<any>(`/workstation/state?session_id=${encodeURIComponent(sessionId)}`),
 
-  listSessions: () =>
-    apiClient<Array<{
-      session_id: string;
-      mission_name: string;
-      status: string;
-      git_branch: string;
-      log_count: number;
-      last_action: string;
-    }>>("/workstation/sessions"),
+  listSessions: async (): Promise<SessionItem[]> => {
+    try {
+      const data = await apiClient<any>("/workstation/sessions");
+      return normalizeSessionList(data);
+    } catch {
+      return [];
+    }
+  },
 
   deleteSession: (sessionId: string) =>
     apiClient<any>(`/workstation/session?session_id=${encodeURIComponent(sessionId)}`, {

@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import {
   FileText,
   Monitor,
@@ -11,7 +11,16 @@ import {
   Compass,
 } from "lucide-react";
 import { api } from "../lib/api";
-import { WorkstationState, SystemStatus, WorkstationTab, CommandResult } from "../types/workstation";
+import {
+  WorkstationState,
+  SystemStatus,
+  WorkstationTab,
+  CommandResult,
+  SessionItem,
+  normalizeSessionList,
+  sanitizeCurrentAction,
+} from "../types/workstation";
+
 import { OfflineBanner } from "../components/common/OfflineBanner";
 import { WorkstationHeader } from "../components/workstation/WorkstationHeader";
 import { WorkstationSidebar } from "../components/workstation/WorkstationSidebar";
@@ -47,14 +56,9 @@ export default function SonicDevinWorkstation() {
   const [loading, setLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
-  const [sessionList, setSessionList] = useState<Array<{
-    session_id: string;
-    mission_name: string;
-    status: string;
-    git_branch: string;
-    log_count?: number;
-    last_action?: string;
-  }>>([]);
+  const [sessionList, setSessionList] = useState<SessionItem[]>([]);
+  const abortPollRef = useRef<boolean>(false);
+  const activePromptSessionRef = useRef<string | null>(null);
 
   const fetchWorkstationData = async (targetSession = sessionId) => {
     try {
@@ -62,11 +66,17 @@ export default function SonicDevinWorkstation() {
       setWorkstationState(state);
       setConnectionStatus("LIVE");
       setErrorMessage(null);
+
+      // If backend reports state is not RUNNING, stop loading spinner
+      if (state && state.status !== "RUNNING") {
+        setLoading(false);
+      }
+
       try {
-        const sessions = await api.listSessions();
-        if (sessions && sessions.length > 0) setSessionList(sessions);
+        const rawSessions = await api.listSessions();
+        setSessionList(normalizeSessionList(rawSessions));
       } catch {
-        // keep current list
+        // keep current list safely on error
       }
     } catch (err: any) {
       setConnectionStatus("OFFLINE");
@@ -75,6 +85,8 @@ export default function SonicDevinWorkstation() {
   };
 
   const handleNewSession = async () => {
+    abortPollRef.current = true;
+    setLoading(false);
     const newSessionId = `mission-${Math.random().toString(36).substring(2, 7)}`;
     setSessionId(newSessionId);
     setActiveFile("");
@@ -83,6 +95,7 @@ export default function SonicDevinWorkstation() {
     setCommandLogs([]);
     await fetchWorkstationData(newSessionId);
   };
+
 
   const handleDeleteSession = async (delSessionId: string) => {
     try {
@@ -131,31 +144,95 @@ export default function SonicDevinWorkstation() {
   }, [sessionId]);
 
   const handleSendPrompt = async (prompt: string, mode: "Normal" | "Autonomous" | "Pair-Program") => {
+    const currentTargetSession = sessionId;
+    activePromptSessionRef.current = currentTargetSession;
+    abortPollRef.current = false;
     setLoading(true);
-    try {
-      const res = await api.sendPrompt(prompt, sessionId, mode.toLowerCase());
-      if (mode === "Autonomous") setActiveTab("mission");
-      if (res?.state) setWorkstationState(res.state);
 
-      for (let attempt = 0; attempt < 90; attempt += 1) {
-        await new Promise((resolve) => setTimeout(resolve, 1000));
-        try {
-          const nextState = await api.getWorkstationState(sessionId);
-          setWorkstationState(nextState);
-          if (nextState?.status !== "RUNNING") break;
-        } catch {
-          // The existing five-second refresh remains responsible for recovery
+    try {
+      const res = await api.sendPrompt(prompt, currentTargetSession, mode.toLowerCase());
+      if (mode === "Autonomous") setActiveTab("mission");
+
+      // If user interrupted or navigated away during prompt send, abort immediately
+      if (abortPollRef.current || activePromptSessionRef.current !== currentTargetSession) {
+        setLoading(false);
+        return;
+      }
+
+      if (res?.state) {
+        setWorkstationState(res.state);
+        // If state is already non-running (IDLE, BLOCKED, PAUSED, COMPLETED), stop loading
+        if (res.state.status && res.state.status !== "RUNNING") {
+          setLoading(false);
+          await fetchDiff();
+          return;
         }
       }
+
+      // Safeguard: Poll with timeout (max 45 attempts = 45s max wait)
+      const MAX_ATTEMPTS = 45;
+      let finished = false;
+
+      for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt += 1) {
+        if (abortPollRef.current || activePromptSessionRef.current !== currentTargetSession) {
+          break;
+        }
+
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+
+        if (abortPollRef.current || activePromptSessionRef.current !== currentTargetSession) {
+          break;
+        }
+
+        try {
+          const nextState = await api.getWorkstationState(currentTargetSession);
+          if (abortPollRef.current || activePromptSessionRef.current !== currentTargetSession) {
+            break;
+          }
+
+          setWorkstationState(nextState);
+
+          // 1. If backend status transitioned to non-RUNNING (IDLE, PAUSED, BLOCKED, COMPLETED)
+          if (nextState?.status && nextState.status !== "RUNNING") {
+            finished = true;
+            break;
+          }
+
+          // 2. If the worklog feed contains a completed response from SONIC
+          const logs = nextState?.worklog || [];
+          const lastLog = logs.length > 0 ? logs[logs.length - 1] : null;
+          if (lastLog && (lastLog.type === "response" || lastLog.title === "SONIC Response")) {
+            finished = true;
+            break;
+          }
+        } catch {
+          // Retry on transient network blip
+        }
+      }
+
+      // Timeout safeguard: if 45s passed without completion, perform final state check and release loader
+      if (!finished && !abortPollRef.current) {
+        try {
+          const finalState = await api.getWorkstationState(currentTargetSession);
+          if (activePromptSessionRef.current === currentTargetSession) {
+            setWorkstationState(finalState);
+          }
+        } catch {
+          // ignore
+        }
+      }
+
       await fetchDiff();
       try {
-        const sessions = await api.listSessions();
-        if (sessions) setSessionList(sessions);
+        const rawSessions = await api.listSessions();
+        setSessionList(normalizeSessionList(rawSessions));
       } catch {}
     } catch (err: any) {
       alert(`Execution error: ${err.message}`);
     } finally {
-      setLoading(false);
+      if (activePromptSessionRef.current === currentTargetSession) {
+        setLoading(false);
+      }
     }
   };
 
@@ -183,6 +260,9 @@ export default function SonicDevinWorkstation() {
   };
 
   const handleInterrupt = async () => {
+    // Immediate cancellation safeguard: abort polling loop and clear spinner
+    abortPollRef.current = true;
+    setLoading(false);
     try {
       await api.interruptSession(sessionId);
       await fetchWorkstationData(sessionId);
@@ -204,6 +284,8 @@ export default function SonicDevinWorkstation() {
           sessions={sessionList}
           currentSessionId={sessionId}
           onSelectSession={(id) => {
+            abortPollRef.current = true;
+            setLoading(false);
             setSessionId(id);
             setActiveFile("");
             setFileContent([]);
@@ -229,9 +311,12 @@ export default function SonicDevinWorkstation() {
             <div className={`${rightPanelOpen ? "col-span-6" : "col-span-12"} border-r border-ink-800 flex flex-col h-full bg-ink-900 overflow-hidden`}>
               <WorklogFeed
                 worklog={workstationState?.worklog || []}
-                currentAction={
-                  loading || workstationState?.status === "RUNNING" ? workstationState?.current_action : undefined
-                }
+                currentAction={sanitizeCurrentAction(
+                  workstationState?.current_action,
+                  workstationState?.status,
+                  loading
+                )}
+                status={workstationState?.status}
                 loading={loading}
                 onSendPrompt={handleSendPrompt}
                 onInterrupt={handleInterrupt}
@@ -242,6 +327,7 @@ export default function SonicDevinWorkstation() {
                 onToggleRightPanel={() => setRightPanelOpen((open) => !open)}
               />
             </div>
+
 
             {rightPanelOpen && (
               <div className="col-span-6 flex flex-col h-full bg-ink-950 overflow-hidden">

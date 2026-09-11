@@ -167,18 +167,21 @@ export function sanitizeCurrentAction(
 
   const raw = (action || "").trim();
   if (!raw) {
-    return loading || normalizedStatus === "RUNNING" ? "Autonomous reasoning in progress..." : undefined;
+    return loading || normalizedStatus === "RUNNING" ? "Thinking..." : undefined;
   }
 
   const lower = raw.toLowerCase();
-  // Strip puppet strings / queued text / idle text
+  // Strip puppet strings / queued text / idle text / reasoning placeholders
   if (
     lower.includes("queued") ||
     lower.includes("reasoning queued") ||
+    lower.includes("autonomous reasoning") ||
     lower.startsWith("idle") ||
-    lower.startsWith("ready")
+    lower.startsWith("ready") ||
+    lower === "thinking" ||
+    lower.startsWith("thinking:")
   ) {
-    return normalizedStatus === "RUNNING" || loading ? "Autonomous reasoning in progress..." : undefined;
+    return normalizedStatus === "RUNNING" || loading ? "Thinking..." : undefined;
   }
 
   return raw;

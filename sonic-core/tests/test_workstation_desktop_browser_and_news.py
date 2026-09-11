@@ -195,7 +195,7 @@ def test_workstation_prompt_eliminates_puppet_queued_status(client, auth_headers
     state = data.get("state", {})
     action = state.get("current_action", "")
     assert "Reasoning queued" not in action
-    assert action.startswith("Thinking: check open ports")
+    assert action == "Thinking..."
     assert data.get("reasoning") != "queued"
 
 

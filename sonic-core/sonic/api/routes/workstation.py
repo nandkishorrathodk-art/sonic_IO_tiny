@@ -2680,9 +2680,13 @@ async def _run_prompt_reasoning(tenant_id: str, session_id: str, prompt: str) ->
                     ),
                     timeout=25,
                 )
-                if llm_res and llm_res.content:
-                    state["thought_summary"] = llm_res.content
-                    _append_worklog(state, "response", "SONIC Response", llm_res.content)
+                if llm_res and (llm_res.content or llm_res.reasoning_content):
+                    if llm_res.reasoning_content:
+                        dur = round(llm_res.latency_ms / 1000.0, 1) if llm_res.latency_ms else 2.0
+                        _append_worklog(state, "thought", "Thinking", llm_res.reasoning_content, duration_seconds=dur)
+                    final_content = llm_res.content or llm_res.reasoning_content
+                    state["thought_summary"] = final_content
+                    _append_worklog(state, "response", "SONIC Response", final_content)
                 else:
                     raise RuntimeError("LLM returned empty content")
             except Exception as llm_call_err:
@@ -2732,7 +2736,7 @@ async def send_workstation_prompt(
     prompt_text = (req.prompt or "").strip()
     state["mission_name"] = prompt_text or "New conversation"
     state["status"] = "RUNNING"
-    state["current_action"] = f"Thinking: {prompt_text}" if prompt_text else "Thinking..."
+    state["current_action"] = "Thinking..."
     _append_worklog(
         state,
         "action",
@@ -2778,8 +2782,8 @@ async def send_workstation_prompt(
     asyncio.create_task(_run_prompt_reasoning(user.email, session_id, prompt_text))
     return {
         "status": "accepted",
-        "reasoning": "in_progress",
-        "message": f"Objective '{prompt_text}' accepted for autonomous reasoning.",
+        "reasoning": "thinking",
+        "message": f"Objective '{prompt_text}' accepted. Thinking...",
         "state": state,
     }
 

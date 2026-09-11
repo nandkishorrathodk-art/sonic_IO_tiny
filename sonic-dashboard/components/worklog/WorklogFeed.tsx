@@ -18,6 +18,7 @@ import {
   Copy,
   Check,
   Zap,
+  Brain,
   MousePointer,
   Eye,
   Monitor,
@@ -84,27 +85,30 @@ export function WorklogFeed({
     lastItem && (lastItem.type === "response" || lastItem.title === "SONIC Response")
   );
 
-  // If state is finished OR if the actual response is already shown at the bottom and status is not RUNNING,
+  // If state is finished OR if the actual response is already shown at the bottom,
   // do not render any spinner!
-  const shouldShowAction = !isFinished && !(lastIsResponse && normalizedStatus !== "RUNNING");
+  const shouldShowAction = !isFinished && !lastIsResponse;
 
   const cleanActionText = (() => {
     if (!shouldShowAction) return undefined;
     const text = (currentAction || "").trim();
     if (!text) {
       return loading || normalizedStatus === "RUNNING"
-        ? "Autonomous reasoning in progress..."
+        ? "Thinking..."
         : undefined;
     }
     const lower = text.toLowerCase();
     if (
       lower.includes("queued") ||
       lower.includes("reasoning queued") ||
+      lower.includes("autonomous reasoning") ||
       lower.startsWith("idle") ||
-      lower.startsWith("ready")
+      lower.startsWith("ready") ||
+      lower === "thinking" ||
+      lower.startsWith("thinking:")
     ) {
       return normalizedStatus === "RUNNING" || loading
-        ? "Autonomous reasoning in progress..."
+        ? "Thinking..."
         : undefined;
     }
     return text;
@@ -452,10 +456,11 @@ export function WorklogFeed({
           })
         )}
 
-        {/* Real-time active action spinner */}
+        {/* Real-time active thinking / action indicator */}
         {cleanActionText && (
-          <div className="pt-2 pb-1 flex items-center gap-2.5 text-xs text-secondary-400 pl-1 animate-fade-in-up">
-            <div className="w-3.5 h-3.5 rounded-full border-2 border-secondary-400 border-t-transparent animate-spin shrink-0" />
+          <div className="pt-2 pb-1 flex items-center gap-2 text-xs text-secondary-400 pl-1 animate-fade-in-up">
+            <Brain className="w-3.5 h-3.5 text-secondary-400 animate-pulse shrink-0" />
+            <div className="w-1.5 h-1.5 rounded-full bg-secondary-400 animate-ping shrink-0" />
             <span className="text-secondary-300 font-mono font-medium text-[11.5px]">
               {cleanActionText}
             </span>

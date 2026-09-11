@@ -112,3 +112,126 @@ def test_native_kernel_evaluate_probe_rpc():
         assert res["secret_or_flag_detected"] is True
         assert res["evidence_payload"]["extracted_artifact"] == "flag{pwn_flag}"
 
+
+def test_action_broker_native_kernel_deny_blocks_execution():
+    """ActionBroker blocks execution and returns exit code 126 when NativeKernel denies."""
+    from sonic.computer_use.models import ActionExecutionStatus
+    from sonic.kernel.action_broker import ActionBroker
+
+    mock_native_client = MagicMock()
+    mock_native_client.authorize.return_value = NativeKernelVerdict(
+        verdict="Deny",
+        reason="Target IP 10.0.0.1 in forbidden CIDR egress range",
+        action_type="TERMINAL_EXEC",
+        audit_id="audit-deny-001",
+        seal_intact=True,
+        timestamp="2026-09-11T12:00:00Z",
+    )
+
+    mock_safety_kernel = MagicMock()
+    broker = ActionBroker(
+        safety_kernel=mock_safety_kernel,
+        native_kernel_client=mock_native_client,
+        tenant_id="test-tenant",
+    )
+
+    mock_provider = MagicMock()
+    res = broker.execute(
+        action_type="TERMINAL_COMMAND",
+        parameters={"command": "curl http://10.0.0.1/admin"},
+        provider=mock_provider,
+    )
+
+    assert res.status == ActionExecutionStatus.BLOCKED
+    assert res.exit_code == 126
+    assert "[NativeKernel Deny]" in res.stderr
+    assert "forbidden CIDR egress" in res.stderr
+    # Must fail-closed before provider execution
+    mock_provider.execute.assert_not_called()
+    # Python safety kernel does not even need to run if hardware/native gate denies
+    mock_safety_kernel.authorize.assert_not_called()
+
+
+def test_action_broker_native_kernel_require_approval_blocks_when_unapproved():
+    """ActionBroker blocks approval-required actions unless approved=True."""
+    from sonic.computer_use.models import ActionExecutionStatus
+    from sonic.kernel.action_broker import ActionBroker
+
+    mock_native_client = MagicMock()
+    mock_native_client.authorize.return_value = NativeKernelVerdict(
+        verdict="RequireApproval",
+        reason="Potentially destructive file deletion: rm -rf",
+        action_type="TERMINAL_EXEC",
+        audit_id="audit-appr-001",
+        seal_intact=True,
+        timestamp="2026-09-11T12:00:00Z",
+    )
+
+    mock_safety_kernel = MagicMock()
+    broker = ActionBroker(
+        safety_kernel=mock_safety_kernel,
+        native_kernel_client=mock_native_client,
+        tenant_id="test-tenant",
+    )
+
+    mock_provider = MagicMock()
+    # 1. Unapproved -> Blocked
+    res_blocked = broker.execute(
+        action_type="TERMINAL_COMMAND",
+        parameters={"command": "rm -rf /tmp/test"},
+        provider=mock_provider,
+        approved=False,
+    )
+    assert res_blocked.status == ActionExecutionStatus.BLOCKED
+    assert res_blocked.exit_code == 126
+    assert "[NativeKernel ApprovalRequired]" in res_blocked.stderr
+    mock_provider.execute.assert_not_called()
+
+    # 2. Approved -> Passes native pre-screening, proceeds to SafetyKernel
+    mock_auth = MagicMock(verdict=MagicMock(value="allow"), is_allowed=True)
+    mock_safety_kernel.authorize.return_value = mock_auth
+    mock_provider.execute.return_value = MagicMock(exit_code=0, stdout="deleted", stderr="")
+
+    res_approved = broker.execute(
+        action_type="TERMINAL_COMMAND",
+        parameters={"command": "rm -rf /tmp/test"},
+        provider=mock_provider,
+        approved=True,
+    )
+    assert res_approved.status == ActionExecutionStatus.SUCCEEDED
+    mock_provider.execute.assert_called_once()
+
+
+def test_action_broker_native_kernel_seal_tampered_fails_closed():
+    """ActionBroker fails-closed immediately if NativeKernel reports seal_intact=False."""
+    from sonic.computer_use.models import ActionExecutionStatus
+    from sonic.kernel.action_broker import ActionBroker
+
+    mock_native_client = MagicMock()
+    mock_native_client.authorize.return_value = NativeKernelVerdict(
+        verdict="Allow",
+        reason="Tamper detected in kernel safety registry",
+        action_type="TERMINAL_EXEC",
+        audit_id="audit-tamper-001",
+        seal_intact=False,
+        timestamp="2026-09-11T12:00:00Z",
+    )
+
+    broker = ActionBroker(
+        native_kernel_client=mock_native_client,
+        tenant_id="test-tenant",
+    )
+
+    mock_provider = MagicMock()
+    res = broker.execute(
+        action_type="TERMINAL_COMMAND",
+        parameters={"command": "ls /home/sonic/workspace"},
+        provider=mock_provider,
+    )
+
+    assert res.status == ActionExecutionStatus.BLOCKED
+    assert res.exit_code == 126
+    assert "seal tampered" in res.stderr.lower()
+    mock_provider.execute.assert_not_called()
+
+

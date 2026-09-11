@@ -2028,6 +2028,26 @@ Resolved the audit findings regarding disconnected evolution engines and injecte
 ### 4. Verification Baseline (100% Green)
 - Full regression suite (`test_codebase_evolution.py` + `test_evolution_strategy_and_engine.py` + `test_remediation_puppet_and_control.py` + `test_native_kernel_bridge.py` + `test_mission_trace_synthesis.py` + `test_phase8_production_kernel_and_evolution.py` — 55 tests) — **55 passed in 3.17s**.
 
+## Phase 38 — Native Rust Kernel Pre-Screening & ActionBroker Integration (DONE)
+Integrated the high-performance Rust safety daemon (`sonic-kernel-rs`) with `ActionBroker` to provide sub-millisecond hardware-speed pre-screening and fail-closed defense-in-depth across all agent execution requests:
+
+### 1. Hardware-Speed Pre-Screening (`sonic/kernel/action_broker.py`)
+- Integrated `NativeKernelClient` into `ActionBroker.__init__`, defaulting to an active client if not explicitly passed.
+- Added target extraction (`_extract_target`) and canonical action type resolution via exported `ACTION_MAP`.
+- Pre-screens every execution request via `native_kernel_client.authorize(action_type, target, is_isolated=True)` before reaching Python safety checks or execution providers.
+
+### 2. Multi-Layer Fail-Closed Guarantees
+- **Tamper Evidence**: If `native_verdict.seal_intact` is `False`, logs a critical security alert (`action_broker_blocked_native_seal_tampered`) and immediately blocks execution with exit code 126.
+- **Hardware-Speed Denial**: If `native_verdict.verdict == "Deny"`, blocks immediately with exit code 126 and returns `[NativeKernel Deny] <reason>` without touching the provider or wasting Python interpreter cycles.
+- **Interactive Approval Gating**: If `native_verdict.verdict == "RequireApproval"` and `approved=False`, blocks execution with exit code 126.
+- **Defense in Depth**: If native checks pass, execution still verifies against Python's sealed `SafetyKernel` before reaching the sandbox provider. If the native binary is absent in dev, gracefully falls back to Python's `SafetyKernel`.
+
+### 3. Verification Baseline (100% Green)
+- `sonic-core/tests/test_native_kernel_bridge.py` (7 tests) — **7 passed in 1.33s**.
+- `sonic-core/tests/test_phase0_safety_kernel_and_broker.py` (6 tests) — **6 passed in 1.15s**.
+- Combined regression test suite (48 tests across Evolution, Strategy, Kernel, Broker, Traces) — **48 passed in 2.50s**.
+
+
 
 
 

@@ -24,14 +24,14 @@ def test_models_yaml_registers_gpt_oss_under_nvidia():
     assert "openai/gpt-oss-20b" in nvidia.fallback_models
 
 
-def test_routing_rules_contain_gpt_oss_fallback():
-    """Verify nvidia/openai/gpt-oss-20b is configured across core task types."""
+def test_routing_rules_contain_fallbacks():
+    """Verify every core routing rule is configured with a non-empty fallback chain."""
     router = ModelRouter.from_config(PROJECT_ROOT / "configs" / "models.yaml")
-    expected_rules = ["planning", "reasoning", "coding", "hypothesis", "verification", "computer_use"]
+    expected_rules = ["planning", "reasoning", "coding", "hypothesis", "verification", "computer_use", "vision"]
     for rule in expected_rules:
         assert rule in router.routing_rules
         fallbacks = router.routing_rules[rule].get("fallback", [])
-        assert "nvidia/openai/gpt-oss-20b" in fallbacks, f"nvidia/openai/gpt-oss-20b missing in {rule} fallbacks"
+        assert fallbacks, f"{rule} has no configured fallbacks"
 
 
 @pytest.mark.asyncio

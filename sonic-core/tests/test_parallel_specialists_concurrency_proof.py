@@ -287,60 +287,28 @@ async def test_central_research_loop_unknowns_and_information_gain():
 @pytest.mark.asyncio
 async def test_workstation_prompt_triggers_parallel_swarm_and_records_metrics():
     """
-    Test that workstation route prompt handling:
-      - Detects research/security prompt keywords
-      - Bypasses sequential ComputerUseAgent
-      - Runs 6+1 Specialists concurrently
-      - Streams live worklog entries with required specialist prefixes
-      - Populates AttackGraph in state["graph"]
-      - Concurrently records parallel_wall_time, sum_of_task_times, parallelism_factor
+    Verify workstation prompt routing post Phase 7.9: the legacy parallel swarm
+    is intentionally disabled (it produced hallucinated endpoints and zero real
+    requests), so all prompts route to the real ComputerUseAgent action loop.
+    Research/security keywords must NOT trigger the swarm anymore.
     """
     tenant_id = "tenant-pentest-team"
     session_id = f"test-swarm-{int(time.time())}"
     state = _get_or_create_session(tenant_id, session_id)
 
-    # Verify prompt keyword detection
-    assert _is_research_prompt("Please scan ports on 192.168.1.100") is True
-    assert _is_research_prompt("Perform security audit and pentest on https://target.local") is True
-    assert _is_research_prompt("Check vulnerability and recon API") is True
+    # Phase 7.9 deliberately disabled the parallel research swarm: `_is_research_prompt`
+    # is a hardcoded False so every prompt flows through the real agent loop instead.
+    assert _is_research_prompt("Please scan ports on 192.168.1.100") is False
+    assert _is_research_prompt("Perform security audit and pentest on https://target.local") is False
+    assert _is_research_prompt("Check vulnerability and recon API") is False
     assert _is_research_prompt("git commit changes") is False
 
-    # Execute _run_prompt_reasoning with research prompt
-    prompt = "Scan ports and test vulnerability on https://api.production.local"
-    await _run_prompt_reasoning(tenant_id, session_id, prompt)
-
-    # 1. Verify required worklog streaming prefixes exist
-    worklog_texts = [f"{w.get('title', '')} {w.get('content', '')}" for w in state.get("worklog", [])]
-    full_worklog = " ".join(worklog_texts)
-
-    assert "[NetworkSpecialist] Scanning ports..." in full_worklog
-    assert "[WebSpecialist] Crawling endpoints..." in full_worklog
-    assert "[ApiSpecialist] Analyzing parameters..." in full_worklog
-    assert "[AuthSpecialist] Inspecting tokens..." in full_worklog
-    assert "[FalsificationSpecialist] Testing hypothesis..." in full_worklog
-
-    # 2. Verify AttackGraph nodes and edges in state["graph"]
-    graph_state = state.get("graph")
-    assert graph_state is not None
-    assert "nodes" in graph_state
-    assert "edges" in graph_state
-    assert len(graph_state["nodes"]) > 0
-    assert "mermaid" in graph_state
-
-    # 3. Verify concurrency execution metrics
-    assert "parallel_wall_time" in state
-    assert "sum_of_task_times" in state
-    assert "parallelism_factor" in state
-    assert state["parallel_wall_time"] > 0
-    assert state["sum_of_task_times"] > 0
-    assert state["parallelism_factor"] > 1.5, (
-        f"Expected parallelism_factor > 1.5 in state, got {state['parallelism_factor']}"
-    )
-
-    # Verify metrics object in state
-    assert "metrics" in state
-    assert state["metrics"]["completed_specialists"] >= 7
-    assert state["metrics"]["parallelism_factor"] == state["parallelism_factor"]
+    # The swarm worklog prefixes / AttackGraph generation must not be streamed
+    # into a purely research-chat session routed to the real agent.
+    for entry in state.get("worklog", []):
+        text = f"{entry.get('title', '')} {entry.get('content', '')}"
+        assert "[NetworkSpecialist]" not in text
+        assert "[WebSpecialist]" not in text
 
 
 # =====================================================================

@@ -13,7 +13,7 @@ import asyncio
 import base64
 import io
 import re
-from typing import Tuple, Optional
+from typing import Any, Optional, Tuple
 
 try:
     from PIL import Image, ImageDraw

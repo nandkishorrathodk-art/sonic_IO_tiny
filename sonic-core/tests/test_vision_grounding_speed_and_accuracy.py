@@ -12,27 +12,27 @@ from sonic.llm.schemas import ImageContent, LLMRequest, Message, MessageRole
 
 
 def test_models_yaml_kimi_k3_routing():
-    """Verify configs/models.yaml configures moonshotai/kimi-k3 for vision, computer_use, and reasoning."""
-    router = ModelRouter.from_config("configs/models.yaml", env_vars={"NVIDIA_API_KEY": "test-key"})
-    assert router.default_provider == "nvidia"
+    """Verify configs/models.yaml routes vision, computer_use, and reasoning to groq/qwen with nvidia fallback."""
+    router = ModelRouter.from_config("configs/models.yaml", env_vars={"NVIDIA_API_KEY": "test-key", "GROQ_API_KEY": "groq-key"})
+    assert router.default_provider == "groq"
     
     prov_vision, model_vision = router._resolve_provider(task_type="vision")
-    assert prov_vision.name == "nvidia"
-    assert model_vision == "moonshotai/kimi-k3"
+    assert prov_vision.name == "groq"
+    assert model_vision == "qwen/qwen3.8-27b"
 
     prov_cu, model_cu = router._resolve_provider(task_type="computer_use")
-    assert prov_cu.name == "nvidia"
-    assert model_cu == "moonshotai/kimi-k3"
+    assert prov_cu.name == "groq"
+    assert model_cu == "qwen/qwen3.8-27b"
 
     prov_reasoning, model_reasoning = router._resolve_provider(task_type="reasoning")
-    assert prov_reasoning.name == "nvidia"
-    assert model_reasoning == "moonshotai/kimi-k3"
+    assert prov_reasoning.name == "groq"
+    assert model_reasoning == "qwen/qwen3.8-27b"
 
 
 @pytest.mark.asyncio
 async def test_multimodal_image_auto_routes_to_vision():
     """Verify that requests carrying images automatically route to vision model."""
-    router = ModelRouter.from_config("configs/models.yaml", env_vars={"NVIDIA_API_KEY": "test-key"})
+    router = ModelRouter.from_config("configs/models.yaml", env_vars={"NVIDIA_API_KEY": "test-key", "GROQ_API_KEY": "groq-key"})
     mock_provider = MagicMock()
     mock_provider.name = "nvidia"
     mock_provider.default_model = "moonshotai/kimi-k3"

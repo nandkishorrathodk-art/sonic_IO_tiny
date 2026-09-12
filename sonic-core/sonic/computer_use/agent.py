@@ -13,13 +13,16 @@ of a step counter. No vulnerability-specific fix is hardcoded anywhere.
 
 from __future__ import annotations
 
+import ast
 import asyncio
+import base64
 import ipaddress
+import json
 import os
 import re
 import shlex
 import time
-from typing import Any
+from typing import Any, Optional
 
 from sonic.computer.models import (
     GUIAction,
@@ -55,6 +58,23 @@ from sonic.research.failure_classifier import classify_failure
 
 from sonic.llm.prompts import COMPUTER_USE_SYSTEM_PROMPT
 from sonic.logger import get_logger
+
+
+def _extract_command_from_sig(sig_payload_str: str) -> str:
+    """Extract the normalized ``command`` value from a stored action signature.
+
+    Signatures persist ``str(payload)`` (e.g. ``"{'command': 'hostname'}"``), so a
+    repeat check that wants to compare the actual command must parse the payload
+    back rather than comparing against the raw string representation. Falls back
+    to the cleaned payload string when it cannot be parsed.
+    """
+    try:
+        parsed = ast.literal_eval(sig_payload_str)
+    except Exception:
+        return sig_payload_str.strip().lower()
+    if isinstance(parsed, dict):
+        return str(parsed.get("command") or parsed.get("tool") or parsed.get("text") or parsed.get("url") or "").strip().lower()
+    return sig_payload_str.strip().lower()
 
 
 def _safe_str(val: Any) -> str:
@@ -3034,10 +3054,10 @@ class ComputerUseAgent:
         # Closed-loop Target Feedback to Self-Evolution Engine
         if status in (ActionExecutionStatus.FAILED, ActionExecutionStatus.RECOVERED) and getattr(self, "evolution_engine", None) is not None:
             try:
-                target_str = target_resource or primary_target or "target"
+                target_str = target_resource or str(self._last_action_output.get("target", "")) or self._last_navigated_url or "target"
                 evo_result = await self.evolution_engine.handle_target_failure(
                     raw_output=actual_obs_str,
-                    exit_code=exit_code if exit_code is not None else 1,
+                    exit_code=action_exit_code if action_exit_code is not None else 1,
                     target=str(target_str),
                     current_approach=f"{action_type.value if hasattr(action_type, 'value') else action_type} on {target_str}",
                     goal=getattr(self, "current_goal", "") or "",
@@ -3264,13 +3284,16 @@ class ComputerUseAgent:
                 for sig in recent_sigs:
                     if new_sig[0] == sig[0]:
                         sig_target = sig[1]
-                        sig_payload_str = sig[2].lower()
                         target_clean = new_sig[1]
                         is_repeat = False
                         if action_type == ComputerActionType.TERMINAL_EXEC:
-                            # For terminal exec, must match the actual command executed
+                            # For terminal exec, must match the actual command executed.
+                            # The stored signature payload is str(payload); parse it back
+                            # so the comparison uses the same normalized command value.
+                            sig_payload_str = _extract_command_from_sig(sig[2])
                             is_repeat = bool(cmd_val and cmd_val == sig_payload_str)
                         else:
+                            sig_payload_str = sig[2].lower()
                             is_repeat = bool(
                                 (target_clean and target_clean == sig_target and cmd_val == sig_payload_str)
                                 or (cmd_val and cmd_val == sig_payload_str)
@@ -3407,7 +3430,7 @@ class ComputerUseAgent:
         else:
             # If the agent already executed at least one action successfully with real output:
             successful_traces = [
-                t for t in self.traces
+                t for t in getattr(self, "traces", [])
                 if t.status in (ActionExecutionStatus.COMPLETED, ActionExecutionStatus.SUCCESS, ActionExecutionStatus.VERIFIED, "COMPLETED", "SUCCESS", "VERIFIED")
                 and t.actual_observation and len(t.actual_observation.strip()) > 0
             ]

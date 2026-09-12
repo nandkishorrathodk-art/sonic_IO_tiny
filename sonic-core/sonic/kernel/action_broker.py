@@ -16,8 +16,9 @@ from datetime import UTC, datetime
 from typing import Any
 
 from sonic.computer_use.models import ActionExecutionStatus
+from sonic.kernel.native_bridge import NativeKernelClient
 from sonic.logger import get_logger
-from sonic.safety.kernel import KernelVerdict, SafetyAuthorization, SafetyKernel
+from sonic.safety.kernel import _ACTION_MAP, KernelVerdict, SafetyAuthorization, SafetyKernel
 
 logger = get_logger(__name__)
 
@@ -49,10 +50,30 @@ class ActionBroker:
         self,
         safety_kernel: SafetyKernel | None = None,
         tenant_id: str = "default",
+        native_kernel_client: NativeKernelClient | None = None,
     ):
         self.tenant_id = tenant_id
         self.safety_kernel = safety_kernel or SafetyKernel(tenant_id=tenant_id)
+        self.native_kernel_client = (
+            native_kernel_client
+            if native_kernel_client is not None
+            else NativeKernelClient()
+        )
         self._history: list[BrokerResult] = []
+
+    def _extract_target(self, action_type: str, parameters: dict[str, Any]) -> str:
+        if action_type in ("TERMINAL_COMMAND", "COMMAND", "EXECUTE_COMMAND", "TERMINAL_EXEC"):
+            return str(parameters.get("command") or parameters.get("cmd") or "")
+        if action_type in ("FILE_WRITE", "WRITE_FILE", "FILE_READ", "READ_FILE"):
+            return str(parameters.get("path") or parameters.get("file_path") or "")
+        if action_type == "SECURITY_TOOL":
+            req = parameters.get("request")
+            if req and hasattr(req, "target"):
+                return str(req.target)
+            return str(parameters.get("target") or "")
+        if action_type in ("BROWSER_NAVIGATE", "HTTP_REQUEST"):
+            return str(parameters.get("url") or parameters.get("target") or "")
+        return str(parameters.get("target") or parameters.get("command") or parameters.get("path") or parameters.get("url") or "")
 
     def execute(
         self,
@@ -68,6 +89,92 @@ class ActionBroker:
         import time
 
         start_time = time.monotonic()
+
+        # 0. Hardware/Native-speed pre-screening via NativeKernelClient (if available)
+        if self.native_kernel_client:
+            target = self._extract_target(action_type, parameters)
+            canonical_action = _ACTION_MAP.get(action_type, action_type)
+            try:
+                native_verdict = self.native_kernel_client.authorize(
+                    action_type=canonical_action,
+                    target=target,
+                    is_isolated=True,
+                )
+            except Exception as exc:
+                logger.debug("Native kernel pre-screening error (failing-open to Python SafetyKernel): %s", exc)
+                native_verdict = None
+
+            if native_verdict is not None:
+                if not native_verdict.seal_intact:
+                    logger.error(
+                        "action_broker_blocked_native_seal_tampered",
+                        action_type=action_type,
+                        tenant_id=self.tenant_id,
+                    )
+                    auth = SafetyAuthorization(
+                        verdict=KernelVerdict.DENY,
+                        reason=f"Native safety kernel seal tampered: {native_verdict.reason}",
+                        action_type=action_type,
+                        seal_intact=False,
+                        audit_id=native_verdict.audit_id,
+                    )
+                    result = BrokerResult(
+                        status=ActionExecutionStatus.BLOCKED,
+                        exit_code=126,
+                        stderr=auth.reason,
+                        authorization=auth,
+                        duration_ms=(time.monotonic() - start_time) * 1000.0,
+                    )
+                    self._history.append(result)
+                    return result
+
+                if native_verdict.verdict == "Deny":
+                    logger.warning(
+                        "action_broker_blocked_by_native_kernel",
+                        action_type=action_type,
+                        reason=native_verdict.reason,
+                        tenant_id=self.tenant_id,
+                    )
+                    auth = SafetyAuthorization(
+                        verdict=KernelVerdict.DENY,
+                        reason=f"[NativeKernel Deny] {native_verdict.reason}",
+                        action_type=action_type,
+                        seal_intact=native_verdict.seal_intact,
+                        audit_id=native_verdict.audit_id,
+                    )
+                    result = BrokerResult(
+                        status=ActionExecutionStatus.BLOCKED,
+                        exit_code=126,
+                        stderr=auth.reason,
+                        authorization=auth,
+                        duration_ms=(time.monotonic() - start_time) * 1000.0,
+                    )
+                    self._history.append(result)
+                    return result
+
+                if native_verdict.verdict == "RequireApproval" and not approved:
+                    logger.warning(
+                        "action_broker_approval_required_by_native_kernel",
+                        action_type=action_type,
+                        reason=native_verdict.reason,
+                        tenant_id=self.tenant_id,
+                    )
+                    auth = SafetyAuthorization(
+                        verdict=KernelVerdict.REQUIRE_APPROVAL,
+                        reason=f"[NativeKernel ApprovalRequired] {native_verdict.reason}",
+                        action_type=action_type,
+                        seal_intact=native_verdict.seal_intact,
+                        audit_id=native_verdict.audit_id,
+                    )
+                    result = BrokerResult(
+                        status=ActionExecutionStatus.BLOCKED,
+                        exit_code=126,
+                        stderr=auth.reason,
+                        authorization=auth,
+                        duration_ms=(time.monotonic() - start_time) * 1000.0,
+                    )
+                    self._history.append(result)
+                    return result
 
         # 1. Gate check via SafetyKernel
         auth = self.safety_kernel.authorize(

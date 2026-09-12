@@ -59,6 +59,7 @@ class EngagementManager:
         compute_provider: Any = None,
         *,
         sandbox_provider: Any = None,
+        computer_provider: Any = None,
         reproduction_engine: Any = None,
         bug_bounty_client: Any = None,
         bugbounty_client: Any = None,
@@ -69,6 +70,12 @@ class EngagementManager:
         self.scope = scope_checker
         self.sandbox_provider = sandbox_provider if sandbox_provider is not None else compute_provider
         self.provider = self.sandbox_provider
+        # GUI-capable computer body (ComputerProvider: screenshot/gui_action/
+        # launch_application/terminal). Falls back to the sandbox provider when
+        # no explicit computer provider is wired so existing call sites keep
+        # working, but _run_computer_dynamic is what actually drives the
+        # ComputerUseAgent and it now prefers this GUI body.
+        self.computer_provider = computer_provider if computer_provider is not None else self.provider
         self.reproduction_engine = reproduction_engine
         self.bug_bounty_client = bug_bounty_client if bug_bounty_client is not None else bugbounty_client
         self.bugbounty_client = self.bug_bounty_client
@@ -159,7 +166,9 @@ class EngagementManager:
         # Egress / scope guard: refuse to create an engagement whose target
         # resolves to a private, loopback, or cloud-metadata address. This
         # prevents an agent from being pointed at internal infrastructure.
-        allowed, reason = is_target_allowed(target)
+        # Unresolvable-at-creation domains are allowed (an operator explicitly
+        # authorizes the target; execution-time egress enforcement still applies).
+        allowed, reason = is_target_allowed(target, allow_unresolvable=True)
         if not allowed:
             logger.warning("engagement_target_egress_denied", target=target, reason=reason)
             return ""
@@ -543,12 +552,13 @@ class EngagementManager:
         The HTTP-probe dynamic phase (previous step) gives fast initial coverage.
         This phase runs deeper scans inside the sandbox.
         """
-        if self.provider is None:
+        provider = self.computer_provider or self.provider
+        if provider is None:
             logger.info("computer_dynamic_skipped_no_provider",
                         engagement=engagement_id)
             return {
                 "skipped": True,
-                "reason": "No ComputeProvider available — sandbox required for real tool execution",
+                "reason": "No ComputerProvider available — GUI desktop/sandbox required for real tool execution",
             }
 
         try:
@@ -593,9 +603,12 @@ class EngagementManager:
             eng = self.active_engagements.get(engagement_id, {})
             tenant_id = eng.get("tenant_id", "default")
 
-            # Create the agent with direct reasoning and sealed safety boundary
+            # Create the agent with direct reasoning and sealed safety boundary.
+            # Uses the GUI-capable computer_provider (DockerComputerProvider/
+            # DaytonaComputerProvider) — screenshot/gui_action/launch_application
+            # all route to the real desktop, not the raw sandbox exec provider.
             agent = ComputerUseAgent(
-                computer_provider=self.provider,
+                computer_provider=provider,
                 safety=safety,
                 browser=browser,
                 tenant_id=tenant_id,
@@ -618,8 +631,12 @@ class EngagementManager:
                 f"Autonomously assess target security posture, investigate attack surface, and report findings."
             )
 
-            # Create a workspace and run the mission
-            ws_id = await self._workspace_for(engagement_id, tenant_id=tenant_id) or f"eng-{engagement_id[:12]}"
+            # Create a workspace and run the mission. The GUI computer body has
+            # its own workspace id (container name); the sandbox provider's
+            # workspace is ONLY a fallback when no GUI computer is wired.
+            ws_id = getattr(provider, "_default_workspace_id", None)
+            if not ws_id or ws_id == "None":
+                ws_id = await self._workspace_for(engagement_id, tenant_id=tenant_id) or f"eng-{engagement_id[:12]}"
 
             traces = await agent.run_mission(
                 workspace_id=ws_id,
@@ -671,7 +688,7 @@ class EngagementManager:
             return {
                 "traces": len(traces or []),
                 "findings": findings,
-                "tools_used": list(security_tools.keys()),
+                "tools_used": list(agent.security_tools.keys()),
                 "goal": goal,
             }
         except Exception as e:

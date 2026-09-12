@@ -176,6 +176,14 @@ class ModelRouter:
             )
             model_id = env_override_model or first_model["id"]
 
+            kwargs = {}
+            # Groq on-demand accounts enforce a hard output-tokens-per-minute
+            # limit (OTPM=1000). Any request declaring more is rejected with 429
+            # before generation starts, regardless of actual output length.
+            # Clamp everything going to Groq so the primary path actually works.
+            if provider_name == "groq" or "api.groq.com" in base_url:
+                kwargs["max_tokens_cap"] = pconfig.get("max_tokens_cap", 900)
+
             router.add_provider_from_config(
                 name=provider_name,
                 base_url=base_url,
@@ -186,6 +194,7 @@ class ModelRouter:
                 speed_tier=speed_map.get(first_model.get("speed_tier", "medium"), SpeedTier.MEDIUM),
                 capabilities=first_model.get("capabilities", []),
                 fallback_models=fallback_model_ids,
+                **kwargs,
             )
 
         # Load routing rules
@@ -243,10 +252,17 @@ class ModelRouter:
             target_model = None
             if task_type and task_type in self.routing_rules:
                 rule = self.routing_rules[task_type]
-                for fb in [rule.get("provider")] + rule.get("fallback", []):
-                    if fb and fb.startswith(f"{self.default_provider}/"):
-                        target_model = fb.split("/", 1)[1]
-                        break
+                # Prefer the rule's primary model when it belongs to the
+                # default provider; only then walk the fallback chain.
+                primary = rule.get("provider")
+                primary_model = rule.get("model")
+                if primary == self.default_provider and primary_model:
+                    target_model = primary_model
+                else:
+                    for fb in rule.get("fallback", []):
+                        if fb and fb.startswith(f"{self.default_provider}/"):
+                            target_model = fb.split("/", 1)[1]
+                            break
             return self.providers[self.default_provider], target_model
 
         # Route by task type

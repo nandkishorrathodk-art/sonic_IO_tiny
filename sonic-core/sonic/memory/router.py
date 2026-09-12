@@ -71,7 +71,9 @@ def get_memory_sync() -> MemoryBackend:
     global _active_memory
     if _active_memory is not None and not isinstance(_active_memory, InMemoryGraph):
         return _active_memory
-    return InMemoryGraph()
+    if not isinstance(_active_memory, InMemoryGraph):
+        _active_memory = InMemoryGraph()
+    return _active_memory
 
 
 def reset_memory_singleton() -> None:

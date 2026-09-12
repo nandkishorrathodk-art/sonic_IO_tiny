@@ -6,6 +6,8 @@ Full engagement management endpoints strictly partitioned by tenant_id.
 
 from __future__ import annotations
 
+import os
+
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 
@@ -60,8 +62,21 @@ def get_engagement_manager():
         except Exception:
             pass
 
+        # Wire GUI computer body (Daytona cloud desktop > Docker desktop) so the
+        # computer-use phase drives a real GUI (screenshot/gui_action/
+        # launch_application) instead of the raw sandbox exec provider.
+        computer_provider = None
+        try:
+            from sonic.computer.docker_computer import DockerComputerProvider
+            if os.environ.get("SONIC_USE_DAYTONA_CLOUD") == "1":
+                from sonic.computer.daytona_computer import DaytonaComputerProvider
+                computer_provider = DaytonaComputerProvider()
+            else:
+                computer_provider = DockerComputerProvider()
+        except Exception:
+            pass
+
         # Wire bug bounty client
-        import os
         h1_key = os.environ.get("HACKERONE_API_KEY", "")
         bc_key = os.environ.get("BUGCROWD_API_KEY", "")
         bugbounty_client = BugBountyClient(hackerone_api_key=h1_key, bugcrowd_api_key=bc_key)
@@ -72,6 +87,7 @@ def get_engagement_manager():
             scope_checker=scope,
             sandbox_provider=compute_provider,
             compute_provider=compute_provider,
+            computer_provider=computer_provider,
             bug_bounty_client=bugbounty_client,
             bugbounty_client=bugbounty_client,
         )

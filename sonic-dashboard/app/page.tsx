@@ -169,8 +169,8 @@ export default function SonicDevinWorkstation() {
         }
       }
 
-      // Safeguard: Poll with timeout (max 45 attempts = 45s max wait)
-      const MAX_ATTEMPTS = 45;
+      // Safeguard: Poll with timeout (max 300 attempts = 5 minutes max wait)
+      const MAX_ATTEMPTS = 300;
       let finished = false;
 
       for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt += 1) {

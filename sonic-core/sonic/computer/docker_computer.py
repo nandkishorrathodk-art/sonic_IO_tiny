@@ -80,7 +80,8 @@ class DockerComputerProvider(ComputerProvider):
         self._container_running_cache: bool = False
         self._container_checked_at: float | None = None
         self._default_workspace_id = self.container_name
-        self._exec_lock = asyncio.Lock()
+        self._exec_semaphore = asyncio.Semaphore(10)
+        self._gui_lock = asyncio.Lock()
         self._last_screenshot: ScreenObservation | None = None
         self._last_screenshot_time: float = 0.0
 
@@ -190,7 +191,7 @@ class DockerComputerProvider(ComputerProvider):
                 self._daemon_checked_at = now
         if not self._daemon_checked:
             return 126, "", "docker daemon is unreachable; command execution failed-closed"
-        async with self._exec_lock:
+        async with self._exec_semaphore:
             try:
                 exec_args = ["docker", "exec", self.container_name, "bash", "-c", cmd]
                 proc = await asyncio.create_subprocess_exec(
@@ -239,11 +240,26 @@ class DockerComputerProvider(ComputerProvider):
         if not await self._container_is_running():
             provisioned = await self._provision_workstation()
             if not provisioned:
-                # Fail-closed: never report a desktop that was not actually provisioned.
-                ws.status = ComputerWorkspaceStatus.STOPPED if shutil.which("docker") else ComputerWorkspaceStatus.FAILED
-                return ws
-            self._container_running_cache = True
-            self._container_checked_at = asyncio.get_event_loop().time()
+                # Try to start existing container if it exists but is stopped
+                try:
+                    await asyncio.to_thread(
+                        subprocess.run,
+                        ["docker", "start", self.container_name],
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.DEVNULL,
+                        timeout=10,
+                    )
+                    # Give container time to start
+                    await asyncio.sleep(2)
+                    self._container_running_cache = True
+                    self._container_checked_at = asyncio.get_event_loop().time()
+                except Exception:
+                    # Fail-closed: never report a desktop that was not actually provisioned.
+                    ws.status = ComputerWorkspaceStatus.STOPPED if shutil.which("docker") else ComputerWorkspaceStatus.FAILED
+                    return ws
+            else:
+                self._container_running_cache = True
+                self._container_checked_at = asyncio.get_event_loop().time()
         ws.status = ComputerWorkspaceStatus.RUNNING
         return ws
 
@@ -328,7 +344,7 @@ class DockerComputerProvider(ComputerProvider):
         ws.status = ComputerWorkspaceStatus.RUNNING
         disp = self._get_display(workspace_id)
         active_window = "Desktop"
-        open_windows: list[str] = ["Desktop", "Terminal"]
+        open_windows: list[str] = ["Desktop", "Terminal"]  # Default fallback for running container
 
         # Check real open windows via wmctrl
         code, out, _ = await self._docker_exec(f"DISPLAY={disp} wmctrl -l 2>/dev/null", timeout=5)
@@ -339,6 +355,10 @@ class DockerComputerProvider(ComputerProvider):
                     title = parts[3].strip()
                     if title and title not in ("xfce4-panel", "Desktop") and title not in open_windows:
                         open_windows.append(title)
+        
+        # Always ensure Desktop is in the list for running containers
+        if "Desktop" not in open_windows:
+            open_windows.insert(0, "Desktop")
 
         # Check active window via xdotool
         code, out, _ = await self._docker_exec(f"DISPLAY={disp} xdotool getactivewindow getwindowname 2>/dev/null", timeout=5)
@@ -421,68 +441,69 @@ class DockerComputerProvider(ComputerProvider):
         action: GUIAction,
         actor: str = "operator",
     ) -> ScreenObservation:
-        atype = action.action
-        disp = self._get_display(workspace_id)
+        async with self._gui_lock:
+            atype = action.action
+            disp = self._get_display(workspace_id)
 
-        if atype in (GUIActionType.CLICK, GUIActionType.DOUBLE_CLICK):
-            repeat = 2 if atype == GUIActionType.DOUBLE_CLICK else 1
-            if action.x is not None and action.y is not None:
-                await self._docker_exec(f"DISPLAY={disp} xdotool mousemove {action.x} {action.y} click --repeat {repeat} 1")
-            else:
-                await self._docker_exec(f"DISPLAY={disp} xdotool click --repeat {repeat} 1")
+            if atype in (GUIActionType.CLICK, GUIActionType.DOUBLE_CLICK):
+                repeat = 2 if atype == GUIActionType.DOUBLE_CLICK else 1
+                if action.x is not None and action.y is not None:
+                    await self._docker_exec(f"DISPLAY={disp} xdotool mousemove {action.x} {action.y} click --repeat {repeat} 1")
+                else:
+                    await self._docker_exec(f"DISPLAY={disp} xdotool click --repeat {repeat} 1")
 
-        elif atype == GUIActionType.RIGHT_CLICK:
-            if action.x is not None and action.y is not None:
-                await self._docker_exec(f"DISPLAY={disp} xdotool mousemove {action.x} {action.y} click 3")
-            else:
-                await self._docker_exec(f"DISPLAY={disp} xdotool click 3")
+            elif atype == GUIActionType.RIGHT_CLICK:
+                if action.x is not None and action.y is not None:
+                    await self._docker_exec(f"DISPLAY={disp} xdotool mousemove {action.x} {action.y} click 3")
+                else:
+                    await self._docker_exec(f"DISPLAY={disp} xdotool click 3")
 
-        elif atype == GUIActionType.MOVE and action.x is not None and action.y is not None:
-            await self._docker_exec(f"DISPLAY={disp} xdotool mousemove {action.x} {action.y}")
+            elif atype == GUIActionType.MOVE and action.x is not None and action.y is not None:
+                await self._docker_exec(f"DISPLAY={disp} xdotool mousemove {action.x} {action.y}")
 
-        elif atype == GUIActionType.DRAG:
-            sx, sy = action.x or 0, action.y or 0
-            dx = action.x2 if action.x2 is not None else sx
-            dy = action.y2 if action.y2 is not None else sy
-            await self._docker_exec(f"DISPLAY={disp} xdotool mousemove {sx} {sy} mousedown 1 mousemove {dx} {dy} mouseup 1")
+            elif atype == GUIActionType.DRAG:
+                sx, sy = action.x or 0, action.y or 0
+                dx = action.x2 if action.x2 is not None else sx
+                dy = action.y2 if action.y2 is not None else sy
+                await self._docker_exec(f"DISPLAY={disp} xdotool mousemove {sx} {sy} mousedown 1 mousemove {dx} {dy} mouseup 1")
 
-        elif atype == GUIActionType.TYPE and action.text:
-            safe_text = shlex.quote(action.text)
-            await self._docker_exec(f"DISPLAY={disp} xdotool type --delay 25 --clearmodifiers {safe_text}")
+            elif atype == GUIActionType.TYPE and action.text:
+                safe_text = shlex.quote(action.text)
+                await self._docker_exec(f"DISPLAY={disp} xdotool type --delay 25 --clearmodifiers {safe_text}")
 
-        elif atype == GUIActionType.KEYPRESS and action.key:
-            safe_key = shlex.quote(action.key)
-            await self._docker_exec(f"DISPLAY={disp} xdotool key {safe_key}")
+            elif atype == GUIActionType.KEYPRESS and action.key:
+                safe_key = shlex.quote(action.key)
+                await self._docker_exec(f"DISPLAY={disp} xdotool key {safe_key}")
 
-        elif atype == GUIActionType.SCROLL:
-            btn = 5 if action.scroll_delta < 0 else 4
-            times = abs(action.scroll_delta) if action.scroll_delta != 0 else 3
-            await self._docker_exec(f"DISPLAY={disp} xdotool click --repeat {times} {btn}")
+            elif atype == GUIActionType.SCROLL:
+                btn = 5 if action.scroll_delta < 0 else 4
+                times = abs(action.scroll_delta) if action.scroll_delta != 0 else 3
+                await self._docker_exec(f"DISPLAY={disp} xdotool click --repeat {times} {btn}")
 
-        elif atype == GUIActionType.OPEN_APP and action.app_name:
-            clean_app = action.app_name.strip()
-            parts = shlex.split(clean_app) if clean_app else []
-            if parts:
-                spawn = f"DISPLAY={disp} nohup {' '.join(shlex.quote(p) for p in parts)} >/dev/null 2>&1 &"
-                await self._docker_exec(spawn)
-                self._active_windows[workspace_id] = parts[0]
+            elif atype == GUIActionType.OPEN_APP and action.app_name:
+                clean_app = action.app_name.strip()
+                parts = shlex.split(clean_app) if clean_app else []
+                if parts:
+                    spawn = f"DISPLAY={disp} nohup {' '.join(shlex.quote(p) for p in parts)} >/dev/null 2>&1 &"
+                    await self._docker_exec(spawn)
+                    self._active_windows[workspace_id] = parts[0]
 
-        elif atype == GUIActionType.CLOSE_APP and action.app_name:
-            await self._docker_exec(f"pkill -f -- {shlex.quote(action.app_name)}")
+            elif atype == GUIActionType.CLOSE_APP and action.app_name:
+                await self._docker_exec(f"pkill -f -- {shlex.quote(action.app_name)}")
 
-        elif atype == GUIActionType.SELECT_WINDOW:
-            target = action.window_id or action.app_name
-            if target:
-                await self._docker_exec(
-                    f"DISPLAY={disp} (wmctrl -i -a {shlex.quote(target)} 2>/dev/null || "
-                    f"wmctrl -a {shlex.quote(target)} 2>/dev/null || "
-                    f"xdotool search --name {shlex.quote(target)} windowactivate 2>/dev/null) || true"
-                )
+            elif atype == GUIActionType.SELECT_WINDOW:
+                target = action.window_id or action.app_name
+                if target:
+                    await self._docker_exec(
+                        f"DISPLAY={disp} (wmctrl -i -a {shlex.quote(target)} 2>/dev/null || "
+                        f"wmctrl -a {shlex.quote(target)} 2>/dev/null || "
+                        f"xdotool search --name {shlex.quote(target)} windowactivate 2>/dev/null) || true"
+                    )
 
-        # Invalidate 2-second cache so fresh post-action screen is captured
-        self._last_screenshot_time = 0.0
-        await asyncio.sleep(0.3)
-        return await self.screenshot(workspace_id)
+            # Invalidate 2-second cache so fresh post-action screen is captured
+            self._last_screenshot_time = 0.0
+            await asyncio.sleep(0.3)
+            return await self.screenshot(workspace_id)
 
     async def tile_workstation(self, workspace_id: str) -> bool:
         """

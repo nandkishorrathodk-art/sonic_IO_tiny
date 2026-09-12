@@ -91,7 +91,7 @@ class ComputerWorkspace(BaseModel):
     workspace_type: ComputerWorkspaceType = ComputerWorkspaceType.MISSION_COMPUTER
     profile: ComputerProfile = ComputerProfile.KALI_SECURITY
     provider_type: str = "DockerProvider"  # DockerProvider, DaytonaProvider, LocalDevProvider
-    image: str = "sonic-kali-linux:v1.3.0"
+    image: str = "sonic-workstation:latest"
     status: ComputerWorkspaceStatus = ComputerWorkspaceStatus.READY
     workspace_path: str = "/home/sonic/workspace"
     capabilities: list[str] = Field(default_factory=lambda: [

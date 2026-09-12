@@ -69,8 +69,6 @@ _ACTION_MAP = {
     "GUI_SCREENSHOT": "GUI_SCREENSHOT",
 }
 
-ACTION_MAP = _ACTION_MAP
-
 
 class SafetyKernel:
     """The central safety kernel for SONIC v2.

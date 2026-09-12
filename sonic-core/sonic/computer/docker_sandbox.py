@@ -99,6 +99,12 @@ class DockerContainerSandbox:
     async def get_preview_link(self, port: int = 6080) -> DockerContainerPreview:
         return DockerContainerPreview(port)
 
+    async def screenshot(self) -> str:
+        """Take a screenshot of the container (placeholder for compatibility)."""
+        # This is a placeholder for screenshot functionality
+        # In a real implementation, this would capture the graphical display
+        return ""
+
     async def delete(self) -> None:
         pass
 

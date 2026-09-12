@@ -20,6 +20,7 @@ import math
 import operator
 import os
 import re
+import threading
 import zlib
 from dataclasses import dataclass, field
 from typing import Any
@@ -47,6 +48,7 @@ class VectorDocument:
     text: str
     metadata: dict[str, Any] = field(default_factory=dict)
     vector: list[float] = field(default_factory=list)
+    tenant_id: str = "default"
 
 
 class DenseVectorizer:
@@ -177,6 +179,7 @@ class VectorMemory:
         self.vectorizer = DenseVectorizer(dim=dim)
         self.documents: dict[str, VectorDocument] = {}
         self.persist = persist
+        self._lock = threading.Lock()
         self._db_path = db_path or (os.environ.get("SONIC_MEMORY_DB_PATH") or _default_db_path()) if persist else None
         self._db: sqlite3.Connection | None = None
         if persist:
@@ -186,25 +189,39 @@ class VectorMemory:
         import sqlite3
         if self._db is not None or not self.persist:
             return
-        self._db = sqlite3.connect(self._db_path, check_same_thread=False)
-        self._db.execute(
-            "CREATE TABLE IF NOT EXISTS vector_documents ("
-            "doc_id TEXT PRIMARY KEY, text TEXT NOT NULL, "
-            "metadata_json TEXT NOT NULL DEFAULT '{}', vector_json TEXT NOT NULL DEFAULT '[]')"
-        )
-        self._db.commit()
-        # Load any previously persisted documents into the read cache.
-        for doc_id, text, meta_json, vec_json in self._db.execute(
-            "SELECT doc_id, text, metadata_json, vector_json FROM vector_documents"
-        ).fetchall():
-            self.documents[doc_id] = VectorDocument(
-                doc_id=doc_id,
-                text=text,
-                metadata=json.loads(meta_json),
-                vector=json.loads(vec_json),
+        with self._lock:
+            self._db = sqlite3.connect(self._db_path, check_same_thread=False)
+            self._db.execute("PRAGMA journal_mode=WAL")
+            self._db.execute("PRAGMA busy_timeout=30000")
+            self._db.execute(
+                "CREATE TABLE IF NOT EXISTS vector_documents ("
+                "doc_id TEXT PRIMARY KEY, text TEXT NOT NULL, "
+                "metadata_json TEXT NOT NULL DEFAULT '{}', vector_json TEXT NOT NULL DEFAULT '[]', "
+                "tenant_id TEXT NOT NULL DEFAULT 'default')"
             )
+            cols = [c[1] for c in self._db.execute("PRAGMA table_info(vector_documents)").fetchall()]
+            if "tenant_id" not in cols:
+                self._db.execute("ALTER TABLE vector_documents ADD COLUMN tenant_id TEXT NOT NULL DEFAULT 'default'")
+            self._db.commit()
+            # Load any previously persisted documents into the read cache.
+            for doc_id, text, meta_json, vec_json, t_id in self._db.execute(
+                "SELECT doc_id, text, metadata_json, vector_json, tenant_id FROM vector_documents"
+            ).fetchall():
+                self.documents[doc_id] = VectorDocument(
+                    doc_id=doc_id,
+                    text=text,
+                    metadata=json.loads(meta_json),
+                    vector=json.loads(vec_json),
+                    tenant_id=t_id or "default",
+                )
 
-    def index_document(self, doc_id: str, text: str, metadata: dict[str, Any] | None = None) -> None:
+    def index_document(
+        self,
+        doc_id: str,
+        text: str,
+        metadata: dict[str, Any] | None = None,
+        tenant_id: str = "default",
+    ) -> None:
         """Add or update a document in the vector index (write-through to SQLite)."""
         vector = self.vectorizer.vectorize(text)
         self.documents[doc_id] = VectorDocument(
@@ -212,23 +229,33 @@ class VectorMemory:
             text=text,
             metadata=metadata or {},
             vector=vector,
+            tenant_id=tenant_id,
         )
         if self._db is not None:
-            self._db.execute(
-                "INSERT OR REPLACE INTO vector_documents "
-                "(doc_id, text, metadata_json, vector_json) VALUES (?, ?, ?, ?)",
-                (doc_id, text, json.dumps(metadata or {}, default=str), json.dumps(vector)),
-            )
-            self._db.commit()
+            with self._lock:
+                self._db.execute(
+                    "INSERT OR REPLACE INTO vector_documents "
+                    "(doc_id, text, metadata_json, vector_json, tenant_id) VALUES (?, ?, ?, ?, ?)",
+                    (doc_id, text, json.dumps(metadata or {}, default=str), json.dumps(vector), tenant_id),
+                )
+                self._db.commit()
 
-    def search(self, query: str, top_k: int = 5, score_threshold: float = 0.2) -> list[dict[str, Any]]:
+    def search(
+        self,
+        query: str,
+        top_k: int = 5,
+        score_threshold: float = 0.2,
+        tenant_id: str | None = None,
+    ) -> list[dict[str, Any]]:
         """
-        Search for top-k most semantically similar documents.
+        Search for top-k most semantically similar documents, optionally filtered by tenant.
         """
         query_vec = self.vectorizer.vectorize(query)
         scored: list[tuple[float, VectorDocument]] = []
 
         for doc in self.documents.values():
+            if tenant_id is not None and doc.tenant_id != tenant_id:
+                continue
             sim = self.vectorizer.cosine_similarity(query_vec, doc.vector)
             if sim >= score_threshold:
                 scored.append((sim, doc))
@@ -242,24 +269,35 @@ class VectorMemory:
                 "text": doc.text,
                 "score": round(score, 4),
                 "metadata": doc.metadata,
+                "tenant_id": doc.tenant_id,
             })
         return results
 
-    def is_duplicate(self, text: str, threshold: float = 0.88) -> tuple[bool, str | None]:
+    def is_duplicate(self, text: str, threshold: float = 0.88, tenant_id: str | None = None) -> tuple[bool, str | None]:
         """
         Check if a finding or text is a duplicate of an existing indexed document.
         """
-        matches = self.search(text, top_k=1, score_threshold=threshold)
+        matches = self.search(text, top_k=1, score_threshold=threshold, tenant_id=tenant_id)
         if matches:
             return True, matches[0]["doc_id"]
         return False, None
 
-    def clear(self) -> None:
+    def clear(self, tenant_id: str | None = None) -> None:
         """Clear the vector memory (in-memory cache and persisted rows)."""
-        self.documents.clear()
-        if self._db is not None:
-            self._db.execute("DELETE FROM vector_documents")
-            self._db.commit()
+        if tenant_id is not None:
+            to_remove = [k for k, v in self.documents.items() if v.tenant_id == tenant_id]
+            for k in to_remove:
+                self.documents.pop(k, None)
+            if self._db is not None:
+                with self._lock:
+                    self._db.execute("DELETE FROM vector_documents WHERE tenant_id = ?", (tenant_id,))
+                    self._db.commit()
+        else:
+            self.documents.clear()
+            if self._db is not None:
+                with self._lock:
+                    self._db.execute("DELETE FROM vector_documents")
+                    self._db.commit()
 
 
 # Global singleton

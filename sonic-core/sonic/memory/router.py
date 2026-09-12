@@ -36,7 +36,7 @@ async def get_smart_memory() -> MemoryBackend:
     async fallback (it is non-persistent).
     """
     global _active_memory
-    if _active_memory is not None:
+    if _active_memory is not None and not isinstance(_active_memory, InMemoryGraph):
         return _active_memory
 
     # Try Neo4j
@@ -65,13 +65,13 @@ def get_memory_sync() -> MemoryBackend:
     """Get already-initialized memory backend (sync access).
 
     If no async backend was initialized yet, returns an InMemoryGraph so the
-    call never blocks; the persistent backend is established lazily on first
-    async ``get_smart_memory()`` call.
+    call never blocks; does not poison _active_memory so that persistent
+    storage (Neo4j or SqliteGraph) is properly initialized on the next async call.
     """
     global _active_memory
-    if _active_memory is None:
-        _active_memory = InMemoryGraph()
-    return _active_memory
+    if _active_memory is not None and not isinstance(_active_memory, InMemoryGraph):
+        return _active_memory
+    return InMemoryGraph()
 
 
 def reset_memory_singleton() -> None:

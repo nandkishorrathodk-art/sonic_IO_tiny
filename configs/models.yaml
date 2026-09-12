@@ -6,8 +6,8 @@
 # ============================================
 
 # Default provider and model when no task-specific rule matches
-default_provider: nvidia
-default_model: meta/llama-3.2-11b-vision-instruct
+default_provider: groq
+default_model: qwen/qwen3.8-27b
 
 # ---- Provider Definitions ----
 providers:
@@ -61,16 +61,26 @@ providers:
     base_url_env: GROQ_BASE_URL
     base_url: https://api.groq.com/openai/v1
     models:
-      - id: llama-3.3-70b-versatile
+      - id: qwen/qwen3.8-27b
         speed_tier: fast
-        cost_per_1k_input: 0.00059
-        cost_per_1k_output: 0.00079
-        capabilities: [reasoning, coding, planning, tool_use]
-      - id: deepseek-r1-distill-llama-70b
+        cost_per_1k_input: 0.0003
+        cost_per_1k_output: 0.0006
+        capabilities: [reasoning, coding, planning, vision, computer_use, multimodal, tool_use]
+      - id: openai/gpt-oss-120b
         speed_tier: fast
-        cost_per_1k_input: 0.00059
-        cost_per_1k_output: 0.00079
-        capabilities: [reasoning, coding]
+        cost_per_1k_input: 0.0005
+        cost_per_1k_output: 0.001
+        capabilities: [reasoning, coding, planning, verification, architecture]
+      - id: openai/gpt-oss-20b
+        speed_tier: fast
+        cost_per_1k_input: 0.0002
+        cost_per_1k_output: 0.0004
+        capabilities: [fast_tasks, classification]
+      - id: qwen/qwen3.6-27b
+        speed_tier: medium
+        cost_per_1k_input: 0.0003
+        cost_per_1k_output: 0.0006
+        capabilities: [reasoning, coding, thinking, vision]
 
   nvidia:
     name: NVIDIA NIM API
@@ -78,6 +88,11 @@ providers:
     base_url_env: NVIDIA_BASE_URL
     base_url: https://integrate.api.nvidia.com/v1
     models:
+      - id: deepseek-ai/deepseek-v4-pro-0813
+        speed_tier: fast
+        cost_per_1k_input: 0.0005
+        cost_per_1k_output: 0.001
+        capabilities: [reasoning, coding, planning, tool_use, architecture]
       - id: meta/llama-3.2-11b-vision-instruct
         speed_tier: fast
         cost_per_1k_input: 0.0003
@@ -167,64 +182,64 @@ providers:
 routing_rules:
   planning:
     description: 'High-level planning, task decomposition, strategy'
-    provider: nvidia
-    model: meta/llama-3.2-11b-vision-instruct
-    fallback: [nvidia/openai/gpt-oss-20b, groq/llama-3.3-70b-versatile, openrouter/deepseek/deepseek-r1, claude/claude-3-5-sonnet-20241022]
+    provider: groq
+    model: qwen/qwen3.8-27b
+    fallback: [groq/qwen/qwen3.6-27b, nvidia/meta/llama-3.2-11b-vision-instruct]
 
   reasoning:
     description: 'Code analysis, dataflow tracing, pattern matching'
-    provider: nvidia
-    model: moonshotai/kimi-k3
-    fallback: [nvidia/openai/gpt-oss-20b, groq/llama-3.3-70b-versatile, openrouter/deepseek/deepseek-r1, claude/claude-3-5-sonnet-20241022]
+    provider: groq
+    model: qwen/qwen3.8-27b
+    fallback: [groq/qwen/qwen3.6-27b, nvidia/meta/llama-3.2-11b-vision-instruct]
 
   fast_recon:
     description: 'Quick reconnaissance, asset discovery, tech detection'
-    provider: nvidia
-    model: meta/llama-3.2-11b-vision-instruct
-    fallback: [groq/llama-3.3-70b-versatile, openai/gpt-4o-mini, grok/grok-3]
+    provider: groq
+    model: qwen/qwen3.8-27b
+    fallback: [groq/qwen/qwen3.6-27b]
 
   coding:
     description: 'Code generation, fix generation, test writing'
-    provider: nvidia
-    model: meta/llama-3.2-11b-vision-instruct
-    fallback: [nvidia/openai/gpt-oss-20b, deepseek/deepseek-reasoner, claude/claude-3-5-sonnet-20241022]
+    provider: groq
+    model: qwen/qwen3.8-27b
+    fallback: [groq/qwen/qwen3.6-27b, nvidia/meta/llama-3.2-11b-vision-instruct]
 
   verification:
     description: 'Evidence checking, confidence scoring, FP filtering'
-    provider: nvidia
-    model: meta/llama-3.2-11b-vision-instruct
-    fallback: [nvidia/openai/gpt-oss-20b, openai/gpt-4o, claude/claude-3-5-sonnet-20241022]
+    provider: groq
+    model: qwen/qwen3.8-27b
+    fallback: [groq/qwen/qwen3.6-27b, nvidia/meta/llama-3.2-11b-vision-instruct]
 
   hypothesis:
     description: 'Novel bug class ideation, creative reasoning'
-    provider: nvidia
-    model: meta/llama-3.2-11b-vision-instruct
-    fallback: [nvidia/openai/gpt-oss-20b, openrouter/deepseek/deepseek-r1]
+    provider: groq
+    model: qwen/qwen3.8-27b
+    fallback: [groq/qwen/qwen3.6-27b, nvidia/meta/llama-3.2-11b-vision-instruct]
 
   classification:
     description: 'Quick labeling, triage, categorization'
-    provider: nvidia
-    model: meta/llama-3.2-11b-vision-instruct
-    fallback: [groq/llama-3.3-70b-versatile, openai/gpt-4o-mini]
+    provider: groq
+    model: qwen/qwen3.8-27b
+    fallback: [groq/qwen/qwen3.6-27b]
 
   vision:
     description: 'Multimodal vision, desktop screenshot parsing, visual UI grounding'
-    provider: nvidia
-    model: moonshotai/kimi-k3
-    fallback: [openrouter/openai/gpt-4o, claude/claude-3-5-sonnet-20241022]
+    provider: groq
+    model: qwen/qwen3.8-27b
+    fallback: [groq/qwen/qwen3.6-27b, nvidia/meta/llama-3.2-11b-vision-instruct]
 
   computer_use:
     description: 'Autonomous computer vision and desktop interaction'
-    provider: nvidia
-    model: moonshotai/kimi-k3
-    fallback: [nvidia/openai/gpt-oss-20b, openrouter/openai/gpt-4o, claude/claude-3-5-sonnet-20241022]
+    provider: groq
+    model: qwen/qwen3.8-27b
+    fallback: [groq/qwen/qwen3.6-27b, nvidia/meta/llama-3.2-11b-vision-instruct]
 
 # ---- Global Fallback Chain ----
 # If the preferred provider for a task fails, try these in order
 global_fallback_chain:
+  - groq
   - openrouter
   - deepseek
-  - groq
   - claude
   - openai
   - nvidia

@@ -96,6 +96,7 @@ class ActionPolicy:
         require_approval_for_intrusive: bool = True,
         scope_checker: ScopeChecker | None = None,
         scope_config: dict | None = None,
+        allow_private_networks: bool = False,
     ):
         self.workspace_root = Path(workspace_root).resolve()
         self.allowed_types = frozenset(allowed_action_types or self.DEFAULT_ALLOWED_TYPES)
@@ -106,9 +107,23 @@ class ActionPolicy:
         self.require_approval_for_intrusive = require_approval_for_intrusive
         self.scope_checker = scope_checker or ScopeChecker()
         self.scope_config = scope_config
+        self.allow_private_networks = allow_private_networks
         # The scope checker's check_action is fail-closed only when rules are
         # loaded; for the command-risk classifier we don't need rules loaded.
         self._rate = _RateWindow()
+
+    def clone_for_agent(self, agent_id: str = "") -> ActionPolicy:
+        """Clone policy with an independent rate window for a concurrent subagent."""
+        return ActionPolicy(
+            workspace_root=str(self.workspace_root),
+            allowed_action_types=set(self.allowed_types),
+            allow_security_tool_targets=set(self.security_tool_targets),
+            max_actions_per_minute=self.max_actions_per_minute,
+            require_approval_for_intrusive=self.require_approval_for_intrusive,
+            scope_checker=self.scope_checker,
+            scope_config=self.scope_config,
+            allow_private_networks=self.allow_private_networks,
+        )
 
     # ------------------------------------------------------------------
     def evaluate(self, action_type_name: str, target: str, payload: dict[str, Any]) -> PolicyVerdict:
@@ -139,7 +154,7 @@ class ActionPolicy:
         #    TOOL_RUN executes a hardcoded `python <workspace-toolsmith-path>`,
         #    so the command is structural; we only gate user-supplied commands.
         if action_type_name == "TERMINAL_EXEC":
-            command = payload.get("command", "")
+            command = payload.get("command") or payload.get("cmd") or target or ""
             verdict = self._check_command(command)
             if not verdict.allowed:
                 return verdict
@@ -249,8 +264,15 @@ class ActionPolicy:
         verdict = self._check_target_and_scope(target, label)
         if verdict is not None:
             return verdict
+        allow_private = False
+        host = self._host_of(target)
+        if (
+            getattr(self, "allow_private_networks", False)
+            or (self.security_tool_targets and (host in self.security_tool_targets or target in self.security_tool_targets))
+        ):
+            allow_private = True
         try:
-            ok, reason = egress.is_target_allowed(target)
+            ok, reason = egress.is_target_allowed(target, allow_private_for_tests=allow_private)
         except Exception as e:
             return PolicyVerdict(False, f"egress check failed: {e}")
         if not ok:

@@ -134,6 +134,7 @@ class ModelRouter:
         router = cls()
         router.default_provider = (
             env.get("DEFAULT_PROVIDER")
+            or env.get("DEFAULT_LLM_PROVIDER")
             or env.get("LLM_PROVIDER")
             or config.get("default_provider", "")
         )
@@ -365,32 +366,40 @@ class ModelRouter:
         task_type: str | None,
     ) -> LLMResponse:
         """Try fallback providers when the primary fails."""
-        # Get fallback chain from routing rule or global
-        fallbacks = self.fallback_chain
+        candidates: list[tuple[str, str | None]] = []
 
         if task_type and task_type in self.routing_rules:
             rule_fallbacks = self.routing_rules[task_type].get("fallback", [])
-            if rule_fallbacks:
-                fallbacks = [
-                    fb.split("/")[0] if "/" in fb else fb
-                    for fb in rule_fallbacks
-                ] + self.fallback_chain
+            for fb in rule_fallbacks:
+                if "/" in fb:
+                    parts = fb.split("/", 1)
+                    candidates.append((parts[0], parts[1]))
+                else:
+                    candidates.append((fb, None))
 
-        for fb_name in fallbacks:
-            if fb_name == failed_provider or fb_name not in self.providers:
+        for p_name in self.fallback_chain:
+            candidates.append((p_name, None))
+
+        original_model = request.model
+        for fb_name, fb_model in candidates:
+            if not self._is_provider_ready(fb_name):
+                continue
+            # Skip if same provider and no different model specified
+            if fb_name == failed_provider and (not fb_model or fb_model == original_model):
                 continue
 
-            logger.info("trying_fallback", provider=fb_name, task_type=task_type)
+            logger.info("trying_fallback", provider=fb_name, model=fb_model, task_type=task_type)
             try:
                 fb_provider = self.providers[fb_name]
+                request.model = fb_model  # Assign model appropriate for fallback provider (or None to use default)
                 return await fb_provider.complete_with_timing(request)
             except Exception as e:
-                logger.warning("fallback_failed", provider=fb_name, error=str(e))
+                logger.warning("fallback_failed", provider=fb_name, model=fb_model, error=str(e))
                 continue
 
         raise RuntimeError(
             f"All providers failed for task_type={task_type}. "
-            f"Tried: {failed_provider} + {fallbacks}"
+            f"Primary: {failed_provider} (model: {original_model}), Candidates tried: {candidates}"
         )
 
     async def stream(

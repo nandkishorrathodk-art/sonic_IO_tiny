@@ -82,6 +82,7 @@ class SqliteGraph:
         self._db = await aiosqlite.connect(self.db_path)
         await self._db.execute("PRAGMA journal_mode=WAL")
         await self._db.execute("PRAGMA foreign_keys=ON")
+        await self._db.execute("PRAGMA busy_timeout=30000")
         await self.init_schema()
         self._connected = True
         logger.info("sqlite_graph_ready", db_path=self.db_path)

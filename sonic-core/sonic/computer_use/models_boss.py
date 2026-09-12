@@ -55,6 +55,7 @@ class Phase(BaseModel):
     thinking: str = ""  # Boss's strategic reasoning for creating this phase
     sub_missions: list[SubMission] = Field(default_factory=list)
     results: list[SubMissionResult] = Field(default_factory=list)
+    summary: str = ""  # Synthesized intelligence summary from this phase
     status: str = "PENDING"  # PENDING -> RUNNING -> COMPLETED
     started_at: str = ""
     completed_at: str = ""

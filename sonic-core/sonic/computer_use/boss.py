@@ -17,6 +17,7 @@ steps, executing on the shared workstation.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 import time
@@ -248,20 +249,23 @@ class BossAgent:
 
         logger.info("boss_agent_start", objective=objective[:200])
 
-        # Phase 1: Strategic decomposition
-        first_phase = await self._strategic_decomposition(objective)
-        if not first_phase or not first_phase.sub_missions:
-            # Objective is too simple for Boss — return minimal report
-            logger.info("boss_agent_simple_objective", objective=objective[:100])
-            return BossReport(
-                objective=objective,
-                status="COMPLETE",
-                findings_summary="Objective is simple enough for direct execution.",
-                duration_seconds=round(time.perf_counter() - t_start, 2),
-            )
+        # Phase 1: Strategic decomposition (if not already populated)
+        if not self.phases:
+            first_phase = await self._strategic_decomposition(objective)
+            if not first_phase or not first_phase.sub_missions:
+                # Objective is too simple for Boss — return minimal report
+                logger.info("boss_agent_simple_objective", objective=objective[:100])
+                return BossReport(
+                    objective=objective,
+                    status="COMPLETE",
+                    findings_summary="Objective is simple enough for direct execution.",
+                    duration_seconds=round(time.perf_counter() - t_start, 2),
+                )
 
-        self.phases.append(first_phase)
-        self._sync_phase_to_graph(first_phase)
+            self.phases.append(first_phase)
+            self._sync_phase_to_graph(first_phase)
+        else:
+            self._sync_phase_to_graph(self.phases[0])
 
         # Execute phases
         for phase_idx in range(self.max_phases):
@@ -280,85 +284,156 @@ class BossAgent:
                 "content": current_phase.thinking,
             })
 
-            # Dispatch each SubAgent sequentially
-            for sub_mission in sorted(current_phase.sub_missions, key=lambda s: -s.priority):
+            # Dispatch SubAgents in concurrent dependency waves
+            completed_sub_ids = {r.sub_mission_id for p in self.phases for r in p.results if r.success}
+            pending_subs = list(sorted(current_phase.sub_missions, key=lambda s: -s.priority))
+
+            while pending_subs:
                 if self._interrupted or (callable(interrupt_check) and interrupt_check()):
                     break
 
-                # Check TaskGraph dependency readiness
-                tg_task = self.task_graph.get_task(sub_mission.id)
-                if tg_task and tg_task.status == TaskStatus.BLOCKED:
-                    logger.info("boss_sub_mission_blocked_in_graph", sub_id=sub_mission.id)
-                    continue
+                # 1. Identify ready sub-missions (dependencies met)
+                ready_batch = [
+                    s for s in pending_subs
+                    if not s.depends_on or all(dep_id in completed_sub_ids for dep_id in s.depends_on)
+                ]
 
-                # Check dependencies
-                if sub_mission.depends_on:
-                    deps_met = all(
-                        any(r.sub_mission_id == dep_id and r.success for r in current_phase.results)
-                        for dep_id in sub_mission.depends_on
-                    )
-                    if not deps_met:
-                        logger.info("boss_sub_mission_deps_not_met", sub_id=sub_mission.id)
+                # Check TaskGraph blocked status
+                unblocked_ready = []
+                for s in ready_batch:
+                    tg_task = self.task_graph.get_task(s.id)
+                    if tg_task and tg_task.status == TaskStatus.BLOCKED:
+                        logger.info("boss_sub_mission_blocked_in_graph", sub_id=s.id)
+                        pending_subs.remove(s)
                         continue
+                    unblocked_ready.append(s)
 
-                sub_mission.status = "RUNNING"
-                if tg_task:
-                    try:
-                        self.task_graph.mark_running(sub_mission.id)
-                    except Exception:
-                        pass
-                self._sub_agent_count += 1
+                if not unblocked_ready:
+                    # Deadlock or unresolvable dependencies among remaining sub-missions
+                    for s in pending_subs:
+                        s.status = "BLOCKED"
+                        if self.task_graph.get_task(s.id):
+                            try:
+                                self.task_graph.mark_failed(s.id, "Dependencies could not be resolved")
+                            except Exception:
+                                pass
+                    break
 
-                await self._emit(phase_callback, "sub_dispatch", {
-                    "sub_mission_id": sub_mission.id,
-                    "goal": sub_mission.goal,
-                    "max_steps": sub_mission.max_steps,
-                    "sub_agent_number": self._sub_agent_count,
-                })
+                # Take up to 5 ready sub-missions for parallel execution in this wave
+                wave_batch = unblocked_ready[:5]
+                for s in wave_batch:
+                    pending_subs.remove(s)
 
-                result = await self._dispatch_sub_agent(
-                    workspace_id, sub_mission, phase_callback
-                )
-                current_phase.results.append(result)
-                self.all_traces.extend(result.traces)
+                # Atomically assign subagent numbers
+                batch_tasks = []
+                for s in wave_batch:
+                    self._sub_agent_count += 1
+                    batch_tasks.append((s, self._sub_agent_count))
 
-                sub_mission.status = "COMPLETED" if result.success else "FAILED"
-                if tg_task:
-                    try:
-                        if result.success:
-                            self.task_graph.mark_completed(sub_mission.id, {
-                                "findings": result.key_discoveries,
-                                "summary": result.findings_summary,
-                            })
-                        else:
-                            self.task_graph.mark_failed(sub_mission.id, result.findings_summary)
-                    except Exception:
-                        pass
+                async def _run_sub_worker(sub_m: SubMission, agent_num: int):
+                    sub_m.status = "RUNNING"
+                    tg_t = self.task_graph.get_task(sub_m.id)
+                    if tg_t:
+                        try:
+                            self.task_graph.mark_running(sub_m.id)
+                        except Exception:
+                            pass
 
-                await self._emit(phase_callback, "sub_report", {
-                    "sub_mission_id": sub_mission.id,
-                    "goal": sub_mission.goal,
-                    "success": result.success,
-                    "findings_summary": result.findings_summary,
-                    "key_discoveries": result.key_discoveries,
-                    "actions_taken": result.actions_taken,
-                    "duration_seconds": result.duration_seconds,
-                })
-
-                # Replan trigger evaluation on SubAgent result
-                trigger = self._detect_sub_mission_trigger(result)
-                if trigger:
-                    trigger_msg = f"⚡ Boss Replan Trigger: {trigger.value.upper()} detected from SubAgent findings. Adjusting tactical priorities."
-                    await self._emit(phase_callback, "boss_thinking", {
-                        "phase": current_phase.phase_number,
-                        "thinking_type": "reaction_planning",
-                        "content": trigger_msg,
+                    await self._emit(phase_callback, "sub_dispatch", {
+                        "sub_mission_id": sub_m.id,
+                        "goal": sub_m.goal,
+                        "max_steps": sub_m.max_steps,
+                        "sub_agent_number": agent_num,
                     })
-                    self.thinking_log.append(BossThinking(
-                        phase=current_phase.phase_number,
-                        thinking_type="reaction_planning",
-                        content=trigger_msg,
-                    ))
+
+                    try:
+                        res = await self._dispatch_sub_agent(
+                            workspace_id, sub_m, phase_callback, sub_agent_num=agent_num
+                        )
+                    except Exception as e:
+                        logger.error("boss_dispatch_sub_agent_error", sub_id=sub_m.id, error=str(e))
+                        res = SubMissionResult(
+                            sub_mission_id=sub_m.id,
+                            goal=sub_m.goal,
+                            success=False,
+                            findings_summary=f"Subagent execution failed: {e}",
+                            key_discoveries=[],
+                            actions_taken=0,
+                            duration_seconds=0.0,
+                            traces=[],
+                        )
+
+                    sub_m.status = "COMPLETED" if res.success else "FAILED"
+                    if tg_t:
+                        try:
+                            if res.success:
+                                self.task_graph.mark_completed(sub_m.id, {
+                                    "findings": res.key_discoveries,
+                                    "summary": res.findings_summary,
+                                })
+                            else:
+                                self.task_graph.mark_failed(sub_m.id, res.findings_summary)
+                        except Exception:
+                            pass
+
+                    await self._emit(phase_callback, "sub_report", {
+                        "sub_mission_id": sub_m.id,
+                        "sub_agent_number": agent_num,
+                        "goal": sub_m.goal,
+                        "success": res.success,
+                        "findings_summary": res.findings_summary,
+                        "key_discoveries": res.key_discoveries,
+                        "actions_taken": res.actions_taken,
+                        "duration_seconds": res.duration_seconds,
+                    })
+
+                    return res
+
+                # Concurrently execute wave
+                if len(batch_tasks) == 1:
+                    sm, num = batch_tasks[0]
+                    res = await _run_sub_worker(sm, num)
+                    wave_results = [res]
+                else:
+                    logger.info("boss_dispatching_concurrent_wave", wave_size=len(batch_tasks))
+                    wave_results = await asyncio.gather(
+                        *(_run_sub_worker(sm, num) for sm, num in batch_tasks),
+                        return_exceptions=True,
+                    )
+
+                for idx, res in enumerate(wave_results):
+                    if isinstance(res, Exception):
+                        sm, num = batch_tasks[idx]
+                        sm.status = "FAILED"
+                        res = SubMissionResult(
+                            sub_mission_id=sm.id,
+                            goal=sm.goal,
+                            success=False,
+                            findings_summary=f"Subagent unhandled exception: {res}",
+                            key_discoveries=[],
+                            actions_taken=0,
+                            duration_seconds=0.0,
+                            traces=[],
+                        )
+                    current_phase.results.append(res)
+                    self.all_traces.extend(res.traces)
+                    if res.success:
+                        completed_sub_ids.add(res.sub_mission_id)
+
+                    # Replan trigger evaluation on SubAgent result
+                    trigger = self._detect_sub_mission_trigger(res)
+                    if trigger:
+                        trigger_msg = f"⚡ Boss Replan Trigger: {trigger.value.upper()} detected from SubAgent findings. Adjusting tactical priorities."
+                        await self._emit(phase_callback, "boss_thinking", {
+                            "phase": current_phase.phase_number,
+                            "thinking_type": "reaction_planning",
+                            "content": trigger_msg,
+                        })
+                        self.thinking_log.append(BossThinking(
+                            phase=current_phase.phase_number,
+                            thinking_type="reaction_planning",
+                            content=trigger_msg,
+                        ))
 
             current_phase.status = "COMPLETED"
             current_phase.completed_at = self._now()
@@ -601,6 +676,7 @@ Rules:
         workspace_id: str,
         sub_mission: SubMission,
         phase_callback: Optional[Callable] = None,
+        sub_agent_num: int = 1,
     ) -> SubMissionResult:
         """Create a focused ComputerUseAgent and run it on a sub-mission.
 
@@ -616,6 +692,12 @@ Rules:
                 EngineeringMissionMode,
             )
 
+            safety_policy = (
+                self.safety.clone_for_agent(f"sub-{sub_agent_num}")
+                if hasattr(self.safety, "clone_for_agent")
+                else self.safety
+            )
+
             agent = ComputerUseAgent(
                 computer_provider=self.computer,
                 autonomy_level=ComputerAutonomyLevel.L3_AUTONOMOUS,
@@ -623,10 +705,10 @@ Rules:
                 max_actions=sub_mission.max_steps,
                 llm_router=self.llm_router,
                 security_tools=self.security_tools,
-                safety=self.safety,
-                self_host=True if self.safety else False,
+                safety=safety_policy,
+                self_host=True if safety_policy else False,
                 tenant_id=self.tenant_id,
-                agent_id=f"sub-agent-{self._sub_agent_count}",
+                agent_id=f"sub-agent-{sub_agent_num}",
                 enable_llm_decomposition=False,
                 browser=self.browser,
                 toolsmith=self.toolsmith,
@@ -640,7 +722,7 @@ Rules:
                 if phase_callback:
                     await self._emit(phase_callback, "sub_step", {
                         "sub_mission_id": sub_mission.id,
-                        "sub_agent_number": self._sub_agent_count,
+                        "sub_agent_number": sub_agent_num,
                         "trace": {
                             "step_index": trace.step_index,
                             "action_type": trace.action_type.value if hasattr(trace.action_type, "value") else str(trace.action_type),
@@ -656,29 +738,56 @@ Rules:
             # Forward accumulated discoveries so SubAgents aren't context-starved
             sub_goal = sub_mission.goal
             if self._accumulated_context:
-                recent_ctx = "; ".join(self._accumulated_context[-3:])
-                sub_goal = f"{sub_mission.goal} [Prior Discoveries: {recent_ctx}]"
+                valid_discoveries = []
+                for item in self._accumulated_context:
+                    clean = item.strip()
+                    if not clean:
+                        continue
+                    # Exclude raw strings that are just IP addresses (often from diagnostic commands)
+                    if re.match(r"^(?:https?://)?(?:\d{1,3}\.){3}\d{1,3}(?::\d+)?(?:/.*)?$", clean):
+                        continue
+                    # Exclude local diagnostic commands/outputs
+                    if any(diag in clean.lower() for diag in (
+                        "ifconfig.me", "icanhazip", "whoami", "uname", "pwd", "hostname", "ip addr", "ip a", "ifconfig", "route"
+                    )):
+                        continue
+                    valid_discoveries.append(clean)
 
-            traces = await agent.run_mission(
-                workspace_id=workspace_id,
-                goal=sub_goal,
-                steps=sub_mission.max_steps,
-                step_callback=_sub_step_callback,
-            )
+                if valid_discoveries:
+                    recent_ctx = "; ".join(valid_discoveries[-3:])
+                    sub_goal = f"{sub_mission.goal} [Prior Discoveries: {recent_ctx}]"
+
+            sub_timeout = max(60.0, float(sub_mission.max_steps) * 60.0)
+            try:
+                traces = await asyncio.wait_for(
+                    agent.run_mission(
+                        workspace_id=workspace_id,
+                        goal=sub_goal,
+                        steps=sub_mission.max_steps,
+                        step_callback=_sub_step_callback,
+                    ),
+                    timeout=sub_timeout,
+                )
+            except asyncio.TimeoutError:
+                logger.warning("sub_agent_timed_out", sub_id=sub_mission.id, agent_num=sub_agent_num)
+                traces = getattr(agent, "history", [])
 
             duration = round(time.perf_counter() - t_start, 2)
 
-            # Summarize findings from traces
-            findings_summary = await self._summarize_sub_agent_traces(
-                sub_mission.goal, traces
-            )
+            # Summarize findings from traces (prefer agent's own self-summary)
+            if getattr(agent, "mission_summary", ""):
+                findings_summary = agent.mission_summary
+            else:
+                findings_summary = await self._summarize_sub_agent_traces(
+                    sub_mission.goal, traces
+                )
 
             # Extract key discoveries
             key_discoveries = self._extract_key_discoveries(traces)
             if key_discoveries:
                 self._accumulated_context.extend(key_discoveries)
-            elif findings_summary and len(findings_summary.strip()) > 10:
-                self._accumulated_context.append(findings_summary[:120])
+            if findings_summary and len(findings_summary.strip()) > 10:
+                self._accumulated_context.append(findings_summary[:180])
 
             succeeded = sum(
                 1 for t in traces
@@ -733,7 +842,7 @@ Rules:
 
         observations = "\n".join(
             f"- {t.action_type.value if hasattr(t.action_type, 'value') else t.action_type} "
-            f"on {t.target_resource}: {(t.actual_observation or '')[:300]}"
+            f"on {t.target_resource}: {(t.actual_observation or '')[:1500]}"
             for t in traces
             if t.actual_observation
         )
@@ -746,33 +855,116 @@ Rules:
 
             req = LLMRequest(
                 messages=[
-                    Message(role=MessageRole.SYSTEM, content="Summarize the worker agent's findings concisely. Focus on key facts discovered."),
+                    Message(role=MessageRole.SYSTEM, content="You are an autonomous intelligence officer. Summarize the worker agent's findings accurately and concisely. Focus on concrete facts: open ports, HTTP status codes, server banners, URLs/paths discovered, configuration details, credentials, flags, or error causes."),
                     Message(role=MessageRole.USER, content=f"Worker goal: {goal}\n\nActions and observations:\n{observations}\n\nSummarize the key findings in 2-4 sentences."),
                 ],
                 task_type="reasoning",
-                max_tokens=300,
+                max_tokens=500,
                 temperature=0.2,
             )
             resp = await self.llm_router.complete(req)
-            return (resp.content or "").strip() or observations[:500]
+            return (resp.content or "").strip() or observations[:1000]
         except Exception:
             # Fallback: return raw observations
-            return observations[:500]
+            return observations[:1000]
 
     def _extract_key_discoveries(self, traces: list[Any]) -> list[str]:
-        """Extract key facts/discoveries from SubAgent traces."""
+        """Extract key facts and security discoveries from SubAgent traces."""
         discoveries = []
+        diag_patterns = (
+            "ifconfig.me",
+            "icanhazip",
+            "whoami",
+            "uname",
+            "pwd",
+            "hostname",
+            "ip addr",
+            "ip a",
+            "ifconfig",
+            "route",
+        )
         for t in traces:
-            obs = (t.actual_observation or "").strip()
-            if not obs or len(obs) < 10:
+            # Check for local diagnostic / environment / identity commands
+            target = getattr(t, "target_resource", None) or getattr(t, "target", "") or ""
+            payload = getattr(t, "payload", "") or ""
+            if isinstance(t, dict):
+                target = t.get("target_resource") or t.get("target") or target
+                payload = t.get("payload") or payload
+
+            cmd_text = f"{target} {payload}".strip().lower()
+            is_diag = False
+            for diag in diag_patterns:
+                if diag in ("ifconfig.me", "icanhazip"):
+                    if diag in cmd_text:
+                        is_diag = True
+                        break
+                elif diag in ("ip addr", "ip a"):
+                    if re.search(r"\bip\s+(addr|a)\b", cmd_text) or diag in cmd_text:
+                        is_diag = True
+                        break
+                else:
+                    if re.search(rf"\b{re.escape(diag)}\b", cmd_text):
+                        is_diag = True
+                        break
+
+            if is_diag:
                 continue
-            status_str = str(t.status)
+
+            if isinstance(t, dict):
+                obs = (t.get("actual_observation") or t.get("observation") or "").strip()
+                status_str = str(t.get("status", ""))
+            else:
+                obs = (getattr(t, "actual_observation", None) or getattr(t, "observation", "") or "").strip()
+                status_str = str(getattr(t, "status", ""))
+
+            if not obs or len(obs) < 5:
+                continue
             if status_str not in ("COMPLETED", "SUCCESS", "VERIFIED"):
                 continue
-            # Take the first meaningful line of each successful observation
-            first_line = obs.split("\n")[0][:200]
-            if first_line and first_line not in discoveries:
-                discoveries.append(first_line)
+
+            # 1. Search for high-value security entities: open ports
+            port_matches = re.findall(r'\b(\d{1,5}/(?:tcp|udp)\s+open\s+[^\r\n]+)', obs, re.IGNORECASE)
+            for pm in port_matches:
+                clean_pm = f"Open port: {pm.strip()}"
+                if clean_pm not in discoveries:
+                    discoveries.append(clean_pm)
+
+            # 2. Search for flags, keys, tokens
+            flag_matches = re.findall(r'(?:flag|secret|key|token)[\s:=]+([^\s\r\n]{6,})', obs, re.IGNORECASE)
+            for fm in flag_matches:
+                clean_fm = f"Discovered value: {fm.strip(' .,;:\"\'')}"
+                if clean_fm not in discoveries:
+                    discoveries.append(clean_fm)
+
+            # 3. Search for HTTP status and server headers
+            http_matches = re.findall(r'\b(HTTP/[12](?:\.[01])?\s+\d{3}\s+[^\r\n]+)', obs, re.IGNORECASE)
+            for hm in http_matches:
+                clean_hm = hm.strip()
+                if clean_hm not in discoveries:
+                    discoveries.append(clean_hm)
+
+            # 4. Fallback line extraction with banner filtering
+            for line in obs.splitlines():
+                line_str = line.strip()
+                if not line_str or len(line_str) < 10:
+                    continue
+                lower_line = line_str.lower()
+                # Skip tool noise and startup banners
+                if any(noise in lower_line for noise in (
+                    "starting nmap", "nmap scan report", "reading package lists",
+                    "building dependency tree", "need to get", "after this operation",
+                    "=== test session", "platform win32", "rootdir:", "plugins:",
+                    "collected ", "total duration", "exit 0", "exit 127",
+                    "curl -", "ping -", "ssh ", "nc -", "warning:",
+                )):
+                    continue
+                # Skip if line is a bare IP address
+                if re.match(r"^(?:https?://)?(?:\d{1,3}\.){3}\d{1,3}(?::\d+)?(?:/.*)?$", line_str):
+                    continue
+                if line_str not in discoveries:
+                    discoveries.append(line_str[:200])
+                    break
+
         return discoveries[:10]  # Cap at 10
 
     # ------------------------------------------------------------------
@@ -810,6 +1002,7 @@ Rules:
             content = summaries
 
         duration = round(time.perf_counter() - t_start, 2)
+        phase.summary = content
         self.thinking_log.append(BossThinking(
             phase=phase.phase_number,
             thinking_type="findings_analysis",
@@ -1033,12 +1226,18 @@ If the objective is complete or no more work is needed, return:
         """Collect all SubAgent findings across all phases."""
         findings = []
         for phase in self.phases:
-            for result in phase.results:
-                if result.findings_summary:
-                    findings.append(
-                        f"[Phase {phase.phase_number} / {result.goal}]:\n"
-                        f"{result.findings_summary}"
-                    )
+            if getattr(phase, "summary", ""):
+                findings.append(
+                    f"[Phase {phase.phase_number} ({phase.name}) Unified Intelligence]:\n"
+                    f"{phase.summary}"
+                )
+            else:
+                for result in phase.results:
+                    if result.findings_summary:
+                        findings.append(
+                            f"[Phase {phase.phase_number} / {result.goal}]:\n"
+                            f"{result.findings_summary}"
+                        )
         return "\n\n".join(findings) if findings else "No findings yet."
 
     @staticmethod

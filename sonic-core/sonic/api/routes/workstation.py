@@ -140,6 +140,14 @@ class BrowserOpenRequest(BaseModel):
 # -------------------------------------------------------------
 _tenant_workstations: dict[str, dict[str, dict[str, Any]]] = {}
 _workstation_state_file = Path(os.environ.get("SONIC_WORKSTATION_STATE_FILE", "sonic_data/workstations.json"))
+_background_tasks: set[asyncio.Task] = set()
+
+
+def _track_background_task(task: asyncio.Task) -> asyncio.Task:
+    """Retain strong reference to background task until completion to prevent GC."""
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
+    return task
 
 
 def _load_workstation_state() -> None:
@@ -435,7 +443,7 @@ def _append_worklog(state: dict[str, Any], item_type: str, title: str, content: 
 
 
 def _mission_event(state: dict[str, Any], event_type: str, title: str, content: str, **extra: Any) -> dict[str, Any]:
-    mission = state["mission"]
+    mission = state.setdefault("mission", {})
     event = {
         "id": f"me-{uuid.uuid4().hex[:10]}",
         "type": event_type,
@@ -623,13 +631,20 @@ async def get_workstation_state(
     state = _get_or_create_session(user.email, session_id)
     workspace_id = _session_workspace_id(user, session_id)
 
-    # 3.0s cache key per user and session to avoid overwhelming sandbox execution with rapid polls
+    # 10.0s cache key per user and session to avoid overwhelming sandbox execution with rapid polls
     cache_key = f"{user.email}:{session_id}"
     now = time.time()
     cached = _workstation_state_cache.get(cache_key)
 
-    if cached and (now - cached[0] < 3.0):
+    if cached and (now - cached[0] < 10.0):
         # Merge cached container telemetry into state
+        cached_data = cached[1]
+        state["git_branch"] = cached_data.get("git_branch", state.get("git_branch", ""))
+        state["desktop"].update(cached_data.get("desktop", {}))
+        return state
+
+    # Avoid blocking on slow container calls during active runs if cached telemetry exists
+    if state.get("status") == "RUNNING" and cached:
         cached_data = cached[1]
         state["git_branch"] = cached_data.get("git_branch", state.get("git_branch", ""))
         state["desktop"].update(cached_data.get("desktop", {}))
@@ -1478,7 +1493,7 @@ async def start_workstation_mission(
     state["status"] = "RUNNING"
     state["current_action"] = "Starting mission target-sandbox preflight..."
     _mission_event(state, "mission", "Mission accepted", req.objective.strip(), mission_id=mission_id, workspace_id=target_id)
-    asyncio.create_task(_run_mission_preflight(user.email, session_id, mission_id))
+    _track_background_task(asyncio.create_task(_run_mission_preflight(user.email, session_id, mission_id)))
     return {"status": "queued", "mission": mission}
 
 
@@ -1493,14 +1508,27 @@ async def get_workstation_mission_events(
 
     async def event_stream():
         cursor = after
-        for _ in range(60):
+        idle_count = 0
+        while True:
             events = state.get("mission", {}).get("events", [])
             while cursor < len(events):
                 yield json.dumps(events[cursor], ensure_ascii=True) + "\n"
                 cursor += 1
-            if state.get("mission", {}).get("status") in {"AWAITING_APPROVAL", "BLOCKED", "FAILED", "COMPLETED"}:
-                break
+                idle_count = 0
+
+            status = state.get("mission", {}).get("status")
+            if status in {"AWAITING_APPROVAL", "BLOCKED", "FAILED", "COMPLETED"}:
+                if cursor >= len(events):
+                    break
+
             await asyncio.sleep(0.5)
+            idle_count += 1
+            # Send periodic keep-alive comment every 15s to keep connection alive
+            if idle_count % 30 == 0:
+                yield json.dumps({"type": "keep_alive", "timestamp": _timestamp()}, ensure_ascii=True) + "\n"
+            # Cap idle duration at 10 minutes (1200 ticks of 0.5s) to prevent leaking idle streams
+            if idle_count > 1200:
+                break
 
     return StreamingResponse(event_stream(), media_type="application/x-ndjson")
 
@@ -2396,42 +2424,65 @@ async def _run_prompt_reasoning(tenant_id: str, session_id: str, prompt: str) ->
                                 data = data or {}
                                 if event_type == "boss_thinking":
                                     content = data.get("content", "")
-                                    _append_worklog(
+                                    _mission_event(
                                         state,
                                         "thought",
                                         f"Boss Thinking ({data.get('thinking_type', 'Planning')})",
                                         content,
+                                        thinking_type=data.get("thinking_type", "Planning"),
+                                        phase=data.get("phase"),
                                     )
                                 elif event_type == "sub_dispatch":
-                                    _append_worklog(
+                                    sub_num = data.get("sub_agent_number")
+                                    title = f"Dispatching SubAgent #{sub_num}" if sub_num is not None else "Dispatching SubAgent"
+                                    _mission_event(
                                         state,
                                         "action",
-                                        f"Dispatching SubAgent #{data.get('sub_agent_number')}",
+                                        title,
                                         f"Goal: {data.get('goal')}\nMax Steps: {data.get('max_steps')}",
+                                        sub_agent_number=sub_num,
+                                        sub_mission_id=data.get("sub_mission_id"),
+                                        goal=data.get("goal"),
+                                        max_steps=data.get("max_steps"),
                                     )
                                 elif event_type == "sub_step":
                                     trace_data = data.get("trace", {})
                                     await _record_step_trace(trace_data)
                                 elif event_type == "sub_report":
-                                    _append_worklog(
+                                    sub_num = data.get("sub_agent_number")
+                                    title = f"SubAgent #{sub_num} Report" if sub_num is not None else "SubAgent Report"
+                                    _mission_event(
                                         state,
                                         "info",
-                                        f"SubAgent #{data.get('sub_agent_number')} Report",
+                                        title,
                                         data.get("findings_summary", ""),
+                                        sub_agent_number=sub_num,
+                                        sub_mission_id=data.get("sub_mission_id"),
+                                        goal=data.get("goal"),
+                                        success=data.get("success"),
+                                        findings_summary=data.get("findings_summary"),
+                                        key_discoveries=data.get("key_discoveries"),
+                                        actions_taken=data.get("actions_taken"),
+                                        duration_seconds=data.get("duration_seconds"),
                                     )
                                 elif event_type == "phase_complete":
-                                    _append_worklog(
+                                    _mission_event(
                                         state,
                                         "info",
                                         f"Phase {data.get('phase_number')} Complete ({data.get('name')})",
                                         f"Completed {data.get('results_count')} sub-missions ({data.get('success_count')} succeeded)",
+                                        phase_number=data.get("phase_number"),
+                                        phase_name=data.get("name"),
+                                        results_count=data.get("results_count"),
+                                        success_count=data.get("success_count"),
                                     )
                                 elif event_type == "boss_report":
-                                    _append_worklog(
+                                    _mission_event(
                                         state,
                                         "response",
                                         "SONIC Boss Report",
                                         data.get("findings_summary", ""),
+                                        findings_summary=data.get("findings_summary"),
                                     )
                                 _persist_workstation_state()
 
@@ -2700,12 +2751,12 @@ async def send_workstation_prompt(
         state["status"] = "RUNNING"
         state["current_action"] = "Executing autonomous mission for evidence-based discovery..."
         _mission_event(state, "mission", "Autonomous mission accepted", prompt_text, mission_id=mission_id, workspace_id=target_id)
-        asyncio.create_task(_run_mission_preflight(user.email, session_id, mission_id))
+        _track_background_task(asyncio.create_task(_run_mission_preflight(user.email, session_id, mission_id)))
         return {"status": "accepted", "reasoning": "mission_started", "message": "Autonomous mission accepted for the scoped target.", "state": state}
 
     # Never hold the HTTP request open on an external LLM.  The dashboard can
     # refresh workstation state while this task records the real result.
-    asyncio.create_task(_run_prompt_reasoning(user.email, session_id, prompt_text))
+    _track_background_task(asyncio.create_task(_run_prompt_reasoning(user.email, session_id, prompt_text)))
     return {
         "status": "accepted",
         "reasoning": "thinking",

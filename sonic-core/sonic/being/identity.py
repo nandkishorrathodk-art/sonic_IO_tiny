@@ -126,6 +126,8 @@ class BeingStore:
         if self._db is not None or not self.persist:
             return
         self._db = sqlite3.connect(self._db_path, check_same_thread=False)
+        self._db.execute("PRAGMA journal_mode=WAL")
+        self._db.execute("PRAGMA busy_timeout=30000")
         self._db.execute(
             "CREATE TABLE IF NOT EXISTS beings ("
             "being_id TEXT PRIMARY KEY, name TEXT, tenant_id TEXT, "

@@ -203,7 +203,7 @@ class UnifiedComputerProvider(ComputerProvider):
                 if workspace_type == ComputerWorkspaceType.TARGET_SANDBOX
                 else WorkspaceType.RESEARCH_LAB
             ),
-            image="sonic-kali-linux:v1.3.0" if profile == ComputerProfile.KALI_SECURITY else "debian:12-slim",
+            image="sonic-workstation:latest" if profile == ComputerProfile.KALI_SECURITY else "debian:12-slim",
             cpu_limit="1.0",
             memory_limit="1024M",
             timeout_seconds=600 if workspace_type == ComputerWorkspaceType.MISSION_COMPUTER else 180,

@@ -23,6 +23,8 @@ import {
   Eye,
   Monitor,
   AppWindow,
+  ChevronDown,
+  ChevronRight,
 } from "lucide-react";
 import { WorklogItem } from "../../types/workstation";
 import { MarkdownText } from "./MarkdownText";
@@ -46,6 +48,98 @@ interface WorklogFeedProps {
   gitBranch?: string;
   rightPanelOpen?: boolean;
   onToggleRightPanel?: () => void;
+}
+
+function SubReportCard({ item }: { item: WorklogItem }) {
+  const [expanded, setExpanded] = useState(false);
+  const isSuccess = item.success !== false && !item.content?.toLowerCase().includes("subagent execution failed");
+  const subNum = item.sub_agent_number ?? item.title?.match(/SubAgent #(\d+)/)?.[1] ?? "";
+
+  return (
+    <div className="my-2 rounded-xl border border-ink-750 bg-ink-850/80 p-3 text-xs shadow-sm transition hover:border-ink-700">
+      <div
+        className="flex items-center justify-between cursor-pointer select-none"
+        onClick={() => setExpanded(!expanded)}
+      >
+        <div className="flex items-center gap-2">
+          <span className="px-2 py-0.5 rounded-md bg-secondary-500/10 border border-secondary-500/30 text-secondary-300 font-mono font-semibold text-[11px]">
+            SubAgent {subNum ? `#${subNum}` : ""}
+          </span>
+          <span className="font-semibold text-slate-200 text-[12px]">{item.title}</span>
+          <span
+            className={`px-1.5 py-0.5 rounded text-[10px] font-mono font-medium ${
+              isSuccess
+                ? "bg-emerald-500/10 text-emerald-400 border border-emerald-500/20"
+                : "bg-rose-500/10 text-rose-400 border border-rose-500/20"
+            }`}
+          >
+            {isSuccess ? "SUCCESS" : "FAILED"}
+          </span>
+        </div>
+        <div className="flex items-center gap-2 text-muted-dim text-[11px]">
+          {item.duration_seconds ? <span>{item.duration_seconds}s</span> : null}
+          <button type="button" className="p-0.5 hover:text-white transition">
+            {expanded ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
+          </button>
+        </div>
+      </div>
+
+      {item.goal && (
+        <div className="mt-2 text-[11.5px] text-muted-bright bg-ink-900/60 p-2 rounded-lg border border-ink-800/80">
+          <span className="text-secondary-400 font-mono text-[10.5px] block font-medium mb-0.5">Objective:</span>
+          {item.goal}
+        </div>
+      )}
+
+      {expanded && (
+        <div className="mt-2.5 pt-2.5 border-t border-ink-800 space-y-2 text-[11.5px] text-slate-300">
+          <div>
+            <span className="text-secondary-400 font-mono text-[10.5px] block font-medium mb-1">Findings Summary:</span>
+            <div className="bg-ink-900/80 p-2.5 rounded-lg border border-ink-800 whitespace-pre-wrap font-sans leading-relaxed">
+              {item.findings_summary || item.content || "No summary recorded."}
+            </div>
+          </div>
+          {item.key_discoveries && item.key_discoveries.length > 0 && (
+            <div>
+              <span className="text-secondary-400 font-mono text-[10.5px] block font-medium mb-1">Key Discoveries:</span>
+              <div className="flex flex-wrap gap-1.5">
+                {item.key_discoveries.map((disc: string, dIdx: number) => (
+                  <span key={dIdx} className="px-2 py-0.5 rounded bg-ink-900 text-secondary-300 border border-secondary-900/60 font-mono text-[10.5px]">
+                    {disc}
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function SubDispatchPill({ item }: { item: WorklogItem }) {
+  const subNum = item.sub_agent_number ?? item.title?.match(/SubAgent #(\d+)/)?.[1] ?? "";
+  return (
+    <div className="my-1.5 flex items-center gap-2 rounded-lg bg-secondary-950/40 border border-secondary-500/20 px-2.5 py-1.5 text-xs text-secondary-200">
+      <Zap className="w-3.5 h-3.5 text-secondary-400 animate-pulse shrink-0" />
+      <span className="font-mono font-semibold text-[11px] text-secondary-300">
+        Dispatching SubAgent {subNum ? `#${subNum}` : ""}
+      </span>
+      <span className="text-muted-bright text-[11px] truncate max-w-md">
+        {item.goal || item.content?.replace(/^Goal:\s*/, "").split("\n")[0] || ""}
+      </span>
+    </div>
+  );
+}
+
+function PhaseCompleteBanner({ item }: { item: WorklogItem }) {
+  return (
+    <div className="my-3 flex items-center gap-2 rounded-xl bg-ink-850 border border-secondary-500/30 px-3 py-2 text-xs">
+      <Check className="w-4 h-4 text-secondary-400 shrink-0" />
+      <span className="font-semibold text-slate-100">{item.title}</span>
+      <span className="text-muted-dim text-[11px] ml-auto font-mono">{item.content}</span>
+    </div>
+  );
 }
 
 export function WorklogFeed({
@@ -445,7 +539,25 @@ export function WorklogFeed({
               );
             }
 
-            // 7. Generic Action Item
+            // 7. SubAgent Reports
+            const isSubReport =
+              (item.title?.includes("SubAgent") && item.title?.includes("Report")) ||
+              (item.type === "info" && item.title?.startsWith("SubAgent #"));
+            if (isSubReport) {
+              return <SubReportCard key={itemId} item={item} />;
+            }
+
+            // 8. SubAgent Dispatches
+            if (item.title?.startsWith("Dispatching SubAgent")) {
+              return <SubDispatchPill key={itemId} item={item} />;
+            }
+
+            // 9. Phase Completion
+            if (item.title?.startsWith("Phase ") && item.title?.includes("Complete")) {
+              return <PhaseCompleteBanner key={itemId} item={item} />;
+            }
+
+            // 10. Generic Action Item
             return (
               <div key={itemId} className="flex items-center gap-2 text-muted text-[11px] py-0.5">
                 <Zap className="w-3.5 h-3.5 text-secondary-400 shrink-0" />

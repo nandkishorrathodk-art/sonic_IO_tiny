@@ -78,7 +78,7 @@ export async function apiClient<T>(endpoint: string, options: RequestOptions = {
 // Workstation Specific API Endpoints
 export const api = {
   getWorkstationState: (sessionId = "default") =>
-    apiClient<any>(`/workstation/state?session_id=${encodeURIComponent(sessionId)}`),
+    apiClient<any>(`/workstation/state?session_id=${encodeURIComponent(sessionId)}`, { timeout: 30000 }),
 
   listSessions: async (): Promise<SessionItem[]> => {
     try {

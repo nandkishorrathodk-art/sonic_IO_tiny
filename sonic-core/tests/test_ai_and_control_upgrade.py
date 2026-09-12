@@ -26,7 +26,7 @@ from sonic.computer.models import (
 )
 from sonic.computer.provider import ComputerProvider
 from sonic.computer_use.agent import ComputerUseAgent
-from sonic.computer_use.models import ComputerActionType
+from sonic.computer_use.models import ComputerActionType, ComputerWorldObservation
 from sonic.llm.providers.custom import (
     CustomLLMProvider,
     _extract_json_object,
@@ -438,3 +438,133 @@ def test_coordinate_at_exact_edge_blocked():
         {"x": 800, "y": 599}, "click",
     ))
     assert trace.status == "BLOCKED"
+
+
+# ---------------------------------------------------------------------------
+# 5. Target Extraction & Self-Targeting Guard Tests
+# ---------------------------------------------------------------------------
+
+def test_extract_targets_strips_prior_discoveries():
+    goal = "Perform assessment on https://target.internal:8080/api [Prior Discoveries: Discovered host 10.0.0.1 on port 80 and url https://old-target.internal]"
+    targets = ComputerUseAgent._extract_targets_from_goal(goal)
+    assert targets["urls"] == ["https://target.internal:8080/api"]
+    assert "10.0.0.1" not in targets["ips"]
+    assert targets["primary_target"] == "https://target.internal:8080/api"
+
+
+def test_extract_targets_strips_prior_discoveries_no_colon():
+    goal = "Scan http://prod.corp.com [Prior Discoveries found 192.168.1.100]"
+    targets = ComputerUseAgent._extract_targets_from_goal(goal)
+    assert targets["urls"] == ["http://prod.corp.com"]
+    assert "192.168.1.100" not in targets["ips"]
+    assert targets["primary_target"] == "http://prod.corp.com"
+
+
+def test_extract_targets_guards_against_localhost_and_loopback():
+    goal = "Run audit against 127.0.0.1"
+    targets = ComputerUseAgent._extract_targets_from_goal(goal)
+    assert "127.0.0.1" in targets["ips"]
+    assert targets["primary_target"] == ""
+
+    goal_zero = "Check port 443 on 0.0.0.0"
+    targets_zero = ComputerUseAgent._extract_targets_from_goal(goal_zero)
+    assert "0.0.0.0" in targets_zero["ips"]
+    assert targets_zero["primary_target"] == ""
+
+
+def test_extract_targets_guards_against_egress_tagged_ip():
+    goal = "Scan target 10.0.0.5 with egress IP 198.51.100.1"
+    targets = ComputerUseAgent._extract_targets_from_goal(goal)
+    assert "10.0.0.5" in targets["ips"]
+    assert "198.51.100.1" in targets["ips"]
+    assert targets["primary_target"] == "http://10.0.0.5"
+
+    goal_egress_only = "Security audit (egress: 198.51.100.2)"
+    targets_egress = ComputerUseAgent._extract_targets_from_goal(goal_egress_only)
+    assert targets_egress["primary_target"] == ""
+
+
+def test_extract_targets_prioritizes_hostnames_and_urls_over_ips():
+    goal = "Check target.company.com and secondary 192.168.1.50"
+    targets = ComputerUseAgent._extract_targets_from_goal(goal)
+    assert targets["primary_target"] == "https://target.company.com"
+
+    goal2 = "Check https://app.example.com and ip 10.0.0.2"
+    targets2 = ComputerUseAgent._extract_targets_from_goal(goal2)
+    assert targets2["primary_target"] == "https://app.example.com"
+
+
+# ---------------------------------------------------------------------------
+# 6. LLM Safety Refusal Auto-Recovery Tests
+# ---------------------------------------------------------------------------
+
+class _StubRouter:
+    def __init__(self, response_content: str = ""):
+        self.response_content = response_content
+
+    async def complete(self, request):
+        return LLMResponse(content=self.response_content, model="test-model")
+
+
+@pytest.mark.parametrize(
+    "refusal_text",
+    [
+        "I can't help with that request as it involves security assessments.",
+        "I cannot assist with this task. Assisting with unauthorized testing is against safety policies.",
+        "I must refuse as this appears to be unethical and illegal.",
+        "I cannot fulfill this request. Creating malware or attacking systems violates our policies.",
+    ],
+)
+def test_parse_llm_action_refusal_does_not_return_empty_no_op(refusal_text):
+    action_type, target, payload, expected = ComputerUseAgent._parse_llm_action(
+        refusal_text, "app.py"
+    )
+    assert action_type == ComputerActionType.TERMINAL_EXEC
+    assert payload.get("command") != "true"
+    assert "python3" in payload.get("command", "") or "uname" in payload.get("command", "")
+
+
+def test_llm_choose_action_recovers_from_refusal_with_target():
+    router = _StubRouter(
+        response_content="I cannot assist with this request because it is against safety policies."
+    )
+    comp = _StubComputer()
+    agent = ComputerUseAgent(computer_provider=comp, llm_router=router)
+    obs = ComputerWorldObservation()
+    action_type, target, payload, expected = _run(
+        agent._llm_choose_action(
+            goal="Scan vulnerabilities on https://test-target.org/api",
+            observation=obs,
+            step_index=1,
+            primary_file="test.py",
+            test_file="test.py",
+        )
+    )
+    assert agent._last_thought == "LLM safety refusal detected. Reframing objective into authorized diagnostic assessment."
+    assert action_type == ComputerActionType.TERMINAL_EXEC
+    assert payload["command"] != "true"
+    assert "curl" in payload["command"]
+    assert "test-target.org" in payload["command"]
+
+
+def test_llm_choose_action_recovers_from_refusal_without_target():
+    router = _StubRouter(
+        response_content="I can't help with that. Generating malware is illegal."
+    )
+    comp = _StubComputer()
+    agent = ComputerUseAgent(computer_provider=comp, llm_router=router)
+    obs = ComputerWorldObservation()
+    action_type, target, payload, expected = _run(
+        agent._llm_choose_action(
+            goal="Analyze sample in local test environment",
+            observation=obs,
+            step_index=1,
+            primary_file="",
+            test_file="",
+        )
+    )
+    assert agent._last_thought == "LLM safety refusal detected. Reframing objective into authorized diagnostic assessment."
+    assert action_type == ComputerActionType.TERMINAL_EXEC
+    assert payload["command"] != "true"
+    assert "python3 --version" in payload["command"] or "uname" in payload["command"]
+

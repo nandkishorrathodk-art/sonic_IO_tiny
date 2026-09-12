@@ -676,7 +676,7 @@ Rules:
         workspace_id: str,
         sub_mission: SubMission,
         phase_callback: Optional[Callable] = None,
-        sub_agent_num: int = 1,
+        sub_agent_num: int = 0,
     ) -> SubMissionResult:
         """Create a focused ComputerUseAgent and run it on a sub-mission.
 
@@ -692,9 +692,11 @@ Rules:
                 EngineeringMissionMode,
             )
 
+            from sonic.safety.action_policy import ActionPolicy
+
             safety_policy = (
                 self.safety.clone_for_agent(f"sub-{sub_agent_num}")
-                if hasattr(self.safety, "clone_for_agent")
+                if isinstance(self.safety, ActionPolicy)
                 else self.safety
             )
 
@@ -775,8 +777,9 @@ Rules:
             duration = round(time.perf_counter() - t_start, 2)
 
             # Summarize findings from traces (prefer agent's own self-summary)
-            if getattr(agent, "mission_summary", ""):
-                findings_summary = agent.mission_summary
+            raw_summary = getattr(agent, "mission_summary", "")
+            if isinstance(raw_summary, str) and raw_summary.strip():
+                findings_summary = raw_summary
             else:
                 findings_summary = await self._summarize_sub_agent_traces(
                     sub_mission.goal, traces

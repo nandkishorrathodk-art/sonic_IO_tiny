@@ -1447,8 +1447,18 @@ async def execute_workstation_command(
             detail="Command execution failed-closed: no Daytona workstation is provisioned for this session. Direct host OS execution is strictly prohibited.",
         )
     comp = get_daytona_computer()
-    res = await comp.terminal(workspace_id, req.command, timeout=req.timeout or 30, actor=user.email)
-    if res.exit_code == 126:
+    try:
+        res = await comp.terminal(workspace_id, req.command, timeout=req.timeout or 30, actor=user.email)
+    except Exception:
+        logger.warning("sandbox_command_execution_failed_unavailable", user=user.email, command=req.command)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Command execution failed-closed: the tenant-owned workstation sandbox could not run the command. Direct host OS execution is strictly prohibited.",
+        )
+    if res.exit_code in (125, 126, 127):
+        # DockerComputerProvider uses these exit codes for fail-closed states:
+        # 125 = container not running, 126 = docker daemon unreachable,
+        # 127 = docker binary missing. Surface them as sandbox-unavailable 503.
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Command execution failed-closed:the tenant-owned workstation sandbox is unreachable. Direct host OS execution is strictly prohibited.",

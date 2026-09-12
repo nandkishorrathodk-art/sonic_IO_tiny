@@ -43,7 +43,7 @@ class LLMSettings(BaseSettings):
     nvidia_api_key: str = ""
     nvidia_base_url: str = "https://integrate.api.nvidia.com/v1"
     local_llm_url: str = "http://localhost:11434"
-    default_llm_provider: str = "nvidia"
+    default_llm_provider: str = "groq"
 
 
 class DatabaseSettings(BaseSettings):
@@ -106,7 +106,7 @@ class Settings(BaseSettings):
     nvidia_api_key: str = ""
     nvidia_base_url: str = "https://integrate.api.nvidia.com/v1"
     local_llm_url: str = "http://localhost:11434"
-    default_llm_provider: str = "nvidia"
+    default_llm_provider: str = "groq"
 
     # -- Database --
     neo4j_uri: str = "bolt://localhost:7687"

@@ -254,6 +254,7 @@ class CustomLLMProvider(LLMProvider):
         max_retries: int = 3,
         retry_base_delay: float = 0.5,
         retry_max_delay: float = 20.0,
+        max_tokens_cap: int | None = None,
     ):
         # Map name to ProviderName enum if possible, else use CLAUDE as fallback
         try:
@@ -285,6 +286,11 @@ class CustomLLMProvider(LLMProvider):
         self.max_retries = max(0, max_retries)
         self.retry_base_delay = max(0.0, retry_base_delay)
         self.retry_max_delay = max(self.retry_base_delay, retry_max_delay)
+        # Hard cap on output tokens per request. Providers with strict per-minute
+        # output budgets (e.g. Groq on-demand OTPM=1000) reject any request whose
+        # declared max_tokens exceeds the limit, even when the actual output is
+        # tiny. Capping avoids deterministic 429s that retries can never clear.
+        self.max_tokens_cap = max_tokens_cap if (max_tokens_cap and max_tokens_cap > 0) else None
 
         # Try to use the official SDKs if available, otherwise fall back to httpx
         self._openai_client = None
@@ -315,6 +321,12 @@ class CustomLLMProvider(LLMProvider):
             except Exception:
                 self._openai_client = None
 
+    def _effective_max_tokens(self, request_max_tokens: int) -> int:
+        """Return request max_tokens, clamped by this provider's output cap."""
+        raw = request_max_tokens if request_max_tokens > 0 else self.max_context_tokens
+        if self.max_tokens_cap is not None:
+            return min(raw, self.max_tokens_cap)
+        return raw
 
     # ============================================
     # Message Conversion
@@ -503,7 +515,7 @@ class CustomLLMProvider(LLMProvider):
             kwargs: dict[str, Any] = {
                 "model": model,
                 "messages": messages,
-                "max_tokens": request.max_tokens,
+                "max_tokens": self._effective_max_tokens(request.max_tokens),
                 "temperature": request.temperature,
                 "top_p": eff_top_p,
             }
@@ -586,7 +598,7 @@ class CustomLLMProvider(LLMProvider):
         payload: dict[str, Any] = {
             "model": model,
             "messages": messages,
-            "max_tokens": request.max_tokens,
+            "max_tokens": self._effective_max_tokens(request.max_tokens),
             "temperature": request.temperature,
             "top_p": eff_top_p,
         }
@@ -767,7 +779,7 @@ class CustomLLMProvider(LLMProvider):
             stream = await self._openai_client.chat.completions.create(
                 model=model,
                 messages=messages,
-                max_tokens=request.max_tokens,
+                max_tokens=self._effective_max_tokens(request.max_tokens),
                 temperature=request.temperature,
                 stream=True,
             )
@@ -790,7 +802,7 @@ class CustomLLMProvider(LLMProvider):
             payload = {
                 "model": model,
                 "messages": messages,
-                "max_tokens": request.max_tokens,
+                "max_tokens": self._effective_max_tokens(request.max_tokens),
                 "temperature": request.temperature,
                 "stream": True,
             }

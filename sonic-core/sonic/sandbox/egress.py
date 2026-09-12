@@ -84,6 +84,7 @@ def is_target_allowed(
     target: str,
     allow_private_for_tests: bool = False,
     blocked_networks: list | tuple | None = None,
+    allow_unresolvable: bool = False,
 ) -> tuple[bool, str]:
     """
     Validate that target IP/domain does not resolve to a private or metadata address.
@@ -92,6 +93,13 @@ def is_target_allowed(
     pass a *frozen snapshot* of the blocked ranges, so a runtime mutation of the
     module-level ``BLOCKED_NETWORKS`` list cannot widen what this check permits.
     Defaults to the live module list for backward compatibility.
+
+    ``allow_unresolvable`` exempts domains that fail DNS from the fail-closed
+    block. Used at engagement-creation time where an operator explicitly
+    authorizes a target that may simply not resolve from the controller's
+    network (e.g. an internal corporate hostname resolvable only inside the
+    scanning sandbox). Genuine leak risks (private/loopback/metadata) are still
+    always blocked.
     """
     if allow_private_for_tests:
         return True, "Allowed (test override)"
@@ -175,6 +183,14 @@ def is_target_allowed(
         if raw_host.endswith(".test") or raw_host == "test":
             logger.debug("egress_test_tld_allowed", host=raw_host)
             return True, "Allowed (RFC 2606 .test domain)"
+        if allow_unresolvable:
+            logger.info(
+                "egress_dns_unresolvable_allowed_at_creation",
+                target=target,
+                host=raw_host,
+                error=str(e),
+            )
+            return True, f"Allowed (unresolvable at creation time; execution-time egress still enforced): {e}"
         logger.warning("egress_dns_resolution_failed", target=target, host=raw_host, error=str(e))
         return False, f"Domain {raw_host} DNS resolution failed: {e}"
 

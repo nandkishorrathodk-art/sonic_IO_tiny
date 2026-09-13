@@ -1221,12 +1221,13 @@ class ComputerUseAgent:
         else:
             user_text = obs_summary
 
+        action_schema = "|".join(action.value for action in ComputerActionType)
         user_text += (
             "\n\n================================================================================\n"
             "CRITICAL INSTRUCTIONS FOR YOUR NEXT IMMEDIATE ACTION:\n"
             "1. Output EXACTLY ONE action block in this format:\n"
             "THOUGHT: <technical rationale analyzing the observation, root cause, and intended probe>\n"
-            "ACTION: <TERMINAL_EXEC|GUI_CLICK|GUI_TYPE|APP_LAUNCH|BROWSER_NAVIGATE|SECURITY_TOOL|GOAL_COMPLETE>\n"
+            f"ACTION: <{action_schema}>\n"
             "TARGET: <target or command>\n"
             "PAYLOAD: {\"command\": \"...\"} or other payload json\n"
             "EXPECTED: <expected outcome>\n"

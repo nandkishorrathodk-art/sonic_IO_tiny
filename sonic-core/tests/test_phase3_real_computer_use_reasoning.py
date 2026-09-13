@@ -215,6 +215,27 @@ def test_action_selection_is_llm_driven():
     assert agent.metrics.verification_score == 1.00  # goal reached, no failures
 
 
+def test_reasoning_contract_exposes_full_live_action_surface():
+    """The model must see every implemented action, not a reduced script menu."""
+    comp = _StubComputer()
+    llm = _StubLLM([_action("GOAL_COMPLETE", "g", "{}", _GOAL_COMPLETE_SENTINEL)])
+    agent = ComputerUseAgent(computer_provider=comp, llm_router=llm)
+    _run(agent.run_mission(comp.workspace_id, "inspect the repository", steps=1))
+
+    prompt = llm.received_prompts[0]
+    for action in (
+        "FILE_READ",
+        "FILE_WRITE",
+        "GIT_COMMIT",
+        "APP_INSTALL",
+        "BROWSER_DOWNLOAD",
+        "TOOL_AUTHOR",
+        "METHOD_INVENT",
+        "GOAL_COMPLETE",
+    ):
+        assert action in prompt
+
+
 # ---------------------------------------------------------------------------
 # [x] Screen observation is actually used in the reasoning prompt
 # ---------------------------------------------------------------------------

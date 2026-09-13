@@ -470,6 +470,22 @@ class BossAgent:
                 logger.info("boss_agent_objective_complete", reason=completion_reason[:200])
                 break
 
+            # Do not manufacture momentum after a phase that produced no
+            # execution, evidence, or discoveries. A replan is useful only
+            # when the previous attempt exposed something to reason about.
+            phase_progress = any(
+                result.success
+                or result.actions_taken > 0
+                or bool(result.key_discoveries)
+                for result in current_phase.results
+            )
+            if not phase_progress:
+                logger.info(
+                    "boss_agent_stopping_without_phase_progress",
+                    phase=current_phase.phase_number,
+                )
+                break
+
             # Not complete — plan next phase
             if phase_idx < self.max_phases - 1:
                 next_phase = await self._plan_next_phase(
@@ -827,8 +843,20 @@ Rules:
                 "VERIFIED",
             )
             success_ratio = (succeeded / total) if total > 0 else 0.0
+            has_concrete_evidence = any(
+                bool(str(
+                    _trace_value(t, "actual_observation", "")
+                    or _trace_value(t, "observation", "")
+                ).strip())
+                for t in traces
+                if str(_trace_value(t, "status", "")) in ("COMPLETED", "SUCCESS", "VERIFIED")
+            )
 
-            is_successful = has_goal_complete or (last_succeeded and success_ratio >= 0.5) or (succeeded > 0 and total == 1)
+            is_successful = has_concrete_evidence and (
+                (has_goal_complete and bool(last_succeeded))
+                or (last_succeeded and success_ratio >= 0.5)
+                or (succeeded > 0 and total == 1)
+            )
 
             return SubMissionResult(
                 sub_mission_id=sub_mission.id,

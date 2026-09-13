@@ -268,6 +268,34 @@ async def test_boss_objective_completion_stops_loop():
 
 
 @pytest.mark.asyncio
+async def test_boss_stops_when_phase_has_no_execution_evidence():
+    """A failed planning/dispatch phase must not create speculative next phases."""
+    boss = BossAgent(computer_provider=_make_computer_mock(), llm_router=MagicMock())
+    first_phase = Phase(
+        phase_number=1,
+        name="Attempt",
+        thinking="Try the least-assumptive path.",
+        sub_missions=[SubMission(id="sub-empty", goal="inspect live state", max_steps=2)],
+    )
+    empty_result = SubMissionResult(
+        sub_mission_id="sub-empty",
+        goal="inspect live state",
+        success=False,
+        findings_summary="No execution evidence was produced.",
+    )
+
+    with patch.object(boss, "_strategic_decomposition", AsyncMock(return_value=first_phase)), \
+         patch.object(boss, "_dispatch_sub_agent", AsyncMock(return_value=empty_result)), \
+         patch.object(boss, "_aggregate_findings", AsyncMock(return_value="")), \
+         patch.object(boss, "_check_objective_complete", AsyncMock(return_value=(False, ""))), \
+         patch.object(boss, "_plan_next_phase", AsyncMock()) as plan_next:
+        report = await boss.run(workspace_id="ws-1", objective="inspect the target")
+
+    assert len(report.phases) == 1
+    plan_next.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_boss_safety_inherited_by_sub_agents():
     """Safety policy is propagated to all SubAgents with self_host=True."""
     decomp_json = json.dumps({

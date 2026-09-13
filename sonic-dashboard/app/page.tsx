@@ -198,13 +198,6 @@ export default function SonicDevinWorkstation() {
             break;
           }
 
-          // 2. If the worklog feed contains a completed response from SONIC
-          const logs = nextState?.worklog || [];
-          const lastLog = logs.length > 0 ? logs[logs.length - 1] : null;
-          if (lastLog && (lastLog.type === "response" || lastLog.title === "SONIC Response")) {
-            finished = true;
-            break;
-          }
         } catch {
           // Retry on transient network blip
         }

@@ -347,5 +347,5 @@ async def test_dismiss_workstation_mission_probe_endpoint(monkeypatch):
         assert resp.status_code == 200
         data = resp.json()
         assert data["status"] == "dismissed"
-        assert data["mission_status"] == "COMPLETED"
+        assert data["mission_status"] == "DISMISSED"
         assert session["mission"]["proposed_actions"] == []

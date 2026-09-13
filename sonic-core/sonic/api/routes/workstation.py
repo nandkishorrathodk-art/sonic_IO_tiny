@@ -1656,7 +1656,7 @@ async def approve_workstation_mission_probe(
             action_id=req.action_id,
         )
         if not mission["proposed_actions"] and mission.get("status") == "AWAITING_APPROVAL":
-            mission["status"] = "COMPLETED"
+            mission["status"] = "DISMISSED"
             state["current_action"] = "All proposed actions resolved."
         _persist_workstation_state()
         return {"status": "dismissed", "action_id": req.action_id, "mission_status": mission.get("status")}
@@ -1719,8 +1719,12 @@ async def approve_workstation_mission_probe(
     # Remove from proposed actions list
     mission["proposed_actions"] = [a for a in proposed_actions if a.get("action_id") != req.action_id]
     if not mission["proposed_actions"]:
-        mission["status"] = "COMPLETED"
-        state["current_action"] = "All approved probe actions completed."
+        if execution.status == "SUCCESS":
+            mission["status"] = "COMPLETED"
+            state["current_action"] = "All approved probe actions completed."
+        else:
+            mission["status"] = "BLOCKED"
+            state["current_action"] = f"Approved probe ended with {execution.status}; no successful completion claim was made."
     _persist_workstation_state()
 
     return {
@@ -1889,7 +1893,7 @@ def _is_complex_or_multi_part_objective(prompt: str) -> bool:
         "sql injection", "xss", "recon", "reconnaissance", "attack surface",
         "enumerate", "penetration", "exploit", "assess", "scan and",
         "check all", "deep dive", "source code", "binary", "executable",
-        "forensics", "reverse engineer",
+        "forensics", "reverse engineer", "open ports", "port scan",
     )
     if any(k in p_lower for k in complex_keywords):
         return True
@@ -2320,14 +2324,9 @@ async def _run_prompt_reasoning(tenant_id: str, session_id: str, prompt: str) ->
                         from sonic.safety.sealed import seal_default
                         state["interrupted"] = False
 
-                        # Pass authentic user goal directly to ComputerUseAgent without synthetic prompt mutation
+                        # Keep the operator objective immutable. The profile is
+                        # advisory context and must be validated by the agent.
                         effective_goal = prompt
-                        if program_profile["status"] == "READY_FOR_BOSS":
-                            effective_goal = (
-                                f"{prompt}\n\n"
-                                "PROGRAM INTAKE PROFILE (classification only; verify in sandbox):\n"
-                                f"{json.dumps(program_profile, ensure_ascii=True)}"
-                            )
 
                         ws_root = "/root" if os.environ.get("SONIC_USE_DAYTONA_CLOUD") != "1" else "/home/daytona"
                         target_domain_or_ip = _extract_target_url_or_domain(effective_goal, state)
@@ -2356,7 +2355,7 @@ async def _run_prompt_reasoning(tenant_id: str, session_id: str, prompt: str) ->
                                 target_resource = str(trace.get("target") or trace.get("target_resource") or "")
                                 thought = str(trace.get("thought") or "")
                                 actual_observation = str(trace.get("observation") or trace.get("actual_observation") or "")
-                                trace_status = str(trace.get("status", "COMPLETED"))
+                                trace_status = str(trace.get("status", "UNKNOWN"))
                                 duration_seconds = trace.get("duration_seconds", 0)
                                 exit_code = trace.get("exit_code")
                                 payload = trace.get("payload", "")
@@ -2367,7 +2366,7 @@ async def _run_prompt_reasoning(tenant_id: str, session_id: str, prompt: str) ->
                                 target_resource = getattr(trace, "target_resource", "")
                                 thought = getattr(trace, "thought", "")
                                 actual_observation = getattr(trace, "actual_observation", "") or ""
-                                trace_status = getattr(trace, "status", "COMPLETED")
+                                trace_status = getattr(trace, "status", "UNKNOWN")
                                 duration_seconds = getattr(trace, "duration_seconds", 0)
                                 exit_code = getattr(trace, "exit_code", None)
                                 payload = getattr(trace, "payload", "")
@@ -2498,6 +2497,7 @@ async def _run_prompt_reasoning(tenant_id: str, session_id: str, prompt: str) ->
                                 tenant_id=tenant_id,
                                 max_phases=3,
                                 sub_agent_steps=5,
+                                initial_context={"program_profile": program_profile},
                             )
 
                             _append_worklog(
@@ -2608,6 +2608,7 @@ async def _run_prompt_reasoning(tenant_id: str, session_id: str, prompt: str) ->
                                 self_host=True,
                                 enable_llm_decomposition=False,
                                 observe_desktop=desktop_prompt,
+                                initial_context={"program_profile": program_profile},
                             )
 
                             _append_worklog(
@@ -2711,7 +2712,8 @@ async def _run_prompt_reasoning(tenant_id: str, session_id: str, prompt: str) ->
 
         has_ready_provider = any(router._is_provider_ready(p) for p in router.providers)
         if not has_ready_provider:
-            # Generate grounded informative response without hanging or failing
+            # Surface the degraded state explicitly. A local status snapshot is
+            # not model output and must not be presented as an assistant reply.
             fallback_response = _generate_grounded_workstation_response(
                 prompt=prompt,
                 session_id=session_id,
@@ -2721,7 +2723,7 @@ async def _run_prompt_reasoning(tenant_id: str, session_id: str, prompt: str) ->
                 action_observations=action_observations,
             )
             state["thought_summary"] = fallback_response
-            _append_worklog(state, "response", "SONIC Response", fallback_response)
+            _append_worklog(state, "info", "LLM Provider Unavailable", fallback_response)
         else:
             system_prompt = WORKSTATION_CHAT_SYSTEM
             messages = [
@@ -2763,7 +2765,7 @@ async def _run_prompt_reasoning(tenant_id: str, session_id: str, prompt: str) ->
                     action_observations=action_observations,
                 )
                 state["thought_summary"] = fallback_response
-                _append_worklog(state, "response", "SONIC Response", fallback_response)
+                _append_worklog(state, "info", "LLM Response Unavailable", fallback_response)
     except Exception as general_err:
         logger.warning("workstation_reasoning_pipeline_error", error=str(general_err))
         err_msg = f"Reasoning pipeline error: {general_err}"

@@ -351,15 +351,9 @@ export function WorklogFeed({
     normalizedStatus === "ERROR" ||
     (!loading && normalizedStatus !== "RUNNING");
 
-  // Check if the latest item in the worklog feed is a finished response
-  const lastItem = displayItems.length > 0 ? displayItems[displayItems.length - 1] : null;
-  const lastIsResponse = Boolean(
-    lastItem && (lastItem.type === "response" || lastItem.title === "SONIC Response")
-  );
-
-  // If state is finished OR if the actual response is already shown at the bottom,
-  // do not render any spinner!
-  const shouldShowAction = !isFinished && !lastIsResponse;
+  // Only backend lifecycle state can end the active work indicator. A response
+  // event is content, not proof that execution has completed.
+  const shouldShowAction = !isFinished;
 
   const cleanActionText = (() => {
     if (!shouldShowAction) return undefined;

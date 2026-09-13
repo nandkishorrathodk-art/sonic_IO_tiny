@@ -95,6 +95,18 @@ async def test_boss_strategic_decomposition_creates_phase():
 
 
 @pytest.mark.asyncio
+async def test_boss_planning_only_result_is_not_reported_complete():
+    """A no-submission plan must not claim the user's objective was completed."""
+    llm = _make_llm_mock(["{}"])
+    boss = BossAgent(computer_provider=_make_computer_mock(), llm_router=llm)
+
+    report = await boss.run(workspace_id="ws-1", objective="inspect the target")
+
+    assert report.status == "INCOMPLETE"
+    assert report.total_actions == 0
+
+
+@pytest.mark.asyncio
 async def test_boss_sub_agent_dispatch_creates_focused_agent():
     """Dispatching a sub-mission creates a focused ComputerUseAgent."""
     summary_json = "Found 3 endpoints with parameters."

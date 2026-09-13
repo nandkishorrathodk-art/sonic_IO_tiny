@@ -155,6 +155,7 @@ def test_boss_detects_high_confidence_finding_trigger():
         sub_mission_id="sub-2",
         goal="Test login form",
         success=True,
+        evidence_verified=True,
         findings_summary="SQL injection confirmed on 'id' parameter with error-based payload.",
         key_discoveries=["SQLi vulnerability exploited"],
     )

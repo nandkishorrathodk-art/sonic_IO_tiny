@@ -181,12 +181,16 @@ class ComputerUseAgent:
         being_mind: Any | None = None,
         evolution_engine: Any | None = None,
         observe_desktop: bool = True,
+        initial_context: dict[str, Any] | None = None,
         **kwargs: Any,
     ):
         self.computer = computer_provider
         # Keep the application desktop optional. Sandbox/operator missions
         # should not capture pixels merely because a workstation exists.
         self.observe_desktop = observe_desktop
+        # Context supplied by the caller is advisory evidence, never a
+        # replacement for the immutable operator objective.
+        self.initial_context = dict(initial_context or {})
         self.autonomy_level = autonomy_level
         self.mode = mode
         self.max_actions = max_actions
@@ -1136,6 +1140,14 @@ class ComputerUseAgent:
             "run curl or bash commands, inspect source, or interact via browser/GUI.\n"
             "================================================================================\n\n"
         )
+        if self.initial_context:
+            obs_summary = (
+                "=== ADVISORY INITIAL CONTEXT (UNVERIFIED) ===\n"
+                f"{json.dumps(self.initial_context, ensure_ascii=True)[:1200]}\n"
+                "Validate these hints against live observations before acting.\n"
+                "==============================================\n\n"
+                + obs_summary
+            )
         obs_summary = target_header + obs_summary
 
         # Select system prompt based on model capability
@@ -3065,9 +3077,15 @@ class ComputerUseAgent:
                         script_path = f"/home/sonic/workspace/{tool_name}{ext}"
                         try:
                             await self.computer.write_file(workspace_id, script_path, code)
-                            actual_obs_str = f"Authored custom script at '{script_path}' (direct script authoring)"
-                            status = ActionExecutionStatus.COMPLETED
-                            recovery_needed = False
+                            actual_obs_str = (
+                                f"Authored custom script at '{script_path}', but it is "
+                                "UNVERIFIED: no Toolsmith sandbox reproduction or registration was performed."
+                            )
+                            # Writing source is not evidence that a capability
+                            # works. Keep the action non-successful so it
+                            # cannot advance a mission or claim progress.
+                            status = ActionExecutionStatus.FAILED
+                            recovery_needed = True
                         except Exception as e:
                             actual_obs_str = f"Failed writing authored script '{script_path}': {e}"
                             recovery_needed = True

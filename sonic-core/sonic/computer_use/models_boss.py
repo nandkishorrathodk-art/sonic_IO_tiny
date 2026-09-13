@@ -45,6 +45,7 @@ class SubMissionResult(BaseModel):
     key_discoveries: list[str] = Field(default_factory=list)
     actions_taken: int = 0
     duration_seconds: float = 0.0
+    evidence_verified: bool = False
 
 
 class Phase(BaseModel):
@@ -85,4 +86,3 @@ class BossReport(BaseModel):
     total_phases: int = 0
     findings_summary: str = ""
     duration_seconds: float = 0.0
-

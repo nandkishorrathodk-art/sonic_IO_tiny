@@ -240,6 +240,7 @@ def test_replan_trigger_broad_offensive_coverage():
         sub_mission_id="sub-ssrf",
         goal="Check webhook",
         success=True,
+        evidence_verified=True,
         findings_summary="Confirmed SSRF to internal metadata service 169.254.169.254.",
     )
     assert boss._detect_sub_mission_trigger(ssrf_res) == ReplanTrigger.NEW_HIGH_CONFIDENCE_FINDING
@@ -249,6 +250,7 @@ def test_replan_trigger_broad_offensive_coverage():
         sub_mission_id="sub-idor",
         goal="Audit user profile API",
         success=True,
+        evidence_verified=True,
         findings_summary="Discovered critical IDOR allowing unauthorized access to admin records.",
     )
     assert boss._detect_sub_mission_trigger(idor_res) == ReplanTrigger.NEW_HIGH_CONFIDENCE_FINDING
@@ -258,6 +260,7 @@ def test_replan_trigger_broad_offensive_coverage():
         sub_mission_id="sub-pwn",
         goal="Analyze binary parser",
         success=True,
+        evidence_verified=True,
         findings_summary="Confirmed buffer overflow and constructed ROP chain.",
     )
     assert boss._detect_sub_mission_trigger(pwn_res) == ReplanTrigger.NEW_HIGH_CONFIDENCE_FINDING
@@ -267,6 +270,7 @@ def test_replan_trigger_broad_offensive_coverage():
         sub_mission_id="sub-flag",
         goal="Extract flag",
         success=True,
+        evidence_verified=True,
         findings_summary="Flag extracted successfully: flag{autonomous_penetration_architect_2026}",
     )
     assert boss._detect_sub_mission_trigger(flag_res) == ReplanTrigger.NEW_HIGH_CONFIDENCE_FINDING

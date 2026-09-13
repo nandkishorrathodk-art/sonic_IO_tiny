@@ -89,6 +89,7 @@ class BossAgent:
         method_lab: Any = None,
         lessons_ledger: Any = None,
         evolution_engine: Any = None,
+        initial_context: dict[str, Any] | None = None,
     ):
         self.computer = computer_provider
         self.llm_router = llm_router
@@ -105,6 +106,7 @@ class BossAgent:
         self.method_lab = method_lab
         self.lessons_ledger = lessons_ledger
         self.evolution_engine = evolution_engine
+        self.initial_context = dict(initial_context or {})
         if self.evolution_engine is None:
             try:
                 from sonic.evolution.engine import EvolutionEngine
@@ -171,6 +173,14 @@ class BossAgent:
         """
         if not result.success:
             return ReplanTrigger.AGENT_FAILURE
+
+        # Summaries and discovery strings are hypotheses until a worker trace
+        # carries an explicit independent verification status.
+        if not result.evidence_verified:
+            return ReplanTrigger.NEW_ATTACK_SURFACE if any(
+                marker in (result.findings_summary + " " + " ".join(result.key_discoveries)).lower()
+                for marker in ("endpoint", "route", "subdomain", "open port", "service")
+            ) else None
 
         combined_text = (
             result.findings_summary + " " + " ".join(result.key_discoveries)
@@ -264,12 +274,17 @@ class BossAgent:
         if not self.phases:
             first_phase = await self._strategic_decomposition(objective)
             if not first_phase or not first_phase.sub_missions:
-                # Objective is too simple for Boss — return minimal report
+                # Boss did not execute anything. Keep the result honest so a
+                # caller can route the objective to direct execution instead
+                # of treating planning-only output as completed work.
                 logger.info("boss_agent_simple_objective", objective=objective[:100])
                 return BossReport(
                     objective=objective,
-                    status="COMPLETE",
-                    findings_summary="Objective is simple enough for direct execution.",
+                    status="INCOMPLETE",
+                    findings_summary=(
+                        "No sub-missions were created; no execution or verification "
+                        "was performed. Route this objective to direct execution."
+                    ),
                     duration_seconds=round(time.perf_counter() - t_start, 2),
                 )
 
@@ -463,7 +478,7 @@ class BossAgent:
             # Check if objective is complete
             all_findings = self._collect_all_findings()
             is_complete, completion_reason = await self._check_objective_complete(
-                objective, all_findings
+                objective, all_findings, current_phase.results
             )
 
             if is_complete:
@@ -741,6 +756,7 @@ Rules:
                 method_lab=self.method_lab,
                 lessons_ledger=self.lessons_ledger,
                 evolution_engine=self.evolution_engine,
+                initial_context=self.initial_context,
             )
 
             # Step callback to stream SubAgent actions to UI
@@ -867,6 +883,10 @@ Rules:
                 key_discoveries=key_discoveries,
                 actions_taken=total,
                 duration_seconds=duration,
+                evidence_verified=any(
+                    str(_trace_value(t, "status", "")) == "VERIFIED"
+                    for t in traces
+                ),
             )
 
         except Exception as e:
@@ -1073,9 +1093,17 @@ Rules:
     # ------------------------------------------------------------------
 
     async def _check_objective_complete(
-        self, objective: str, all_findings: str
+        self,
+        objective: str,
+        all_findings: str,
+        results: list[SubMissionResult] | None = None,
     ) -> tuple[bool, str]:
-        """Ask the LLM whether the objective has been fully satisfied."""
+        """Require an LLM proposal plus structured evidence before completion.
+
+        The model may interpret the findings, but it cannot promote a textual
+        claim into a completed mission. At least one worker must report
+        independently verified evidence from its execution trace.
+        """
         t_start = time.perf_counter()
 
         try:
@@ -1102,6 +1130,17 @@ Rules:
         is_complete = parsed.get("complete", False) if parsed else False
         reason = parsed.get("reason", raw[:200]) if parsed else raw[:200]
 
+        verified_results = [
+            result for result in (results or [])
+            if result.evidence_verified or self._result_has_verified_trace(result)
+        ]
+        if is_complete and not verified_results:
+            is_complete = False
+            reason = (
+                "The model proposed completion, but no independently verified "
+                "execution evidence supports it."
+            )
+
         self.thinking_log.append(BossThinking(
             phase=len(self.phases),
             thinking_type="completion_check",
@@ -1110,6 +1149,24 @@ Rules:
         ))
 
         return is_complete, reason
+
+    @staticmethod
+    def _result_has_verified_trace(result: SubMissionResult) -> bool:
+        """Recognize independently observed, successful sandbox evidence."""
+        for trace in result.traces:
+            status = getattr(trace, "status", None)
+            if status is None and isinstance(trace, dict):
+                status = trace.get("status")
+            status_text = str(status or "").upper()
+            observation = getattr(trace, "actual_observation", None)
+            if observation is None and isinstance(trace, dict):
+                observation = trace.get("actual_observation") or trace.get("observation")
+            if status_text == "VERIFIED" or (
+                status_text in {"SUCCESS", "COMPLETED"}
+                and bool(str(observation or "").strip())
+            ):
+                return True
+        return False
 
     # ------------------------------------------------------------------
     # Next Phase Planning (Reaction)
@@ -1264,8 +1321,13 @@ If the objective is complete or no more work is needed, return:
         all_success = all(
             r.success for p in self.phases for r in p.results
         ) if self.phases and any(p.results for p in self.phases) else False
+        all_verified = all(
+            r.evidence_verified or self._result_has_verified_trace(r)
+            for p in self.phases
+            for r in p.results
+        ) if self.phases and any(p.results for p in self.phases) else False
 
-        if all_success:
+        if all_success and all_verified:
             status = "COMPLETE"
         elif any_success:
             status = "PARTIAL"

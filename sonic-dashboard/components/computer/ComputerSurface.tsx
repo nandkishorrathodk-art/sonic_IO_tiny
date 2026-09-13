@@ -82,13 +82,10 @@ export function ComputerSurface({
   };
 
   useEffect(() => {
-    // VNC Stream is already live and must not trigger background screenshot
-    // capture. Snapshot polling is opt-in so opening the workstation or having
-    // a conversational session never observes the desktop implicitly.
+    // VNC Stream is already live and must not trigger screenshot capture.
+    // Snapshot mode performs one explicit capture; refresh is operator-driven.
     if (useStream) return;
     fetchScreenshot();
-    const interval = setInterval(fetchScreenshot, 3000);
-    return () => clearInterval(interval);
   }, [sessionId, useStream]);
 
   // Follow new command output only while the operator is at the tail.
@@ -159,7 +156,6 @@ export function ComputerSurface({
 
     try {
       await api.postGUIAction(sessionId, { action: "CLICK", x, y });
-      setTimeout(fetchScreenshot, 300);
     } catch (err) {
       console.error("Failed to dispatch GUI click:", err);
     }
@@ -173,7 +169,6 @@ export function ComputerSurface({
       await api.postGUIAction(sessionId, { action: "TYPE", text: inputText });
       await api.postGUIAction(sessionId, { action: "KEYPRESS", key: "Return" });
       setInputText("");
-      setTimeout(fetchScreenshot, 400);
     } catch (err) {
       console.error("Failed to type text:", err);
     } finally {
@@ -184,7 +179,6 @@ export function ComputerSurface({
   const handleSendKey = async (key: string) => {
     try {
       await api.postGUIAction(sessionId, { action: "KEYPRESS", key });
-      setTimeout(fetchScreenshot, 300);
     } catch (err) {
       console.error("Failed to press key:", err);
     }

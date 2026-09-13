@@ -156,21 +156,14 @@ def test_grounding_map_crop_to_screen():
 
 
 def test_grounding_webapp_landmarks():
-    # Test Web Application landmark queries
-    submit_coords = resolve_ui_target("submit button", width=1280, height=800)
-    assert submit_coords is not None
-    assert abs(submit_coords[0] - 640) <= 2
-    assert abs(submit_coords[1] - 496) <= 2
+    # Test Web Application queries fail closed to None without vision perception (no landmark guessing)
+    assert resolve_ui_target("submit button", width=1280, height=800) is None
+    assert resolve_ui_target("username input", width=1280, height=800) is None
+    assert resolve_ui_target("dashboard tab", width=1280, height=800) is None
 
-    user_coords = resolve_ui_target("username input", width=1280, height=800)
-    assert user_coords is not None
-    assert abs(user_coords[0] - 640) <= 2
-    assert abs(user_coords[1] - 384) <= 2
-
-    dash_coords = resolve_ui_target("dashboard tab", width=1280, height=800)
-    assert dash_coords is not None
-    assert abs(dash_coords[0] - 128) <= 2
-    assert abs(dash_coords[1] - 64) <= 2
+    # Direct coordinates resolve accurately
+    submit_coords = resolve_ui_target("640, 496", width=1280, height=800)
+    assert submit_coords == (640, 496)
 
 
 @pytest.mark.asyncio

@@ -1732,74 +1732,6 @@ async def approve_workstation_mission_probe(
     }
 
 
-_PACKAGE_PLACEHOLDERS = {
-    "package", "app", "application", "the", "a", "an", "tool", "something", "it", "pkg", "program", "software",
-}
-
-
-def _detect_requested_app(prompt: str) -> tuple[str, str]:
-    """Detect requested desktop application and any target URL or arguments."""
-    lower = prompt.strip().lower()
-
-    # Browser / Web navigation
-    _NEWS_KEYWORDS = ("news", "khabar", "kabar", "samachar", "taaza", "taja", "headlines", "breaking", "khabrein", "aaj ki khabar", "today news")
-    is_news_request = any(k in lower for k in _NEWS_KEYWORDS)
-    _BROWSER_KEYWORDS = (
-        "browser", "chrome", "chromium", "chromim", "chrom", "crome", "chromuim",
-        "firefox", "web", "surf", "website", "url", "open link", "google", "search for", "search", "dhoondo", "dhundo", "khoj", "dhund", "web dekho", "internet"
-    )
-    if is_news_request or any(k in lower for k in _BROWSER_KEYWORDS):
-        url_match = re.search(r"https?://[^\s]+", prompt)
-        if url_match:
-            return "chromium", url_match.group(0)
-        domain_match = re.search(r"\b([a-zA-Z0-9-]+\.(?:io|com|org|net|app|co|dev|xyz|ai|me))\b", prompt, re.IGNORECASE)
-        if domain_match:
-            return "chromium", f"https://{domain_match.group(1)}"
-        # Check for "<item> search karo" (Hindi grammar) or "search <item>"
-        hindi_search = re.search(r"([a-zA-Z0-9+_.-]+)\s+(?:search karo|dhoondo|dhundo)", lower)
-        if hindi_search and hindi_search.group(1) not in ("chromium", "chrome", "google", "kaam", "bhi"):
-            query = hindi_search.group(1).strip()
-            return "chromium", f"https://www.google.com/search?q={query}"
-        search_match = re.search(r"(?:search for|search|look for|find|dhundo|dhoondo)\s+(?:karo\s+)?([a-zA-Z0-9+_.-]+)", lower)
-        if search_match and search_match.group(1) not in ("karo", "chromium", "chrome", "google"):
-            query = search_match.group(1).strip()
-            return "chromium", f"https://www.google.com/search?q={query}"
-        # For news requests, return news.google.com instead of generic Google
-        if is_news_request:
-            return "chromium", "https://news.google.com"
-        return "chromium", "https://www.google.com"
-
-    # Terminal
-    if any(k in lower for k in ("terminal", "terminial", "bash", "shell", "console", "cmd", "terminal kholo", "terminal open", "kholo terminal", "cmd khol")):
-        return "xfce4-terminal", ""
-
-    return "", ""
-
-
-def _clean_rss_titles(rss_xml: str) -> list[str]:
-    """Parse an RSS XML feed and return clean, entity-decoded item titles.
-
-    Tolerant of CDATA wrappers and numeric/character entity references
-    (``&amp;`` -> ``&``, ``&#39;`` -> ``'``). Returns an empty list for
-    malformed/empty input rather than raising — feeds are best-effort.
-    """
-    if not rss_xml or not rss_xml.strip():
-        return []
-    titles: list[str] = []
-    for block in re.finditer(r"<item\b[^>]*>(.*?)</item>", rss_xml, re.IGNORECASE | re.DOTALL):
-        inner = block.group(1)
-        m = re.search(r"<title\b[^>]*>(.*?)</title>", inner, re.IGNORECASE | re.DOTALL)
-        if not m:
-            continue
-        raw = m.group(1).strip()
-        # Strip optional CDATA wrapper.
-        cdata = re.search(r"<!\[CDATA\[(.*?)\]\]>", raw, re.DOTALL)
-        if cdata:
-            raw = cdata.group(1)
-        cleaned = html.unescape(raw).strip()
-        if cleaned:
-            titles.append(cleaned)
-    return titles
 
 
 def _extract_target_url_or_domain(prompt: str, state: dict[str, Any] | None = None) -> str:
@@ -1894,79 +1826,6 @@ def _is_complex_or_multi_part_objective(prompt: str) -> bool:
 
 
 
-_NON_INSTALL_WORDS = {
-    "karo", "it", "them", "this", "that", "app", "application", "package", "tools", "tool",
-    "usko", "isko", "unko", "inhe", "unhe", "please", "pls", "kar", "do", "karna", "then",
-    "the", "an", "a"
-}
-
-
-def _extract_install_package(prompt: str) -> str:
-    """Extract a simple package name without capturing filler words or shell syntax."""
-    p_lower = prompt.lower()
-    # 1. Hindi SOV: "<package> install karo" or "<package> ko install karo"
-    hindi_match = re.search(r"([a-z0-9][a-z0-9+_.-]*)\s+(?:ko\s+)?install\s+karo", p_lower)
-    if hindi_match:
-        cand = hindi_match.group(1)
-        if cand not in _NON_INSTALL_WORDS:
-            return cand
-
-    # 2. English SVO: "install <package>"
-    match = re.search(
-        r"\binstall(?:\s+(?:the|an|a))?(?:\s+(?:application|app|package))?\s+([a-z0-9][a-z0-9+_.-]*)\b",
-        p_lower,
-    )
-    if match:
-        cand = match.group(1)
-        if cand not in _NON_INSTALL_WORDS:
-            return cand
-
-    # 3. Known security tools mentioned in an install context
-    if "install" in p_lower:
-        for tool in ("chromium", "nmap", "ffuf", "sqlmap", "wireshark", "nikto", "metasploit"):
-            if tool in p_lower:
-                return tool
-
-    return ""
-
-
-def _extract_terminal_command(prompt: str) -> str:
-    """Read an explicit command only; never infer one from a vague request."""
-    match = re.search(
-        r"(?:run|execute)\s+(?:command\s*)?[:\-]?\s*[`\"]?(.+?)[`\"]?$|"
-        r"terminal\s*[:\-]\s*[`\"]?(.+?)[`\"]?$",
-        prompt.strip(),
-        re.IGNORECASE,
-    )
-    if match:
-        return (match.group(1) or match.group(2) or "").strip()
-    # Also check if prompt starts directly with common safe shell utilities
-    trimmed = prompt.strip()
-    first_word = trimmed.split()[0].lower() if trimmed.split() else ""
-    if first_word in {"uname", "whoami", "pwd", "curl", "nmap", "dig", "host", "ping", "cat", "ls", "find", "git", "python", "python3", "which", "id", "df", "free", "ps", "uptime"}:
-        return trimmed
-    return ""
-
-
-async def _run_autonomous_desktop_loop(
-    state: dict[str, Any],
-    desktop_id: str,
-    tenant_id: str,
-    prompt: str,
-) -> tuple[list[str], str | None, bool]:
-    """DEPRECATED / REMOVED: All autonomous operations now flow exclusively through ComputerUseAgent."""
-    return [], None, False
-
-
-def _is_research_prompt(prompt: str) -> bool:
-    """Detect if prompt requests autonomous research, security assessment, or scanning.
-
-    DISABLED (Phase 7.9): The parallel research swarm produces hallucinated
-    endpoints and hypotheses — zero real HTTP requests or scans.  All prompts
-    now flow through the real ComputerUseAgent action loop which executes
-    commands in the sandbox.  Re-enable once specialists make real requests.
-    """
-    return False
 
 
 async def _run_parallel_research_swarm(
@@ -2241,84 +2100,31 @@ def _generate_grounded_workstation_response(
     desktop_context: str,
     action_observations: list[str] | None = None,
 ) -> str:
-    """Generate a high-quality, grounded conversational or workstation status response
-    used when LLM providers are unconfigured, timed out, or unavailable.
-    """
+    """Generate an authentic workstation status response when LLM providers are unconfigured or unavailable."""
     if action_observations:
         obs_summary = "\n\n".join(action_observations)
         return (
             f"**Desktop Action Completed:**\n\n"
             f"{obs_summary}\n\n"
-            f"*The Daytona graphical workstation and terminal are synchronized with these results.*"
+            f"*The workstation environment is synchronized with these results.*"
         )
 
-    lower = prompt.strip().lower()
-    cleaned = re.sub(r"[\s?!.,;]+$", "", lower).strip()
-
-    if cleaned in {
-        "who are you", "kaun ho tum", "tum kaun ho", "aap kaun ho",
-        "tell me about yourself", "what is sonic", "who is sonic",
-    }:
-        return (
-            "I am **SONIC** (Autonomous Self-Evolving Penetration Architect), an AI offensive security agent "
-            "and autonomous cyber workstation operator. I can inspect desktop & terminal environments, "
-            "execute authorized security assessments, discover and test attack hypotheses, and run "
-            "security tooling in sandboxed environments."
-        )
-
-    if cleaned in {
-        "what can you do", "kya kar sakte ho", "help", "commands",
-    }:
-        return (
-            "I can assist with the following operations on your Daytona workstation:\n\n"
-            "- **Terminal & Shell Execution:** Run security tools (nmap, nuclei, ffuf, curl), navigate repositories, and inspect code.\n"
-            "- **Browser Interaction:** Navigate websites, test web applications, and extract intelligence.\n"
-            "- **Desktop Application Management:** Launch allowed graphical and terminal apps.\n"
-            "- **Autonomous Security Missions:** Formulate attack plans, collect tamper-evident evidence, and update graph memory.\n\n"
-            "Provide an objective or ask me to inspect your workstation to begin."
-        )
-
-    if cleaned in {
-        "status", "kya kar rahe ho", "kya chal raha hai", "system status",
-    }:
-        status_val = state.get("status", "IDLE")
-        curr_act = state.get("current_action", "Ready when you are.")
-        ws_info = f"Active Daytona sandbox `{desktop_id}`" if desktop_id else "No desktop provisioned (API mode)"
-        branch = state.get("git_branch") or "main"
-        target = state.get("active_target") or state.get("target_sandbox", {}).get("target") or "None set"
-        return (
-            f"**SONIC Workstation Status Report:**\n\n"
-            f"- **System State:** `{status_val}`\n"
-            f"- **Current Action:** {curr_act}\n"
-            f"- **Session ID:** `{session_id}`\n"
-            f"- **Workstation:** {ws_info}\n"
-            f"- **Git Branch:** `{branch}`\n"
-            f"- **Active Target:** `{target}`\n\n"
-            f"Ready for your instructions."
-        )
-
-    if cleaned in {
-        "hi", "hello", "hey", "hi sonic", "hello sonic", "hey sonic", "yo", "sup",
-        "namaste", "salaam",
-    }:
-        return (
-            "Hello! SONIC is online and connected to your workstation session. "
-            "How can I assist with your objective or security operations today?"
-        )
-
-    if desktop_id:
-        return (
-            f"I have inspected the live workstation desktop and terminal environment for session `{session_id}`.\n\n"
-            f"Observation context:\n> {desktop_context[:300]}...\n\n"
-            f"Ready to execute your instructions. You can ask me to launch applications, run terminal commands, "
-            f"or conduct security operations directly."
-        )
+    status_val = state.get("status", "IDLE")
+    curr_act = state.get("current_action", "Ready.")
+    ws_info = f"Active sandbox `{desktop_id}`" if desktop_id else "No desktop sandbox provisioned"
+    branch = state.get("git_branch") or "main"
+    target = state.get("active_target") or state.get("target_sandbox", {}).get("target") or "None set"
+    obs_snippet = f"\n\nObservation context:\n> {desktop_context[:300]}..." if desktop_id and desktop_context else ""
 
     return (
-        f"Objective received: '{prompt}'.\n\n"
-        f"Workstation analysis completed for session `{session_id}`. "
-        f"To execute live shell commands, network scans, or launch applications on the Linux desktop, "
-        f"provision a Daytona workstation from the Computer tab."
+        f"**SONIC Workstation Status:**\n\n"
+        f"- **Objective:** {prompt}\n"
+        f"- **State:** `{status_val}`\n"
+        f"- **Current Action:** {curr_act}\n"
+        f"- **Workstation:** {ws_info}\n"
+        f"- **Branch:** `{branch}`\n"
+        f"- **Active Target:** `{target}`"
+        f"{obs_snippet}"
     )
 
 
@@ -2329,10 +2135,6 @@ async def _run_prompt_reasoning(tenant_id: str, session_id: str, prompt: str) ->
     action_observations: list[str] = []
     desktop_context = "No tenant-owned desktop observation is available for this session."
     try:
-        # Check if prompt requests autonomous research, security assessment, scanning, or pentest
-        if _is_research_prompt(prompt):
-            await _run_parallel_research_swarm(state, tenant_id, session_id, prompt)
-            return
 
         from sonic.llm.prompts import WORKSTATION_CHAT_SYSTEM
         from sonic.llm.providers.custom import CustomLLMProvider
@@ -2399,19 +2201,8 @@ async def _run_prompt_reasoning(tenant_id: str, session_id: str, prompt: str) ->
                         from sonic.safety.sealed import seal_default
                         state["interrupted"] = False
 
-                        # Enhance goal with target context from session history if not directly in prompt
+                        # Pass authentic user goal directly to ComputerUseAgent without synthetic prompt mutation
                         effective_goal = prompt
-                        urls_in_history = []
-                        for entry in state.get("worklog", []):
-                            txt = str(entry.get("content") or "")
-                            for u in re.findall(r'https?://[a-zA-Z0-9.\-_~:/?#\[\]@!$&\'()*+,;=%]+', txt):
-                                if not any(ign in u for ign in ("localhost", "127.0.0.1", "github.com", "nmap.org")):
-                                    urls_in_history.append(u.rstrip(").,;\"'"))
-                        if urls_in_history:
-                            seen = set()
-                            dedup_urls = [u for u in urls_in_history if not (u in seen or seen.add(u))]
-                            if not any(u in prompt for u in dedup_urls):
-                                effective_goal += f"\n[Contextual Target URL in scope: {dedup_urls[0]}]"
 
                         ws_root = "/root" if os.environ.get("SONIC_USE_DAYTONA_CLOUD") != "1" else "/home/daytona"
                         target_domain_or_ip = _extract_target_url_or_domain(effective_goal, state)

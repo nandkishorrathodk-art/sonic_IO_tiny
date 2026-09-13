@@ -2165,19 +2165,18 @@ class ComputerUseAgent:
                     )
                 grounding_fn = _ground
 
-            # When operating with a live screen screenshot, strictly require visual perception
-            # and forbid falling back to arbitrary mock percentage clicks.
+            # Require genuine visual perception or direct coordinates; forbid landmark fallbacks.
             res_coords = await resolve_ui_target_async(
                 query=target_resource,
                 screenshot_b64=self._last_screenshot_b64,
                 width=self._screen_width,
                 height=self._screen_height,
                 grounding_fn=grounding_fn,
-                allow_landmarks=not bool(self._last_screenshot_b64),
+                allow_landmarks=False,
             )
             if res_coords is not None:
                 payload["x"], payload["y"] = res_coords
-                resolved_via_grounding = True
+                resolved_via_grounding = bool(grounding_fn and self._last_screenshot_b64)
                 logger.info(
                     "visual_grounding_target_resolved",
                     action=action_type.value,

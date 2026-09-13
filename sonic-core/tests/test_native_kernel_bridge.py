@@ -235,3 +235,28 @@ def test_action_broker_native_kernel_seal_tampered_fails_closed():
     mock_provider.execute.assert_not_called()
 
 
+def test_native_kernel_persistent_daemon_streaming():
+    """Client streams requests over persistent daemon pipe without process-per-call overhead."""
+    client = NativeKernelClient(binary_path="/mock/sonic-kernel")
+    mock_proc = MagicMock()
+    mock_proc.poll.return_value = None
+    mock_proc.stdin = MagicMock()
+    mock_proc.stdout = MagicMock()
+    mock_proc.stdout.readline.return_value = json.dumps({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "result": {"status": "healthy", "version": "0.2.0"},
+    }) + "\n"
+
+    with patch("subprocess.Popen", return_value=mock_proc), \
+         patch("pathlib.Path.is_file", return_value=True):
+        res = client.health()
+        assert res is not None
+        assert res["status"] == "healthy"
+        assert mock_proc.stdin.write.called
+        assert mock_proc.stdout.readline.called
+
+    client.close()
+    assert mock_proc.terminate.called
+
+

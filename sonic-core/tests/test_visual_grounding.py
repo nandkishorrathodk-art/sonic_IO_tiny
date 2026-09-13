@@ -35,23 +35,13 @@ def test_resolve_ui_target_direct_coords():
     assert pt == (800, 600)
 
 
-def test_resolve_ui_target_landmarks():
+def test_resolve_ui_target_no_landmarks():
     from sonic.computer_use.grounding import resolve_ui_target
-    # Test common desktop landmarks on 1280x800
-    pt_app = resolve_ui_target("Applications menu", width=1280, height=800)
-    assert pt_app is not None
-    assert pt_app[0] < 50 and pt_app[1] < 50
-
-    pt_term = resolve_ui_target("Terminal icon", width=1280, height=800)
-    assert pt_term is not None
-    assert pt_term[0] < 100 and pt_term[1] < 50
-
-    pt_chrome = resolve_ui_target("Google Chrome", width=1280, height=800)
-    assert pt_chrome is not None
-
-    pt_close = resolve_ui_target("Window close", width=1280, height=800)
-    assert pt_close is not None
-    assert pt_close[0] > 1200
+    # Verifies that arbitrary text queries without coordinates or vision return None (no landmark guessing)
+    assert resolve_ui_target("Applications menu", width=1280, height=800) is None
+    assert resolve_ui_target("Terminal icon", width=1280, height=800) is None
+    assert resolve_ui_target("Google Chrome", width=1280, height=800) is None
+    assert resolve_ui_target("Window close", width=1280, height=800) is None
 
 
 def test_resolve_ui_target_grounding_fn():
@@ -93,17 +83,33 @@ async def test_agent_visual_grounding_click_dispatch():
         workspace_id="test-ws",
         action_type=ComputerActionType.GUI_CLICK,
         target_resource="Applications menu",
-        payload={},
+        payload={"x": 20, "y": 12},
         predicted_outcome="Open application menu",
     )
 
     assert trace.status == "SUCCESS"
-    assert "Visual grounding resolved 'Applications menu'" in trace.actual_observation
+    assert "Clicked at (20, 12)" in trace.actual_observation
     assert mock_computer.gui_action.called
     gui_call = mock_computer.gui_action.call_args[0][1]
     assert gui_call.action == GUIActionType.CLICK
     assert gui_call.x == 20
     assert gui_call.y == 12
+
+
+@pytest.mark.asyncio
+async def test_agent_click_blocked_when_unresolved():
+    mock_computer = MagicMock()
+    agent = ComputerUseAgent(computer_provider=mock_computer)
+    trace = await agent.execute_action(
+        workspace_id="test-ws",
+        action_type=ComputerActionType.GUI_CLICK,
+        target_resource="Applications menu",
+        payload={},
+        predicted_outcome="Open application menu",
+    )
+    assert trace.status == "BLOCKED"
+    assert "could not be resolved" in trace.actual_observation
+    assert not mock_computer.gui_action.called
 
 
 @pytest.mark.asyncio
@@ -118,12 +124,12 @@ async def test_agent_gui_right_click_dispatch():
         workspace_id="test-ws",
         action_type=ComputerActionType.GUI_RIGHT_CLICK,
         target_resource="Terminal",
-        payload={},
+        payload={"x": 48, "y": 12},
         predicted_outcome="Open terminal context menu",
     )
 
     assert trace.status == "SUCCESS"
-    assert "Visual grounding resolved 'Terminal'" in trace.actual_observation
+    assert "Right-clicked at (48, 12)" in trace.actual_observation
     assert mock_computer.gui_action.called
     gui_call = mock_computer.gui_action.call_args[0][1]
     assert gui_call.action == GUIActionType.RIGHT_CLICK

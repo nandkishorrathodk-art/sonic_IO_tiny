@@ -48,8 +48,8 @@ services:
   # 3. SONIC-REDA Core Control Plane API
   sonic-core:
     build:
-      context: ./sonic-core
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: sonic-core/Dockerfile
     container_name: sonic-core-prod
     restart: always
     depends_on:

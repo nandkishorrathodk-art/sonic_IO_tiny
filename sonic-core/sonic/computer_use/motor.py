@@ -9,6 +9,7 @@ budget hygiene for the SONIC Computer.
 from __future__ import annotations
 
 import asyncio
+import os
 import shlex
 from typing import Any
 
@@ -44,10 +45,22 @@ class MotorReflexes:
                 pass
         return 1, "", "No execution method available"
 
+    def _get_display(self, workspace_id: str | None = None) -> str:
+        """Resolve dynamic X11 DISPLAY for the workstation."""
+        if hasattr(self.computer, "_get_display"):
+            try:
+                disp = self.computer._get_display(workspace_id)
+                if disp:
+                    return disp
+            except Exception:
+                pass
+        return os.environ.get("DISPLAY") or ":99"
+
     async def _send_hotkey(self, workspace_id: str, key: str) -> None:
         """Send a keyboard shortcut or keypress to the workstation."""
         safe_key = shlex.quote(key)
-        cmd = f"DISPLAY=:99 xdotool key --clearmodifiers {safe_key}"
+        disp = self._get_display(workspace_id)
+        cmd = f"DISPLAY={disp} xdotool key --clearmodifiers {safe_key}"
         if hasattr(self.computer, "_docker_exec"):
             try:
                 res = await self.computer._docker_exec(cmd)
@@ -75,7 +88,8 @@ class MotorReflexes:
         """
         safe_text = shlex.quote(text)
         delay_arg = f"--delay {delay_ms} " if delay_ms > 0 else ""
-        cmd = f"DISPLAY=:99 xdotool type {delay_arg}--clearmodifiers {safe_text}"
+        disp = self._get_display(workspace_id)
+        cmd = f"DISPLAY={disp} xdotool type {delay_arg}--clearmodifiers {safe_text}"
 
         if hasattr(self.computer, "_docker_exec"):
             try:
@@ -161,8 +175,9 @@ class MotorReflexes:
             val = getattr(self.computer, "tab_count")
             count = val() if callable(val) else int(val)
         else:
+            disp = self._get_display(workspace_id)
             code, out, _ = await self._exec_cmd(
-                "DISPLAY=:99 wmctrl -l 2>/dev/null || wmctrl -l 2>/dev/null", workspace_id
+                f"DISPLAY={disp} wmctrl -l 2>/dev/null || wmctrl -l 2>/dev/null", workspace_id
             )
             if code == 0 and out.strip():
                 for line in out.splitlines():
@@ -182,10 +197,11 @@ class MotorReflexes:
 
         excess = max(0, count - max_tabs)
         if excess > 0:
+            disp = self._get_display(workspace_id)
             focus_browser_cmd = (
-                "DISPLAY=:99 wmctrl -a 'Chrome' 2>/dev/null || "
-                "DISPLAY=:99 wmctrl -a 'Chromium' 2>/dev/null || "
-                "DISPLAY=:99 xdotool search --class 'google-chrome' windowactivate --sync 2>/dev/null || true"
+                f"DISPLAY={disp} wmctrl -a 'Chrome' 2>/dev/null || "
+                f"DISPLAY={disp} wmctrl -a 'Chromium' 2>/dev/null || "
+                f"DISPLAY={disp} xdotool search --class 'google-chrome' windowactivate --sync 2>/dev/null || true"
             )
             await self._exec_cmd(focus_browser_cmd, workspace_id)
             await asyncio.sleep(0.05)
@@ -231,10 +247,11 @@ class MotorReflexes:
           Stage 3: Dispatch physical click event at coordinate (x, y).
         """
         safe_target = shlex.quote(target_window)
+        disp = self._get_display(workspace_id)
         # Stage 1: Focus/raise window
         focus_cmd = (
-            f"DISPLAY=:99 wmctrl -a {safe_target} 2>/dev/null || "
-            f"DISPLAY=:99 xdotool search --name {safe_target} windowactivate --sync 2>/dev/null || true"
+            f"DISPLAY={disp} wmctrl -a {safe_target} 2>/dev/null || "
+            f"DISPLAY={disp} xdotool search --name {safe_target} windowactivate --sync 2>/dev/null || true"
         )
         await self._exec_cmd(focus_cmd, workspace_id)
 
@@ -255,10 +272,10 @@ class MotorReflexes:
                     action_obj,
                 )
             except Exception:
-                click_cmd = f"DISPLAY=:99 xdotool mousemove {x} {y} click {button}"
+                click_cmd = f"DISPLAY={disp} xdotool mousemove {x} {y} click {button}"
                 await self._exec_cmd(click_cmd, workspace_id)
         else:
-            click_cmd = f"DISPLAY=:99 xdotool mousemove {x} {y} click {button}"
+            click_cmd = f"DISPLAY={disp} xdotool mousemove {x} {y} click {button}"
             await self._exec_cmd(click_cmd, workspace_id)
 
         return f"two_stage_clicked: window={target_window} at=({x},{y})"

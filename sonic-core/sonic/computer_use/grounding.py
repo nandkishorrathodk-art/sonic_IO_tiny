@@ -157,171 +157,20 @@ def draw_action_marker(
         return image_b64
 
 
-# Standard landmark positions for a standard desktop workstation (scaled to width, height)
-_COMMON_UI_LANDMARKS: dict[str, tuple[float, float]] = {
-    # Top panel / Application menu
-    "applications menu": (0.016, 0.015),
-    "applications": (0.016, 0.015),
-    "app menu": (0.016, 0.015),
-    "whisker menu": (0.016, 0.015),
-    "start menu": (0.016, 0.015),
-
-    # Quick launcher icons on top panel
-    "terminal launcher": (0.038, 0.015),
-    "terminal icon": (0.038, 0.015),
-    "terminal": (0.038, 0.015),
-    "browser launcher": (0.060, 0.015),
-    "chrome icon": (0.060, 0.015),
-    "chrome": (0.060, 0.015),
-    "google chrome": (0.060, 0.015),
-    "chromium": (0.060, 0.015),
-    "file manager launcher": (0.082, 0.015),
-    "file manager": (0.082, 0.015),
-    "text editor launcher": (0.104, 0.015),
-    "editor": (0.104, 0.015),
-
-    # Desktop shortcuts / icons (left column)
-    "home desktop icon": (0.030, 0.080),
-    "home folder": (0.030, 0.080),
-    "user home": (0.030, 0.080),
-    "trash": (0.030, 0.200),
-    "trash desktop icon": (0.030, 0.200),
-    "recycle bin": (0.030, 0.200),
-    "filesystem": (0.030, 0.320),
-    "filesystem desktop icon": (0.030, 0.320),
-    "root filesystem": (0.030, 0.320),
-    "chrome desktop icon": (0.030, 0.440),
-    "terminal desktop icon": (0.030, 0.560),
-
-    # Window controls (standard top-right of active maximized window)
-    "close button": (0.985, 0.015),
-    "close window": (0.985, 0.015),
-    "window close": (0.985, 0.015),
-    "exit window": (0.985, 0.015),
-    "minimize button": (0.950, 0.015),
-    "minimize window": (0.950, 0.015),
-    "window minimize": (0.950, 0.015),
-    "maximize button": (0.968, 0.015),
-    "maximize window": (0.968, 0.015),
-    "window maximize": (0.968, 0.015),
-
-    # System Tray / Notification Area (top right panel)
-    "clock": (0.910, 0.015),
-    "time": (0.910, 0.015),
-    "clock applet": (0.910, 0.015),
-    "notification area": (0.875, 0.015),
-    "notifications": (0.875, 0.015),
-    "network status": (0.850, 0.015),
-    "network icon": (0.850, 0.015),
-    "wifi icon": (0.850, 0.015),
-    "audio status": (0.825, 0.015),
-    "volume icon": (0.825, 0.015),
-
-    # Browser Navigation & Controls (Chrome / Chromium / Web)
-    "browser back": (0.015, 0.075),
-    "back button": (0.015, 0.075),
-    "browser forward": (0.035, 0.075),
-    "forward button": (0.035, 0.075),
-    "browser reload": (0.055, 0.075),
-    "reload button": (0.055, 0.075),
-    "refresh page": (0.055, 0.075),
-    "refresh button": (0.055, 0.075),
-    "browser address bar": (0.450, 0.075),
-    "address bar": (0.450, 0.075),
-    "url bar": (0.450, 0.075),
-    "location bar": (0.450, 0.075),
-    "omnibox": (0.450, 0.075),
-    "browser new tab": (0.240, 0.040),
-    "new tab button": (0.240, 0.040),
-    "new tab": (0.240, 0.040),
-    "browser close tab": (0.210, 0.040),
-    "close tab": (0.210, 0.040),
-    "browser devtools": (0.980, 0.075),
-    "developer tools": (0.980, 0.075),
-    "browser menu": (0.988, 0.075),
-    "chrome menu": (0.988, 0.075),
-    "three dots menu": (0.988, 0.075),
-    "browser search bar": (0.500, 0.380),
-    "google search input": (0.500, 0.380),
-
-    # Terminal window active regions
-    "terminal prompt": (0.200, 0.200),
-    "terminal input": (0.200, 0.200),
-    "terminal window": (0.500, 0.500),
-
-    # Common dialog & web buttons
-    "login button": (0.500, 0.580),
-    "login": (0.500, 0.580),
-    "sign in button": (0.500, 0.580),
-    "ok button": (0.550, 0.550),
-    "ok": (0.550, 0.550),
-    "cancel button": (0.450, 0.550),
-    "cancel": (0.450, 0.550),
-    "save button": (0.520, 0.550),
-    "search button": (0.620, 0.380),
-
-    # Web Application Form & Navigation Controls
-    "submit button": (0.500, 0.620),
-    "submit": (0.500, 0.620),
-    "username input": (0.500, 0.480),
-    "email input": (0.500, 0.480),
-    "password input": (0.500, 0.540),
-    "dashboard tab": (0.100, 0.080),
-    "settings tab": (0.900, 0.080),
-    "network tab": (0.250, 0.080),
-    "console tab": (0.350, 0.080),
-
-    # Web Applications, Marketplaces & Navigation (e.g. OpenSea, Web3, dApps)
-    "web search bar": (0.350, 0.160),
-    "search opensea": (0.350, 0.160),
-    "opensea search": (0.350, 0.160),
-    "opensea search bar": (0.350, 0.160),
-    "search input": (0.350, 0.160),
-    "opensea logo": (0.120, 0.160),
-    "connect wallet": (0.880, 0.160),
-    "wallet": (0.880, 0.160),
-    "connect": (0.880, 0.160),
-    "explore": (0.220, 0.160),
-    "profile": (0.930, 0.160),
-    "profile icon": (0.930, 0.160),
-    "cart": (0.965, 0.160),
-    "featured banner": (0.500, 0.450),
-    "first item": (0.250, 0.450),
-    "second item": (0.500, 0.450),
-    "third item": (0.750, 0.450),
-    "trending": (0.150, 0.280),
-    "top items": (0.220, 0.280),
-    "page content": (0.500, 0.500),
-    "web content": (0.500, 0.500),
-    "browser content": (0.500, 0.500),
-    "close popup": (0.850, 0.200),
-    "dismiss": (0.850, 0.200),
-    "accept cookies": (0.500, 0.850),
-
-    # Common screen regions
-    "screen center": (0.500, 0.500),
-    "center": (0.500, 0.500),
-    "search bar": (0.500, 0.500),
-    "search box": (0.500, 0.500),
-}
-
-
 def resolve_ui_target(
     query: str,
     screenshot_b64: Optional[str] = None,
     width: int = 1280,
     height: int = 800,
     grounding_fn: Optional[Any] = None,
-    allow_landmarks: bool = True,
+    allow_landmarks: bool = False,
 ) -> Optional[Tuple[int, int]]:
     """Resolves a natural language UI target query to absolute screen coordinates (x, y).
 
     Resolution pipeline:
     1. Direct numeric coordinate check (if query is already "640,400").
     2. Dynamic Multimodal Grounding Function (vision LLM / ShowUI / OS-Atlas) if provided.
-    3. Heuristic / Semantic Landmark Dictionary (only if allow_landmarks=True).
-       When operating with live perception, allow_landmarks=False prevents blind clicks
-       on arbitrary mock percentages when visual resolution fails.
+    Strictly forbids falling back to arbitrary mock percentage landmarks or blind clicking.
     """
     if not query:
         return None
@@ -347,19 +196,6 @@ def resolve_ui_target(
         except Exception as exc:
             logger.warning("grounding_fn_resolution_failed", query=query, error=str(exc))
 
-    # 3. Landmark & Semantic Matching (Strictly gated by allow_landmarks)
-    if not allow_landmarks:
-        return None
-
-    for key, (norm_x, norm_y) in _COMMON_UI_LANDMARKS.items():
-        if key == clean_query:
-            return int(norm_x * width), int(norm_y * height)
-
-    sorted_landmarks = sorted(_COMMON_UI_LANDMARKS.items(), key=lambda kv: len(kv[0]), reverse=True)
-    for key, (norm_x, norm_y) in sorted_landmarks:
-        if re.search(r'\b' + re.escape(key) + r'\b', clean_query):
-            return int(norm_x * width), int(norm_y * height)
-
     return None
 
 
@@ -369,7 +205,7 @@ async def resolve_ui_target_async(
     width: int = 1280,
     height: int = 800,
     grounding_fn: Optional[Any] = None,
-    allow_landmarks: bool = True,
+    allow_landmarks: bool = False,
 ) -> Optional[Tuple[int, int]]:
     """Asynchronous variant of resolve_ui_target supporting coroutine grounding functions."""
     if not query:
@@ -400,19 +236,6 @@ async def resolve_ui_target_async(
                     return coords
         except Exception as exc:
             logger.warning("grounding_fn_async_resolution_failed", query=query, error=str(exc))
-
-    # 3. Landmark & Semantic Matching (Strictly gated by allow_landmarks)
-    if not allow_landmarks:
-        return None
-
-    for key, (norm_x, norm_y) in _COMMON_UI_LANDMARKS.items():
-        if key == clean_query:
-            return int(norm_x * width), int(norm_y * height)
-
-    sorted_landmarks = sorted(_COMMON_UI_LANDMARKS.items(), key=lambda kv: len(kv[0]), reverse=True)
-    for key, (norm_x, norm_y) in sorted_landmarks:
-        if re.search(r'\b' + re.escape(key) + r'\b', clean_query):
-            return int(norm_x * width), int(norm_y * height)
 
     return None
 

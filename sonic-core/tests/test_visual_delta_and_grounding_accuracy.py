@@ -35,17 +35,14 @@ def test_extract_bbox_midpoint_formats():
 
 
 def test_landmark_substring_collision_prevention():
-    # "token" should NOT match landmark "ok"
-    res_token = resolve_ui_target("token", width=1280, height=800)
-    assert res_token is None
+    # Without coordinates or vision grounding, text queries fail closed to None (no blind clicking)
+    assert resolve_ui_target("token", width=1280, height=800) is None
+    assert resolve_ui_target("ok", width=1280, height=800) is None
+    assert resolve_ui_target("search bar", width=1280, height=800) is None
 
-    # "ok" matches landmark ok -> (0.550, 0.550) -> (704, 440)
-    res_ok = resolve_ui_target("ok", width=1280, height=800)
-    assert res_ok == (704, 440)
-
-    # "search bar" matches (0.500, 0.500) -> (640, 400)
-    res_search = resolve_ui_target("search bar", width=1280, height=800)
-    assert res_search == (640, 400)
+    # Direct coordinates resolve cleanly
+    assert resolve_ui_target("704, 440", width=1280, height=800) == (704, 440)
+    assert resolve_ui_target("640, 400", width=1280, height=800) == (640, 400)
 
 
 @pytest.mark.asyncio

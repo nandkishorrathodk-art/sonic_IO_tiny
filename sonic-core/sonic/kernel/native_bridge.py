@@ -39,10 +39,11 @@ class NativeKernelVerdict:
 
 
 class NativeKernelClient:
-    """Client for querying the sonic-kernel-rs daemon or binary via JSON-RPC."""
+    """Client for querying the sonic-kernel-rs daemon or binary via fast JSON-RPC."""
 
     def __init__(self, binary_path: str | None = None) -> None:
         self.binary_path = binary_path or self._discover_binary()
+        self._daemon_proc: subprocess.Popen | None = None
 
     def _discover_binary(self) -> str | None:
         env_path = os.environ.get("SONIC_KERNEL_BIN")
@@ -70,8 +71,33 @@ class NativeKernelClient:
     def is_available(self) -> bool:
         return self.binary_path is not None
 
+    def _get_or_spawn_daemon(self) -> subprocess.Popen | None:
+        """Maintains a long-lived streaming daemon for zero-overhead pipe communication."""
+        if self._daemon_proc is not None:
+            if self._daemon_proc.poll() is None:
+                return self._daemon_proc
+            self._daemon_proc = None
+
+        if not self.binary_path or not Path(self.binary_path).is_file():
+            return None
+
+        try:
+            self._daemon_proc = subprocess.Popen(
+                [self.binary_path, "--daemon"],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                bufsize=1,
+            )
+            return self._daemon_proc
+        except Exception as exc:
+            logger.debug("Failed to spawn native kernel persistent daemon: %s", exc)
+            self._daemon_proc = None
+            return None
+
     def _execute_rpc(self, method: str, params: dict[str, Any]) -> dict[str, Any] | None:
-        """Executes a single JSON-RPC method call to the native kernel."""
+        """Executes a JSON-RPC method call to the native kernel via persistent pipe or fallback."""
         payload = json.dumps({
             "jsonrpc": "2.0",
             "id": 1,
@@ -82,6 +108,29 @@ class NativeKernelClient:
         if not self.binary_path:
             return None
 
+        # 1. Microsecond streaming pipe over persistent daemon
+        daemon = self._get_or_spawn_daemon()
+        if daemon and daemon.stdin and daemon.stdout:
+            try:
+                daemon.stdin.write(payload + "\n")
+                daemon.stdin.flush()
+                line = daemon.stdout.readline()
+                if line and line.strip():
+                    data = json.loads(line.strip())
+                    if "result" in data:
+                        return data["result"]
+                    if "error" in data:
+                        logger.warning("Native kernel returned RPC error: %s", data["error"])
+                        return None
+            except Exception as pipe_err:
+                logger.debug("Persistent pipe streaming failed, restarting daemon: %s", pipe_err)
+                try:
+                    daemon.kill()
+                except Exception:
+                    pass
+                self._daemon_proc = None
+
+        # 2. Fallback to one-shot subprocess invocation (preserves test patches and single-shot runs)
         try:
             proc = subprocess.run(
                 [self.binary_path, "--daemon"],
@@ -110,6 +159,20 @@ class NativeKernelClient:
             return None
 
         return None
+
+    def close(self) -> None:
+        """Cleanly terminate the persistent streaming daemon process."""
+        if self._daemon_proc is not None:
+            try:
+                self._daemon_proc.terminate()
+                self._daemon_proc.wait(timeout=1.0)
+            except Exception:
+                try:
+                    self._daemon_proc.kill()
+                except Exception:
+                    pass
+            finally:
+                self._daemon_proc = None
 
     def health(self) -> dict[str, Any] | None:
         """Returns the health status of the native kernel."""

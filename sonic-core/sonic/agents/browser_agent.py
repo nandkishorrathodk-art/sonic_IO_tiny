@@ -42,6 +42,7 @@ class DOMElement:
     selector: str
     attributes: dict[str, str] = field(default_factory=dict)
     is_visible: bool = True
+    bbox: tuple[int, int, int, int] | None = None
 
 
 class BrowserAgent:
@@ -217,6 +218,7 @@ class BrowserAgent:
                         val = await el.get_attribute(attr)
                         if val:
                             attrs[attr] = val
+                    bbox = await el.bounding_box() if visible else None
 
                     elements.append(DOMElement(
                         tag=tag,
@@ -224,6 +226,14 @@ class BrowserAgent:
                         selector=f"{tag}:nth-of-type({i+1})",
                         attributes=attrs,
                         is_visible=visible,
+                        bbox=(
+                            int(bbox["x"]),
+                            int(bbox["y"]),
+                            int(bbox["width"]),
+                            int(bbox["height"]),
+                        )
+                        if bbox
+                        else None,
                     ))
             except Exception:
                 pass

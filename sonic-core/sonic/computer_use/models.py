@@ -246,6 +246,8 @@ class ComputerWorldObservation(BaseModel):
     ide_state: dict[str, Any] = Field(default_factory=lambda: {"active_file": "None", "cursor_line": 1})
     git_branch: str = "main"
     git_clean: bool = True
+    perception_version: int = 0
+    perception_latency_ns: int = 0
     timestamp: str = Field(default_factory=_now)
 
 

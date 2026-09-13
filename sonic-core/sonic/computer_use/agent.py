@@ -51,6 +51,7 @@ from sonic.computer_use.models import (
     SubGoalChecklist,
     SubGoalStatus,
 )
+from sonic.computer_use.perception_bus import PerceptionBus
 from sonic.computer_use.motor import MotorReflexes
 from sonic.computer_use.scratchpad import HackerScratchpad
 from sonic.computer_use.wire_telemetry import WireTelemetryEngine
@@ -191,6 +192,9 @@ class ComputerUseAgent:
         # Context supplied by the caller is advisory evidence, never a
         # replacement for the immutable operator objective.
         self.initial_context = dict(initial_context or {})
+        # Shared versioned perception state keeps semantic targets and
+        # sub-agents on one live snapshot without repeatedly decoding pixels.
+        self.perception_bus = PerceptionBus()
         self.autonomy_level = autonomy_level
         self.mode = mode
         self.max_actions = max_actions
@@ -547,6 +551,31 @@ class ComputerUseAgent:
             except Exception as e:
                 logger.warning("browser_observe_failed", error=str(e))
 
+        perception_snapshot = self.perception_bus.publish(
+            screenshot_base64=self._last_screenshot_b64,
+            width=self._screen_width,
+            height=self._screen_height,
+            active_window=getattr(screen_obs, "active_window", ""),
+            visible_text=getattr(screen_obs, "visible_text", ""),
+            controls=getattr(screen_obs, "detected_controls", []),
+            browser_state=browser_state,
+        )
+        for element in browser_state.get("interactive_elements", []):
+            if not isinstance(element, dict) or not element.get("bbox"):
+                continue
+            bbox = element["bbox"]
+            if not isinstance(bbox, (list, tuple)) or len(bbox) != 4:
+                continue
+            query = str(element.get("text") or element.get("selector") or "").strip()
+            if query and element.get("visible", True):
+                self.perception_bus.register_target(
+                    query,
+                    tuple(int(value) for value in bbox),
+                    source="browser_dom",
+                    confidence=0.98,
+                    state_version=perception_snapshot.version,
+                )
+
         file_names = [f.name for f in files]
         return ComputerWorldObservation(
             screen=screen_obs,
@@ -561,6 +590,8 @@ class ComputerUseAgent:
             ide_state={"active_file": file_names[0] if file_names else "", "cursor_line": 1},
             git_branch=git_st.branch if hasattr(git_st, "branch") else "main",
             git_clean=git_st.is_clean if hasattr(git_st, "is_clean") else True,
+            perception_version=perception_snapshot.version,
+            perception_latency_ns=self.perception_bus.last_update_latency_ns,
         )
 
     async def _observe_browser(self) -> dict[str, Any]:
@@ -596,7 +627,13 @@ class ComputerUseAgent:
                 else:
                     raw_el = res
                 elements = [
-                    {"tag": getattr(e, "tag", ""), "text": getattr(e, "text", ""), "selector": getattr(e, "selector", "")}
+                    {
+                        "tag": getattr(e, "tag", ""),
+                        "text": getattr(e, "text", ""),
+                        "selector": getattr(e, "selector", ""),
+                        "visible": getattr(e, "is_visible", True),
+                        "bbox": getattr(e, "bbox", None),
+                    }
                     if not isinstance(e, dict) else e
                     for e in (raw_el or [])
                 ]
@@ -2224,71 +2261,116 @@ class ComputerUseAgent:
             ComputerActionType.GUI_RIGHT_CLICK,
             ComputerActionType.GUI_MOVE,
         ) and (payload.get("x") is None or payload.get("y") is None):
-            grounding_fn = None
-            if self.llm_router and self._last_screenshot_b64:
-                async def _ground(q, s):
-                    return await query_multimodal_grounding(
-                        self.llm_router, q, s, width=self._screen_width, height=self._screen_height
+            semantic_match = self.perception_bus.resolve(target_resource)
+            if semantic_match is not None:
+                future = self.perception_bus.prepare(action_type.value, target_resource)
+                if not self.perception_bus.is_current(future):
+                    actual_obs_str = (
+                        f"Target UI element '{target_resource}' became stale before dispatch; "
+                        "re-observing instead of guessing."
                     )
-                grounding_fn = _ground
-
-            # Require genuine visual perception or direct coordinates; forbid landmark fallbacks.
-            res_coords = await resolve_ui_target_async(
-                query=target_resource,
-                screenshot_b64=self._last_screenshot_b64,
-                width=self._screen_width,
-                height=self._screen_height,
-                grounding_fn=grounding_fn,
-                # Static landmarks are only a compatibility fallback when no
-                # screenshot exists. Once pixels are available, unresolved
-                # targets must be blocked rather than guessed.
-                allow_landmarks=not bool(self._last_screenshot_b64),
-            )
-            if res_coords is not None:
-                payload["x"], payload["y"] = res_coords
-                resolved_via_grounding = bool(grounding_fn and self._last_screenshot_b64)
+                    status = ActionExecutionStatus.BLOCKED
+                    trace = ComputerDecisionTrace(
+                        step_index=self.action_counter,
+                        action_type=action_type,
+                        target_resource=target_resource,
+                        payload=str(payload),
+                        predicted_outcome=predicted_outcome,
+                        actual_observation=actual_obs_str,
+                        expected_observation=predicted_outcome,
+                        info_gain=0.0,
+                        recovery_attempted=False,
+                        status=status,
+                        exit_code=126,
+                        thought=getattr(self, "_last_thought", ""),
+                        duration_seconds=round(time.perf_counter() - t_start, 3),
+                        thought_duration_seconds=getattr(self, "_last_thought_duration", 0.0),
+                    )
+                    self.traces.append(trace)
+                    self.history.append({"action": action_type.value, "result": actual_obs_str})
+                    return trace
+                x, y, width, height = semantic_match.bbox
+                payload["x"] = x + max(0, width // 2)
+                payload["y"] = y + max(0, height // 2)
+                resolved_via_grounding = False
                 logger.info(
-                    "visual_grounding_target_resolved",
+                    "perception_bus_target_resolved",
                     action=action_type.value,
                     query=target_resource,
-                    resolved_x=res_coords[0],
-                    resolved_y=res_coords[1],
+                    source=semantic_match.source,
+                    state_version=semantic_match.state_version,
                 )
-            elif not self._last_screenshot_b64 and target_resource.strip().lower() == "search bar":
-                # Headless compatibility for providers that expose no pixels.
-                # Live desktop execution always has a screenshot and therefore
-                # remains fail-closed on unresolved visual targets.
-                payload["x"], payload["y"] = (
-                    self._screen_width // 2,
-                    max(1, int(self._screen_height * 0.12)),
-                )
+
+            # Fall back to visual reasoning only when the live semantic state
+            # has no target; no fixed coordinate or application mapping is used.
+            if payload.get("x") is not None and payload.get("y") is not None:
+                pass
             else:
-                target = target_resource
-                actual_obs_str = f"Target UI element '{target}' could not be resolved from visual grounding. Re-observing screen."
-                status = ActionExecutionStatus.BLOCKED
-                logger.warning(
-                    "action_blocked_unresolved_visual_grounding",
-                    action=action_type.value,
-                    target=target,
+                grounding_fn = None
+                if self.llm_router and self._last_screenshot_b64:
+                    async def _ground(q, s):
+                        return await query_multimodal_grounding(
+                            self.llm_router, q, s, width=self._screen_width, height=self._screen_height
+                        )
+                    grounding_fn = _ground
+
+                # Require genuine visual perception or direct coordinates; forbid landmark fallbacks.
+                res_coords = await resolve_ui_target_async(
+                    query=target_resource,
+                    screenshot_b64=self._last_screenshot_b64,
+                    width=self._screen_width,
+                    height=self._screen_height,
+                    grounding_fn=grounding_fn,
+                    # Static landmarks are only a compatibility fallback when no
+                    # screenshot exists. Once pixels are available, unresolved
+                    # targets must be blocked rather than guessed.
+                    allow_landmarks=not bool(self._last_screenshot_b64),
                 )
-                trace = ComputerDecisionTrace(
-                    step_index=self.action_counter,
-                    action_type=action_type,
-                    target_resource=target_resource,
-                    payload=str(payload),
-                    predicted_outcome=predicted_outcome,
-                    actual_observation=actual_obs_str,
-                    expected_observation=predicted_outcome,
-                    info_gain=0.0,
-                    recovery_attempted=False,
-                    status=status,
-                    thought=getattr(self, "_last_thought", ""),
-                    duration_seconds=round(time.perf_counter() - t_start, 3),
-                    thought_duration_seconds=getattr(self, "_last_thought_duration", 0.0),
-                )
-                self.traces.append(trace)
-                self.history.append({"action": f"{action_type.value} {target_resource}", "result": actual_obs_str})
-                return trace
+                if res_coords is not None:
+                    payload["x"], payload["y"] = res_coords
+                    resolved_via_grounding = bool(grounding_fn and self._last_screenshot_b64)
+                    logger.info(
+                        "visual_grounding_target_resolved",
+                        action=action_type.value,
+                        query=target_resource,
+                        resolved_x=res_coords[0],
+                        resolved_y=res_coords[1],
+                    )
+                elif not self._last_screenshot_b64 and target_resource.strip().lower() == "search bar":
+                    # Headless compatibility for providers that expose no pixels.
+                    # Live desktop execution always has a screenshot and therefore
+                    # remains fail-closed on unresolved visual targets.
+                    payload["x"], payload["y"] = (
+                        self._screen_width // 2,
+                        max(1, int(self._screen_height * 0.12)),
+                    )
+                else:
+                    target = target_resource
+                    actual_obs_str = f"Target UI element '{target}' could not be resolved from visual grounding. Re-observing screen."
+                    status = ActionExecutionStatus.BLOCKED
+                    logger.warning(
+                        "action_blocked_unresolved_visual_grounding",
+                        action=action_type.value,
+                        target=target,
+                    )
+                    trace = ComputerDecisionTrace(
+                        step_index=self.action_counter,
+                        action_type=action_type,
+                        target_resource=target_resource,
+                        payload=str(payload),
+                        predicted_outcome=predicted_outcome,
+                        actual_observation=actual_obs_str,
+                        expected_observation=predicted_outcome,
+                        info_gain=0.0,
+                        recovery_attempted=False,
+                        status=status,
+                        thought=getattr(self, "_last_thought", ""),
+                        duration_seconds=round(time.perf_counter() - t_start, 3),
+                        thought_duration_seconds=getattr(self, "_last_thought_duration", 0.0),
+                    )
+                    self.traces.append(trace)
+                    self.history.append({"action": f"{action_type.value} {target_resource}", "result": actual_obs_str})
+                    return trace
 
         # ----- Coordinate bounds validation -----
         # GUI coordinate actions are validated against the last observed screen

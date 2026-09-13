@@ -25,6 +25,7 @@ Usage:
 
 from __future__ import annotations
 
+import re
 from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
@@ -43,6 +44,28 @@ from sonic.llm.schemas import (
     LLMResponse,
     SpeedTier,
 )
+
+REFUSAL_PHRASES = (
+    "can't help with that",
+    "cannot help with that",
+    "cannot assist",
+    "can't assist",
+    "unethical",
+    "against safety policies",
+    "against safety policy",
+    "as an ai",
+    "i am unable to fulfill",
+)
+
+
+def is_refusal_response(response: LLMResponse) -> bool:
+    """Detect if an LLM returned a safety refusal rather than an actionable answer."""
+    content = (response.content or "").lower()
+    reasoning = (response.reasoning_content or "").lower()
+    combined = f"{content} {reasoning}"
+    has_refusal = any(p in combined for p in REFUSAL_PHRASES)
+    has_action = bool(re.search(r"\baction\s*:\s*[a-z_]+", combined))
+    return has_refusal and not has_action
 
 
 class ModelRouter:
@@ -350,6 +373,16 @@ class ModelRouter:
 
         try:
             response = await provider.complete_with_timing(request)
+
+            # Check for safety refusal; trigger model fallback if detected
+            if is_refusal_response(response):
+                logger.warning(
+                    "llm_safety_refusal_detected_triggering_fallback",
+                    provider=provider.name,
+                    model=response.model,
+                    task_type=effective_task,
+                )
+                return await self._try_fallbacks(request, provider.name, effective_task)
 
             # Track cost
             self.cost_records.append(CostRecord(

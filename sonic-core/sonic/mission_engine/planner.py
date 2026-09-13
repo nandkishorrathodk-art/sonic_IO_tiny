@@ -11,6 +11,8 @@ executed).
 
 from __future__ import annotations
 
+import json
+import re
 import uuid
 from datetime import UTC, datetime
 from typing import Any
@@ -336,11 +338,15 @@ class MissionPlanner:
         that surfaced config files gets a config-inspection follow-up whereas an
         objective that surfaced repo layout gets a dependency-layout follow-up.
         """
-        initial_ids = {action.action_id for action in plan.actions}
+        initial_ids = {action.action_id for action in plan.actions if not action.requires_approval}
         if not initial_ids.issubset(completed_action_ids):
             return []
 
-        evidence_text = " ".join(evidence_brief or []).lower()
+        brief_items = [
+            item if isinstance(item, str) else json.dumps(item)
+            for item in (evidence_brief or [])
+        ]
+        evidence_text = " ".join(brief_items).lower()
         intent = _intent_of(plan.objective)
         follow_up: list[PlannedAction] = []
 
@@ -353,10 +359,10 @@ class MissionPlanner:
         if intent == "web" or any(k in evidence_text for k in ("http", "endpoint", "route", "api")):
             follow_up.append(PlannedAction(
                 tool="target_shell_readonly",
-                input={"command": "grep -rnE '(app|router)\\.(get|post|put|delete)\\(|@(app|router)\\.(get|post|put|delete)' . --include='*.py' | head -40 || true"},
+                input={"command": "grep -rnE '(app|router)\\.(get|post|put|delete)\\(|@(app|router)\\.(get|post|put|delete)' . --include='*.py' --include='*.js' --include='*.ts' --include='*.go' | head -40 || true"},
                 risk=ToolRisk.READ_ONLY,
             ))
-        if "secret" in evidence_text or "token" in evidence_text or "api[_-]?key" in evidence_text:
+        if "secret" in evidence_text or "token" in evidence_text or bool(re.search(r"api[_-]?key", evidence_text)):
             follow_up.append(PlannedAction(
                 tool="target_shell_readonly",
                 input={"command": "grep -rnE 'sk-[a-zA-Z0-9]{10,}|password\\s*=|secret\\s*=' . --include='*.py' --include='*.js' --include='*.env*' | head -20 || true"},
@@ -451,7 +457,7 @@ class MissionPlanner:
                 actions.append(probe)
                 prev_id = probe.action_id
         # Stage 5 — verify: re-confirm the active-test outcome is reproducible.
-        add_stage("target_shell_readonly", "echo VERIFY_REPRODUCIBILITY", 5)
+        add_stage("target_shell_readonly", "git status --short 2>/dev/null || true", 5)
         # Stage 6 — report: summarise what the chain found (read-only gather).
         add_stage("target_shell_readonly", "find . -maxdepth 3 -type f | wc -l", 6)
 

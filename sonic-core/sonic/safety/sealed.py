@@ -60,6 +60,7 @@ _SEALED_FIELDS = (
     "workspace_root",
     "scope_checker",
     "scope_config",
+    "allow_private_networks",
     "_sealed",
     "_seal_hash",
     "_blocked_networks_snapshot",
@@ -83,6 +84,7 @@ class SealedActionPolicy(ActionPolicy):
         require_approval_for_intrusive: bool = True,
         scope_checker: ScopeChecker | None = None,
         scope_config: dict | None = None,
+        allow_private_networks: bool = False,
     ):
         super().__init__(
             workspace_root=workspace_root,
@@ -92,6 +94,7 @@ class SealedActionPolicy(ActionPolicy):
             require_approval_for_intrusive=require_approval_for_intrusive,
             scope_checker=scope_checker,
             scope_config=scope_config,
+            allow_private_networks=allow_private_networks,
         )
         # Freeze the mutable target set into a frozenset immediately.
         self.security_tool_targets = frozenset(self.security_tool_targets)
@@ -132,6 +135,7 @@ class SealedActionPolicy(ActionPolicy):
             "max_actions_per_minute": self.max_actions_per_minute,
             "require_approval_for_intrusive": self.require_approval_for_intrusive,
             "workspace_root": str(self.workspace_root),
+            "allow_private_networks": bool(getattr(self, "allow_private_networks", False)),
             "blocked_networks": [str(n) for n in self._blocked_networks_snapshot],
             "scope_intrusive_patterns": sorted(
                 [getattr(p, "pattern", str(p)) for p in getattr(ScopeChecker, "_INTRUSIVE_PATTERNS", [])]
@@ -185,6 +189,22 @@ class SealedActionPolicy(ActionPolicy):
             )
         return super().evaluate(action_type_name, target, payload)
 
+    def clone_for_agent(self, agent_id: str = "") -> SealedActionPolicy:
+        """Clone policy with an independent rate window for a concurrent subagent, sealed if parent is sealed."""
+        cloned = SealedActionPolicy(
+            workspace_root=str(self.workspace_root),
+            allowed_action_types=set(self.allowed_types),
+            allow_security_tool_targets=set(self.security_tool_targets),
+            max_actions_per_minute=self.max_actions_per_minute,
+            require_approval_for_intrusive=self.require_approval_for_intrusive,
+            scope_checker=self.scope_checker,
+            scope_config=self.scope_config,
+            allow_private_networks=self.allow_private_networks,
+        )
+        if self._sealed:
+            cloned.seal()
+        return cloned
+
     # ------------------------------------------------------------------
     # Egress uses the FROZEN blocked-networks snapshot, not the live module list.
     # ------------------------------------------------------------------
@@ -192,6 +212,8 @@ class SealedActionPolicy(ActionPolicy):
         verdict = self._check_target_and_scope(target, label)
         if verdict is not None:
             return verdict
+        if getattr(self, "allow_private_networks", False):
+            return PolicyVerdict(True, f"{label} target allowed by private-network scope policy")
         try:
             ok, reason = egress.is_target_allowed(
                 target,
@@ -204,6 +226,18 @@ class SealedActionPolicy(ActionPolicy):
         return PolicyVerdict(True, "egress allowed")
 
 
-def seal_default(workspace_root: str = "/home/sonic/workspace") -> SealedActionPolicy:
-    """Build + seal the standard production policy for the being life loop."""
-    return SealedActionPolicy(workspace_root=workspace_root).seal()
+def seal_default(
+    workspace_root: str = "/home/sonic/workspace",
+    allow_security_tool_targets: set[str] | None = None,
+    allow_private_networks: bool = False,
+    scope_config: dict[str, Any] | None = None,
+    scope_checker: Any | None = None,
+) -> SealedActionPolicy:
+    """Build + seal the standard production policy for the being life loop or mission."""
+    return SealedActionPolicy(
+        workspace_root=workspace_root,
+        allow_security_tool_targets=allow_security_tool_targets or set(),
+        allow_private_networks=allow_private_networks,
+        scope_config=scope_config,
+        scope_checker=scope_checker,
+    ).seal()

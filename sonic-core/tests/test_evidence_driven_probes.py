@@ -250,3 +250,102 @@ def test_follow_up_without_evidence_stays_baseline():
         plan, completed, evidence_brief=["found hardcoded token sk-abc123xyz in creds.py"]
     )
     assert "".join(a.input["command"] for a in bare) != "".join(a.input["command"] for a in secret)
+
+
+import pytest
+
+
+@pytest.mark.asyncio
+async def test_approve_workstation_mission_probe_endpoint(monkeypatch):
+    from fastapi import FastAPI
+    from httpx import ASGITransport, AsyncClient
+    from sonic.api.routes.workstation import router, _get_or_create_session
+    from sonic.auth.models import User, UserRole
+    from sonic.auth.middleware import require_operator
+
+    session = _get_or_create_session("op@corp.com", "test-session")
+    session["target_sandbox"] = {"workspace_id": "ws-target", "sandbox_id": "ws-target", "target": "10.0.0.1", "scope_verified": True}
+    session["mission"] = {
+        "mission_id": "m-123",
+        "status": "AWAITING_APPROVAL",
+        "proposed_actions": [
+            {
+                "action_id": "act-probe-1",
+                "tool": "target_security_scan",
+                "input": {"tool": "nmap", "target": "10.0.0.1", "options": {"ports": "top-100", "timing": "T4", "extra_args": "-sV"}},
+                "risk": "APPROVAL_REQUIRED",
+                "requires_approval": True,
+                "stage": 3,
+                "depends_on": "",
+            }
+        ],
+        "events": [],
+    }
+
+    app = FastAPI()
+    app.include_router(router)
+
+    class _MockComputer:
+        async def terminal(self, *args, **kwargs):
+            return ExecResult(command="cmd", exit_code=0, stdout="PORT 80/tcp OPEN", stderr="")
+
+        async def execute(self, *args, **kwargs):
+            return ExecResult(command="cmd", exit_code=0, stdout="80/tcp open http Apache\n", stderr="")
+
+    monkeypatch.setattr("sonic.api.routes.workstation.get_daytona_computer", lambda: _MockComputer())
+    app.dependency_overrides[require_operator] = lambda: User(email="op@corp.com", name="Operator", role=UserRole.OPERATOR, tenant_id="tenant-1")
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        # Test approving the probe
+        resp = await client.post(
+            "/workstation/mission/approve-probe?session_id=test-session",
+            json={"action_id": "act-probe-1", "approved": True},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "SUCCESS"
+        assert data["mission_status"] == "COMPLETED"
+        assert session["mission"]["proposed_actions"] == []
+
+
+@pytest.mark.asyncio
+async def test_dismiss_workstation_mission_probe_endpoint(monkeypatch):
+    from fastapi import FastAPI
+    from httpx import ASGITransport, AsyncClient
+    from sonic.api.routes.workstation import router, _get_or_create_session
+    from sonic.auth.models import User, UserRole
+    from sonic.auth.middleware import require_operator
+
+    session = _get_or_create_session("op@corp.com", "test-session-dismiss")
+    session["target_sandbox"] = {"workspace_id": "ws-target", "sandbox_id": "ws-target", "target": "10.0.0.1", "scope_verified": True}
+    session["mission"] = {
+        "mission_id": "m-456",
+        "status": "AWAITING_APPROVAL",
+        "proposed_actions": [
+            {
+                "action_id": "act-probe-dismiss",
+                "tool": "target_security_scan",
+                "input": {"tool": "ffuf", "target": "10.0.0.1", "options": {}},
+                "risk": "APPROVAL_REQUIRED",
+                "requires_approval": True,
+                "stage": 3,
+                "depends_on": "",
+            }
+        ],
+        "events": [],
+    }
+
+    app = FastAPI()
+    app.include_router(router)
+    app.dependency_overrides[require_operator] = lambda: User(email="op@corp.com", name="Operator", role=UserRole.OPERATOR, tenant_id="tenant-1")
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        resp = await client.post(
+            "/workstation/mission/approve-probe?session_id=test-session-dismiss",
+            json={"action_id": "act-probe-dismiss", "approved": False},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "dismissed"
+        assert data["mission_status"] == "COMPLETED"
+        assert session["mission"]["proposed_actions"] == []

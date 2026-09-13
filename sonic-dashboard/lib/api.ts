@@ -155,6 +155,12 @@ export const api = {
   getMissionEvidence: (sessionId = "default") =>
     apiClient<any>(`/workstation/mission/evidence?session_id=${encodeURIComponent(sessionId)}`),
 
+  approveMissionProbe: (actionId: string, approved = true, sessionId = "default") =>
+    apiClient<any>(`/workstation/mission/approve-probe?session_id=${encodeURIComponent(sessionId)}`, {
+      method: "POST",
+      body: JSON.stringify({ action_id: actionId, approved }),
+    }),
+
   openMissionBrowser: (url: string, sessionId = "default", approved = false) =>
     apiClient<any>(`/workstation/mission/browser-open?session_id=${encodeURIComponent(sessionId)}`, {
       method: "POST",

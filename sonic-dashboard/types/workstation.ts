@@ -6,7 +6,7 @@ export type WorkstationTab = "desktop" | "code" | "changes" | "research" | "evid
 
 export interface WorklogItem {
   id: string;
-  type: "action" | "command" | "read" | "write" | "event" | "evidence" | "thought" | "response";
+  type: "action" | "command" | "read" | "write" | "event" | "evidence" | "thought" | "response" | "approval" | "plan" | "observation" | "replan" | "completed" | "info" | string;
   title: string;
   content?: string;
   command?: string;
@@ -17,6 +17,13 @@ export interface WorklogItem {
   duration_seconds?: number;
   exit_code?: number;
   role?: "user" | "assistant" | "system" | string;
+  proposed_actions?: any[];
+  sub_agent_number?: number;
+  sub_mission_id?: string;
+  goal?: string;
+  success?: boolean;
+  findings_summary?: string;
+  key_discoveries?: string[];
 }
 
 export interface DesktopApp {

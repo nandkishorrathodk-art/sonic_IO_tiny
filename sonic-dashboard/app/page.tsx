@@ -325,6 +325,8 @@ export default function SonicDevinWorkstation() {
                 gitBranch={workstationState?.git_branch || ""}
                 rightPanelOpen={rightPanelOpen}
                 onToggleRightPanel={() => setRightPanelOpen((open) => !open)}
+                sessionId={sessionId}
+                onRefreshState={() => fetchWorkstationData(sessionId)}
               />
             </div>
 

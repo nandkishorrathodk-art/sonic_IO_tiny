@@ -135,6 +135,11 @@ class BrowserOpenRequest(BaseModel):
     approved: bool = False
 
 
+class MissionProbeApproveRequest(BaseModel):
+    action_id: str
+    approved: bool = True
+
+
 # -------------------------------------------------------------
 # Tenant-Scoped Workstation State Store
 # -------------------------------------------------------------
@@ -1617,6 +1622,116 @@ async def open_mission_browser(
     return result.model_dump()
 
 
+@router.post("/workstation/mission/approve-probe")
+async def approve_workstation_mission_probe(
+    req: MissionProbeApproveRequest,
+    session_id: str = Query("default"),
+    user: User = Depends(require_operator),
+):
+    """Execute or dismiss an operator-gated probe proposed during mission preflight."""
+    state = _get_or_create_session(user.email, session_id)
+    mission = state.get("mission", {})
+    target_id = _session_target_id(user, session_id)
+    proposed_actions = mission.get("proposed_actions", [])
+
+    matching_action_dict = None
+    for a in proposed_actions:
+        if a.get("action_id") == req.action_id:
+            matching_action_dict = a
+            break
+
+    if not matching_action_dict:
+        raise HTTPException(status_code=404, detail=f"Proposed probe action '{req.action_id}' not found in mission")
+
+    if not req.approved:
+        # Operator rejected/dismissed this probe
+        mission["proposed_actions"] = [a for a in proposed_actions if a.get("action_id") != req.action_id]
+        tool_name = matching_action_dict.get("input", {}).get("tool", "probe")
+        probe_target = matching_action_dict.get("input", {}).get("target", "")
+        _mission_event(
+            state,
+            "approval",
+            "Probe proposal dismissed",
+            f"Probe {tool_name} on {probe_target} was dismissed by operator.",
+            action_id=req.action_id,
+        )
+        if not mission["proposed_actions"] and mission.get("status") == "AWAITING_APPROVAL":
+            mission["status"] = "COMPLETED"
+            state["current_action"] = "All proposed actions resolved."
+        _persist_workstation_state()
+        return {"status": "dismissed", "action_id": req.action_id, "mission_status": mission.get("status")}
+
+    # Operator approved this probe: dispatch it through MissionToolExecutor
+    comp = get_daytona_computer()
+    from sonic.tools.registry import get_default_registry
+    try:
+        security_tools = get_default_registry(comp)
+    except Exception as registry_err:
+        logger.warning("mission_security_tools_registry_failed", error=str(registry_err))
+        security_tools = None
+
+    mission_target = str(state.get("target_sandbox", {}).get("target", "") or mission.get("target", "") or "").strip()
+    executor = MissionToolExecutor(comp, security_tools=security_tools, scoped_target=mission_target)
+
+    action = PlannedAction(**matching_action_dict)
+    tool_name = action.input.get("tool", action.tool)
+    probe_target = action.input.get("target", mission_target)
+    _mission_event(
+        state,
+        "action",
+        f"Approved probe dispatch: {tool_name}",
+        f"Executing approved {tool_name} probe on target {probe_target}.",
+        action_id=action.action_id,
+    )
+
+    execution = await executor.execute(
+        action,
+        target_workspace_id=target_id,
+        actor=user.email,
+        approved=True,
+    )
+
+    _mission_event(
+        state,
+        "observation" if execution.status == "SUCCESS" else execution.status.lower(),
+        f"Approved probe {tool_name} result",
+        execution.output[:4000] or "(no output)",
+        action=action.model_dump(),
+        result=execution.model_dump(),
+    )
+
+    if execution.status == "SUCCESS":
+        target_info = state.get("target_sandbox", {})
+        evidence = _record_mission_evidence(
+            state,
+            mission.get("mission_id", "default"),
+            str(target_info.get("target", "")),
+            execution,
+        )
+        _mission_event(
+            state,
+            "evidence",
+            "Evidence captured from approved probe",
+            f"Verified {execution.tool} result recorded with SHA-256 custody digest {evidence['sha256'][:16]}…",
+            evidence_id=evidence["id"],
+        )
+
+    # Remove from proposed actions list
+    mission["proposed_actions"] = [a for a in proposed_actions if a.get("action_id") != req.action_id]
+    if not mission["proposed_actions"]:
+        mission["status"] = "COMPLETED"
+        state["current_action"] = "All approved probe actions completed."
+    _persist_workstation_state()
+
+    return {
+        "status": execution.status,
+        "action_id": req.action_id,
+        "output": execution.output,
+        "exit_code": execution.exit_code,
+        "mission_status": mission.get("status"),
+    }
+
+
 _PACKAGE_PLACEHOLDERS = {
     "package", "app", "application", "the", "a", "an", "tool", "something", "it", "pkg", "program", "software",
 }
@@ -2282,9 +2397,6 @@ async def _run_prompt_reasoning(tenant_id: str, session_id: str, prompt: str) ->
                         from sonic.execution.capability_router import CapabilityRouter
                         computer = CapabilityRouter.resolve_provider(computer, "agent")
                         from sonic.safety.sealed import seal_default
-                        ws_root = "/root" if os.environ.get("SONIC_USE_DAYTONA_CLOUD") != "1" else "/home/daytona"
-                        safety_policy = seal_default(workspace_root=ws_root)
-
                         state["interrupted"] = False
 
                         # Enhance goal with target context from session history if not directly in prompt
@@ -2300,6 +2412,26 @@ async def _run_prompt_reasoning(tenant_id: str, session_id: str, prompt: str) ->
                             dedup_urls = [u for u in urls_in_history if not (u in seen or seen.add(u))]
                             if not any(u in prompt for u in dedup_urls):
                                 effective_goal += f"\n[Contextual Target URL in scope: {dedup_urls[0]}]"
+
+                        ws_root = "/root" if os.environ.get("SONIC_USE_DAYTONA_CLOUD") != "1" else "/home/daytona"
+                        target_domain_or_ip = _extract_target_url_or_domain(effective_goal, state)
+                        scoped_targets = set()
+                        is_private_net = False
+                        if target_domain_or_ip:
+                            scoped_targets.add(target_domain_or_ip)
+                            try:
+                                import ipaddress
+                                ip_obj = ipaddress.ip_address(target_domain_or_ip)
+                                if ip_obj.is_private or ip_obj.is_loopback:
+                                    is_private_net = True
+                            except ValueError:
+                                if target_domain_or_ip in ("localhost", "127.0.0.1") or target_domain_or_ip.endswith(".local") or target_domain_or_ip.endswith(".internal"):
+                                    is_private_net = True
+                        safety_policy = seal_default(
+                            workspace_root=ws_root,
+                            allow_security_tool_targets=scoped_targets,
+                            allow_private_networks=is_private_net,
+                        )
 
                         async def _record_step_trace(trace: Any) -> None:
                             if isinstance(trace, dict):

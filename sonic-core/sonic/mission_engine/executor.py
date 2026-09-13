@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ipaddress
 import shlex
 from typing import Any
 from urllib.parse import urlparse
@@ -211,4 +212,9 @@ class MissionToolExecutor:
             return False
         probe_host = probe_host.lower()
         scope_host = scope_host.lower()
-        return probe_host == scope_host or probe_host.endswith(f".{scope_host}")
+        try:
+            scope_ip = ipaddress.ip_address(scope_host)
+            probe_ip = ipaddress.ip_address(probe_host)
+            return probe_ip == scope_ip
+        except ValueError:
+            return probe_host == scope_host or probe_host.endswith(f".{scope_host}")

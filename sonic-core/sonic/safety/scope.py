@@ -173,9 +173,9 @@ class ScopeChecker:
         re.compile(r"\bdd\b.*\bof=[\"']?/dev/", re.IGNORECASE),
         re.compile(r">\s*/dev/sd", re.IGNORECASE),
         re.compile(r"\b(killall\s+-9|pkill\s+-9)\b", re.IGNORECASE),
-        re.compile(r"\bshutdown\b", re.IGNORECASE),
-        re.compile(r"\breboot\b", re.IGNORECASE),
-        re.compile(r"\bhalt\b", re.IGNORECASE),
+        re.compile(r"(?:\A|[;&|])\s*(?:sudo\s+)?(?:/s?bin/)?shutdown\b", re.IGNORECASE),
+        re.compile(r"(?:\A|[;&|])\s*(?:sudo\s+)?(?:/s?bin/)?reboot\b", re.IGNORECASE),
+        re.compile(r"(?:\A|[;&|])\s*(?:sudo\s+)?(?:/s?bin/)?halt\b", re.IGNORECASE),
         re.compile(r"\b:()\{\s*:\|:&\s*\};:", re.IGNORECASE),  # fork bomb
         # --- Policy parity with safety_rules.yaml forbidden_actions ---
         re.compile(r"\bdrop\s+database\b", re.IGNORECASE),

@@ -25,8 +25,14 @@ import {
   AppWindow,
   ChevronDown,
   ChevronRight,
+  AlertTriangle,
+  Play,
+  X,
+  Loader2,
+  ShieldAlert,
 } from "lucide-react";
 import { WorklogItem } from "../../types/workstation";
+import { api } from "../../lib/api";
 import { MarkdownText } from "./MarkdownText";
 import { ThinkingBlock } from "./ThinkingBlock";
 import { CommandBlock } from "./CommandBlock";
@@ -48,6 +54,175 @@ interface WorklogFeedProps {
   gitBranch?: string;
   rightPanelOpen?: boolean;
   onToggleRightPanel?: () => void;
+  sessionId?: string;
+  onRefreshState?: () => void;
+}
+
+function ProbeProposalCard({
+  item,
+  sessionId = "default",
+  onActionComplete,
+}: {
+  item: WorklogItem;
+  sessionId?: string;
+  onActionComplete?: () => void;
+}) {
+  const [loadingActionId, setLoadingActionId] = useState<string | null>(null);
+  const [results, setResults] = useState<Record<string, { status: string; output?: string }>>({});
+  const [error, setError] = useState<string | null>(null);
+
+  const actions: any[] =
+    item.proposed_actions && item.proposed_actions.length > 0
+      ? item.proposed_actions
+      : (item as any).action_id
+      ? [{ action_id: (item as any).action_id, tool: item.title, input: { tool: "probe", target: item.content } }]
+      : [];
+
+  const handleApprove = async (actionId: string) => {
+    setLoadingActionId(actionId);
+    setError(null);
+    try {
+      const res = await api.approveMissionProbe(actionId, true, sessionId);
+      setResults((prev) => ({
+        ...prev,
+        [actionId]: { status: res?.status || "SUCCESS", output: res?.output },
+      }));
+      onActionComplete?.();
+    } catch (err: any) {
+      setError(err?.message || "Failed to execute approved probe");
+    } finally {
+      setLoadingActionId(null);
+    }
+  };
+
+  const handleDismiss = async (actionId: string) => {
+    setLoadingActionId(actionId);
+    setError(null);
+    try {
+      const res = await api.approveMissionProbe(actionId, false, sessionId);
+      setResults((prev) => ({
+        ...prev,
+        [actionId]: { status: "dismissed" },
+      }));
+      onActionComplete?.();
+    } catch (err: any) {
+      setError(err?.message || "Failed to dismiss probe");
+    } finally {
+      setLoadingActionId(null);
+    }
+  };
+
+  return (
+    <div className="my-2.5 rounded-xl border border-amber-500/40 bg-amber-500/5 p-3.5 text-xs shadow-md">
+      <div className="flex items-center gap-2 mb-2">
+        <ShieldAlert className="w-4 h-4 text-amber-400 shrink-0" />
+        <span className="font-semibold text-slate-100 text-[12.5px]">
+          {item.title || "Operator Approval Required: Active Security Probes"}
+        </span>
+        <span className="ml-auto px-2 py-0.5 rounded bg-amber-500/20 border border-amber-500/30 text-amber-400 font-mono font-semibold text-[10px]">
+          OPERATOR-GATED
+        </span>
+      </div>
+
+      {item.content && (
+        <p className="text-[11.5px] text-slate-300 leading-relaxed mb-3 whitespace-pre-wrap">
+          {item.content}
+        </p>
+      )}
+
+      {error && (
+        <div className="mb-2.5 p-2 rounded bg-rose-500/10 border border-rose-500/30 text-rose-400 text-[11px] flex items-center gap-1.5">
+          <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+          <span>{error}</span>
+        </div>
+      )}
+
+      {actions.length > 0 && (
+        <div className="space-y-2">
+          {actions.map((act: any, idx: number) => {
+            const actId = act.action_id || `probe-${idx}`;
+            const toolName = act.input?.tool || act.tool || "probe";
+            const targetHost = act.input?.target || act.target || "";
+            const options = act.input?.options || {};
+            const preview =
+              act.command ||
+              (options.args ? `${toolName} ${options.args} ${targetHost}` : `${toolName} ${targetHost}`);
+            const resultState = results[actId];
+            const isProcessing = loadingActionId === actId;
+
+            return (
+              <div
+                key={actId}
+                className="p-2.5 rounded-lg bg-ink-900/90 border border-ink-750 flex flex-col gap-2"
+              >
+                <div className="flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <span className="px-2 py-0.5 rounded bg-secondary-500/20 border border-secondary-500/40 text-secondary-300 font-mono font-semibold text-[11px] uppercase">
+                      {toolName}
+                    </span>
+                    <span className="text-slate-200 font-mono text-[11.5px] truncate" title={targetHost}>
+                      Target: <span className="text-cyan-400 font-mono">{targetHost}</span>
+                    </span>
+                  </div>
+
+                  {resultState ? (
+                    <span
+                      className={`px-2 py-0.5 rounded font-mono text-[10px] font-medium ${
+                        resultState.status === "dismissed"
+                          ? "bg-ink-800 text-muted-dim border border-ink-700"
+                          : resultState.status === "SUCCESS"
+                          ? "bg-emerald-500/20 text-emerald-400 border border-emerald-500/40"
+                          : "bg-rose-500/20 text-rose-400 border border-rose-500/40"
+                      }`}
+                    >
+                      {resultState.status === "dismissed" ? "DISMISSED" : resultState.status}
+                    </span>
+                  ) : (
+                    <div className="flex items-center gap-1.5 shrink-0">
+                      <button
+                        type="button"
+                        disabled={isProcessing}
+                        onClick={() => handleApprove(actId)}
+                        className="px-2.5 py-1 rounded-md bg-emerald-600 hover:bg-emerald-500 text-white font-medium text-[11px] flex items-center gap-1 transition shadow-sm disabled:opacity-50"
+                      >
+                        {isProcessing ? (
+                          <Loader2 className="w-3 h-3 animate-spin" />
+                        ) : (
+                          <Play className="w-3 h-3 fill-current" />
+                        )}
+                        <span>Approve &amp; Run</span>
+                      </button>
+                      <button
+                        type="button"
+                        disabled={isProcessing}
+                        onClick={() => handleDismiss(actId)}
+                        className="px-2 py-1 rounded-md bg-ink-800 hover:bg-ink-750 text-slate-300 hover:text-white border border-ink-700 text-[11px] flex items-center gap-1 transition disabled:opacity-50"
+                      >
+                        <X className="w-3 h-3" />
+                        <span>Dismiss</span>
+                      </button>
+                    </div>
+                  )}
+                </div>
+
+                {preview && (
+                  <div className="font-mono text-[10.5px] text-muted-bright bg-ink-950 px-2 py-1 rounded border border-ink-800 truncate">
+                    <code>$ {preview}</code>
+                  </div>
+                )}
+
+                {resultState?.output && (
+                  <div className="mt-1 font-mono text-[10.5px] text-slate-300 bg-ink-950 p-2 rounded border border-ink-800 max-h-32 overflow-y-auto whitespace-pre-wrap">
+                    {resultState.output}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
 }
 
 function SubReportCard({ item }: { item: WorklogItem }) {
@@ -154,6 +329,8 @@ export function WorklogFeed({
   gitBranch = "",
   rightPanelOpen = true,
   onToggleRightPanel,
+  sessionId = "default",
+  onRefreshState,
 }: WorklogFeedProps) {
   const [promptText, setPromptText] = useState("");
   const [activeMode, setActiveMode] = useState<Mode>("Normal");
@@ -304,6 +481,24 @@ export function WorklogFeed({
         ) : (
           displayItems.map((item, idx) => {
             const itemId = item.id || `item-${idx}`;
+
+            // 0. Operator Gate / Active Probe Approval Proposals
+            const isApprovalProposal =
+              item.type === "approval" ||
+              (item.proposed_actions && item.proposed_actions.length > 0) ||
+              item.title?.toLowerCase().includes("probe proposal") ||
+              item.title?.toLowerCase().includes("awaiting operator approval");
+
+            if (isApprovalProposal) {
+              return (
+                <ProbeProposalCard
+                  key={itemId}
+                  item={item}
+                  sessionId={sessionId}
+                  onActionComplete={onRefreshState}
+                />
+              );
+            }
 
             // 1. Thinking / Thought Block (matching Devin's Thought for Xs & v Thinking)
             if (item.type === "thought" || item.title === "Thinking") {

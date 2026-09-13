@@ -962,17 +962,10 @@ class ComputerUseAgent:
             f"Steps taken so far: {len(self.traces)}\n"
             f"Strategy A state: {strat_a_state.value if strat_a_state != StrategyState.EXHAUSTED else 'EXHAUSTED — pivot needed'}\n"
             "=== END FACTS ===\n\n"
-            "Cognitive Reasoning Dimensions (synthesize freely into your autonomous THOUGHT):\n"
-            "- WHAT DO I KNOW?: Verified facts from observations\n"
-            "- WHAT DO I NOT KNOW?: Target unknowns and pending discoveries\n"
-            "- WHAT FAILED?: Recent failure or NONE\n"
-            "- WHY DID IT FAIL?: Root cause analysis or NONE\n"
-            "- WHAT HYPOTHESIS DOES THIS SUPPORT/DISPROVE?: Evidence correlation\n"
-            "- WHAT IS THE HIGHEST-INFORMATION NEXT ACTION?: Optimal next action to gain maximal ground truth\n"
-            "=== AUTONOMOUS COGNITIVE FREEDOM ===\n"
-            "HOW you think is completely up to you. Do NOT robotically fill out bullet points or rigid forms.\n"
-            "Think naturally, deeply, and strategically in your own voice in your THOUGHT block.\n"
-            "Reflect on what you previously thought, what the latest observation revealed, and where to probe next.\n"
+            "Autonomous Engineering Mindset:\n"
+            "Think like an elite systems researcher/engineer. Analyze raw technical telemetry, correlate clues,\n"
+            "synthesize root causes from command outputs, and reason freely in your THOUGHT block without rigid forms.\n"
+            "If an approach stalls or fails twice, pivot immediately to an orthogonal angle.\n"
         )
 
         scratchpad_hud = ""
@@ -1070,6 +1063,22 @@ class ComputerUseAgent:
             target_header += f"TARGET ENDPOINTS: {', '.join(targets['endpoints'])}\n"
         if target_header:
             target_header += "USE THESE TARGETS — do NOT substitute example.com or other URLs.\n"
+
+        scope_info = ""
+        if getattr(self, "safety", None) is not None:
+            allowed_tgts = getattr(self.safety, "security_tool_targets", set())
+            if allowed_tgts:
+                scope_info += f"  Allowed Targets in Scope: {', '.join(sorted(allowed_tgts))}\n"
+            ws_root = getattr(self.safety, "workspace_root", None)
+            if ws_root:
+                scope_info += f"  Workspace Root: {ws_root}\n"
+            scope_info += "  Scope Rule: Confine all inspection, network interactions, and commands strictly to authorized targets and workspace.\n"
+        if scope_info:
+            target_header += (
+                "=== AUTHORIZED ENGAGEMENT SCOPE ===\n"
+                f"{scope_info}"
+                "===================================\n\n"
+            )
 
         target_header += (
             "================================================================================\n"
@@ -1171,7 +1180,7 @@ class ComputerUseAgent:
             "\n\n================================================================================\n"
             "CRITICAL INSTRUCTIONS FOR YOUR NEXT IMMEDIATE ACTION:\n"
             "1. Output EXACTLY ONE action block in this format:\n"
-            "THOUGHT: <1-sentence rationale>\n"
+            "THOUGHT: <technical rationale analyzing the observation, root cause, and intended probe>\n"
             "ACTION: <TERMINAL_EXEC|GUI_CLICK|GUI_TYPE|APP_LAUNCH|BROWSER_NAVIGATE|SECURITY_TOOL|GOAL_COMPLETE>\n"
             "TARGET: <target or command>\n"
             "PAYLOAD: {\"command\": \"...\"} or other payload json\n"
@@ -1652,7 +1661,7 @@ class ComputerUseAgent:
         if action_type == ComputerActionType.TERMINAL_EXEC:
             raw_cmd = payload.get("command") or fields.get("COMMAND")
             if not raw_cmd or str(raw_cmd).lower() in ("none", "null", ""):
-                payload["command"] = target if target and target != default_file and not target.startswith("{") else "true"
+                payload["command"] = target if target and target != default_file and not target.startswith("{") else "echo 'ERROR: Empty command payload' >&2; exit 1"
             else:
                 payload["command"] = raw_cmd
             if payload.get("command"):
@@ -1662,10 +1671,10 @@ class ComputerUseAgent:
                 cmd_str = re.sub(r'\(.*?\)', '', cmd_str).strip()
                 # Filter out UI text and navigation elements that are not commands
                 if any(pattern in cmd_str for pattern in ("localhost:12001", "[Missions]", "[Computer]", "[Research]", "[Experiments]", "[Graph Memory]", "[Evidence Board]", "[Agents]", "[Security Lab]", "[Settings]", "LIVE", "FAIL-CLOSED", "SONICA-SEA", "Copy", "Autonomous execution paused")):
-                    cmd_str = "true"
+                    cmd_str = "echo 'ERROR: UI navigation text is not an executable command' >&2; exit 1"
                 # Handle conversational placeholders like "Terminal" or "Terminal window"
                 if cmd_str.lower() in ("terminal", "terminal window", "the terminal", "bash", "shell", "console"):
-                    cmd_str = "true"
+                    cmd_str = "echo 'ERROR: Shell placeholder name is not an executable command' >&2; exit 1"
                 # Handle phrases like "No specific target is needed for this command."
                 if any(phrase in cmd_str.lower() for phrase in ("no specific", "not needed", "n/a", "none", "no target")):
                     cmd_str = "uname -m"
@@ -1854,9 +1863,9 @@ class ComputerUseAgent:
 
         # 3. If it is still a JSON object like {"diagnostic": ...} without command, don't execute raw JSON in bash
         if s.startswith("{") and s.endswith("}"):
-            return "true"
+            return "echo 'ERROR: Unparseable JSON command payload' >&2; exit 1"
 
-        return s or "echo OK"
+        return s or "echo 'ERROR: Empty command' >&2; exit 1"
 
     def _extract_tool_name(
         self,
@@ -2010,40 +2019,39 @@ class ComputerUseAgent:
             self._recent_action_signatures = []
         self._recent_action_signatures.append(action_sig)
 
-        if action_type not in (ComputerActionType.TERMINAL_EXEC, ComputerActionType.SECURITY_TOOL):
-            if len(self._recent_action_signatures) >= 3 and all(
-                s == action_sig for s in self._recent_action_signatures[-3:]
-            ):
-                actual_obs_str = (
-                    f"[ACTION LOOP DETECTED]: You have repeated '{action_type.value}' on '{target_resource}' "
-                    "3 times consecutively without state progression. "
-                    "This action is BLOCKED. Advance to a different action (e.g. GUI_CLICK on elements, GUI_TYPE, scroll, or conclude)."
-                )
-                status = ActionExecutionStatus.BLOCKED
-                logger.warning(
-                    "action_loop_breaker_triggered",
-                    action=action_type.value,
-                    target=target_resource,
-                    consecutive_count=3,
-                )
-                trace = ComputerDecisionTrace(
-                    step_index=self.action_counter,
-                    action_type=action_type,
-                    target_resource=target_resource,
-                    payload=str(payload),
-                    predicted_outcome=predicted_outcome,
-                    actual_observation=actual_obs_str,
-                    expected_observation=predicted_outcome,
-                    info_gain=0.0,
-                    recovery_attempted=False,
-                    status=status,
-                    thought=getattr(self, "_last_thought", ""),
-                    duration_seconds=round(time.perf_counter() - t_start, 3),
-                    thought_duration_seconds=getattr(self, "_last_thought_duration", 0.0),
-                )
-                self.traces.append(trace)
-                self.history.append({"action": f"{action_type.value} {target_resource}", "result": actual_obs_str})
-                return trace
+        if len(self._recent_action_signatures) >= 3 and all(
+            s == action_sig for s in self._recent_action_signatures[-3:]
+        ):
+            actual_obs_str = (
+                f"[ACTION LOOP DETECTED]: You have repeated '{action_type.value}' on '{target_resource}' "
+                "3 times consecutively without state progression. "
+                "This action is BLOCKED. Advance to a different action (e.g. alternative command, script authoring, GUI interaction, or conclude)."
+            )
+            status = ActionExecutionStatus.BLOCKED
+            logger.warning(
+                "action_loop_breaker_triggered",
+                action=action_type.value,
+                target=target_resource,
+                consecutive_count=3,
+            )
+            trace = ComputerDecisionTrace(
+                step_index=self.action_counter,
+                action_type=action_type,
+                target_resource=target_resource,
+                payload=str(payload),
+                predicted_outcome=predicted_outcome,
+                actual_observation=actual_obs_str,
+                expected_observation=predicted_outcome,
+                info_gain=0.0,
+                recovery_attempted=False,
+                status=status,
+                thought=getattr(self, "_last_thought", ""),
+                duration_seconds=round(time.perf_counter() - t_start, 3),
+                thought_duration_seconds=getattr(self, "_last_thought_duration", 0.0),
+            )
+            self.traces.append(trace)
+            self.history.append({"action": f"{action_type.value} {target_resource}", "result": actual_obs_str})
+            return trace
 
         # ----- Visual Grounding Target Resolution -----
         # If numeric coordinates were not provided for a GUI action, attempt to
@@ -3217,9 +3225,15 @@ class ComputerUseAgent:
         if failed_action_type == ComputerActionType.FILE_READ:
             return "Recovery blocked: the missing file must be restored from a real workspace snapshot or repository checkout"
 
-        # Recovery strategy 3: Terminal PTY reset
+        # Recovery strategy 3: Terminal PTY reset and diagnostic guidance
         if failed_action_type == ComputerActionType.TERMINAL_EXEC:
-            await self.computer.terminal(workspace_id, "clear || true")
+            err_lower = (error_context or "").lower()
+            await self.computer.terminal(workspace_id, "stty sane 2>/dev/null || true")
+            if any(term in err_lower for term in ("127", "not found", "command not found")):
+                return (
+                    "Reset terminal shell session: Command not found in container (exit 127). "
+                    "Pivot to Python stdlib scalpel: author inline scripts in /workspace/tools/ using socket, urllib.request, http.client, json."
+                )
             return "Reset terminal shell session"
 
         return "Generic recovery action applied"
@@ -3428,18 +3442,19 @@ class ComputerUseAgent:
             except Exception as e:
                 evidence = f"Verify probe failed: {e}"
         else:
-            # If the agent already executed at least one action successfully with real output:
+            obs = await self.observe(workspace_id)
+            evidence = f"Re-observed: app={obs.active_application}, term={obs.terminal_output[:120]}"
             successful_traces = [
                 t for t in getattr(self, "traces", [])
-                if t.status in (ActionExecutionStatus.COMPLETED, ActionExecutionStatus.SUCCESS, ActionExecutionStatus.VERIFIED, "COMPLETED", "SUCCESS", "VERIFIED")
+                if (t.status.value if hasattr(t.status, "value") else str(t.status)) in (
+                    ActionExecutionStatus.COMPLETED.value, ActionExecutionStatus.SUCCESS.value, ActionExecutionStatus.VERIFIED.value,
+                    "COMPLETED", "SUCCESS", "VERIFIED"
+                )
                 and t.actual_observation and len(t.actual_observation.strip()) > 0
             ]
             if successful_traces:
                 last_trace = successful_traces[-1]
-                evidence = f"Goal satisfied by executed action {last_trace.action_type.value}: {last_trace.actual_observation[:200]}"
-                return True, evidence
-            obs = await self.observe(workspace_id)
-            evidence = f"Re-observed: app={obs.active_application}, term={obs.terminal_output[:120]}"
+                evidence += f" | Last output: {last_trace.actual_observation[:180]}"
 
         ev_lower = evidence.lower()
         # Fail-closed verification: reject dummy/placeholder observations as
@@ -3558,11 +3573,6 @@ class ComputerUseAgent:
             # Goal-complete sentinel: the LLM JUDGED the goal achieved — but we
             # do not stop on self-declaration alone. We independently verify.
             if expected == _GOAL_COMPLETE_SENTINEL:
-                if getattr(self, "_goal_complete_declared", False):
-                    logger.info("mission_goal_complete_unverified_second_declaration")
-                    goal_reached = False
-                    break
-                self._goal_complete_declared = False
                 verified, evidence = await self.verify_goal(workspace_id, goal)
                 if verified:
                     logger.info(
@@ -3578,6 +3588,14 @@ class ComputerUseAgent:
                                 sg.evidence = evidence[:100]
                     goal_reached = True
                     break
+
+                unverified_count = getattr(self, "_consecutive_unverified_declarations", 0) + 1
+                self._consecutive_unverified_declarations = unverified_count
+                if unverified_count >= 3:
+                    logger.info("mission_goal_complete_unverified_max_attempts_exceeded")
+                    goal_reached = False
+                    break
+
                 # Self-declared done but independent verification FAILED: the
                 # goal is NOT actually achieved. Feed the evidence back so the
                 # LLM corrects course instead of stopping on a false positive.
@@ -3586,7 +3604,6 @@ class ComputerUseAgent:
                     "result": f"VERIFICATION FAILED: {evidence[:200]}. Goal NOT achieved — continue.",
                 })
                 self._consecutive_failures += 1
-                self._goal_complete_declared = True
                 if getattr(self, "checklist", None) is not None:
                     active_sg = self.checklist.active_sub_goal()
                     if active_sg:
@@ -3660,6 +3677,7 @@ class ComputerUseAgent:
                 "VERIFIED",
             ):
                 self._consecutive_failures = 0
+                self._consecutive_unverified_declarations = 0
                 if getattr(self, "checklist", None) is not None:
                     active_sg = self.checklist.active_sub_goal()
                     if active_sg:

@@ -57,6 +57,7 @@ export function ComputerSurface({
   const canvasRef = useRef<HTMLDivElement>(null);
   const imgRef = useRef<HTMLImageElement>(null);
   const cmdLogRef = useRef<HTMLDivElement>(null);
+  const followCommandTailRef = useRef(true);
   const isFetchingScreenshot = useRef(false);
 
   const streamUrl = desktopState?.novnc_url || (desktopState as any)?.vnc_url || "http://localhost:6080/vnc.html?autoconnect=true&resize=scale";
@@ -90,12 +91,19 @@ export function ComputerSurface({
     return () => clearInterval(interval);
   }, [sessionId, useStream]);
 
-  // Auto-scroll the command log to the newest line.
+  // Follow new command output only while the operator is at the tail.
   useEffect(() => {
-    if (cmdLogRef.current) {
+    if (cmdLogRef.current && followCommandTailRef.current) {
       cmdLogRef.current.scrollTop = cmdLogRef.current.scrollHeight;
     }
   }, [commandLogs, showCmdPanel]);
+
+  const handleCommandLogScroll = () => {
+    const log = cmdLogRef.current;
+    if (!log) return;
+    const distanceFromBottom = log.scrollHeight - log.scrollTop - log.clientHeight;
+    followCommandTailRef.current = distanceFromBottom <= 24;
+  };
 
   const runCommand = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -440,6 +448,7 @@ export function ComputerSurface({
           <div className="px-3 pb-3 space-y-2">
             <div
               ref={cmdLogRef}
+              onScroll={handleCommandLogScroll}
               className="h-32 overflow-auto rounded border border-ink-700 bg-ink-950 p-2 text-[11px] font-mono leading-relaxed"
             >
               {commandLogs.length === 0 ? (

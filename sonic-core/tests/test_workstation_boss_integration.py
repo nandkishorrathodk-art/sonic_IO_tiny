@@ -9,6 +9,7 @@ from sonic.api.routes.workstation import (
     _get_or_create_session,
     _infer_program_profile,
     _is_action_prompt,
+    _requires_desktop_observation,
     _is_complex_or_multi_part_objective,
     _run_prompt_reasoning,
 )
@@ -72,6 +73,13 @@ def test_program_intake_profile_is_classification_only():
     incomplete = _infer_program_profile("Here are the details of my program.")
     assert incomplete["status"] == "NEEDS_OBJECTIVE"
     assert incomplete["objective_present"] is False
+
+
+def test_desktop_observation_is_explicit_not_implicit():
+    assert _requires_desktop_observation("open chrome and inspect the page") is True
+    assert _requires_desktop_observation("click the submit button") is True
+    assert _requires_desktop_observation("check open ports and running services") is False
+    assert _requires_desktop_observation("analyze this source repository") is False
 
 
 @pytest.mark.asyncio

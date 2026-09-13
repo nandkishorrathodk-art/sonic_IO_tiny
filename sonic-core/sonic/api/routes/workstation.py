@@ -1851,6 +1851,22 @@ def _is_action_prompt(prompt: str) -> bool:
     return has_explicit_action or has_explicit_command or has_target_or_artifact
 
 
+def _requires_desktop_observation(prompt: str) -> bool:
+    """Return whether the objective needs application-plane pixels.
+
+    Sandbox/operator work such as source review, service enumeration, tests,
+    and custom probes must not open or repeatedly inspect the GUI. Desktop
+    capture is reserved for explicit application and visual interaction.
+    """
+    lower = prompt.strip().lower()
+    desktop_terms = (
+        "desktop", "screen", "screenshot", "gui", "visual", "mouse", "click",
+        "double-click", "right-click", "type into", "keyboard", "window",
+        "browser", "chrome", "firefox", "focus ", "scroll", "drag", "download",
+    )
+    return any(term in lower for term in desktop_terms)
+
+
 def _is_research_prompt(prompt: str) -> bool:
     """Keep the removed parallel-research shortcut import-compatible.
 
@@ -2230,6 +2246,7 @@ async def _run_prompt_reasoning(tenant_id: str, session_id: str, prompt: str) ->
     action_observations: list[str] = []
     desktop_context = "No tenant-owned desktop observation is available for this session."
     action_prompt = _is_action_prompt(prompt)
+    desktop_prompt = _requires_desktop_observation(prompt)
     program_profile = _infer_program_profile(prompt, state)
     state["program_profile"] = program_profile
     try:
@@ -2250,26 +2267,27 @@ async def _run_prompt_reasoning(tenant_id: str, session_id: str, prompt: str) ->
         if desktop_id and action_prompt:
             try:
                 computer = get_daytona_computer()
-                screen = await computer.screenshot(desktop_id)
-                terminal = await computer.terminal(desktop_id, "pwd", actor=tenant_id)
-                inventory = await computer.terminal(
-                    desktop_id,
-                    "ls -la /root 2>/dev/null || ls -la /home 2>/dev/null || ls -la",
-                    actor=tenant_id,
-                )
+                if desktop_prompt:
+                    screen = await computer.screenshot(desktop_id)
+                    terminal = await computer.terminal(desktop_id, "pwd", actor=tenant_id)
+                    inventory = await computer.terminal(
+                        desktop_id,
+                        "ls -la /root 2>/dev/null || ls -la /home 2>/dev/null || ls -la",
+                        actor=tenant_id,
+                    )
 
-                desktop_context = (
-                    f"Live desktop state: {screen.desktop_state}; resolution={screen.width}x{screen.height}; "
-                    f"visible_text={screen.visible_text!r}; controls={screen.detected_controls!r}; "
-                    f"sandbox_pwd={terminal.stdout.strip()!r}; "
-                    f"workspace_inventory={inventory.stdout.strip()!r}."
-                )
-                _append_worklog(
-                    state,
-                    "action",
-                    "Agent Desktop Observation",
-                    "Agent inspected the Daytona Linux workstation via PTY & screenshot. " + desktop_context,
-                )
+                    desktop_context = (
+                        f"Live desktop state: {screen.desktop_state}; resolution={screen.width}x{screen.height}; "
+                        f"visible_text={screen.visible_text!r}; controls={screen.detected_controls!r}; "
+                        f"sandbox_pwd={terminal.stdout.strip()!r}; "
+                        f"workspace_inventory={inventory.stdout.strip()!r}."
+                    )
+                    _append_worklog(
+                        state,
+                        "action",
+                        "Agent Desktop Observation",
+                        "Agent inspected the Daytona Linux workstation via PTY & screenshot. " + desktop_context,
+                    )
             except Exception as observation_err:
                 logger.warning("workstation_desktop_observation_failed", error=str(observation_err))
                 _append_worklog(
@@ -2589,6 +2607,7 @@ async def _run_prompt_reasoning(tenant_id: str, session_id: str, prompt: str) ->
                                 safety=safety_policy,
                                 self_host=True,
                                 enable_llm_decomposition=False,
+                                observe_desktop=desktop_prompt,
                             )
 
                             _append_worklog(

@@ -70,6 +70,20 @@ class GoalStatus(StrEnum):
     FAILED = "failed"
 
 
+def create_self_update_goal(director: "EvolutionGoalDirector") -> EvolutionGoal:
+    """Queue the durable maintenance goal used by the evolution engine."""
+    return director.submit_goal(
+        title="Self-Update: maintain autonomous assessment reliability",
+        description=(
+            "Review non-safety runtime reliability gaps discovered by tests or "
+            "operator feedback, then propose a verified, reversible improvement."
+        ),
+        priority=4,
+        category=GoalCategory.LOGIC_IMPROVEMENT,
+        max_attempts=1,
+    )
+
+
 @dataclass
 class EvolutionGoal:
     """A high-level improvement or bug-fix objective for SONIC to achieve."""
@@ -590,4 +604,3 @@ class EvolutionGoalDirector:
 
         logger.info("evolution_continuous_runner_finished", goals_processed=processed)
         return reports
-

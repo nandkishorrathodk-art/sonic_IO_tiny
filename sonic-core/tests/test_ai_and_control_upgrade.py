@@ -366,6 +366,13 @@ def test_coordinate_validation_tracks_screen_from_observe():
     assert agent._screen_height == 768
 
 
+def test_sandbox_agent_observation_does_not_capture_desktop():
+    comp = _StubComputer()
+    agent = ComputerUseAgent(computer_provider=comp, observe_desktop=False)
+    _run(agent.observe(comp.workspace_id))
+    assert agent._last_screenshot_b64 == ""
+
+
 def test_off_screen_click_is_blocked_not_executed():
     comp = _StubComputer(width=800, height=600)
     agent = ComputerUseAgent(computer_provider=comp)

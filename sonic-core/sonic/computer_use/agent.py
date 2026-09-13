@@ -27,6 +27,7 @@ from typing import Any, Optional
 from sonic.computer.models import (
     GUIAction,
     GUIActionType,
+    ScreenObservation,
 )
 from sonic.computer.provider import ComputerProvider
 from sonic.computer_use.grounding import (
@@ -179,9 +180,13 @@ class ComputerUseAgent:
         wire_telemetry: WireTelemetryEngine | None = None,
         being_mind: Any | None = None,
         evolution_engine: Any | None = None,
+        observe_desktop: bool = True,
         **kwargs: Any,
     ):
         self.computer = computer_provider
+        # Keep the application desktop optional. Sandbox/operator missions
+        # should not capture pixels merely because a workstation exists.
+        self.observe_desktop = observe_desktop
         self.autonomy_level = autonomy_level
         self.mode = mode
         self.max_actions = max_actions
@@ -441,7 +446,18 @@ class ComputerUseAgent:
         interactive elements) is folded into the observation so the same
         reasoning loop can drive web interaction.
         """
-        screen_obs = await self.computer.screenshot(workspace_id)
+        if self.observe_desktop:
+            screen_obs = await self.computer.screenshot(workspace_id)
+        else:
+            screen_obs = ScreenObservation(
+                screenshot_base64="",
+                width=0,
+                height=0,
+                active_window="",
+                visible_text="",
+                detected_controls=[],
+                desktop_state="NOT_REQUESTED",
+            )
         # Store screenshot for vision-in-the-loop (VLM image input)
         self._last_screenshot_b64 = getattr(screen_obs, "screenshot_base64", "")
         # Track real screen dimensions so coordinate actions can be validated

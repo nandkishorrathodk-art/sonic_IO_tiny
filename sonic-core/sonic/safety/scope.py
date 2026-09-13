@@ -331,3 +331,125 @@ def get_scope_checker() -> ScopeChecker:
         _scope_checker = ScopeChecker()
         _scope_checker.load_rules()
     return _scope_checker
+
+
+class SandboxIsolationTier(StrEnum):
+    """Smart-sandbox isolation tiers.
+
+    The being routes each autonomous action to a tier whose network/FS
+    footprint scales with the action's assessed severity. Fail-closed: unknown
+    severity -> FORBIDDEN (never execute).
+    """
+    HOST_CAGED = "host_caged"          # severity info      – in-memory only, no network
+    STANDARD = "standard"              # severity low       – container, no network
+    ISOLATED = "isolated"              # severity medium    – container + network-isolated net
+    EPHEMERAL = "ephemeral"            # severity high      – short-lived container, no persistence
+    FORBIDDEN = "forbidden"            # severity critical  – never executed
+
+
+class SandboxTierRouter:
+    """Maps an action's assessed severity to a sandbox isolation tier.
+
+    This is the ASI-level Sandbox pillar: instead of a static provider, the
+    being *chooses* the isolation envelope for each action. The native Rust
+    kernel confirms the mapping (native_verdict intact) whenever available;
+    otherwise the deterministic Python map applies (still fail-closed).
+    """
+
+    _SEVERITY_TO_TIER: dict[str, SandboxIsolationTier] = {
+        "info": SandboxIsolationTier.HOST_CAGED,
+        "low": SandboxIsolationTier.STANDARD,
+        "medium": SandboxIsolationTier.ISOLATED,
+        "high": SandboxIsolationTier.EPHEMERAL,
+        "critical": SandboxIsolationTier.FORBIDDEN,
+    }
+
+    _TIER_NETWORK_ISOLATED: dict[SandboxIsolationTier, bool] = {
+        SandboxIsolationTier.HOST_CAGED: False,   # no network at all (in-memory)
+        SandboxIsolationTier.STANDARD: False,     # container, offline
+        SandboxIsolationTier.ISOLATED: True,      # dedicated sandbox net
+        SandboxIsolationTier.EPHEMERAL: True,     # dedicated net, short-lived
+        SandboxIsolationTier.FORBIDDEN: True,     # unreachable — never built
+    }
+
+    def __init__(self, native_kernel: Any | None = None) -> None:
+        self.native_kernel = native_kernel
+
+    @classmethod
+    def tier_for_severity(cls, severity: str) -> SandboxIsolationTier:
+        return cls._SEVERITY_TO_TIER.get(str(severity).lower(), SandboxIsolationTier.FORBIDDEN)
+
+    @classmethod
+    def network_isolated_for(cls, tier: SandboxIsolationTier) -> bool:
+        return cls._TIER_NETWORK_ISOLATED.get(tier, True)
+
+    def route(
+        self,
+        severity: str,
+        action_type: str = "",
+        target: str = "",
+    ) -> dict[str, Any]:
+        """Return the sandbox routing decision for an action.
+
+        The returned dict is introspectable and directly consumable as
+        WorkspaceConfig knobs:
+            {
+                "severity", "tier", "network_isolated", "executable",
+                "native_verdict", "reason",
+            }
+        `executable` is False when the tier forbids execution (fail-closed).
+        """
+        if self.native_kernel is None:
+            try:
+                from sonic.kernel.native_bridge import NativeKernelClient
+                self.native_kernel = NativeKernelClient()
+            except Exception:
+                self.native_kernel = None
+
+        tier = self.tier_for_severity(severity)
+        executable = tier is not SandboxIsolationTier.FORBIDDEN
+        native_verdict = "unavailable"
+        scope_denied = False
+
+        if self.native_kernel is not None and getattr(self.native_kernel, "is_available", lambda: False)():
+            try:
+                # `is_isolated=True` for every executable tier: all tiers run
+                # inside an isolated provider (container/pod), satisfying the
+                # kernel's zero-host-escape invariant. The dedicated network is
+                # the finer `network_isolated` knob, separate from sandboxing.
+                res = self.native_kernel.authorize(
+                    action_type=action_type or "SANDBOX_EXEC",
+                    target=target or "",
+                    is_isolated=True,
+                )
+                # The kernel decides both the action-family envelope (seal
+                # intact + allowlisted) and the target scope (e.g. blocked
+                # private-IP egress). A scope-level Deny does NOT flip the
+                # isolation tier to FORBIDDEN: severity already decides the
+                # tier, and target-scope enforcement happens at execution time
+                # (ActionBroker/SafetyKernel). Only a broken seal is a hard
+                # structural stop — represented via `scope_denied` + verdict.
+                if res is not None and res.seal_intact:
+                    native_verdict = res.verdict
+                    scope_denied = res.verdict == "Deny"
+                elif res is not None:
+                    # Seal tampered: treat as forbidden structural stop.
+                    native_verdict = "SEAL_TAMPERED"
+                    tier = SandboxIsolationTier.FORBIDDEN
+                    executable = False
+                    scope_denied = True
+            except Exception:
+                native_verdict = "unavailable"
+
+        return {
+            "severity": str(severity).lower(),
+            "tier": tier.value,
+            "network_isolated": self.network_isolated_for(tier),
+            "executable": executable,
+            "native_verdict": native_verdict,
+            "scope_denied": scope_denied,
+            "reason": (
+                f"severity={severity} -> tier={tier.value}"
+                + (f" | native={native_verdict}" if native_verdict != "unavailable" else "")
+            ),
+        }

@@ -113,7 +113,7 @@ fn main() {
     println!("    Generated Counter-Hypothesis : Mandatory Falsification Anchor Active");
 
     // 5. Brain Reasoning Cycle (Decoupled Epistemic Planning)
-    let _ = mission.transition_checked(MissionState::Planning);
+    let _ = mission.transition_to(MissionState::Planning);
     println!("\n[5] Brain Reasoning Cycle (Zero Tool Handles)...");
     let plan = brain.plan_next_step(&hyp_engine, false, mission.findings_count);
     println!("    Generated Plan ID    : {}", plan.plan_id);
@@ -229,9 +229,9 @@ fn main() {
     assert!(!evil_accepted);
 
     // 10. Finalize Mission
-    let _ = mission.transition_checked(MissionState::Verifying);
-    let _ = mission.transition_checked(MissionState::Reporting);
-    let _ = mission.transition_checked(MissionState::Completed);
+    let _ = mission.transition_to(MissionState::Verifying);
+    let _ = mission.transition_to(MissionState::Reporting);
+    let _ = mission.transition_to(MissionState::Completed);
     println!("\n[10] Mission Successfully Completed!");
     println!("     Final State: {:?}", mission.state);
     println!("     Verified Findings Count: {}", mission.findings_count);

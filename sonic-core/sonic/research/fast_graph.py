@@ -49,6 +49,8 @@ try:
         FastAttackGraph as _CompiledFastAttackGraph,
         fast_find_all_paths as _compiled_fast_find_all_paths,
         fast_shortest_path as _compiled_fast_shortest_path,
+        fast_parliament_consensus as _compiled_fast_parliament_consensus,
+        fast_roll_forward_gain as _compiled_fast_roll_forward_gain,
     )
     CYTHON_COMPILED = _COMPILED_FLAG
 except ImportError:
@@ -56,6 +58,8 @@ except ImportError:
     _CompiledFastAttackGraph = None
     _compiled_fast_find_all_paths = None
     _compiled_fast_shortest_path = None
+    _compiled_fast_parliament_consensus = None
+    _compiled_fast_roll_forward_gain = None
 
 
 class FastAttackGraph:
@@ -274,4 +278,55 @@ def fast_find_all_paths(graph: AttackGraph, start_id: str, target_id: str) -> li
         setattr(graph, "_dirty", False)
 
     return fast_graph.find_all_paths(start_id, target_id)
+
+
+# ---------------------------------------------------------------------------
+# NEXUS ASI hot-path scorers — pure-Python fallback (identical to .pyx)
+# ---------------------------------------------------------------------------
+
+# Vote codes: 0=support, 1=oppose, 2=abstain, 3=veto.
+# Branch indices: 0=strategist, 1=skeptic, 2=historian, 3=risk_governor, 4=method_inventor.
+_NEXUS_BRANCH_WEIGHTS = (1.0, 1.0, 0.6, 1.2, 0.4)
+_VOTE_SUPPORT = 0
+_VOTE_OPPOSE = 1
+_VOTE_ABSTAIN = 2
+_VOTE_VETO = 3
+
+
+def fast_parliament_consensus(weights: list[float] | tuple[float, ...], votes: list[tuple]) -> tuple[float, float, float, bool]:
+    """Pure-Python fallback for the compiled parliament consensus scorer.
+
+    weights: flat list [strategist, skeptic, historian, risk_governor, method_inventor]
+    votes:   list of (branch_index:int, vote_code:int, confidence:float).
+    Returns (credibility, support_weight, oppose_weight, vetoed).
+    """
+    if _compiled_fast_parliament_consensus is not None:
+        return _compiled_fast_parliament_consensus(list(weights), votes)
+    total = support = oppose = 0.0
+    vetoed = False
+    for branch_idx, vote_code, confidence in votes:
+        w = weights[branch_idx] * confidence
+        total += w
+        if vote_code == _VOTE_SUPPORT:
+            support += w
+        elif vote_code in (_VOTE_OPPOSE, _VOTE_VETO):
+            oppose += w
+            if vote_code == _VOTE_VETO:
+                vetoed = True
+    credibility = support / total if total > 0.0 else 0.0
+    return min(1.0, credibility), support, oppose, vetoed
+
+
+def fast_roll_forward_gain(info_gains: list[float], costs: list[float]) -> tuple[float, float, int]:
+    """Pure-Python fallback for the compiled world-twin roll-forward accumulator."""
+    if _compiled_fast_roll_forward_gain is not None:
+        return _compiled_fast_roll_forward_gain(info_gains, costs)
+    n = min(len(info_gains), len(costs))
+    total_gain = sum(info_gains[:n])
+    total_cost = sum(costs[:n])
+    return total_gain, total_cost, n
+
+
+def nexus_default_weights() -> tuple[float, ...]:
+    return _NEXUS_BRANCH_WEIGHTS
 

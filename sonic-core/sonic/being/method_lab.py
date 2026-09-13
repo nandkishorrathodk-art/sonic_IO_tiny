@@ -39,7 +39,11 @@ Integration:
 
 from __future__ import annotations
 
+import json
+import os
 import re
+import sqlite3
+import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
@@ -48,6 +52,15 @@ from sonic.llm.prompts import method_lab_system_prompt
 from sonic.logger import get_logger
 
 logger = get_logger(__name__)
+
+
+def _now() -> str:
+    return datetime.now(UTC).isoformat()
+
+
+def _method_lab_db_path() -> str:
+    from sonic.memory.sqlite_graph import _default_db_path as _g
+    return os.environ.get("SONIC_METHOD_LAB_DB_PATH") or os.environ.get("SONIC_MEMORY_DB_PATH") or _g()
 
 # The vector-memory namespace for the known-technique ledger. Techniques are
 # indexed under this doc_id prefix so novelty search is scoped to methods, not
@@ -355,3 +368,372 @@ class MethodLab:
             )
         except Exception as e:
             logger.warning("method_lab_ledger_persist_failed", error=str(e))
+
+# ---------------------------------------------------------------------------
+# NEXUS L6 -- Offense-Generative Vulnerability Researcher
+# ---------------------------------------------------------------------------
+
+@dataclass
+class OffenseHypothesis:
+    """A mutated vulnerability-class hypothesis generated from known patterns."""
+    hypothesis_id: str
+    family: str                 # mutation lineage
+    source_patterns: list[str]
+    mutated_technique: str
+    parameters: dict[str, Any] = field(default_factory=dict)
+    novelty_score: float = 0.0
+    status: str = "generated"   # generated | tested | confirmed | rejected
+    note: str = ""
+    created_at: str = field(default_factory=_now)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "hypothesis_id": self.hypothesis_id,
+            "family": self.family,
+            "source_patterns": self.source_patterns,
+            "mutated_technique": self.mutated_technique,
+            "parameters": self.parameters,
+            "novelty_score": self.novelty_score,
+            "status": self.status,
+            "note": self.note,
+            "created_at": self.created_at,
+        }
+
+
+# Known vulnerability-pattern genome. Each carries deterministic mutation hooks.
+KNOWN_VULN_PATTERNS: dict[str, list[str]] = {
+    "sql_injection": [
+        "parameterized query boundary",
+        "boolean-based differential",
+        "time-based sleep oracle",
+        "union column enumeration",
+    ],
+    "xss": [
+        "reflected sink",
+        "DOM write sink",
+        "event-handler attribute",
+        "svg/math namespace tag",
+    ],
+    "ssrf": [
+        "URL fetch endpoint",
+        "redirect-following fetch",
+        "DNS rebinding candidate",
+        "protocol-relative fetch",
+    ],
+    "deserialization": [
+        "untrusted object stream",
+        "gadget chain discovery",
+        "magic-method invocation",
+        "type confusion on read",
+    ],
+    "auth_bypass": [
+        "token replay",
+        "password-reset oracle",
+        "path-based role check",
+        "JWT algorithm confusion",
+    ],
+    "race_condition": [
+        "TOCTOU file op",
+        "double-spend ledger",
+        "limit-check-then-spend",
+        "async idempotency bypass",
+    ],
+    "crypto_flaw": [
+        "constant-time comparison missing",
+        "deterministic IV reuse",
+        "padding oracle",
+        "weak key derivation",
+    ],
+    "template_injection": [
+        "expression sandbox escape",
+        "undefined-variable reflection",
+        "recursive render hook",
+        "config-delegate leak",
+    ],
+}
+
+_MUTATORS = (
+    "transpose_to_domain",     # carry the trick into another class (cross-domain)
+    "parameterize_surface",    # generalize the injection point
+    "conjoin_classes",         # combine two patterns into a compound hypothesis
+    "invert_condition",        # flip the boolean expectation
+)
+
+
+class OffenseGenerator:
+    """Grows a private catalog of vulnerability-class hypotheses via mutation.
+
+    Pure hypothesis generation — no execution. A hypothesis is only worth
+    testing, and only registered as a confirmed pattern after an empirical
+    reproduction elsewhere (mark_tested).
+    """
+
+    def __init__(self, db_path: str | None = None) -> None:
+        self.db_path = db_path or _method_lab_db_path()
+        self._hypotheses: dict[str, OffenseHypothesis] = {}
+        self._init_db()
+        self._hydrate()
+
+    def _init_db(self) -> None:
+        os.makedirs(os.path.dirname(self.db_path) or ".", exist_ok=True)
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS offense_hypotheses (
+                    hypothesis_id TEXT PRIMARY KEY,
+                    family TEXT,
+                    source_patterns TEXT,
+                    mutated_technique TEXT,
+                    parameters_json TEXT,
+                    novelty_score REAL,
+                    status TEXT,
+                    note TEXT,
+                    created_at TEXT
+                )
+                """
+            )
+
+    def _hydrate(self) -> None:
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                rows = conn.execute(
+                    "SELECT hypothesis_id, family, source_patterns, mutated_technique,"
+                    " parameters_json, novelty_score, status, note, created_at"
+                    " FROM offense_hypotheses"
+                ).fetchall()
+            for hid, family, sp, mt, pj, novelty, status, note, created_at in rows:
+                params = json.loads(pj) if pj else {}
+                self._hypotheses[hid] = OffenseHypothesis(
+                    hypothesis_id=hid, family=family,
+                    source_patterns=json.loads(sp) if sp else [],
+                    mutated_technique=mt, parameters=params, novelty_score=novelty,
+                    status=status, note=note or "", created_at=created_at,
+                )
+        except (sqlite3.Error, json.JSONDecodeError) as e:
+            logger.warning("offense_hydrate_failed", error=str(e))
+
+    def _persist(self, h: OffenseHypothesis) -> None:
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                conn.execute(
+                    "INSERT OR REPLACE INTO offense_hypotheses VALUES (?,?,?,?,?,?,?,?,?)",
+                    (
+                        h.hypothesis_id, h.family, json.dumps(h.source_patterns),
+                        h.mutated_technique, json.dumps(h.parameters),
+                        h.novelty_score, h.status, h.note, h.created_at,
+                    ),
+                )
+        except sqlite3.Error as e:
+            logger.warning("offense_persist_failed", error=str(e))
+
+    @staticmethod
+    def _novelty(family: str, parameters: dict[str, Any], mutated: str) -> float:
+        """Deterministic novelty proxy: derivative complexity of the mutation."""
+        complexity = len(parameters) * 0.2 + 0.1
+        domain_cross = 0.5 if "transpose" in family else 0.0
+        conjoined = 0.3 if "conjoin" in family else 0.0
+        return round(min(1.0, 0.2 + complexity + domain_cross + conjoined), 3)
+
+    def generate(
+        self,
+        limit: int = 12,
+        families: list[str] | None = None,
+    ) -> list[OffenseHypothesis]:
+        """Generate new class hypotheses by mutating the known pattern genome."""
+        patterns = KNOWN_VULN_PATTERNS if not families else {k: v for k, v in KNOWN_VULN_PATTERNS.items() if k in families}
+        generated: list[OffenseHypothesis] = []
+        class_names = list(patterns.keys())
+
+        for family in class_names:
+            techniques = patterns[family]
+            for idx, mutant_name in enumerate(_MUTATORS):
+                if idx >= limit:
+                    break
+                technique = techniques[idx % len(techniques)]
+                hid = f"off-{uuid.uuid4().hex[:10]}"
+                param = {"source": family, "mutator": mutant_name, "surface": technique}
+                if mutant_name == "conjoin_classes" and len(class_names) > 1:
+                    other = class_names[0] if family != class_names[0] else class_names[1]
+                    param["conjoined_with"] = other
+                mutate_technique = f"{technique} -> {mutant_name} ({family})"
+                hypothesis = OffenseHypothesis(
+                    hypothesis_id=hid,
+                    family=family,
+                    source_patterns=techniques[:2],
+                    mutated_technique=mutate_technique,
+                    parameters=param,
+                    novelty_score=self._novelty(mutant_name, param, mutate_technique),
+                )
+                self._hypotheses[hid] = hypothesis
+                self._persist(hypothesis)
+                generated.append(hypothesis)
+
+        return generated
+
+    def mark_tested(self, hypothesis_id: str, confirmed: bool, evidence: str) -> bool:
+        hyp = self._hypotheses.get(hypothesis_id)
+        if not hyp:
+            return False
+        hyp.status = "confirmed" if confirmed else "rejected"
+        if evidence:
+            hyp.note = evidence
+        self._persist(hyp)
+        return True
+
+    def confirmed_catalog(self) -> list[OffenseHypothesis]:
+        return [h for h in self._hypotheses.values() if h.status == "confirmed"]
+
+    def hypotheses(self) -> list[OffenseHypothesis]:
+        return list(self._hypotheses.values())
+
+    def count(self) -> int:
+        return len(self._hypotheses)
+
+
+# ---------------------------------------------------------------------------
+# NEXUS L7 -- Adversarial Self-Play Arena
+# ---------------------------------------------------------------------------
+
+@dataclass
+class ArenaRound:
+    """One attacker-vs-defender exchange."""
+    round_id: str
+    attack_technique: str
+    defense_model: str
+    attack_score: float
+    defense_score: float
+    counterfactual_signal: str
+    attack_adaptation: str
+    defense_adaptation: str
+    timestamp: str = field(default_factory=_now)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "round_id": self.round_id,
+            "attack_technique": self.attack_technique,
+            "defense_model": self.defense_model,
+            "attack_score": self.attack_score,
+            "defense_score": self.defense_score,
+            "counterfactual_signal": self.counterfactual_signal,
+            "attack_adaptation": self.attack_adaptation,
+            "defense_adaptation": self.defense_adaptation,
+            "timestamp": self.timestamp,
+        }
+
+
+class AdversarialArena:
+    """Closed-world attacker/defender simulation producing training signals.
+
+    Round flow:
+        1. Attacker proposes a technique/hypothesis.
+        2. Defender responds with a defense model.
+        3. A neutral referee scores the exchange (attack novelty x defense
+           soundness), producing a counterfactual signal.
+        4. Lessons persist (attack-strength, defense-strength, adapt directive).
+
+    Pure closed-world modeling — no real target is ever touched.
+    """
+
+    _ATTACK_ANCHORS = ("novel", "blind", "chained", "persistent", "stealth")
+    _DEFENSE_ANCHORS = ("segmentation", "canary", "rate-limit", "normalization", "allowlist")
+
+    def __init__(self, db_path: str | None = None) -> None:
+        self.db_path = db_path or _method_lab_db_path()
+        self._rounds: dict[str, ArenaRound] = {}
+        self._round_counter = 0
+        self._init_db()
+        self._hydrate()
+
+    def _init_db(self) -> None:
+        os.makedirs(os.path.dirname(self.db_path) or ".", exist_ok=True)
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS arena_rounds (
+                    round_id TEXT PRIMARY KEY,
+                    attack_technique TEXT,
+                    defense_model TEXT,
+                    attack_score REAL,
+                    defense_score REAL,
+                    counterfactual_signal TEXT,
+                    attack_adaptation TEXT,
+                    defense_adaptation TEXT,
+                    timestamp TEXT
+                )
+                """
+            )
+
+    def _hydrate(self) -> None:
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                rows = conn.execute(
+                    "SELECT round_id, attack_technique, defense_model, attack_score,"
+                    " defense_score, counterfactual_signal, attack_adaptation,"
+                    " defense_adaptation, timestamp FROM arena_rounds"
+                ).fetchall()
+            for r in rows:
+                self._rounds[r[0]] = ArenaRound(
+                    round_id=r[0], attack_technique=r[1], defense_model=r[2],
+                    attack_score=r[3], defense_score=r[4], counterfactual_signal=r[5],
+                    attack_adaptation=r[6], defense_adaptation=r[7], timestamp=r[8],
+                )
+        except sqlite3.Error as e:
+            logger.warning("arena_hydrate_failed", error=str(e))
+
+    def _persist(self, r: ArenaRound) -> None:
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                conn.execute(
+                    "INSERT OR REPLACE INTO arena_rounds VALUES (?,?,?,?,?,?,?,?,?)",
+                    (
+                        r.round_id, r.attack_technique, r.defense_model,
+                        r.attack_score, r.defense_score, r.counterfactual_signal,
+                        r.attack_adaptation, r.defense_adaptation, r.timestamp,
+                    ),
+                )
+        except sqlite3.Error as e:
+            logger.warning("arena_persist_failed", error=str(e))
+
+    @staticmethod
+    def _score(text: str, anchors: tuple[str, ...]) -> float:
+        hits = sum(1 for a in anchors if a in text.lower())
+        return round(min(1.0, 0.25 + 0.15 * hits), 3)
+
+    def play_round(
+        self,
+        attack_technique: str,
+        defense_model: str,
+        attack_adaptation: str = "",
+        defense_adaptation: str = "",
+    ) -> ArenaRound:
+        """Run one attacker/defender exchange and persist the lesson."""
+        self._round_counter += 1
+        attack_score = self._score(attack_technique, self._ATTACK_ANCHORS)
+        defense_score = self._score(defense_model, self._DEFENSE_ANCHORS)
+        signal = (
+            f"attack={attack_score:.2f}:defense={defense_score:.2f} -> "
+            f"{'LEAN-ATTACK-CONTINUE' if attack_score > defense_score else 'HARDEN-DEFENSE'}"
+        )
+        round_ = ArenaRound(
+            round_id=f"arena-{self._round_counter:06d}",
+            attack_technique=attack_technique,
+            defense_model=defense_model,
+            attack_score=attack_score,
+            defense_score=defense_score,
+            counterfactual_signal=signal,
+            attack_adaptation=attack_adaptation or (
+                "adapt: pursue higher-novelty vector" if attack_score >= defense_score else "adapt: diversify approach"
+            ),
+            defense_adaptation=defense_adaptation or "defense: reinforce modeled boundary",
+        )
+        self._rounds[round_.round_id] = round_
+        self._persist(round_)
+        return round_
+
+    def lessons(self, limit: int = 50) -> list[ArenaRound]:
+        rounds = list(self._rounds.values())
+        rounds.sort(key=lambda r: r.timestamp, reverse=True)
+        return rounds[:limit]
+
+    def round_count(self) -> int:
+        return len(self._rounds)

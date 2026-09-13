@@ -117,6 +117,35 @@ impl IpcServer {
                 serde_json::to_value(&res).map_err(|e| e.to_string())
             }
 
+            "nexus_parliament_consensus" => {
+                let weights: [f32; 5] = req.params
+                    .get("weights")
+                    .and_then(|v| v.as_array())
+                    .map(|arr| {
+                        let mut w = [1.0f32; 5];
+                        for (i, v) in arr.iter().take(5).enumerate() {
+                            w[i] = v.as_f64().unwrap_or(1.0) as f32;
+                        }
+                        w
+                    })
+                    .unwrap_or_else(crate::brain::nexus_default_weights);
+                let votes: Vec<crate::brain::NexusVoteRec> = req.params
+                    .get("votes")
+                    .and_then(|v| serde_json::from_value(v.clone()).ok())
+                    .unwrap_or_default();
+                let decision = crate::brain::parliament_consensus(&weights, &votes);
+                serde_json::to_value(&decision).map_err(|e| e.to_string())
+            }
+
+            "nexus_world_twin_roll_forward" => {
+                let steps: Vec<crate::brain::WorldTwinStep> = req.params
+                    .get("steps")
+                    .and_then(|v| serde_json::from_value(v.clone()).ok())
+                    .unwrap_or_default();
+                let rollout = crate::brain::world_twin_roll_forward(&steps);
+                serde_json::to_value(&rollout).map_err(|e| e.to_string())
+            }
+
             unknown => Err(format!("Unknown JSON-RPC method '{}'", unknown)),
         };
 

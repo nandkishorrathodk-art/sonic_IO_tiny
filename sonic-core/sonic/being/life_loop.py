@@ -28,7 +28,11 @@ roring `ComputerUseAgent(self_host=True)`'s hard requirement.
 from __future__ import annotations
 
 import asyncio
-from typing import Any
+import time
+from collections import OrderedDict, defaultdict
+from dataclasses import dataclass, field
+from datetime import UTC, datetime
+from typing import Any, Awaitable, Callable
 
 from sonic.being.identity import (
     Being,
@@ -39,6 +43,90 @@ from sonic.being.identity import (
 from sonic.logger import get_logger
 
 logger = get_logger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# NEXUS L1 -- EventBus (Continuous Infinity Loop event surface)
+# ---------------------------------------------------------------------------
+
+def _now() -> str:
+    return datetime.now(UTC).isoformat()
+
+
+@dataclass
+class BusEvent:
+    """A single cognition event published on the bus."""
+    topic: str
+    payload: dict[str, Any] = field(default_factory=dict)
+    created_at: str = field(default_factory=_now)
+    event_id: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "topic": self.topic,
+            "payload": self.payload,
+            "created_at": self.created_at,
+            "event_id": self.event_id,
+        }
+
+
+Handler = Callable[[BusEvent], Awaitable[Any]] | Callable[[BusEvent], Any]
+
+
+class EventBus:
+    """An LRU-bounded, coalesced in-process event bus for always-on cognition.
+
+    The being is woken by *any* event (subprocess result, webhook, trace
+    completion, state transition) rather than only fixed ticks. `publish` is
+    fire-and-forget and coalesced by topic so unbounded growth is impossible;
+    `subscribe` registers the WAKE handlers of cognition.
+    """
+
+    def __init__(self, max_frontier: int = 512) -> None:
+        self._subscribers: dict[str, list[Handler]] = defaultdict(list)
+        self._frontier: OrderedDict[str, BusEvent] = OrderedDict()
+        self._max_frontier = max_frontier
+        self._published = 0
+
+    def subscribe(self, topic: str, handler: Handler) -> None:
+        self._subscribers[topic].append(handler)
+
+    def publish(self, topic: str, payload: dict[str, Any] | None = None) -> BusEvent:
+        event = BusEvent(topic=topic, payload=payload or {})
+        # coalesce: same topic payloads overwrite rather than append unboundedly
+        self._frontier.pop(topic, None)
+        self._frontier[topic] = event
+        while len(self._frontier) > self._max_frontier:
+            self._frontier.popitem(last=False)
+        self._published += 1
+        for handler in self._subscribers.get(topic, []):
+            try:
+                result = handler(event)
+                if asyncio.iscoroutine(result):
+                    asyncio.ensure_future(result)
+            except Exception as e:
+                logger.warning("eventbus_handler_failed", topic=topic, error=str(e))
+        return event
+
+    def frontier(self) -> list[BusEvent]:
+        return list(self._frontier.values())
+
+    def frontier_topics(self) -> list[str]:
+        return list(self._frontier.keys())
+
+    def latest(self, topic: str) -> BusEvent | None:
+        return self._frontier.get(topic)
+
+    def reset(self) -> None:
+        self._frontier.clear()
+        self._subscribers.clear()
+
+    def stats(self) -> dict[str, Any]:
+        return {
+            "published_total": self._published,
+            "frontier_size": len(self._frontier),
+            "subscribers": sum(len(h) for h in self._subscribers.values()),
+        }
 
 
 class BeingLifeLoop:
@@ -80,6 +168,7 @@ class BeingLifeLoop:
         self._stop = asyncio.Event()
         self.cycles_completed = 0
         self.before_tick_hooks: list = []
+        self.bus: EventBus = EventBus()
 
     # ------------------------------------------------------------------
     def mind(self) -> BeingMind:
@@ -110,6 +199,16 @@ class BeingLifeLoop:
                 novel=getattr(res, "was_novel", False),
                 info_gain=getattr(res, "info_gain", 0.0),
             )
+            # Publish the cycle outcome onto the continuous-event bus so any
+            # subscribed cognition layer can react without a fixed tick.
+            self.bus.publish("being.idle_cycle", {
+                "being_id": self.being.being_id,
+                "cycle": self.cycles_completed,
+                "goal": getattr(res, "proposed_goal", ""),
+                "was_novel": getattr(res, "was_novel", False),
+                "info_gain": getattr(res, "info_gain", 0.0),
+                "learned_fact": str(learned),
+            })
             return res
         except Exception as e:
             # A single failed tick must never kill the being.

@@ -334,6 +334,116 @@ impl ResearchBrain {
     }
 }
 
+// ---------------------------------------------------------------------------
+// NEXUS स्वरूप-0 -- Native Multi-Mind Parliament + World Twin (ASI substrate)
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum NexusVote {
+    Support,
+    Oppose,
+    Abstain,
+    Veto,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NexusVoteRec {
+    pub branch: u8,        // 0=Strategist 1=Skeptic 2=Historian 3=RiskGovernor 4=MethodInventor
+    pub vote: NexusVote,
+    pub confidence: f32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NexusDecision {
+    pub outcome: String,          // "approve" | "oppose" | "undecided" | "vetoed"
+    pub credibility: f32,
+    pub support_weight: f32,
+    pub oppose_weight: f32,
+    pub vetoed: bool,
+}
+
+/// Native weighted consensus for the Multi-Mind Parliament. Weighted votes are
+/// summed in float32 (parallel semantics to the Python fast_parliament_consensus).
+pub fn parliament_consensus(weights: &[f32; 5], votes: &[NexusVoteRec]) -> NexusDecision {
+    let mut total = 0.0f32;
+    let mut support = 0.0f32;
+    let mut oppose = 0.0f32;
+    let mut vetoed = false;
+
+    for rec in votes {
+        let w = weights[rec.branch as usize] * rec.confidence;
+        total += w;
+        match rec.vote {
+            NexusVote::Support => support += w,
+            NexusVote::Oppose | NexusVote::Veto => {
+                oppose += w;
+                if rec.vote == NexusVote::Veto {
+                    vetoed = true;
+                }
+            }
+            NexusVote::Abstain => {}
+        }
+    }
+
+    let credibility = if total > 0.0 { (support / total).clamp(0.0, 1.0) } else { 0.0 };
+    // Veto always wins (mirrors the Python hard gate).
+    let outcome = if vetoed {
+        "vetoed"
+    } else if credibility >= 0.6 && oppose < support {
+        "approve"
+    } else if oppose > support {
+        "oppose"
+    } else {
+        "undecided"
+    };
+
+    NexusDecision {
+        outcome: outcome.to_string(),
+        credibility,
+        support_weight: support,
+        oppose_weight: oppose,
+        vetoed,
+    }
+}
+
+/// Default parliament branch weights — MUST match $ python fast_parliament_consensus
+pub fn nexus_default_weights() -> [f32; 5] {
+    [1.0, 1.0, 0.6, 1.2, 0.4]
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorldTwinStep {
+    pub action: String,
+    pub expected_info_gain: f32,
+    pub cost: f32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorldTwinRollout {
+    pub total_gain: f32,
+    pub total_cost: f32,
+    pub depth: usize,
+    pub actions: Vec<String>,
+}
+
+/// Native World-Twin roll-forward accumulation (parallel to fast_roll_forward_gain).
+pub fn world_twin_roll_forward(steps: &[WorldTwinStep]) -> WorldTwinRollout {
+    steps.iter().fold(
+        WorldTwinRollout {
+            total_gain: 0.0,
+            total_cost: 0.0,
+            depth: steps.len(),
+            actions: Vec::with_capacity(steps.len()),
+        },
+        |mut acc, s| {
+            acc.total_gain += s.expected_info_gain;
+            acc.total_cost += s.cost;
+            acc.actions.push(s.action.clone());
+            acc
+        },
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -388,5 +498,46 @@ mod tests {
 
         let plan = brain.plan_next_step(&engine, false, 0);
         assert_eq!(plan.specialist_type, "pwn");
+    }
+
+    #[test]
+    fn test_nexus_parliament_approves_consensus() {
+        use super::{nexus_default_weights, parliament_consensus, NexusVote, NexusVoteRec};
+        let w = nexus_default_weights();
+        let votes = vec![
+            NexusVoteRec { branch: 0, vote: NexusVote::Support, confidence: 0.8 },
+            NexusVoteRec { branch: 1, vote: NexusVote::Support, confidence: 0.6 },
+            NexusVoteRec { branch: 3, vote: NexusVote::Support, confidence: 0.9 },
+        ];
+        let d = parliament_consensus(&w, &votes);
+        assert_eq!(d.outcome, "approve");
+        assert!(d.credibility >= 0.6);
+        assert!(!d.vetoed);
+    }
+
+    #[test]
+    fn test_nexus_parliament_veto_wins() {
+        use super::{nexus_default_weights, parliament_consensus, NexusVote, NexusVoteRec};
+        let w = nexus_default_weights();
+        let votes = vec![
+            NexusVoteRec { branch: 0, vote: NexusVote::Support, confidence: 0.9 },
+            NexusVoteRec { branch: 3, vote: NexusVote::Veto, confidence: 1.0 },
+        ];
+        let d = parliament_consensus(&w, &votes);
+        assert_eq!(d.outcome, "vetoed");
+        assert!(d.vetoed);
+    }
+
+    #[test]
+    fn test_nexus_world_twin_roll_forward() {
+        use super::{world_twin_roll_forward, WorldTwinStep};
+        let steps = vec![
+            WorldTwinStep { action: "recon".into(), expected_info_gain: 0.8, cost: 0.2 },
+            WorldTwinStep { action: "exploit".into(), expected_info_gain: 0.5, cost: 0.4 },
+        ];
+        let r = world_twin_roll_forward(&steps);
+        assert_eq!(r.depth, 2);
+        assert_eq!(r.total_gain, 1.3);
+        assert_eq!(r.total_cost, 0.6);
     }
 }

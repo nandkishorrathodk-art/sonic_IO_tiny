@@ -88,7 +88,14 @@ impl SealedPolicy {
         for act in &[
             "TERMINAL_EXEC", "FILE_READ", "FILE_WRITE", "GIT_COMMIT",
             "BROWSER_NAVIGATE", "BROWSER_CLICK", "BROWSER_TYPE", "BROWSER_SCREENSHOT",
-            "SECURITY_TOOL", "GUI_CLICK", "GUI_TYPE", "GUI_SCREENSHOT",
+            "SECURITY_TOOL",
+            "GUI_CLICK", "GUI_TYPE", "GUI_SCREENSHOT",
+            "GUI_DOUBLE_CLICK", "GUI_RIGHT_CLICK", "GUI_KEYPRESS",
+            "GUI_MOVE", "GUI_SCROLL", "GUI_DRAG", "GUI_WAIT",
+            "APP_LAUNCH", "APP_CLOSE", "APP_FOCUS", "APP_INSTALL",
+            "SERVICE_ACTION", "GIT_BRANCH", "TERMINAL_EXEC",
+            "TOOL_RUN", "TOOL_AUTHOR", "METHOD_INVENT",
+            "BROWSER_WAIT", "BROWSER_DOWNLOAD",
         ] {
             allowed.insert(act.to_string());
         }

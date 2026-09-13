@@ -72,3 +72,8 @@ sonic-core/sonic_data/
 sonic_data/
 .agents_tmp/
 open-computer-use/
+
+# ---- Cython compiled extensions (built at deploy time from *.pyx) ----
+sonic-core/sonic/research/_fast_graph*.so
+sonic-core/sonic/research/fast_graph*.so
+sonic-core/sonic/research/*.c

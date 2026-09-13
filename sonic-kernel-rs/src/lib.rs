@@ -28,7 +28,11 @@ pub mod ipc;
 
 pub use error::{KernelError, KernelResult};
 pub use safety::{KernelVerdict, SafetyAuthorization, SafetyKernel, SealedPolicy};
-pub use brain::{DecisionAction, DecisionEngine, Experiment, ExperimentPlan, Hypothesis, HypothesisEngine, HypothesisStatus, ResearchBrain};
+pub use brain::{
+    DecisionAction, DecisionEngine, Experiment, ExperimentPlan, Hypothesis, HypothesisEngine,
+    HypothesisStatus, NexusDecision, NexusVote, NexusVoteRec, ResearchBrain, WorldTwinRollout,
+    WorldTwinStep, nexus_default_weights, parliament_consensus, world_twin_roll_forward,
+};
 pub use world::{AssetInventory, AssetNode, AttackGraph, AttackNode, AttackPath, AttackTransitionEdge};
 pub use kernel::{Blackboard, BudgetTracker, InformationGainCostScheduler, MissionBudget, MissionKernel, MissionState, ScheduledTask};
 pub use evidence::{CustodyChain, VerificationLab, VerificationLabReport};

@@ -1887,6 +1887,59 @@ class ComputerUseAgent:
             return str(payload.get("package") or payload.get("app_name") or target_resource or "installer")
         return action_type.value
 
+    @staticmethod
+    def _assess_severity(action_type: ComputerActionType, payload: dict[str, Any]) -> str:
+        """Map a computer action to a severity band for sandbox-tier routing.
+
+        Conservative and explicit: anything that writes files, installs apps,
+        runs arbitrary commands, touches services, or mutates git/source is at
+        least 'medium'. GUI navigation is 'low'; pure observation is 'info'.
+        """
+        t = action_type.value
+        if t in (
+            "FILE_WRITE", "APP_INSTALL", "SERVICE_ACTION",
+            "TOOL_AUTHOR", "TOOL_RUN", "METHOD_INVENT",
+            "GIT_COMMIT", "GIT_BRANCH",
+        ):
+            return "high"
+        if t in (
+            "TERMINAL_EXEC", "APP_LAUNCH", "APP_CLOSE", "APP_FOCUS",
+            "BROWSER_DOWNLOAD", "SECURITY_TOOL",
+        ):
+            return "medium"
+        if t in ("FILE_READ",):
+            return "low"
+        return "info"
+
+    def _native_govern_action(
+        self,
+        action_type: ComputerActionType,
+        target_resource: str,
+    ) -> dict[str, Any]:
+        """Run the action through the ASI Sandbox pillar (severity -> tier) with
+        the native Rust kernel confirming the envelope. Fail-closed: a Forbidden
+        tier or a kernel Deny blocks execution outright."""
+        try:
+            from sonic.safety.scope import SandboxTierRouter
+            severity = self._assess_severity(action_type, {})
+            router = SandboxTierRouter()
+            routed = router.route(
+                severity,
+                action_type=action_type.value,
+                target=target_resource,
+            )
+            return routed
+        except Exception as e:
+            logger.debug("native_govern_action_unavailable", error=str(e))
+            return {
+                "severity": "info",
+                "tier": "standard",
+                "network_isolated": False,
+                "executable": True,
+                "native_verdict": "unavailable",
+                "reason": f"native governance unavailable: {e}",
+            }
+
     async def execute_action(
         self,
         workspace_id: str,
@@ -1945,6 +1998,46 @@ class ComputerUseAgent:
                 self.traces.append(trace)
                 self.history.append({"action": action_type.value, "result": actual_obs_str})
                 return trace
+
+        # ----- ASI Sandbox Pillar + Native Kernel governance -----
+        # The action's severity decides its isolation tier (fail-closed:
+        # critical/unknown severity never executes). The native Rust kernel is
+        # consulted for the envelope (seal intact + allowlisted family). A
+        # kernel Deny on a *specific target* (e.g. private-IP egress) is NOT
+        # treated as a sandbox-tier violation here — target-scope enforcement is
+        # the ActionBroker/SafetyKernel's job at execution time. Only an
+        # outright forbidden tier hard-blocks at this stage.
+        routed = self._native_govern_action(action_type, target_resource)
+        if not routed.get("executable", True):
+            actual_obs_str = (
+                f"Sandbox tier forbids execution: {routed.get('reason', 'denied')}"
+            )
+            status = ActionExecutionStatus.BLOCKED
+            logger.warning(
+                "action_blocked_by_sandbox_tier",
+                action=action_type.value,
+                tier=routed.get("tier"),
+                reason=routed.get("reason"),
+                native_verdict=routed.get("native_verdict"),
+            )
+            trace = ComputerDecisionTrace(
+                step_index=self.action_counter,
+                action_type=action_type,
+                target_resource=target_resource,
+                payload=str(payload),
+                predicted_outcome=predicted_outcome,
+                actual_observation=actual_obs_str,
+                expected_observation=predicted_outcome,
+                info_gain=0.0,
+                recovery_attempted=False,
+                status=status,
+                exit_code=126,
+                duration_seconds=round(time.perf_counter() - t_start, 3),
+                thought_duration_seconds=getattr(self, "_last_thought_duration", 0.0),
+            )
+            self.traces.append(trace)
+            self.history.append({"action": action_type.value, "result": actual_obs_str})
+            return trace
 
         # ----- Substrate Outage Detection (Failure Budget) -----
         # If 3 consecutive provider errors occurred, STOP target actions and switch to substrate diagnostic action.

@@ -120,6 +120,24 @@ class EvolutionEngine:
                 lessons_ledger=self.lessons_ledger,
             )
         )
+        # NEXUS L∞ — recursive self-architecting intelligence loop. Lazy late
+        # binding so the engine can be constructed without its layers present
+        # (the loop self-instantiates defaults when run).
+        self._recursive_intelligence: RecursiveIntelligenceLoop | None = None
+
+    def intellect(self) -> "RecursiveIntelligenceLoop":
+        """Access (and lazily instantiate) the recursive intelligence loop —
+        the being's self-improvement-of-improvement surface.
+
+        The loop is armed with the guarded CodebaseEvolver so the SelfDeveloper
+        pillar can perform real, parliament-gated codebase evolution — not just
+        substrate weight mutations.
+        """
+        if self._recursive_intelligence is None:
+            self._recursive_intelligence = RecursiveIntelligenceLoop(
+                codebase_evolver=self.codebase_evolver,
+            )
+        return self._recursive_intelligence
 
     async def handle_target_failure(
         self,
@@ -287,3 +305,258 @@ class EvolutionEngine:
 
 
 
+
+# ---------------------------------------------------------------------------
+# NEXUS L∞ -- Recursive Intelligence Loop (self-improvement self-architecting)
+# ---------------------------------------------------------------------------
+
+class RecursiveIntelligenceLoop:
+    """The closing loop of the NEXUS substrate: cognition that improves its own
+    architecture.
+
+    Each generation:
+        1. ingests event-bus frontier + current champion substrate variant
+        2. consults the temporal governor for thinking depth allocation
+        3. convenes the parliament to approve the next strategic motion
+        4. rolls the world twin forward to weigh expected information gain
+        5. gates the resulting action through the risk portfolio governor
+        6. produces a NEW substrate variant (offspring) by mutating the
+           champion's layer weights -- the self-architecting step
+        7. records growth metrics + curriculum signal from the cycle
+
+    The offspring is NOT adopted blindly: the SubstrateSearchLab benchmark
+    must score it above the champion before promotion. This is improvement of
+    the improve-set itself -- the being composes its own next mind, measured
+    empirically, never by decree.
+    """
+
+    def __init__(
+        self,
+        parliament: Any | None = None,
+        world_twin: Any | None = None,
+        abstraction: Any | None = None,
+        substrate: Any | None = None,
+        curriculum: Any | None = None,
+        offense_generator: Any | None = None,
+        arena: Any | None = None,
+        event_bus: Any | None = None,
+        risk_governor: Any | None = None,
+        temporal_governor: Any | None = None,
+        growth_tracker: Any | None = None,
+        codebase_evolver: Any | None = None,
+        generation_label: str = "G0",
+    ) -> None:
+        # Lazy imports keep the loop dependency-free when layers are absent.
+        from sonic.brain.decision import MultiMindParliament
+        from sonic.brain.planner import TemporalStackingGovernor
+        from sonic.brain.world_model import CrossDomainAbstractionGraph, WorldTwin
+        from sonic.meta.benchmark import CapabilityGrowthTracker, SubstrateSearchLab
+        from sonic.being.lessons import SelfCurriculum
+        from sonic.being.method_lab import AdversarialArena, OffenseGenerator
+        from sonic.being.life_loop import EventBus
+        from sonic.safety.action_policy import RiskPortfolioGovernor
+
+        self.parliament = parliament if parliament is not None else MultiMindParliament()
+        self.world_twin = world_twin if world_twin is not None else WorldTwin()
+        self.abstraction = abstraction if abstraction is not None else CrossDomainAbstractionGraph()
+        self.substrate = substrate if substrate is not None else SubstrateSearchLab()
+        self.curriculum = curriculum if curriculum is not None else SelfCurriculum()
+        self.offense_generator = offense_generator if offense_generator is not None else OffenseGenerator()
+        self.arena = arena if arena is not None else AdversarialArena()
+        self.event_bus = event_bus if event_bus is not None else EventBus()
+        self.risk_governor = risk_governor if risk_governor is not None else RiskPortfolioGovernor()
+        self.temporal = temporal_governor if temporal_governor is not None else TemporalStackingGovernor()
+        self.growth = growth_tracker if growth_tracker is not None else CapabilityGrowthTracker()
+        # SelfDeveloper pillar: real codebase evolution gated by parliament +
+        # risk governor. None = the loop breeds substrate variants only (the
+        # default in tests / headless boots, preserving existing behavior).
+        self.codebase_evolver = codebase_evolver
+
+        self.generation = generation_label
+        self.cycle_count = 0
+        self.cycles: list[dict[str, Any]] = []
+
+    def run_cycle(self, motion: str = "advance_research", context: str = "") -> dict[str, Any]:
+        """Run one self-improvement generation cycle."""
+        self.cycle_count += 1
+
+        # 0. Look at what's alive on the bus right now.
+        frontier_topics = self.event_bus.frontier_topics()
+
+        # 1. Temporal governor decides how deep to think about this.
+        uncertainty = 0.3 + (0.1 * (self.cycle_count % 5))
+        depth = self.temporal.decide(
+            uncertainty=uncertainty,
+            stakes=0.4 if self.cycle_count % 2 else 0.6,
+            novelty=0.2 + (0.1 * (self.cycle_count % 4)),
+        )
+
+        # 2. Parliament vets the proposed motion for this generation.
+        decision = self.parliament.convene(
+            proposal=f"generation-{self.generation}-cycle-{self.cycle_count}",
+            motion=motion,
+            context=context or f"bus:{','.join(frontier_topics) or 'idle'}",
+        )
+
+        # 3. World twin: estimate info gain if we push the motion forward.
+        plan = self.world_twin.roll_forward([motion, "verify"], from_state="start")
+        info_gain = plan.expected_info_gain
+
+        # 4. Risk governor gates the action portfolio for this generation.
+        risk = self.risk_governor.assess(
+            action=f"{self.generation}:{motion}",
+            severity="medium" if decision.outcome == "approve" else "low",
+        )
+
+        # 5. Self-architecturing offspring: mutate the champion's layer weights.
+        offspring = self._breed_next_substrate()
+
+        # 5.5 SelfDeveloper pillar: when parliament approves AND the risk
+        # governor allows, actually evolve a real code component (with its own
+        # safety-invariant, AST, unit-test, and security-regression gates).
+        # auto_promote=False keeps operator approval in the loop — the being
+        # cannot promote its own code changes by decree.
+        evolution_report = self._maybe_evolve_codebase(
+            motion=motion,
+            decision=decision,
+            risk=risk,
+        )
+
+        # 6. Generate fresh offense hypotheses + run a self-play arena round.
+        fresh_hypotheses = self.offense_generator.generate(limit=2, families=["auth_bypass", "crypto_flaw"])
+        arena_round = self.arena.play_round(
+            attack_technique=f"novel chained {motion} hypothesis",
+            defense_model="segmentation canary rate-limit allowlist",
+        )
+
+        # 7. Growth metrics + curriculum signal.
+        approved = float(decision.outcome == "approve")
+        self.growth.record_cycle(approved + (0.05 * info_gain), "self")
+        if decision.outcome == "approve" and offspring is not None:
+            self.curriculum.record(
+                action=f"{motion} (gen {self.generation})",
+                rationale=decision.dissent_record[0]["rationale"]
+                if decision.dissent_record
+                else decision.votes and decision.votes[0].rationale or "approved by parliament",
+                outcome=f"offspring substrate {offspring.name} bred",
+                status="verified",
+                domain="self_improvement",
+            )
+
+        dedup_skip = evolution_report is False  # no evolver wired -> no report field
+        cycle_record = {
+            "generation": self.generation,
+            "cycle": self.cycle_count,
+            "tier": depth.tier.value,
+            "parliament_outcome": decision.outcome,
+            "consensus": decision.consensus_credibility,
+            "info_gain": round(info_gain, 4),
+            "risk_allowed": risk.allowed,
+            "offspring": offspring.to_dict() if offspring else None,
+            "arena_signal": arena_round.counterfactual_signal,
+            "fresh_hypotheses": len(fresh_hypotheses),
+        }
+        if not dedup_skip and evolution_report is not None:
+            if isinstance(evolution_report, dict):
+                cycle_record["codebase_evolution"] = dict(evolution_report)
+            elif hasattr(evolution_report, "to_dict"):
+                cycle_record["codebase_evolution"] = evolution_report.to_dict()
+            elif isinstance(evolution_report, str):
+                cycle_record["codebase_evolution"] = {"report": evolution_report}
+            else:
+                try:
+                    cycle_record["codebase_evolution"] = vars(evolution_report)
+                except TypeError:
+                    cycle_record["codebase_evolution"] = {"report": str(evolution_report)}
+        self.cycles.append(cycle_record)
+
+        # Advance the being's generation label after each cycle so the next
+        # generation self-architects from a slightly evolved platform.
+        self.generation = f"G{self.cycle_count}"
+        return cycle_record
+
+    def _breed_next_substrate(self) -> Any | None:
+        """Construct an offspring substrate variant by mutating the current
+        champion's layer weights. The offspring must outscore the champion in
+        the SubstrateSearchLab benchmark before it is adopted."""
+        champion = self.substrate.champion()
+        if champion is None:
+            return None
+
+        layers = dict(champion.layers)
+        # deterministic small mutation upward/downward around the champion
+        for layer, weight in layers.items():
+            delta = 0.05 * (1 if (self.cycle_count + len(layer)) % 2 else -1)
+            layers[layer] = max(0.0, round(weight + delta, 3))
+
+        offspring = self.substrate.register_variant(
+            name=f"offspring-{self.generation}",
+            layers=layers,
+            rationale=f"Mutated from champion '{champion.name}' at generation {self.generation}.",
+        )
+        promoted = self.substrate.promote_if_better()
+        return offspring if promoted is not None else champion
+
+    def _maybe_evolve_codebase(
+        self,
+        motion: str,
+        decision: Any,
+        risk: Any,
+        target_component: str = "",
+        code_diff: str = "",
+    ) -> Any | None | bool:
+        """SelfDeveloper pillar: evolve a real component when the parliament
+        approves the motion, the risk governor allows the draw, and a guarded
+        CodebaseEvolver has been wired in.
+
+        When `code_diff` is empty, the write path is NOT executed — the intent
+        is recorded only (returning the gate decision dict). This keeps the
+        loop honest: it never fabricates or truncates code it doesn't have; a
+        real diff is produced upstream (LLM/offense generator) and injected.
+
+        Returns the EvolutionSummaryReport from the guarded evolve() call,
+        a gate-decision dict, None when the gates block it, or False when no
+        evolver is wired (callers use that to drop the report field).
+        """
+        if self.codebase_evolver is None:
+            return False
+        if decision.outcome != "approve" or not risk.allowed:
+            logger.info(
+                "selfdev_skipped",
+                parliament=decision.outcome,
+                risk_allowed=risk.allowed,
+                reason="parliament/risk gate not satisfied",
+            )
+            return None
+        if not code_diff:
+            return {
+                "gate": "approved",
+                "action": "propose_only",
+                "target_component": target_component or "none",
+                "reason": "no code_diff supplied; write path skipped (no fabrication)",
+            }
+        try:
+            # auto_promote=False: promotion still requires the operator
+            # (EvolutionPipeline.promote_with_approval).
+            report = self.codebase_evolver.evolve(
+                target_component=target_component,
+                description=f"NEXUS generation {self.generation}: self-improvement for '{motion}'.",
+                code_diff=code_diff,
+                auto_promote=False,
+                push=False,
+            )
+            return report
+        except Exception as e:
+            logger.warning("selfdev_evolve_failed", generation=self.generation, error=str(e))
+            return None
+
+    def status(self) -> dict[str, Any]:
+        """Human-readable status of the recursive cognition loop."""
+        return {
+            "generation": self.generation,
+            "cycles_completed": self.cycle_count,
+            "growth": self.growth.summary(),
+            "arena_rounds": self.arena.round_count(),
+            "parliament_decision_log": self.parliament.list_decisions(limit=3),
+            "last_cycle": self.cycles[-1] if self.cycles else None,
+        }

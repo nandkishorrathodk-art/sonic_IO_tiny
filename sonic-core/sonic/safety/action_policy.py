@@ -24,9 +24,14 @@ self-directed exploration cannot escape the envelope.
 
 from __future__ import annotations
 
+import json
+import os
 import re
+import sqlite3
 import time
+import uuid
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -35,6 +40,15 @@ from sonic.safety.scope import RiskLevel, ScopeChecker
 from sonic.sandbox import egress
 
 logger = get_logger(__name__)
+
+
+def _now() -> str:
+    return datetime.now(UTC).isoformat()
+
+
+def _risk_db_path() -> str:
+    from sonic.memory.sqlite_graph import _default_db_path as _g
+    return os.environ.get("SONIC_RISK_DB_PATH") or os.environ.get("SONIC_MEMORY_DB_PATH") or _g()
 
 
 @dataclass
@@ -295,3 +309,138 @@ class ActionPolicy:
 # A minimal in-process verdict the agent can short-circuit on.
 def denied(verdict: PolicyVerdict) -> bool:
     return not verdict.allowed
+
+# ---------------------------------------------------------------------------
+# NEXUS L9 -- Risk Portfolio Governor
+# ---------------------------------------------------------------------------
+
+@dataclass
+class RiskBudgetDecision:
+    """The governor's verdict on a proposed offensive action portfolio."""
+    request_id: str
+    action: str
+    severity: str                    # info | low | medium | high | critical
+    remaining_budget: float          # 0.0..1.0 before this draw
+    allowed: bool
+    remaining_after: float
+    reason: str
+    timestamp: str = field(default_factory=_now)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "request_id": self.request_id,
+            "action": self.action,
+            "severity": self.severity,
+            "remaining_budget": self.remaining_budget,
+            "allowed": self.allowed,
+            "remaining_after": self.remaining_after,
+            "reason": self.reason,
+            "timestamp": self.timestamp,
+        }
+
+
+class RiskPortfolioGovernor:
+    """A mission-level risk budget layered ABOVE the per-action ActionPolicy.
+
+    The ActionPolicy gates every single action (fail-closed). The RiskGovernor
+    additionally enforces that a *portfolio* of offensive actions does not
+    exceed a cumulative risk budget — preventing a campaign of individually
+    legal actions from compounding into an unsafe overreach abroad.
+
+    Budget model: 1.0 initial. Each action draws `severity` weight
+    (info->0.1, low->0.25, medium->0.5, high->0.85, critical->1.3).
+    Crossing the ceiling sinks the request. Budget slowly replenishes over time
+    (the risk "bleeds back") so a mission can continue after cooling down.
+    """
+
+    _SEVERITY_WEIGHT = {
+        "info": 0.1,
+        "low": 0.25,
+        "medium": 0.5,
+        "high": 0.85,
+        "critical": 1.3,
+    }
+    _REPLENISH_PER_SECOND = 0.02
+
+    def __init__(self, ceiling: float = 1.0, db_path: str | None = None) -> None:
+        self.ceiling = ceiling
+        self.db_path = db_path or _risk_db_path()
+        self._budget = 1.0
+        self._last_update = time.time()
+        self._decisions: list[RiskBudgetDecision] = []
+        self._total_drawn = 0.0
+        self._init_db()
+
+    def _init_db(self) -> None:
+        os.makedirs(os.path.dirname(self.db_path) or ".", exist_ok=True)
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS risk_budget_decisions (
+                    request_id TEXT PRIMARY KEY,
+                    action TEXT,
+                    severity TEXT,
+                    remaining_budget REAL,
+                    allowed INTEGER,
+                    remaining_after REAL,
+                    reason TEXT,
+                    timestamp TEXT
+                )
+                """
+            )
+
+    def _persist(self, d: RiskBudgetDecision) -> None:
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                conn.execute(
+                    "INSERT OR REPLACE INTO risk_budget_decisions VALUES (?,?,?,?,?,?,?,?)",
+                    (
+                        d.request_id, d.action, d.severity,
+                        d.remaining_budget, int(d.allowed), d.remaining_after,
+                        d.reason, d.timestamp,
+                    ),
+                )
+        except sqlite3.Error as e:
+            logger.warning("risk_gov_persist_failed", error=str(e))
+
+    def _replenish(self) -> None:
+        """Slowly restore budget over time so a cooled-down mission can continue."""
+        now = time.time()
+        elapsed = now - self._last_update
+        self._last_update = now
+        self._budget = min(1.0, self._budget + elapsed * self._REPLENISH_PER_SECOND)
+
+    def assess(self, action: str, severity: str) -> RiskBudgetDecision:
+        """Evaluate one more offensive action against the remaining budget."""
+        self._replenish()
+        sev = severity if severity in self._SEVERITY_WEIGHT else "medium"
+        draw = self._SEVERITY_WEIGHT[sev]
+        remaining_before = self._budget
+        allowed = remaining_before - draw >= -0.001
+        if allowed:
+            self._budget = max(0.0, self._budget - draw)
+            self._total_drawn += draw
+            reason = f"Draw {draw:.2f} ({sev}) from remaining budget {remaining_before:.2f}."
+        else:
+            reason = (f"Denied: draw {draw:.2f} ({sev}) exceeds remaining "
+                      f"budget {remaining_before:.2f}. Mission must cool down or reduce "
+                      f"portfolio excess.")
+        decision = RiskBudgetDecision(
+            request_id=f"risk-{uuid.uuid4().hex[:10]}",
+            action=action, severity=sev,
+            remaining_budget=remaining_before,
+            allowed=allowed, remaining_after=self._budget, reason=reason,
+        )
+        self._decisions.append(decision)
+        self._persist(decision)
+        return decision
+
+    def remaining(self) -> float:
+        self._replenish()
+        return round(self._budget, 4)
+
+    def total_drawn(self) -> float:
+        return round(self._total_drawn, 4)
+
+    def decisions(self, limit: int = 100) -> list[RiskBudgetDecision]:
+        return list(self._decisions[-limit:])

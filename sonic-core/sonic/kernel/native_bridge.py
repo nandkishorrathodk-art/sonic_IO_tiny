@@ -191,3 +191,59 @@ class NativeKernelClient:
         }
         return self._execute_rpc("evaluate_probe", params)
 
+    # ------------------------------------------------------------------
+    # NEXUS स्वरूप-0 native scorers (Multi-Mind Parliament + World Twin)
+    # ------------------------------------------------------------------
+    def nexus_parliament_consensus(
+        self,
+        votes: list[tuple[int, str, float]],
+        weights: list[float] | None = None,
+    ) -> dict[str, Any] | None:
+        """Native Rust Multi-Mind Parliament consensus.
+
+        `votes` is a list of (branch_index, vote_key, confidence) where
+        vote_key is one of "support" | "oppose" | "abstain" | "veto".
+        Branch indices MUST match Rust: 0=Strategist 1=Skeptic 2=Historian
+        3=RiskGovernor 4=MethodInventor. Returns None when the kernel is
+        unavailable so callers fall back to the Cython/Python scorer.
+        """
+        if weights is None:
+            weights = [1.0, 1.0, 0.6, 1.2, 0.4]
+        norm_votes: list[dict[str, Any]] = []
+        for branch, vote_key, conf in votes:
+            vote_map = {
+                "support": "Support",
+                "oppose": "Oppose",
+                "abstain": "Abstain",
+                "veto": "Veto",
+            }
+            norm_votes.append({
+                "branch": int(branch),
+                "vote": vote_map.get(str(vote_key).lower(), "Abstain"),
+                "confidence": float(conf),
+            })
+        return self._execute_rpc("nexus_parliament_consensus", {
+            "weights": weights,
+            "votes": norm_votes,
+        })
+
+    def nexus_world_twin_roll_forward(
+        self,
+        steps: list[dict[str, Any]],
+    ) -> dict[str, Any] | None:
+        """Native Rust World-Twin roll-forward accumulation.
+
+        `steps` is a list of {"action": str, "expected_info_gain": float,
+        "cost": float}. Returns {"total_gain", "total_cost", "depth",
+        "actions"} when the kernel is available, else None.
+        """
+        norm_steps = [
+            {
+                "action": str(s.get("action", "")),
+                "expected_info_gain": float(s.get("expected_info_gain", 0.0)),
+                "cost": float(s.get("cost", 0.0)),
+            }
+            for s in (steps or [])
+        ]
+        return self._execute_rpc("nexus_world_twin_roll_forward", {"steps": norm_steps})
+

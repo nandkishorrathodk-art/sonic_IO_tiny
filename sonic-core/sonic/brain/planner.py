@@ -1,12 +1,22 @@
 """
-SONIC v2 — Decoupled Research Brain & Planner
-=============================================
+SONIC v2 — Decoupled Research Brain, Planner & NEXUS L8 Temporal Stacking
+========================================================================
 Pure reasoning and hypothesis formulation engine.
 
 Architectural Invariant:
 The Research Brain has ZERO direct execution tools, shell handles, or sockets.
 It does NOT execute commands or touch sandboxes. It consumes the World Model
 and produces an ExperimentPlan for the Mission Kernel and Specialist Pool.
+
+NEXUS L8 — Temporal Stacking / Cognitive Governor
+-------------------------------------------------
+Scales thinking depth by situation instead of running one uniform loop.
+For every decision input, the governor selects a thinking tier:
+    * reflex      — sub-millisecond mechanical (delegated to the native Rust kernel)
+    * intuitive   — fast one-shot reasoning
+    * deliberative — multi-step chain-of-thought
+    * deep_research — hours-long autonomous cognition spawning sub-cognition loops
+More compute = deeper thinking. The governor is deterministic and pure-reasoning.
 """
 
 from __future__ import annotations
@@ -14,11 +24,89 @@ from __future__ import annotations
 import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from enum import StrEnum
 from typing import Any
 
 from sonic.brain.experiment import Experiment, ExperimentDesigner
 from sonic.brain.hypothesis import Hypothesis, HypothesisEngine, HypothesisStatus
 from sonic.brain.world_model import DynamicWorldModel
+
+
+class ThinkingTier(StrEnum):
+    REFLEX = "reflex"                     # sub-millisecond mechanical (native kernel)
+    INTUITIVE = "intuitive"               # fast one-shot reasoning
+    DELIBERATIVE = "deliberative"         # multi-step chain-of-thought
+    DEEP_RESEARCH = "deep_research"       # hours-long autonomous cognition
+
+
+@dataclass
+class ThinkingTierDecision:
+    """The cognitive governor's allocation of thinking depth for an input."""
+    tier: ThinkingTier
+    reason: str
+    context_budget: int = 0
+    sub_loops: int = 0
+    max_reasoning_steps: int = 1
+    timestamp: str = field(default_factory=lambda: datetime.now(UTC).isoformat())
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "tier": self.tier.value,
+            "reason": self.reason,
+            "context_budget": self.context_budget,
+            "sub_loops": self.sub_loops,
+            "max_reasoning_steps": self.max_reasoning_steps,
+            "timestamp": self.timestamp,
+        }
+
+
+class TemporalStackingGovernor:
+    """Selects the appropriate cognitive tier for a situation.
+
+    Pure, deterministic policy:
+        * critical safety edge        -> REFLEX (native kernel pre-screen first)
+        * low-uncertainty, low-stakes -> INTUITIVE
+        * medium uncertainty          -> DELIBERATIVE
+        * high uncertainty / high stakes / novel domain -> DEEP_RESEARCH
+    """
+
+    def __init__(self) -> None:
+        self._decisions: list[ThinkingTierDecision] = []
+
+    def decide(
+        self,
+        uncertainty: float = 0.0,
+        stakes: float = 0.0,
+        is_safety_edge: bool = False,
+        novelty: float = 0.0,
+        context_budget: int = 0,
+    ) -> ThinkingTierDecision:
+        if is_safety_edge:
+            tier = ThinkingTier.REFLEX
+            reason = "Safety-critical edge: delegate to native sub-millisecond pre-screen."
+            sub_loops, steps = 0, 1
+        elif novelty >= 0.8 or (uncertainty >= 0.7 and stakes >= 0.6):
+            tier = ThinkingTier.DEEP_RESEARCH
+            reason = "High uncertainty + high stakes or novel domain: deep-research cognition."
+            sub_loops, steps = 6, 64
+        elif uncertainty >= 0.4 or stakes >= 0.5:
+            tier = ThinkingTier.DELIBERATIVE
+            reason = "Moderate uncertainty/stakes: multi-step deliberative reasoning."
+            sub_loops, steps = 2, 12
+        else:
+            tier = ThinkingTier.INTUITIVE
+            reason = "Low uncertainty/stakes: fast one-shot reasoning."
+            sub_loops, steps = 0, 1
+
+        decision = ThinkingTierDecision(
+            tier=tier, reason=reason, context_budget=context_budget,
+            sub_loops=sub_loops, max_reasoning_steps=steps,
+        )
+        self._decisions.append(decision)
+        return decision
+
+    def decisions(self) -> list[ThinkingTierDecision]:
+        return list(self._decisions)
 
 
 @dataclass

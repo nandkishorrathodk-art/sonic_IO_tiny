@@ -41,7 +41,9 @@ from __future__ import annotations
 import json
 import os
 import re
+import sqlite3
 import time
+import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -273,3 +275,171 @@ def inject_into_context(lessons: list[Lesson]) -> str:
         for l in avoids:
             lines.append(f"  [AVOID] {l.approach} → {l.evidence}")
     return "\n".join(lines) + "\n"
+
+# ---------------------------------------------------------------------------
+# NEXUS L5 -- Self-Designed Experience Training (SelfCurriculum)
+# ---------------------------------------------------------------------------
+
+_VERIFIED_STATUSES = {"verified", "confirmed", "promoted"}
+
+
+@dataclass
+class CurriculumDemonstration:
+    """A single (action -> rationale -> outcome) teaching exemplar."""
+    demo_id: str
+    action: str
+    rationale: str
+    outcome: str
+    status: str = "pending"           # verified | confirmed | rejected | pending
+    domain: str = ""
+    target_class: str = ""
+    quality_score: float = 0.0
+    created_at: str = field(default_factory=_now)
+
+    @property
+    def verified(self) -> bool:
+        return self.status.lower() in _VERIFIED_STATUSES
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "demo_id": self.demo_id,
+            "action": self.action,
+            "rationale": self.rationale,
+            "outcome": self.outcome,
+            "status": self.status,
+            "domain": self.domain,
+            "target_class": self.target_class,
+            "quality_score": self.quality_score,
+            "created_at": self.created_at,
+        }
+
+
+class SelfCurriculum:
+    """Curates verified experience into a usable curriculum and synthesizes
+    fine-tuning signal (explicit demonstrations, ranked by quality).
+
+    HONESTY INVARIANT:
+    Only *verified* outcomes become curriculum. A demonstration whose outcome
+    is not confirmed is never promoted into the served curriculum.
+    """
+
+    def __init__(self, db_path: str | None = None) -> None:
+        self.db_path = db_path or _default_curriculum_db_path()
+        self._demos: dict[str, CurriculumDemonstration] = {}
+        self._init_db()
+        self._hydrate()
+
+    def _init_db(self) -> None:
+        os.makedirs(os.path.dirname(self.db_path) or ".", exist_ok=True)
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS curriculum_demonstrations (
+                    demo_id TEXT PRIMARY KEY,
+                    action TEXT,
+                    rationale TEXT,
+                    outcome TEXT,
+                    status TEXT,
+                    domain TEXT,
+                    target_class TEXT,
+                    quality_score REAL,
+                    created_at TEXT
+                )
+                """
+            )
+
+    def _hydrate(self) -> None:
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                rows = conn.execute(
+                    "SELECT demo_id, action, rationale, outcome, status, domain,"
+                    " target_class, quality_score, created_at FROM curriculum_demonstrations"
+                ).fetchall()
+            for demo_id, action, rationale, outcome, status, domain, tc, qs, created_at in rows:
+                self._demos[demo_id] = CurriculumDemonstration(
+                    demo_id=demo_id, action=action, rationale=rationale, outcome=outcome,
+                    status=status, domain=domain or "", target_class=tc or "",
+                    quality_score=qs, created_at=created_at,
+                )
+        except sqlite3.Error as e:
+            logger.warning("curriculum_hydrate_failed", error=str(e))
+
+    def _persist(self, demo: CurriculumDemonstration) -> None:
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                conn.execute(
+                    "INSERT OR REPLACE INTO curriculum_demonstrations VALUES (?,?,?,?,?,?,?,?,?)",
+                    (
+                        demo.demo_id, demo.action, demo.rationale, demo.outcome,
+                        demo.status, demo.domain, demo.target_class,
+                        demo.quality_score, demo.created_at,
+                    ),
+                )
+        except sqlite3.Error as e:
+            logger.warning("curriculum_persist_failed", error=str(e))
+
+    def record(
+        self,
+        action: str,
+        rationale: str,
+        outcome: str,
+        status: str = "pending",
+        domain: str = "",
+        target_class: str = "",
+        quality_score: float = 0.0,
+    ) -> CurriculumDemonstration:
+        """Record a trace-derived demonstration. Honesty gate: non-verified
+        outcomes are stored but never enter the served curriculum."""
+        demo = CurriculumDemonstration(
+            demo_id=f"demo-{uuid.uuid4().hex[:10]}",
+            action=action, rationale=rationale, outcome=outcome, status=status,
+            domain=domain, target_class=target_class, quality_score=quality_score,
+        )
+        self._demos[demo.demo_id] = demo
+        self._persist(demo)
+        return demo
+
+    def mark_verified(self, demo_id: str, evidence: str = "") -> bool:
+        """Promote a pending demonstration into the verified curriculum only
+        when evidence of real reproduction exists."""
+        demo = self._demos.get(demo_id)
+        if not demo:
+            return False
+        if evidence.strip():
+            demo.outcome = f"{demo.outcome} [verified: {evidence}]"
+        demo.status = "verified"
+        demo.quality_score = max(demo.quality_score, 0.8)
+        self._persist(demo)
+        return True
+
+    def verified_demos(
+        self,
+        domain: str = "",
+        limit: int = 10,
+    ) -> list[CurriculumDemonstration]:
+        """Serve the verified curriculum, optionally filtered by domain."""
+        demos = [d for d in self._demos.values() if d.verified]
+        if domain:
+            demos = [d for d in demos if d.domain == domain]
+        demos.sort(key=lambda d: d.quality_score, reverse=True)
+        return demos[:limit]
+
+    def fine_tune_signal(
+        self,
+        domain: str = "",
+        top_k: int = 5,
+    ) -> list[dict[str, Any]]:
+        """Synthesize instruction-tuning style signal from the best verified
+        demonstrations (action->rationale->outcome). This is the export surface
+        a downstream training infra consumes."""
+        return [d.to_dict() for d in self.verified_demos(domain=domain, limit=top_k)]
+
+    def counts(self) -> dict[str, int]:
+        total = len(self._demos)
+        verified = sum(1 for d in self._demos.values() if d.verified)
+        return {"total": total, "verified": verified, "pending": total - verified}
+
+
+def _default_curriculum_db_path() -> str:
+    from sonic.memory.sqlite_graph import _default_db_path as _g
+    return os.environ.get("SONIC_CURRICULUM_DB_PATH") or os.environ.get("SONIC_MEMORY_DB_PATH") or _g()

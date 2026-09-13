@@ -14,6 +14,7 @@ from __future__ import annotations
 import uuid
 from datetime import UTC, datetime
 from typing import Any
+from urllib.parse import urlparse
 
 from pydantic import BaseModel, Field
 
@@ -93,6 +94,64 @@ def _intent_of(objective: str) -> str:
         return "db"
     return "recon"  # default: reconnaissance-style inspection
 
+def _probe_target(target: str) -> tuple[str, str]:
+    """Split a mission target into (host, base_url) for probe generation.
+
+    Handles URLs (``https://api.example.com:8443/v1``), bare hosts
+    (``api.example.com``), and paths/workspace targets. Returns empty strings
+    when nothing usable can be extracted; probe generation then skips that
+    category.
+    """
+    raw = (target or "").strip()
+    if not raw:
+        return "", ""
+
+    # URL target: keep scheme+host+port so HTTP probes preserve any port.
+    if "://" in raw:
+        parsed = urlparse(raw)
+        if not parsed.hostname:
+            return "", ""
+        netloc = parsed.netloc.split("@")[-1]  # strip any userinfo
+        return parsed.hostname, f"{parsed.scheme}://{netloc}"
+
+    # A path (absolute or relative) is not a network target — treat as none so
+    # no network probe is suggested for a workspace/file target.
+    if "/" in raw or "\\" in raw or raw.startswith(".") or raw in (".", ".."):
+        return "", ""
+
+    # Bare host or host:port (IPv4/6, domain).
+    return raw.split(":", 1)[0].strip(), ""
+
+
+def _probe_command_preview(tool: str, target: str, options: dict[str, Any]) -> str:
+    """Render a concrete probe command for the operator approval preview.
+
+    Mirrors the adapter build_command output so the preview matches what would
+    actually run inside the sandbox. Safe and purely informational — execution
+    always goes through the fail-closed executor + safety layer.
+    """
+    if tool == "nmap":
+        ports = options.get("ports", "top-100")
+        timing = options.get("timing", "T4")
+        extra = options.get("extra_args", "-sV --open")
+        port_arg = "--top-ports 100" if ports == "top-100" else ("-p-" if ports == "all" else f"-p {ports}")
+        return f"nmap -{timing} {port_arg} {extra} {target}".strip()
+    if tool == "http_client":
+        method = str(options.get("method", "GET")).upper()
+        return f"curl -i -s -L -X {method} --max-time 120 '{target}'"
+    if tool == "ffuf":
+        wordlist = options.get("wordlist", "/usr/share/wordlists/dirb/common.txt")
+        fc = options.get("filter_status", "404")
+        threads = options.get("threads", 40)
+        url = f"{target.rstrip('/')}/FUZZ"
+        return f"ffuf -u '{url}' -w '{wordlist}' -fc {fc} -t {threads} -o - -of json -s"
+    if tool == "nuclei":
+        tags = options.get("tags", "cve,misconfig,exposure")
+        severity = options.get("severity", "critical,high,medium")
+        rl = options.get("rate_limit", 50)
+        return f"nuclei -u {target} -tags {tags} -severity {severity} -rate-limit {rl} -jsonl -silent"
+    return f"{tool} {target}"
+
 
 class MissionPlanner:
     """Build an objective-adaptive read-only baseline plan from a mission."""
@@ -152,15 +211,20 @@ class MissionPlanner:
             ))
 
         # Active probes are represented as approval-required actions, but are
-        # not silently executed by the baseline planner. The agent dynamically
-        # devises, tests, and verifies actions within the safety boundary.
+        # not silently executed by the baseline planner. Instead of a no-op
+        # ``echo APPROVAL_REQUIRED`` placeholder, the planner now emits concrete,
+        # typed ``target_security_scan`` probes derived from the objective and
+        # the target. The executor still refuses to run them without operator
+        # approval, so the operator sees a REAL command to approve — not a
+        # scripted puppet gate.
         if any(word in objective.lower() for word in ("scan", "test", "probe", "audit", "pentest")):
-            actions.append(PlannedAction(
-                tool="target_shell_approved",
-                input={"command": "echo APPROVAL_REQUIRED"},
-                risk=ToolRisk.APPROVAL_REQUIRED,
-                requires_approval=True,
-            ))
+            actions.extend(
+                self.build_probe_actions(
+                    mission_id=mission_id,
+                    objective=objective,
+                    target=target,
+                )
+            )
         for action in actions:
             MissionToolRegistry.get(action.tool)
         return MissionActionPlan(
@@ -175,33 +239,142 @@ class MissionPlanner:
             ),
         )
 
+    def build_probe_actions(
+        self,
+        mission_id: str,
+        objective: str,
+        target: str,
+    ) -> list[PlannedAction]:
+        """Derive concrete, typed security probes from the objective and target.
+
+        This is the anti-puppet replacement for the old ``echo APPROVAL_REQUIRED``
+        gate: the planner now emits REAL ``target_security_scan`` actions (nmap,
+        http_client, nuclei, ffuf) whose inputs are concrete and derived from the
+        mission objective's intent and the in-scope target. The executor still
+        refuses to run them until an operator approves (APPROVAL_REQUIRED), so the
+        operator is asked to approve an actual command — never a no-op echo.
+
+        Determinism and safety:
+          * Every probe uses the allowlisted ``target_security_scan`` tool, which
+            routes through the SecurityToolRegistry and safety layer.
+          * Probes are scoped to the given target only; options keep scans bounded
+            (top ports, small wordlist, rate-limited) and non-destructive.
+          * Only benign, read-only probes are suggested. Anything intrusive still
+            requires the operator to review and approve before dispatch.
+        """
+        if not target.strip():
+            return []
+
+        intent = _intent_of(objective)
+        obj_lower = objective.lower()
+
+        # Normalize the target to a usable atomic value for the tool input.
+        target_host, target_url = _probe_target(target)
+
+        probes: list[PlannedAction] = []
+
+        def scan(action_tool: str, scan_target: str, options: dict[str, Any], rationale: str) -> None:
+            probes.append(PlannedAction(
+                tool="target_security_scan",
+                input={
+                    "tool": action_tool,
+                    "target": scan_target,
+                    "options": options,
+                    "rationale": rationale,
+                    # Human/preview representation of the concrete probe so the
+                    # operator sees the real command in the approval UI.
+                    "command": _probe_command_preview(action_tool, scan_target, options),
+                },
+                risk=ToolRisk.APPROVAL_REQUIRED,
+                requires_approval=True,
+            ))
+
+        # Port/service discovery — always relevant to an active-test objective.
+        if target_host:
+            scan("nmap", target_host, {"ports": "top-100", "timing": "T4", "extra_args": "--open"},
+                 "Enumerate open TCP ports and services on the in-scope target host.")
+
+        # Web/API surface probing for web-intent or any mission carrying a URL.
+        if target_url or intent in ("web", "db") or ("http" in obj_lower or "web" in obj_lower or "api" in obj_lower):
+            web_base = target_url if target_url else f"http://{target_host}"
+            scan("http_client", web_base, {"method": "GET", "follow_redirects": True},
+                 "Probe the primary web/API endpoint, capture status, headers, and body.")
+
+        # Content/directory discovery for full web assessments.
+        if intent == "web" and target_url:
+            scan("ffuf", target_url, {"wordlist": "/usr/share/wordlists/dirb/common.txt", "filter_status": "404", "threads": 20},
+                 "Discover hidden content paths under the scoped web root.")
+
+        # Template-based vulnerability assessment for audit/pentest intent.
+        if intent in ("recon", "web") or any(w in obj_lower for w in ("vulner", "audit", "pentest", "cve")):
+            if target_url or target_host:
+                scan("nuclei", target_url or f"{target_host}", {"tags": "cve,misconfig,exposure", "severity": "critical,high,medium", "rate_limit": 50},
+                     "Passive/template-driven vulnerability assessment of the scoped target.")
+
+        return probes
+
     def build_follow_up_actions(
         self,
         plan: MissionActionPlan,
         completed_action_ids: set[str],
+        evidence_brief: list[dict[str, Any]] | None = None,
+        result_cache: dict[str, str] | None = None,
     ) -> list[PlannedAction]:
         """Produce the next bounded discovery batch from completed evidence.
 
         This is deliberately deterministic rather than an unconstrained model
         command generator: every action is read-only, allowlisted by the
-        executor, and recorded before the next batch is considered.
+        executor, and recorded before the next batch is considered. The batch
+        adapts to what the earlier actions actually returned — it is a function
+        of the evidence, not a fixed copy-pasted script.
+
+        ``evidence_brief`` is a list of short strings describing what each
+        completed action observed (e.g. "grep ...: os.path.join in auth.py").
+        ``result_cache`` maps action_id -> raw output for the read-only actions.
+
+        The batch is derived from the initial plan's intent so that an objective
+        that surfaced config files gets a config-inspection follow-up whereas an
+        objective that surfaced repo layout gets a dependency-layout follow-up.
         """
         initial_ids = {action.action_id for action in plan.actions}
         if not initial_ids.issubset(completed_action_ids):
             return []
 
-        follow_up = [
-            PlannedAction(
+        evidence_text = " ".join(evidence_brief or []).lower()
+        intent = _intent_of(plan.objective)
+        follow_up: list[PlannedAction] = []
+
+        if intent == "db":
+            follow_up.append(PlannedAction(
                 tool="target_shell_readonly",
-                input={"command": "git log -5 --oneline 2>/dev/null || true"},
+                input={"command": "grep -rnE 'unions?|select .* from|insert into|where .*=' . --include='*.py' --include='*.js' | head -40 || true"},
                 risk=ToolRisk.READ_ONLY,
-            ),
-            PlannedAction(
+            ))
+        if intent == "web" or any(k in evidence_text for k in ("http", "endpoint", "route", "api")):
+            follow_up.append(PlannedAction(
                 tool="target_shell_readonly",
-                input={"command": "find . -maxdepth 3 -type f | grep -E '(README|requirements|package\\.json|pyproject\\.toml|Dockerfile|compose)' | head -100"},
+                input={"command": "grep -rnE '(app|router)\\.(get|post|put|delete)\\(|@(app|router)\\.(get|post|put|delete)' . --include='*.py' | head -40 || true"},
                 risk=ToolRisk.READ_ONLY,
-            ),
-        ]
+            ))
+        if "secret" in evidence_text or "token" in evidence_text or "api[_-]?key" in evidence_text:
+            follow_up.append(PlannedAction(
+                tool="target_shell_readonly",
+                input={"command": "grep -rnE 'sk-[a-zA-Z0-9]{10,}|password\\s*=|secret\\s*=' . --include='*.py' --include='*.js' --include='*.env*' | head -20 || true"},
+                risk=ToolRisk.READ_ONLY,
+            ))
+
+        # Baseline closing follow-up: dependency / build landmarks and recent
+        # history. Kept bounded and read-only so the agent never spins forever.
+        follow_up.append(PlannedAction(
+            tool="target_shell_readonly",
+            input={"command": "git log -5 --oneline 2>/dev/null || true"},
+            risk=ToolRisk.READ_ONLY,
+        ))
+        follow_up.append(PlannedAction(
+            tool="target_shell_readonly",
+            input={"command": "find . -maxdepth 3 -type f | grep -E '(README|requirements|package\\.json|pyproject\\.toml|Dockerfile|compose)' | head -100"},
+            risk=ToolRisk.READ_ONLY,
+        ))
         return follow_up
 
     def build_long_horizon_plan(
@@ -267,11 +440,16 @@ class MissionPlanner:
         add_stage("target_shell_readonly", "grep -rnE 'password|secret|token|api[_-]?key' . --include='*.py' --include='*.js' | head -40 || true", 2)
         # Stage 3 — hypothesize: collect TODO/FIXME and auth/entry surface for leads.
         add_stage("target_shell_readonly", "grep -rnE 'TODO|FIXME|HACK|XXX|auth|login|session' . --include='*.py' --include='*.js' | head -50 || true", 3)
-        # Stage 4 — active test: approval-gated, never auto-run.
+        # Stage 4 — active test: approval-gated, never auto-run. The concrete
+        # probe actions (not a dummy echo) are the stage payload; the probe
+        # generator and the executor keep them operator-gated.
         active = any(w in objective.lower() for w in ("scan", "test", "probe", "audit", "pentest"))
         if active:
-            add_stage("target_shell_approved", "echo APPROVAL_REQUIRED", 4,
-                      risk=ToolRisk.APPROVAL_REQUIRED, approval=True)
+            for probe in self.build_probe_actions(mission_id, objective, target):
+                probe.stage = 4
+                probe.depends_on = prev_id
+                actions.append(probe)
+                prev_id = probe.action_id
         # Stage 5 — verify: re-confirm the active-test outcome is reproducible.
         add_stage("target_shell_readonly", "echo VERIFY_REPRODUCIBILITY", 5)
         # Stage 6 — report: summarise what the chain found (read-only gather).

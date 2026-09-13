@@ -59,7 +59,7 @@ class MissionToolExecutor:
         "echo ",
     )
 
-    def __init__(self, computer: DaytonaComputerProvider, security_tools: Any | None = None):
+    def __init__(self, computer: DaytonaComputerProvider, security_tools: Any | None = None, scoped_target: str | None = None):
         self.computer = computer
         # Optional registry of real security scanners (nmap/nuclei/ffuf/http).
         # When wired, `target_security_scan` dispatches a real in-sandbox scan;
@@ -67,6 +67,10 @@ class MissionToolExecutor:
         # generic "not implemented" — so callers know scanners exist but aren't
         # provisioned for this executor).
         self.security_tools = security_tools
+        # Optional engagement-scoped target host/URL. When set, every security
+        # probe is required to stay within this scope — defending against a
+        # mis-generated or tampered probe targeting an out-of-scope asset.
+        self.scoped_target = str(scoped_target or "").strip()
 
     async def execute(
         self,
@@ -135,6 +139,14 @@ class MissionToolExecutor:
                 target = str(action.input.get("target", "")).strip()
                 if not tool_name or not target:
                     return ActionExecutionResult(action_id=action.action_id, tool=action.tool, status="BLOCKED", workspace_id=workspace_id, output="Security scan requires a 'tool' (nmap/nuclei/ffuf/http_client) and a 'target'")
+                if not self._probe_in_scope(target):
+                    return ActionExecutionResult(
+                        action_id=action.action_id,
+                        tool=action.tool,
+                        status="BLOCKED",
+                        workspace_id=workspace_id,
+                        output=f"Security probe target {target!r} is outside the engagement scope {self.scoped_target!r}",
+                    )
                 if self.security_tools is None:
                     return ActionExecutionResult(action_id=action.action_id, tool=action.tool, status="BLOCKED", workspace_id=workspace_id, output="Security tool registry is not configured for this executor — scanners exist but are not provisioned")
                 scanner = self.security_tools.get(tool_name) if hasattr(self.security_tools, "get") else None
@@ -173,3 +185,30 @@ class MissionToolExecutor:
             return ActionExecutionResult(action_id=action.action_id, tool=action.tool, status="BLOCKED", workspace_id=workspace_id, output="Tool adapter is not implemented")
         except Exception as exc:
             return ActionExecutionResult(action_id=action.action_id, tool=action.tool, status="FAILED", workspace_id=workspace_id, output=str(exc))
+
+    def _probe_in_scope(self, target: str) -> bool:
+        """True when the probe target stays within the engaged scoped target.
+
+        When no scoped target was configured for this executor the gate is
+        skipped (True) — legacy callers rely on the planner-only construction
+        guarantee, which already scopes every probe to the mission target. When
+        a scope IS configured (the workstation mission preflight always does),
+        the gate is strict and suffix-safe: ``api.target.com`` is inside scope
+        ``target.com``, but ``target.com.evil.net`` is not.
+        """
+        if not self.scoped_target:
+            return True
+
+        def host_of(value: str) -> str:
+            value = value.strip().strip("/")
+            if "://" in value:
+                return urlparse(value).hostname or ""
+            return value.split("/")[0].split(":")[0].strip()
+
+        probe_host = host_of(target)
+        scope_host = host_of(self.scoped_target)
+        if not probe_host or not scope_host:
+            return False
+        probe_host = probe_host.lower()
+        scope_host = scope_host.lower()
+        return probe_host == scope_host or probe_host.endswith(f".{scope_host}")

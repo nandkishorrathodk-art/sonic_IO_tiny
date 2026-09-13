@@ -265,6 +265,27 @@ class ModelRouter:
         if provider_name and provider_name in self.providers:
             return self.providers[provider_name], None
 
+        # Visual requests must honor the dedicated multimodal route. A text
+        # default provider may be configured globally but still lack reliable
+        # image support or have a much smaller input-token budget.
+        if task_type in ("vision", "computer_use") and task_type in self.routing_rules:
+            rule = self.routing_rules[task_type]
+            target_provider = rule["provider"]
+            target_model = rule.get("model")
+            if self._is_provider_ready(target_provider):
+                return self.providers[target_provider], target_model
+            for fallback in rule.get("fallback", []):
+                fb_provider = fallback.split("/")[0] if "/" in fallback else fallback
+                if self._is_provider_ready(fb_provider):
+                    fb_model = fallback.split("/", 1)[1] if "/" in fallback else None
+                    logger.info(
+                        "routing_fallback",
+                        task_type=task_type,
+                        original=target_provider,
+                        fallback=fb_provider,
+                    )
+                    return self.providers[fb_provider], fb_model
+
         # If user explicitly configured a default provider (e.g. DEFAULT_PROVIDER=deepseek or openrouter),
         # prioritize it over the static routing rules if it is ready.
         if (

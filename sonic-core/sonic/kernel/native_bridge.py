@@ -44,6 +44,7 @@ class NativeKernelClient:
     def __init__(self, binary_path: str | None = None) -> None:
         self.binary_path = binary_path or self._discover_binary()
         self._daemon_proc: subprocess.Popen | None = None
+        self._native_disabled = False
 
     def _discover_binary(self) -> str | None:
         env_path = os.environ.get("SONIC_KERNEL_BIN")
@@ -69,10 +70,21 @@ class NativeKernelClient:
         return None
 
     def is_available(self) -> bool:
-        return self.binary_path is not None
+        return self.binary_path is not None and not self._native_disabled
+
+    def _disable_native(self, exc: BaseException) -> None:
+        """Disable an incompatible binary for this client lifetime."""
+        self._native_disabled = True
+        logger.warning(
+            "Native kernel unavailable; using Python safety fallback",
+            binary=self.binary_path,
+            error=str(exc),
+        )
 
     def _get_or_spawn_daemon(self) -> subprocess.Popen | None:
         """Maintains a long-lived streaming daemon for zero-overhead pipe communication."""
+        if self._native_disabled:
+            return None
         if self._daemon_proc is not None:
             if self._daemon_proc.poll() is None:
                 return self._daemon_proc
@@ -91,6 +103,13 @@ class NativeKernelClient:
                 bufsize=1,
             )
             return self._daemon_proc
+        except OSError as exc:
+            if getattr(exc, "winerror", None) == 193:
+                self._disable_native(exc)
+            else:
+                logger.debug("Failed to spawn native kernel persistent daemon: %s", exc)
+            self._daemon_proc = None
+            return None
         except Exception as exc:
             logger.debug("Failed to spawn native kernel persistent daemon: %s", exc)
             self._daemon_proc = None
@@ -105,7 +124,7 @@ class NativeKernelClient:
             "params": params,
         })
 
-        if not self.binary_path:
+        if not self.binary_path or self._native_disabled:
             return None
 
         # 1. Microsecond streaming pipe over persistent daemon
@@ -154,6 +173,12 @@ class NativeKernelClient:
             if "error" in data:
                 logger.warning("Native kernel returned RPC error: %s", data["error"])
                 return None
+        except OSError as e:
+            if getattr(e, "winerror", None) == 193:
+                self._disable_native(e)
+            else:
+                logger.debug("Failed to query native kernel RPC: %s", e)
+            return None
         except Exception as e:
             logger.debug("Failed to query native kernel RPC: %s", e)
             return None
@@ -309,4 +334,3 @@ class NativeKernelClient:
             for s in (steps or [])
         ]
         return self._execute_rpc("nexus_world_twin_roll_forward", {"steps": norm_steps})
-

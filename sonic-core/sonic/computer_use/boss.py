@@ -46,6 +46,13 @@ from sonic.computer_use.models_boss import (
 logger = structlog.get_logger(__name__)
 
 
+def _trace_value(trace: Any, name: str, default: Any = "") -> Any:
+    """Read trace fields from both model instances and serialized history."""
+    if isinstance(trace, dict):
+        return trace.get(name, default)
+    return getattr(trace, name, default)
+
+
 class BossAgent:
     """Strategic orchestrator that delegates work to SubAgent workers.
 
@@ -729,15 +736,23 @@ Rules:
                         "sub_mission_id": sub_mission.id,
                         "sub_agent_number": sub_agent_num,
                         "trace": {
-                            "step_index": trace.step_index,
-                            "action_type": trace.action_type.value if hasattr(trace.action_type, "value") else str(trace.action_type),
-                            "target": trace.target_resource,
-                            "thought": getattr(trace, "thought", ""),
-                            "observation": (trace.actual_observation or "")[:500],
-                            "status": str(trace.status),
-                            "duration_seconds": getattr(trace, "duration_seconds", 0),
-                            "exit_code": getattr(trace, "exit_code", None),
-                        },
+                                "step_index": _trace_value(trace, "step_index", 0),
+                                "action_type": (
+                                    _trace_value(trace, "action_type", "")
+                                    .value
+                                    if hasattr(_trace_value(trace, "action_type", ""), "value")
+                                    else str(_trace_value(trace, "action_type", ""))
+                                ),
+                                "target": _trace_value(trace, "target_resource", ""),
+                                "thought": _trace_value(trace, "thought", ""),
+                                "observation": str(
+                                    _trace_value(trace, "actual_observation", "")
+                                    or _trace_value(trace, "observation", "")
+                                )[:500],
+                                "status": str(_trace_value(trace, "status", "")),
+                                "duration_seconds": _trace_value(trace, "duration_seconds", 0),
+                                "exit_code": _trace_value(trace, "exit_code", None),
+                            },
                     })
 
             # Forward accumulated discoveries so SubAgents aren't context-starved
@@ -797,18 +812,22 @@ Rules:
 
             succeeded = sum(
                 1 for t in traces
-                if str(t.status) in ("COMPLETED", "SUCCESS", "VERIFIED")
+                if str(_trace_value(t, "status", "")) in ("COMPLETED", "SUCCESS", "VERIFIED")
             )
             total = len(traces)
 
             has_goal_complete = any(
-                getattr(t, "expected_observation", "") == "GOAL_COMPLETE"
-                or getattr(t, "actual_observation", "") == "GOAL_COMPLETE"
-                or "goal-complete" in getattr(t, "target_resource", "").lower()
+                _trace_value(t, "expected_observation", "") == "GOAL_COMPLETE"
+                or _trace_value(t, "actual_observation", "") == "GOAL_COMPLETE"
+                or "goal-complete" in str(_trace_value(t, "target_resource", "")).lower()
                 for t in traces
             )
             last_trace = traces[-1] if traces else None
-            last_succeeded = last_trace and str(last_trace.status) in ("COMPLETED", "SUCCESS", "VERIFIED")
+            last_succeeded = last_trace and str(_trace_value(last_trace, "status", "")) in (
+                "COMPLETED",
+                "SUCCESS",
+                "VERIFIED",
+            )
             success_ratio = (succeeded / total) if total > 0 else 0.0
 
             is_successful = has_goal_complete or (last_succeeded and success_ratio >= 0.5) or (succeeded > 0 and total == 1)
@@ -847,10 +866,15 @@ Rules:
             return "No actions executed."
 
         observations = "\n".join(
-            f"- {t.action_type.value if hasattr(t.action_type, 'value') else t.action_type} "
-            f"on {t.target_resource}: {(t.actual_observation or '')[:1500]}"
+            f"- {(
+                _trace_value(t, 'action_type', '').value
+                if hasattr(_trace_value(t, 'action_type', ''), 'value')
+                else _trace_value(t, 'action_type', '')
+            )} "
+            f"on {_trace_value(t, 'target_resource', '')}: "
+            f"{str(_trace_value(t, 'actual_observation', '') or _trace_value(t, 'observation', ''))[:1500]}"
             for t in traces
-            if t.actual_observation
+            if _trace_value(t, "actual_observation", "") or _trace_value(t, "observation", "")
         )
 
         if not observations:

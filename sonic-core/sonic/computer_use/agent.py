@@ -780,13 +780,19 @@ class ComputerUseAgent:
                 "Strategy B": {"name": "Alternative Instrumentation", "description": "Secondary inspection / fallback tool", "state": StrategyState.ACTIVE},
             }
 
+        has_live_pixels = bool(self._last_screenshot_b64)
         history_text = self._format_history()
+        if has_live_pixels:
+            history_text = history_text[-1200:]
 
         # Truthful observations: output UNKNOWN when missing or unavailable (no fake observations)
         screen_text = (observation.visible_text or "").strip() or "UNKNOWN"
-        if screen_text != "UNKNOWN" and len(screen_text) > 4000:
-            screen_text = screen_text[:3997] + "..."
+        screen_limit = 1200 if has_live_pixels else 4000
+        if screen_text != "UNKNOWN" and len(screen_text) > screen_limit:
+            screen_text = screen_text[: screen_limit - 3] + "..."
         terminal_text = (observation.terminal_output or "").strip() or "UNKNOWN"
+        if has_live_pixels and len(terminal_text) > 800:
+            terminal_text = terminal_text[-800:]
         workdir = getattr(observation, "working_directory", "") or "UNKNOWN"
         user_home = workdir.split("/workspace")[0] if ("/workspace" in workdir and workdir != "UNKNOWN") else workdir
         self._last_working_dir = workdir
@@ -794,8 +800,9 @@ class ComputerUseAgent:
         windows_str = ", ".join(observation.windows) if observation.windows else "UNKNOWN"
         if observation.filesystem_files is not None and len(observation.filesystem_files) > 0:
             raw_files = observation.filesystem_files
-            if len(raw_files) > 60:
-                files_str = f"{str(raw_files[:60])[:-1]}, ... +{len(raw_files) - 60} more files]"
+            file_limit = 15 if has_live_pixels else 60
+            if len(raw_files) > file_limit:
+                files_str = f"{str(raw_files[:file_limit])[:-1]}, ... +{len(raw_files) - file_limit} more files]"
             else:
                 files_str = str(raw_files)
         else:
@@ -810,6 +817,8 @@ class ComputerUseAgent:
         active_url = bs.get("url") if (self.browser and bs.get("url") and bs.get("url") != "about:blank") else getattr(self, "_last_navigated_url", "")
         if self.browser is not None:
             elements = bs.get("interactive_elements", [])
+            if has_live_pixels:
+                elements = elements[:5]
             el_summary = ", ".join(
                 f"{e.get('tag', '?')}[{e.get('selector', '')}]:'{e.get('text', '')}'"
                 for e in elements[:10]

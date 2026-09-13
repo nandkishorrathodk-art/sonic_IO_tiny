@@ -405,6 +405,37 @@ attack surface. Now:
   LLM subdomain deduped against real CT; CT blocked → no invented subdomains;
   no router → only real CT assets.
 
+### Anti-puppet concrete probes + evidence-driven follow-ups (Phase 7.9)
+The planner's active-test stage used to emit the no-op stub
+`target_shell_approved { command: "echo APPROVAL_REQUIRED" }` — a scripted
+puppet gate that gave the operator nothing real to approve. Closed:
+- `planner.build_probe_actions(objective, target)` now derives CONCRETE, typed
+  `target_security_scan` probes (nmap top-100 / http_client / nuclei / ffuf)
+  from the objective intent + in-scope target. Probes carry a real option set,
+  a `rationale`, and a human-readable `command` preview for the operator.
+  All probes are `APPROVAL_REQUIRED`; read-only objectives emit none.
+- `build_plan` and `build_long_horizon_plan` (stage 4) call the probe generator
+  instead of the echo stub.
+- `build_follow_up_actions(plan, completed, evidence_brief=...)` adapts the next
+  read-only batch to the evidence that earlier actions actually returned
+  (web-route greps, secret/token hunts) instead of a fixed copy-paste batch.
+- `workstation.py::_run_mission_preflight` now: wires the real scanner registry
+  into the executor; surfaces probe proposals as `mission["proposed_actions"]`
+  (+ mission events) for operator approval; NEVER auto-runs a probe (removed
+  the old raw `comp.terminal` dispatch that bypassed the executor); passes real
+  evidence outputs to the follow-up planner; closes with an AWAITING_APPROVAL
+  message referencing how many probe proposals await approval.
+- `executor.MissionToolExecutor(..., scoped_target=...)`: when scope is set
+  (preflight always does), the `target_security_scan` path BLOCKS any probe
+  whose host is outside the engaged scope — suffix-safe (api.target.com in
+  scope target.com; target.com.evil.net NOT). Legacy callers without
+  scoped_target keep the previous planner-only guarantee.
+- Tests: `tests/test_evidence_driven_probes.py` (11) covers: no echo stub in
+  active plans; probes concrete/scoped/previewed; read-only objectives emit
+  none; dispatch behind approval via a fake SecurityTool scanner; out-of-scope
+  probe blocked even when approved; follow-ups adapt to secret and web-route
+  evidence.
+
 ### Test baseline (after Phase 7.8)
 - 397 passed, 48 honestly skipped, 0 failures.
 

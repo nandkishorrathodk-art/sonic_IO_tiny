@@ -78,6 +78,56 @@ def test_native_kernel_perception_rpc():
         assert state["controls"][0]["label"] == "flag"
 
 
+def test_native_kernel_desktop_snapshot_and_action_check_rpc():
+    """Client publishes whole-computer state and checks snapshot freshness."""
+    client = NativeKernelClient(binary_path="/mock/sonic-kernel")
+    responses = [
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "result": {
+                "version": 7,
+                "width": 1280,
+                "height": 800,
+                "active_window": "Terminal",
+                "windows": ["Terminal", "Desktop"],
+                "processes": ["wm", "terminal"],
+                "publish_latency_ns": 900,
+            },
+        },
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "result": {
+                "allowed": False,
+                "reason": "stale desktop snapshot",
+                "current_version": 8,
+            },
+        },
+    ]
+
+    with patch("subprocess.run") as mock_run:
+        mock_run.side_effect = [
+            MagicMock(returncode=0, stdout=json.dumps(responses[0]) + "\n", stderr=""),
+            MagicMock(returncode=0, stdout=json.dumps(responses[1]) + "\n", stderr=""),
+        ]
+        snapshot = client.desktop_snapshot(
+            width=1280,
+            height=800,
+            active_window="Terminal",
+            windows=["Terminal", "Desktop"],
+            processes=["wm", "terminal"],
+            visible_text=["Ready"],
+            controls=["prompt"],
+            screenshot="frame-a",
+        )
+        check = client.desktop_action_check(7)
+
+    assert snapshot["version"] == 7
+    assert snapshot["active_window"] == "Terminal"
+    assert check["allowed"] is False
+
+
 def test_native_kernel_evaluate_probe_rpc():
     """Client correctly queries empirical probe evaluation."""
     client = NativeKernelClient(binary_path="/mock/sonic-kernel")
@@ -258,5 +308,4 @@ def test_native_kernel_persistent_daemon_streaming():
 
     client.close()
     assert mock_proc.terminate.called
-
 

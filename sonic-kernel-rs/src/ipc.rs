@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::{
-    perception::PerceptionFusion,
+    perception::{DesktopPerception, PerceptionFusion},
     safety::SafetyKernel,
     specialists::{SpecialistType, SpecialistWorker},
     evidence::{CustodyChain, VerificationLab},
@@ -36,12 +36,14 @@ pub struct JsonRpcResponse {
 
 pub struct IpcServer {
     safety_kernel: SafetyKernel,
+    desktop_perception: DesktopPerception,
 }
 
 impl IpcServer {
     pub fn new(tenant_id: &str, workspace: &str) -> Self {
         Self {
             safety_kernel: SafetyKernel::new(tenant_id, workspace, true),
+            desktop_perception: DesktopPerception::new(),
         }
     }
 
@@ -72,6 +74,37 @@ impl IpcServer {
 
                 let state = PerceptionFusion::fuse(url, title, None, html);
                 serde_json::to_value(&state).map_err(|e| e.to_string())
+            }
+
+            "desktop_snapshot" => {
+                let screenshot = req.params.get("screenshot")
+                    .and_then(|v| v.as_str())
+                    .map(str::as_bytes);
+                let strings = |key: &str| -> Vec<String> {
+                    req.params.get(key)
+                        .and_then(|v| v.as_array())
+                        .map(|items| items.iter().filter_map(|item| item.as_str().map(str::to_string)).collect())
+                        .unwrap_or_default()
+                };
+                let snapshot = self.desktop_perception.publish(
+                    req.params.get("width").and_then(|v| v.as_u64()).unwrap_or(0) as u32,
+                    req.params.get("height").and_then(|v| v.as_u64()).unwrap_or(0) as u32,
+                    req.params.get("active_window").and_then(|v| v.as_str()).unwrap_or(""),
+                    strings("windows"),
+                    strings("processes"),
+                    strings("visible_text"),
+                    strings("controls"),
+                    screenshot,
+                );
+                serde_json::to_value(snapshot).map_err(|e| e.to_string())
+            }
+
+            "desktop_action_check" => {
+                let expected_version = req.params.get("expected_version")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0);
+                let check = self.desktop_perception.check_action(expected_version);
+                serde_json::to_value(check).map_err(|e| e.to_string())
             }
 
             "compute_custody_hash" => {
@@ -256,5 +289,41 @@ mod tests {
         let res_escape = server.handle_request(req_escape);
         assert_eq!(res_escape.result.unwrap().get("verdict").unwrap(), "Deny");
     }
-}
 
+    #[test]
+    fn test_ipc_desktop_snapshot_and_stale_action_check() {
+        let mut server = IpcServer::new("tenant-test", "/workspace");
+        let snapshot = server.handle_request(JsonRpcRequest {
+            jsonrpc: Some("2.0".to_string()),
+            id: Some(serde_json::json!(4)),
+            method: "desktop_snapshot".to_string(),
+            params: serde_json::json!({
+                "width": 1280,
+                "height": 800,
+                "active_window": "Terminal",
+                "windows": ["Terminal", "Desktop"],
+                "processes": ["wm", "terminal"],
+                "visible_text": ["Ready"],
+                "controls": ["prompt"],
+                "screenshot": "frame-a"
+            }),
+        });
+        let version = snapshot.result.unwrap().get("version").unwrap().as_u64().unwrap();
+
+        let current = server.handle_request(JsonRpcRequest {
+            jsonrpc: Some("2.0".to_string()),
+            id: Some(serde_json::json!(5)),
+            method: "desktop_action_check".to_string(),
+            params: serde_json::json!({"expected_version": version}),
+        });
+        assert_eq!(current.result.unwrap().get("allowed").unwrap(), true);
+
+        let stale = server.handle_request(JsonRpcRequest {
+            jsonrpc: Some("2.0".to_string()),
+            id: Some(serde_json::json!(6)),
+            method: "desktop_action_check".to_string(),
+            params: serde_json::json!({"expected_version": version - 1}),
+        });
+        assert_eq!(stale.result.unwrap().get("allowed").unwrap(), false);
+    }
+}

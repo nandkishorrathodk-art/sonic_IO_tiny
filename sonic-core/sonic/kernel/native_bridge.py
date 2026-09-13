@@ -239,6 +239,36 @@ class NativeKernelClient:
             params["html"] = html
         return self._execute_rpc("fuse_perception", params)
 
+    def desktop_snapshot(
+        self,
+        *,
+        width: int,
+        height: int,
+        active_window: str,
+        windows: list[str],
+        processes: list[str],
+        visible_text: list[str],
+        controls: list[str],
+        screenshot: str = "",
+    ) -> dict[str, Any] | None:
+        """Publish a computer-wide state snapshot to the native perception runtime."""
+        return self._execute_rpc("desktop_snapshot", {
+            "width": width,
+            "height": height,
+            "active_window": active_window,
+            "windows": windows,
+            "processes": processes,
+            "visible_text": visible_text,
+            "controls": controls,
+            "screenshot": screenshot,
+        })
+
+    def desktop_action_check(self, expected_version: int) -> dict[str, Any] | None:
+        """Reject GUI actions prepared against an older desktop snapshot."""
+        return self._execute_rpc("desktop_action_check", {
+            "expected_version": expected_version,
+        })
+
     def verify_finding(
         self,
         finding_id: str,

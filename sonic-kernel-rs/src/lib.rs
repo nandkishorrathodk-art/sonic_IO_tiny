@@ -36,9 +36,11 @@ pub use brain::{
 pub use world::{AssetInventory, AssetNode, AttackGraph, AttackNode, AttackPath, AttackTransitionEdge};
 pub use kernel::{Blackboard, BudgetTracker, InformationGainCostScheduler, MissionBudget, MissionKernel, MissionState, ScheduledTask};
 pub use evidence::{CustodyChain, VerificationLab, VerificationLabReport};
-pub use perception::{InteractiveControl, PerceptionFusion, StructuredWorldState};
+pub use perception::{
+    DesktopActionCheck, DesktopPerception, DesktopSnapshot, InteractiveControl,
+    PerceptionFusion, StructuredWorldState,
+};
 pub use evolution::{EvolutionPipeline, EvolutionStage, ImprovementProposal};
 pub use memory::{EpisodicMemory, Lesson, LessonType, LessonsLedger, WorkingMemory};
 pub use specialists::{SpecialistResult, SpecialistType, SpecialistWorker};
 pub use ipc::{IpcServer, JsonRpcRequest, JsonRpcResponse};
-

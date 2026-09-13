@@ -36,6 +36,8 @@ class PerceptionSnapshot:
     width: int
     height: int
     active_window: str
+    windows: tuple[str, ...]
+    processes: tuple[str, ...]
     visible_text: str
     controls: tuple[str, ...]
     browser_state: dict[str, Any]
@@ -64,6 +66,8 @@ class PerceptionBus:
             width=0,
             height=0,
             active_window="",
+            windows=(),
+            processes=(),
             visible_text="",
             controls=(),
             browser_state={},
@@ -87,6 +91,8 @@ class PerceptionBus:
         width: int = 0,
         height: int = 0,
         active_window: str = "",
+        windows: list[str] | tuple[str, ...] = (),
+        processes: list[str] | tuple[str, ...] = (),
         visible_text: str = "",
         controls: list[str] | tuple[str, ...] = (),
         browser_state: dict[str, Any] | None = None,
@@ -102,6 +108,8 @@ class PerceptionBus:
                 width=max(0, int(width)),
                 height=max(0, int(height)),
                 active_window=str(active_window or ""),
+                windows=tuple(str(item) for item in windows),
+                processes=tuple(str(item) for item in processes),
                 visible_text=str(visible_text or ""),
                 controls=tuple(str(item) for item in controls),
                 browser_state=dict(browser_state or {}),
@@ -170,6 +178,8 @@ class PerceptionBus:
                 width=self._snapshot.width,
                 height=self._snapshot.height,
                 active_window=self._snapshot.active_window,
+                windows=self._snapshot.windows,
+                processes=self._snapshot.processes,
                 visible_text=self._snapshot.visible_text,
                 controls=self._snapshot.controls,
                 browser_state=dict(self._snapshot.browser_state),

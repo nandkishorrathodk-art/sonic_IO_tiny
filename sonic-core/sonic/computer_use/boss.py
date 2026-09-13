@@ -101,6 +101,14 @@ class BossAgent:
         # Explicit concurrency budget: the Boss may never create more live
         # workers than this configured bound in a dependency wave.
         self.max_parallel_workers = max(1, int(max_parallel_workers))
+        # A single workstation is a shared mutable state machine. Parallel
+        # GUI/browser workers would race over focus, tabs, screenshots, and
+        # typed input, so only isolated/headless providers may fan out.
+        self._shared_desktop = (
+            browser is not None
+            or callable(getattr(computer_provider, "screenshot", None))
+            or callable(getattr(computer_provider, "gui_action", None))
+        )
         self.browser = browser
         self.toolsmith = toolsmith
         self.method_lab = method_lab
@@ -347,7 +355,8 @@ class BossAgent:
 
                 # Respect the configured worker budget.  Dependencies still
                 # determine waves; this only bounds concurrent execution.
-                wave_batch = unblocked_ready[:self.max_parallel_workers]
+                worker_limit = 1 if self._shared_desktop else self.max_parallel_workers
+                wave_batch = unblocked_ready[:worker_limit]
                 for s in wave_batch:
                     pending_subs.remove(s)
 

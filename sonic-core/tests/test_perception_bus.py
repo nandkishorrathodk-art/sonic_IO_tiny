@@ -8,6 +8,8 @@ def test_perception_bus_versions_and_rejects_stale_futures():
         width=1280,
         height=800,
         active_window="Browser",
+        windows=["Browser", "Terminal"],
+        processes=["browser"],
         controls=["submit"],
     )
     target = bus.register_target(
@@ -19,6 +21,8 @@ def test_perception_bus_versions_and_rejects_stale_futures():
     assert target.state_version == 1
     assert bus.resolve("submit") == target
     assert bus.is_current(future)
+    assert bus.current().windows == ("Browser", "Terminal")
+    assert bus.current().processes == ("browser",)
 
     bus.publish(screenshot_base64="frame-b")
     assert bus.current().version == 2

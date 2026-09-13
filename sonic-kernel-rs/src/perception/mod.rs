@@ -6,6 +6,7 @@ use std::sync::OnceLock;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::time::Instant;
 
 static INPUT_RE: OnceLock<Regex> = OnceLock::new();
 static BUTTON_RE: OnceLock<Regex> = OnceLock::new();
@@ -60,6 +61,107 @@ pub struct StructuredWorldState {
     pub controls: Vec<InteractiveControl>,
     pub visible_text: Vec<String>,
     pub screenshot_hash: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DesktopSnapshot {
+    pub version: u64,
+    pub width: u32,
+    pub height: u32,
+    pub active_window: String,
+    pub windows: Vec<String>,
+    pub processes: Vec<String>,
+    pub visible_text: Vec<String>,
+    pub controls: Vec<String>,
+    pub screen_hash: String,
+    pub publish_latency_ns: u128,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DesktopActionCheck {
+    pub allowed: bool,
+    pub reason: String,
+    pub current_version: u64,
+}
+
+pub struct DesktopPerception {
+    version: u64,
+    snapshot: Option<DesktopSnapshot>,
+}
+
+impl DesktopPerception {
+    pub fn new() -> Self {
+        Self {
+            version: 0,
+            snapshot: None,
+        }
+    }
+
+    pub fn publish(
+        &mut self,
+        width: u32,
+        height: u32,
+        active_window: &str,
+        windows: Vec<String>,
+        processes: Vec<String>,
+        visible_text: Vec<String>,
+        controls: Vec<String>,
+        screenshot_bytes: Option<&[u8]>,
+    ) -> DesktopSnapshot {
+        let started = Instant::now();
+        self.version += 1;
+        let screen_hash = screenshot_bytes
+            .map(|bytes| {
+                let mut hasher = Sha256::new();
+                hasher.update(bytes);
+                format!("{:x}", hasher.finalize())
+            })
+            .unwrap_or_default();
+        let snapshot = DesktopSnapshot {
+            version: self.version,
+            width,
+            height,
+            active_window: active_window.to_string(),
+            windows,
+            processes,
+            visible_text,
+            controls,
+            screen_hash,
+            publish_latency_ns: started.elapsed().as_nanos(),
+        };
+        self.snapshot = Some(snapshot.clone());
+        snapshot
+    }
+
+    pub fn current(&self) -> Option<&DesktopSnapshot> {
+        self.snapshot.as_ref()
+    }
+
+    pub fn check_action(&self, expected_version: u64) -> DesktopActionCheck {
+        let current_version = self.version;
+        if expected_version == current_version && current_version > 0 {
+            DesktopActionCheck {
+                allowed: true,
+                reason: "desktop snapshot is current".to_string(),
+                current_version,
+            }
+        } else {
+            DesktopActionCheck {
+                allowed: false,
+                reason: format!(
+                    "stale desktop snapshot: expected {}, current {}",
+                    expected_version, current_version
+                ),
+                current_version,
+            }
+        }
+    }
+}
+
+impl Default for DesktopPerception {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 pub struct PerceptionFusion;
@@ -257,5 +359,37 @@ mod tests {
             Some(html),
         );
         assert_eq!(state.page_state, "flag_captured");
+    }
+
+    #[test]
+    fn desktop_perception_rejects_stale_actions() {
+        let mut perception = DesktopPerception::new();
+        let first = perception.publish(
+            1280,
+            800,
+            "Desktop",
+            vec!["Desktop".to_string()],
+            vec!["wm".to_string()],
+            vec!["Ready".to_string()],
+            vec!["menu".to_string()],
+            Some(b"frame-a"),
+        );
+
+        assert!(perception.check_action(first.version).allowed);
+        let second = perception.publish(
+            1280,
+            800,
+            "Terminal",
+            vec!["Terminal".to_string()],
+            vec!["wm".to_string(), "terminal".to_string()],
+            vec!["Prompt".to_string()],
+            vec![],
+            Some(b"frame-b"),
+        );
+        let stale = perception.check_action(first.version);
+        assert!(!stale.allowed);
+        assert_eq!(stale.current_version, second.version);
+        assert_eq!(second.windows, vec!["Terminal".to_string()]);
+        assert!(!second.screen_hash.is_empty());
     }
 }

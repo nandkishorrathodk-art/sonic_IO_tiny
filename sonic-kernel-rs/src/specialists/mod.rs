@@ -14,6 +14,10 @@ pub enum SpecialistType {
     Api,
     Auth,
     Logic,
+    Pwn,
+    Crypto,
+    Network,
+    Forensics,
 }
 
 impl SpecialistType {
@@ -24,6 +28,10 @@ impl SpecialistType {
             SpecialistType::Api => "api",
             SpecialistType::Auth => "auth",
             SpecialistType::Logic => "logic",
+            SpecialistType::Pwn => "pwn",
+            SpecialistType::Crypto => "crypto",
+            SpecialistType::Network => "network",
+            SpecialistType::Forensics => "forensics",
         }
     }
 }
@@ -37,6 +45,7 @@ pub struct SpecialistResult {
     pub baseline_observation: String,
     pub probe_observation: String,
     pub behavioral_difference_detected: bool,
+    pub secret_or_flag_detected: bool,
     pub difference_description: String,
     pub evidence_payload: HashMap<String, String>,
 }
@@ -44,6 +53,22 @@ pub struct SpecialistResult {
 pub struct SpecialistWorker;
 
 impl SpecialistWorker {
+    pub fn evaluate_probe(
+        specialist: SpecialistType,
+        experiment_id: &str,
+        hypothesis_id: &str,
+        baseline: &str,
+        probe_response: &str,
+    ) -> SpecialistResult {
+        Self::simulate_probe(
+            specialist,
+            experiment_id,
+            hypothesis_id,
+            baseline,
+            probe_response,
+        )
+    }
+
     pub fn simulate_probe(
         specialist: SpecialistType,
         experiment_id: &str,
@@ -65,6 +90,13 @@ impl SpecialistWorker {
 
         let mut payload = HashMap::new();
         payload.insert("raw_probe".to_string(), probe_response.to_string());
+        let secret_or_flag_detected = {
+            let lower = probe_response.to_ascii_lowercase();
+            lower.contains("flag{")
+                || lower.contains("ctf{")
+                || lower.contains("secret")
+                || lower.contains("token")
+        };
 
         SpecialistResult {
             experiment_id: experiment_id.to_string(),
@@ -74,6 +106,7 @@ impl SpecialistWorker {
             baseline_observation: baseline.to_string(),
             probe_observation: probe_response.to_string(),
             behavioral_difference_detected: diff,
+            secret_or_flag_detected,
             difference_description: desc,
             evidence_payload: payload,
         }

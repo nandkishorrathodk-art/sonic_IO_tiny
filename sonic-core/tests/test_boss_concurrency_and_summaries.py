@@ -23,6 +23,13 @@ class MockComputerProvider:
         return {"status": "RUNNING", "windows": ["Terminal"]}
 
 
+class MockHeadlessProvider:
+    """Provider without shared GUI state; safe for concurrent worker tests."""
+
+    async def terminal(self, cmd: str, timeout: int = 15) -> str:
+        return "mock terminal output"
+
+
 class MockLLMRouter:
     async def complete(self, request):
         resp = MagicMock()
@@ -85,7 +92,7 @@ async def test_extract_key_discoveries_structured():
 @pytest.mark.asyncio
 async def test_concurrent_dependency_waves():
     """Verify that independent sub-missions execute concurrently in parallel waves."""
-    boss = BossAgent(MockComputerProvider(), MockLLMRouter(), max_phases=1)
+    boss = BossAgent(MockHeadlessProvider(), MockLLMRouter(), max_phases=1)
 
     execution_log = []
 
@@ -144,6 +151,46 @@ async def test_concurrent_dependency_waves():
     # Verify sub4 started AFTER sub1 and sub2 finished (Wave 2: dependent execution)
     sub4_entry = next(entry for entry in execution_log if entry["sub_id"] == "sub-4")
     assert sub4_entry["start"] > min(wave1_starts) + 0.04
+
+
+@pytest.mark.asyncio
+async def test_shared_desktop_dependency_wave_is_serialized():
+    """GUI workers must not race over one workstation's mutable state."""
+    boss = BossAgent(MockComputerProvider(), MockLLMRouter(), max_phases=1, max_parallel_workers=3)
+    execution_log = []
+
+    async def fake_dispatch(workspace_id, sub_m, phase_callback=None, sub_agent_num=1):
+        execution_log.append(time.perf_counter())
+        await asyncio.sleep(0.03)
+        return SubMissionResult(
+            sub_mission_id=sub_m.id,
+            goal=sub_m.goal,
+            success=True,
+            findings_summary="completed",
+            key_discoveries=[],
+            actions_taken=1,
+            duration_seconds=0.03,
+        )
+
+    boss._dispatch_sub_agent = fake_dispatch
+    boss.phases.append(
+        Phase(
+            phase_number=1,
+            name="Desktop Wave",
+            thinking="Observe then act",
+            sub_missions=[
+                SubMission(id="desktop-1", goal="Inspect screen"),
+                SubMission(id="desktop-2", goal="Inspect active window"),
+            ],
+        )
+    )
+    boss._aggregate_findings = AsyncMock(return_value="complete")
+    boss._check_objective_complete = AsyncMock(return_value=(True, "done"))
+
+    await boss.run(workspace_id="test-ws", objective="Inspect desktop")
+
+    assert len(execution_log) == 2
+    assert execution_log[1] - execution_log[0] >= 0.025
 
 
 @pytest.mark.asyncio

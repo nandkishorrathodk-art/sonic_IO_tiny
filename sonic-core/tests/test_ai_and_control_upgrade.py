@@ -506,6 +506,34 @@ class _StubRouter:
         return LLMResponse(content=self.response_content, model="test-model")
 
 
+class _RecordingRouter(_StubRouter):
+    def __init__(self):
+        super().__init__("ACTION: GOAL_COMPLETE\nTARGET: goal_complete\nPAYLOAD: {}\nEXPECTED: Done")
+        self.request = None
+
+    async def complete(self, request):
+        self.request = request
+        return await super().complete(request)
+
+
+def test_multimodal_computer_use_does_not_send_reasoning_effort():
+    router = _RecordingRouter()
+    agent = ComputerUseAgent(computer_provider=_StubComputer(), llm_router=router)
+    agent._last_screenshot_b64 = "aGVsbG8="
+    _run(
+        agent._llm_choose_action(
+            goal="Inspect the supplied application",
+            observation=ComputerWorldObservation(),
+            step_index=1,
+            primary_file="",
+            test_file="",
+        )
+    )
+    assert router.request is not None
+    assert router.request.reasoning_effort is None
+    assert any(message.images for message in router.request.messages)
+
+
 @pytest.mark.parametrize(
     "refusal_text",
     [
@@ -520,8 +548,8 @@ def test_parse_llm_action_refusal_does_not_return_empty_no_op(refusal_text):
         refusal_text, "app.py"
     )
     assert action_type == ComputerActionType.TERMINAL_EXEC
-    assert payload.get("command") != "true"
-    assert "python3" in payload.get("command", "") or "uname" in payload.get("command", "")
+    assert payload == {}
+    assert expected == "GOAL_COMPLETE"
 
 
 def test_llm_choose_action_recovers_from_refusal_with_target():
@@ -565,6 +593,5 @@ def test_llm_choose_action_recovers_from_refusal_without_target():
     )
     assert agent._last_thought == "LLM safety refusal detected. Reframing objective into authorized diagnostic assessment."
     assert action_type == ComputerActionType.TERMINAL_EXEC
-    assert payload["command"] != "true"
-    assert "python3 --version" in payload["command"] or "uname" in payload["command"]
-
+    assert payload == {}
+    assert expected == "GOAL_COMPLETE"

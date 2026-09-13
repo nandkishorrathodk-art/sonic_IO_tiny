@@ -35,24 +35,25 @@ class NmapAdapter(SecurityTool):
         else:
             port_arg = f"-p {ports}"
 
-        return f"nmap -{timing} {port_arg} {extra_args} {request.target}"
+        return f"nmap -{timing} {port_arg} {extra_args} '{request.target}'"
 
     def parse_output(self, raw_stdout: str, raw_stderr: str) -> list[dict[str, Any]]:
         """Parse text/greppable Nmap output into structured port mappings."""
         open_ports = []
-        port_pattern = re.compile(r"^\s*(\d+)/(tcp|udp)\s+open\s+(\S+)(?:\s+(.*))?$", re.MULTILINE)
+        port_pattern = re.compile(r"^\s*(\d+)/(tcp|udp)\s+(open(?:\|filtered)?)\s+(\S+)(?:\s+(.*))?$", re.MULTILINE)
 
         for match in port_pattern.finditer(raw_stdout):
             port = int(match.group(1))
             proto = match.group(2)
-            service = match.group(3)
-            version = (match.group(4) or "").strip()
+            state = match.group(3)
+            service = match.group(4)
+            version = (match.group(5) or "").strip()
             open_ports.append({
                 "port": port,
                 "protocol": proto,
                 "service": service,
                 "version": version,
-                "state": "open",
+                "state": state,
             })
 
         return open_ports

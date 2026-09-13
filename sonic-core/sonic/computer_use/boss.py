@@ -76,6 +76,7 @@ class BossAgent:
         tenant_id: str = "default",
         max_phases: int = 5,
         sub_agent_steps: int = 5,
+        max_parallel_workers: int = 4,
         browser: Any = None,
         toolsmith: Any = None,
         method_lab: Any = None,
@@ -89,6 +90,9 @@ class BossAgent:
         self.tenant_id = tenant_id
         self.max_phases = max_phases
         self.sub_agent_steps = sub_agent_steps
+        # Explicit concurrency budget: the Boss may never create more live
+        # workers than this configured bound in a dependency wave.
+        self.max_parallel_workers = max(1, int(max_parallel_workers))
         self.browser = browser
         self.toolsmith = toolsmith
         self.method_lab = method_lab
@@ -319,8 +323,9 @@ class BossAgent:
                                 pass
                     break
 
-                # Take up to 5 ready sub-missions for parallel execution in this wave
-                wave_batch = unblocked_ready[:5]
+                # Respect the configured worker budget.  Dependencies still
+                # determine waves; this only bounds concurrent execution.
+                wave_batch = unblocked_ready[:self.max_parallel_workers]
                 for s in wave_batch:
                     pending_subs.remove(s)
 
@@ -510,17 +515,25 @@ Your job is to analyze the user's objective from first principles and decompose 
 USER OBJECTIVE: {objective}
 
 Apply target-agnostic first-principles reasoning:
+0. PROGRAM INTAKE:
+   If the objective describes a program, repository, binary, service, or
+   application, first build a verified profile from the supplied details and
+   sandbox observations: modality, entry points, inputs/outputs, trust
+   boundaries, dependencies, runtime behavior, unknowns, and evidence needed.
+   Do not invent a target, tool, vulnerability, or successful execution.
+   If the objective does not state what outcome is wanted, ask for the missing
+   analysis objective instead of executing.
 1. DOMAIN & MODALITY TRIAGE:
    Identify the primary target type:
-   - [BINARY / REVERSE ENGINEERING / PWN]: Local ELF/PE file, firmware, disassembly, checksec, debugging (gdb), memory corruption, ROP.
-   - [NETWORK / INFRASTRUCTURE]: IP/CIDR, open ports, routing, protocols (SSH, SMB, RPC, DNS), daemons.
-   - [API / MICROSERVICE / HEADLESS]: REST, GraphQL, auth tokens, schemas, parameters (CLI / curl / python probes, zero GUI overhead).
-   - [CRYPTOGRAPHY]: Ciphers, hashes, padding oracle, key recovery, entropy.
-   - [FORENSICS / DATA]: Memory dumps, pcaps, logs, file carving (tshark, volatility).
-   - [WEB APPLICATION]: HTTP requests, cookies, DOM (use browser only when visual interaction/client JS is genuinely required).
+   - [BINARY / REVERSE ENGINEERING / PWN]: local executable or firmware, code behavior, memory safety.
+   - [NETWORK / INFRASTRUCTURE]: address space, reachable services, routing, and protocol behavior.
+   - [API / MICROSERVICE / HEADLESS]: request/response contracts, auth state, schemas, and parameters.
+   - [CRYPTOGRAPHY]: ciphers, hashes, oracles, key material, and entropy.
+   - [FORENSICS / DATA]: memory, captures, logs, and file artifacts.
+   - [WEB APPLICATION]: HTTP state, cookies, DOM, and client behavior when actually required.
 
 2. METHODOLOGY:
-   - Do NOT force or assume web tools (Chromium, Burp Suite, ffuf) if the target is a binary, network service, or headless API.
+   - Do not force an application, scanner, protocol, or interaction modality before observing the target.
    - Each worker must receive a clear, operational task tailored to the specific target modality.
 
 Respond with EXACTLY this JSON format (no extra text):
@@ -578,11 +591,19 @@ Rules:
             return None  # Too simple for Boss
 
         sub_missions = []
-        for sm in sub_missions_raw[:5]:  # Cap at 5 sub-missions per phase
+        for sm in sub_missions_raw[:5]:  # Cap planning fan-out per phase
+            goal = str(sm.get("goal", "")).strip()
+            if not goal:
+                continue
+            requested_steps = sm.get("max_steps", self.sub_agent_steps)
+            try:
+                requested_steps = int(requested_steps)
+            except (TypeError, ValueError):
+                requested_steps = self.sub_agent_steps
             sub_missions.append(SubMission(
-                goal=sm.get("goal", ""),
-                max_steps=min(sm.get("max_steps", self.sub_agent_steps), 8),
-                priority=sm.get("priority", 1),
+                goal=goal,
+                max_steps=max(1, min(requested_steps, 8)),
+                priority=max(0, int(sm.get("priority", 1) or 1)),
             ))
 
         # Record thinking
@@ -601,56 +622,38 @@ Rules:
         )
 
     def _fallback_decomposition(self, objective: str) -> Phase:
-        """Robust deterministic domain fallback when LLM decomposition fails."""
-        obj_lower = objective.lower()
-        sub_missions: list[SubMission] = []
+        """Provide a tool-agnostic fallback when strategic LLM planning fails.
 
-        # Heuristic 1: Detect binary / reverse engineering target
-        if any(ext in obj_lower for ext in (".bin", ".elf", ".exe", ".so", "binary", "firmware", "reverse", "disassemble", "pwn")):
-            sub_missions = [
-                SubMission(
-                    goal=f"Inspect target binary file and environment (file, checksec, strings, objdump) for: {objective}",
-                    max_steps=min(self.sub_agent_steps, 5),
-                    priority=2,
-                ),
-                SubMission(
-                    goal=f"Execute dynamic analysis and debugging (gdb, ltrace, strace) for: {objective}",
-                    max_steps=max(self.sub_agent_steps, 6),
-                    priority=1,
-                ),
-            ]
-        # Heuristic 2: Detect network / infrastructure target
-        elif any(net in obj_lower for net in ("ip", "subnet", "cidr", "port", "nmap", "scan", "network", "host")):
-            sub_missions = [
-                SubMission(
-                    goal=f"Perform host discovery and service port enumeration for: {objective}",
-                    max_steps=min(self.sub_agent_steps, 5),
-                    priority=2,
-                ),
-                SubMission(
-                    goal=f"Inspect discovered services and test protocol interactions for: {objective}",
-                    max_steps=max(self.sub_agent_steps, 6),
-                    priority=1,
-                ),
-            ]
-        # Heuristic 3: Default 2-stage discovery + execution pipeline with expanded budget
+        This deliberately does not infer an application, scanner, protocol, or
+        exploit recipe from keywords. Workers receive bounded observation and
+        evidence tasks and choose their own modality from live state.
+        """
+        budget = max(1, min(int(self.sub_agent_steps), 8))
+        objective_lower = objective.lower()
+        if any(token in objective_lower for token in ("firmware", ".bin", ".elf", ".exe", "reverse")):
+            target_context = "target binary/artifact"
+        elif any(token in objective_lower for token in ("network", "subnet", "cidr", "host", "service")):
+            target_context = "target host/service surface"
         else:
-            sub_missions = [
-                SubMission(
-                    goal=f"Initial discovery and environment orientation for: {objective}",
-                    max_steps=min(self.sub_agent_steps, 5),
-                    priority=2,
-                ),
-                SubMission(
-                    goal=f"Execute core actions and verify completion for: {objective}",
-                    max_steps=max(self.sub_agent_steps * 2, 8),
-                    priority=1,
-                ),
-            ]
+            target_context = "target surface"
+        sub_missions = [
+            SubMission(
+                id="fallback-observe",
+                goal=f"Observe and characterize the {target_context} relevant to this objective, recording only live evidence: {objective}",
+                max_steps=budget,
+                priority=2,
+            ),
+            SubMission(
+                goal=f"Use the observations to test the highest-value hypothesis and verify the result without assumptions on the {target_context}: {objective}",
+                max_steps=budget,
+                priority=1,
+                depends_on=["fallback-observe"],
+            ),
+        ]
 
         thinking_text = (
-            f"LLM strategic decomposition unavailable; activated deterministic domain fallback pipeline "
-            f"with {len(sub_missions)} structured sub-tasks."
+            f"LLM strategic decomposition unavailable; activated a tool-agnostic "
+            f"live-observation fallback with {len(sub_missions)} bounded sub-tasks."
         )
 
         self.thinking_log.append(BossThinking(
@@ -1136,10 +1139,21 @@ If the objective is complete or no more work is needed, return:
 
         sub_missions = []
         for sm in sub_missions_raw[:5]:
+            goal = str(sm.get("goal", "")).strip()
+            if not goal:
+                continue
+            try:
+                requested_steps = int(sm.get("max_steps", self.sub_agent_steps))
+            except (TypeError, ValueError):
+                requested_steps = self.sub_agent_steps
+            try:
+                priority = max(0, int(sm.get("priority", 1) or 1))
+            except (TypeError, ValueError):
+                priority = 1
             sub_missions.append(SubMission(
-                goal=sm.get("goal", ""),
-                max_steps=min(sm.get("max_steps", self.sub_agent_steps), 8),
-                priority=sm.get("priority", 1),
+                goal=goal,
+                max_steps=max(1, min(requested_steps, 8)),
+                priority=priority,
             ))
 
         self.thinking_log.append(BossThinking(
@@ -1292,4 +1306,3 @@ If the objective is complete or no more work is needed, return:
                 await result
         except Exception as e:
             logger.debug("boss_emit_callback_failed", event=event_type, error=str(e))
-

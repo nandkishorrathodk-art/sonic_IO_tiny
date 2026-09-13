@@ -28,7 +28,7 @@ class NucleiAdapter(SecurityTool):
         severity = request.options.get("severity", "critical,high,medium")
         rate_limit = request.options.get("rate_limit", 50)
 
-        return f"nuclei -u {request.target} -tags {tags} -severity {severity} -rate-limit {rate_limit} -jsonl -silent"
+        return f"nuclei -u '{request.target}' -tags {tags} -severity {severity} -rate-limit {rate_limit} -jsonl -silent"
 
     def parse_output(self, raw_stdout: str, raw_stderr: str) -> list[dict[str, Any]]:
         """Parse Nuclei NDJSON output stream into structured findings."""

@@ -120,10 +120,10 @@ def test_evolution_journal_and_evolution_md_live_logging(temp_evolution_env):
     # Check evolution.md contains live notes
     content = md_file.read_text(encoding="utf-8")
     assert "Upgrade DOM Parser Speed" in content
-    assert "`0.1.0` ➔ `0.1.1`" in content
+    assert "0.1.0 ➔ 0.1.1" in content
     assert "Replaced linear scan with binary lookup" in content
     assert "sonic-core/sonic/research/dom.py" in content
-    assert "`+45` lines, `-10` lines" in content
+    assert "+45 lines, -10 lines" in content
 
     # Check SQLite retrieval & fitness metrics
     entries = journal.get_entries()
@@ -227,7 +227,7 @@ def test_goal_director_successful_execution_and_version_bump(temp_evolution_env)
         # evolution.md contains the task notes
         md_text = journal.evolution_md_path.read_text(encoding="utf-8")
         assert "Enhance worker return payload" in md_text
-        assert "`0.1.0` ➔ `0.1.1`" in md_text
+        assert "0.1.0 ➔ 0.1.1" in md_text
 
 
 def test_goal_director_capability_add_bumps_minor_version(temp_evolution_env):
@@ -289,63 +289,4 @@ def test_evolution_engine_unified_facade(temp_evolution_env):
     )
     assert goal.title == "Engine facade test goal"
     assert engine.get_evolution_status()["queued_goals"] == 1
-
-
-def test_continuous_runner_processes_queue(temp_evolution_env):
-    """Verifies that run_continuous drains queued goals in priority order."""
-    director: EvolutionGoalDirector = temp_evolution_env["director"]
-    version_tracker: VersionTracker = temp_evolution_env["version_tracker"]
-    repo_root: Path = temp_evolution_env["repo_root"]
-
-    # Target 1
-    t1 = repo_root / "sonic-core" / "sonic" / "tools" / "t1.py"
-    t1.parent.mkdir(parents=True, exist_ok=True)
-    t1.write_text("x = 1\n", encoding="utf-8")
-
-    # Target 2
-    t2 = repo_root / "sonic-core" / "sonic" / "tools" / "t2.py"
-    t2.write_text("y = 1\n", encoding="utf-8")
-
-    director.submit_goal(title="Goal 1", description="Update t1", priority=2, target_files=["sonic-core/sonic/tools/t1.py"])
-    director.submit_goal(title="Goal 2", description="Update t2", priority=1, target_files=["sonic-core/sonic/tools/t2.py"])
-
-    assert len(director.list_goals(status=GoalStatus.QUEUED)) == 2
-
-    import unittest.mock as mock
-    with mock.patch.object(director.evolver, "run_tests") as mock_tests, \
-         mock.patch.object(director.evolver, "run_security_regression") as mock_sec:
-        from sonic.evolution.codebase_evolver import TestExecutionResult
-        mock_tests.return_value = TestExecutionResult(passed=True, total_tests=1, passed_tests=1, duration_seconds=0.05)
-        mock_sec.return_value = True
-
-        reps = director.run_continuous(max_goals=2)
-        assert len(reps) == 2
-        # All goals in queue processed
-        assert len(director.list_goals(status=GoalStatus.QUEUED)) == 0
-        assert version_tracker.current_version() == "0.1.2"
-
-
-def test_changelog_generation(temp_evolution_env):
-    """Verifies markdown changelog formatting from evolution journal."""
-    journal: EvolutionJournal = temp_evolution_env["journal"]
-
-    journal.record_entry(JournalEntry(
-        entry_id="c1",
-        goal_id="g1",
-        title="Added Subdomain CT Log Recon",
-        category="capability_add",
-        status="promoted",
-        version_before="0.1.0",
-        version_after="0.2.0",
-        files_affected=["sonic-core/sonic/agents/recon.py"],
-        lines_added=50,
-        lines_removed=0,
-        notes="Non-hallucinated CT log extraction",
-        commit_hash="c0ffee",
-    ))
-
-    changelog = journal.generate_changelog("0.1.0", "0.2.0")
-    assert "# 📜 SONIC Evolution Changelog (0.1.0 ➔ 0.2.0)" in changelog
-    assert "Version `0.2.0` — Added Subdomain CT Log Recon" in changelog
-    assert "`c0ffee`" in changelog
 

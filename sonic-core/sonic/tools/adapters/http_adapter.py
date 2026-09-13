@@ -46,11 +46,17 @@ class HTTPClientAdapter(SecurityTool):
         return " ".join(cmd)
 
     def parse_output(self, raw_stdout: str, raw_stderr: str) -> list[dict[str, Any]]:
-        """Split HTTP response into headers, status code, and body."""
+        """Split HTTP response into headers, status code, and body, handling redirects cleanly."""
         if not raw_stdout:
             return []
 
-        parts = raw_stdout.split("\r\n\r\n", 1) if "\r\n\r\n" in raw_stdout else raw_stdout.split("\n\n", 1)
+        import re
+        # When curl follows redirects (-L), multiple HTTP responses appear sequentially.
+        # Split on boundary between responses to extract the final response block
+        blocks = re.split(r"(?:\r?\n\r?\n)(?=HTTP/\d)", raw_stdout)
+        final_block = blocks[-1] if blocks else raw_stdout
+
+        parts = final_block.split("\r\n\r\n", 1) if "\r\n\r\n" in final_block else final_block.split("\n\n", 1)
         raw_headers = parts[0]
         body = parts[1] if len(parts) > 1 else ""
 
@@ -67,4 +73,5 @@ class HTTPClientAdapter(SecurityTool):
             "headers_raw": raw_headers,
             "body": body[:4096],  # First 4KB preview
             "body_length": len(body),
+            "redirects_followed": max(0, len(blocks) - 1),
         }]

@@ -558,7 +558,7 @@ class EngagementManager:
                         engagement=engagement_id)
             return {
                 "skipped": True,
-                "reason": "No ComputerProvider available — GUI desktop/sandbox required for real tool execution",
+                "reason": "No ComputeProvider available — GUI desktop/sandbox required for real tool execution",
             }
 
         try:
@@ -635,7 +635,7 @@ class EngagementManager:
             # its own workspace id (container name); the sandbox provider's
             # workspace is ONLY a fallback when no GUI computer is wired.
             ws_id = getattr(provider, "_default_workspace_id", None)
-            if not ws_id or ws_id == "None":
+            if not isinstance(ws_id, str) or not ws_id.strip() or ws_id == "None":
                 ws_id = await self._workspace_for(engagement_id, tenant_id=tenant_id) or f"eng-{engagement_id[:12]}"
 
             traces = await agent.run_mission(

@@ -337,6 +337,8 @@ export function WorklogFeed({
   const [modeMenuOpen, setModeMenuOpen] = useState(false);
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const worklogEndRef = useRef<HTMLDivElement>(null);
+  const timelineRef = useRef<HTMLDivElement>(null);
+  const shouldFollowTailRef = useRef(true);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   const displayItems: WorklogItem[] = worklog || [];
@@ -386,8 +388,25 @@ export function WorklogFeed({
   })();
 
   useEffect(() => {
-    worklogEndRef.current?.scrollIntoView({ behavior: "smooth" });
+    const timeline = timelineRef.current;
+    if (!timeline || !shouldFollowTailRef.current) return;
+    // Keep live output readable without overriding an operator who is
+    // reviewing an earlier event in the same conversation.
+    timeline.scrollTop = timeline.scrollHeight;
   }, [worklog, cleanActionText]);
+
+  useEffect(() => {
+    // A newly selected conversation should start at its latest event.
+    shouldFollowTailRef.current = true;
+  }, [sessionId]);
+
+  const handleTimelineScroll = (event: React.UIEvent<HTMLDivElement>) => {
+    const timeline = event.currentTarget;
+    const distanceFromBottom = timeline.scrollHeight - timeline.scrollTop - timeline.clientHeight;
+    // Once the operator scrolls away from the tail, pause auto-follow. It is
+    // re-enabled only when they deliberately return to the bottom.
+    shouldFollowTailRef.current = distanceFromBottom <= 24;
+  };
 
   const handleSubmit = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
@@ -467,7 +486,11 @@ export function WorklogFeed({
       </div>
 
       {/* Main Process Timeline */}
-      <div className="flex-1 overflow-y-auto px-4 py-3 space-y-2 text-xs">
+      <div
+        ref={timelineRef}
+        onScroll={handleTimelineScroll}
+        className="flex-1 min-h-0 overflow-y-auto overscroll-contain px-4 py-3 space-y-2 text-xs"
+      >
         {displayItems.length === 0 ? (
           <div className="h-full min-h-[320px] flex flex-col items-center justify-center text-center p-6 text-muted-dim space-y-2 select-none">
             <div className="w-10 h-10 rounded-full bg-ink-850 border border-ink-800 flex items-center justify-center text-secondary-400 font-mono text-sm shadow-inner">
@@ -796,7 +819,7 @@ export function WorklogFeed({
               }
             }}
             rows={2}
-            placeholder="Instruct SONIC or ask a question (e.g. 'Scan ports', 'Open Burp Suite', 'Audit JWT')..."
+            placeholder="Instruct SONIC or ask a question about a supplied target, application, or workspace..."
             className="w-full resize-none bg-transparent text-[12.5px] text-slate-100 placeholder:text-muted-dim outline-none font-sans px-1 leading-relaxed"
           />
 

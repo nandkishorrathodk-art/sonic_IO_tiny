@@ -7,6 +7,8 @@ import pytest
 
 from sonic.api.routes.workstation import (
     _get_or_create_session,
+    _infer_program_profile,
+    _is_action_prompt,
     _is_complex_or_multi_part_objective,
     _run_prompt_reasoning,
 )
@@ -42,6 +44,34 @@ def test_is_complex_or_multi_part_objective_distinguishes_goals():
     assert _is_complex_or_multi_part_objective("whoami") is False
     assert _is_complex_or_multi_part_objective("date") is False
     assert _is_complex_or_multi_part_objective("ls -la") is False
+
+
+def test_conversational_prompts_do_not_start_desktop_observation():
+    """Greetings and meta questions stay in the response plane."""
+    assert _is_action_prompt("hi sonic desktop") is False
+    assert _is_action_prompt("hey what happened?") is False
+    assert _is_action_prompt("what can you actually do?") is False
+    assert _is_action_prompt("what can you able to do? and what is you things?") is False
+    assert _is_action_prompt("hi sonic ? what are you doing") is False
+    assert _is_action_prompt("buddy") is False
+    assert _is_action_prompt("I was wondering what is happening") is False
+    assert _is_action_prompt("please tell me about this system") is False
+    assert _is_action_prompt("open the supplied application") is True
+    assert _is_action_prompt("check open ports on 192.0.2.10") is True
+
+
+def test_program_intake_profile_is_classification_only():
+    profile = _infer_program_profile(
+        "Analyze this Python source repository and reproduce the authentication issue."
+    )
+    assert "SOURCE" in profile["modalities"]
+    assert profile["objective_present"] is True
+    assert profile["status"] == "READY_FOR_BOSS"
+    assert profile["target"] == ""
+
+    incomplete = _infer_program_profile("Here are the details of my program.")
+    assert incomplete["status"] == "NEEDS_OBJECTIVE"
+    assert incomplete["objective_present"] is False
 
 
 @pytest.mark.asyncio
@@ -386,5 +416,3 @@ async def test_boss_sub_goal_filters_raw_ips_and_diagnostic_context():
         assert "10.0.0.5" not in goal
         # Legitimate discovery should be present
         assert "Found open port 8080 with vulnerable web server" in goal
-
-

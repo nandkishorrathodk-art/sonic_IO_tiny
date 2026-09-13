@@ -84,6 +84,17 @@ async def _maybe_start_being_life_loop(settings):
             logger.warning("being_provider_docker_unavailable", error=str(e))
         if provider is None:
             provider = await get_sandbox_provider()
+        # The life loop is a computer-use actor, not a generic command worker.
+        # A ComputeProvider/DockerSandbox without screen capture cannot satisfy
+        # the observe -> reason -> act contract, so do not start a loop that
+        # will fail on every tick.
+        if not callable(getattr(provider, "screenshot", None)):
+            logger.warning(
+                "being_life_loop_no_computer_provider",
+                provider=type(provider).__name__,
+                reason="screen_capture_unavailable",
+            )
+            return None
         home = None
         if hasattr(provider, "get_or_create_home"):
             home = await provider.get_or_create_home(tenant_id)

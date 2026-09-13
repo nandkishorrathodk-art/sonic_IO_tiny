@@ -1782,7 +1782,7 @@ def _is_action_prompt(prompt: str) -> bool:
 
     # Filter out bare greetings and conversational queries
     _GREETINGS = {
-        "hi", "hello", "hey", "ping", "sup", "yo", "ok", "okay", "hm", "hmm", "status",
+        "hi", "hello", "hey", "ping", "sup", "yo", "buddy", "friend", "ok", "okay", "hm", "hmm", "status",
     }
     _GREETING_PHRASES = {
         "hello how are you", "hi how are you", "hey how are you", "how are you", "how do you do",
@@ -1792,6 +1792,24 @@ def _is_action_prompt(prompt: str) -> bool:
         "what is sonic", "who is sonic", "tell me about yourself",
     }
     cleaned = re.sub(r"[\s?!.,;]+$", "", lower).strip()
+    if re.fullmatch(r"(?:hi|hello|hey|yo|buddy|friend)(?:\s+sonic)?(?:\s+desktop)?", cleaned):
+        return False
+    # Capability, identity, and architecture questions are conversational.
+    # They must not start a desktop mission or invent a target.
+    if (
+        re.search(r"\bwhat\s+(?:can|do)\s+you\s+(?:actually\s+)?do\b", cleaned)
+        or re.search(r"\bwhat\s+(?:you\s+)?can\s+(?:you\s+)?(?:actually\s+)?(?:do|able\s+to\s+do)\b", cleaned)
+        or re.search(r"\bwhat\s+(?:is|are)\s+you\s+(?:things|capable\s+of)\b", cleaned)
+        or re.search(r"\bwhat\s+are\s+you\s+able\s+to\s+do\b", cleaned)
+        or re.search(r"\b(?:your|sonic(?:'s)?)\s+(?:capabilities|abilities|features)\b", cleaned)
+        or re.search(r"\bhow\s+do\s+you\s+work\b", cleaned)
+        or re.search(r"\bwhat\s+(?:are|is)\s+(?:you|sonic)(?:\s+currently|\s+right\s+now)?\s+doing\b", cleaned)
+        or re.search(r"\bwhat\s+are\s+you\s+doing\b", cleaned)
+        or "what is your role" in cleaned
+        or "what are your limitations" in cleaned
+        or re.fullmatch(r"(?:hey\s+)?what happened", cleaned) is not None
+    ):
+        return False
     if (
         lower in _GREETINGS
         or lower in _GREETING_PHRASES
@@ -1800,8 +1818,47 @@ def _is_action_prompt(prompt: str) -> bool:
     ):
         return False
 
-    # Everything else is actionable — let ComputerUseAgent decide what to do
-    return True
+    # Do not treat arbitrary language as an execution request.  A missing
+    # action intent is conversational by default; this prevents greetings,
+    # questions, and vague prose from opening the desktop or starting a loop.
+    explicit_action_terms = (
+        "open", "launch", "start", "close", "focus", "click", "type", "enter",
+        "scroll", "drag", "download", "navigate", "browse", "look at", "inspect",
+        "check", "run", "execute", "test", "analyze", "analyse", "audit", "review",
+        "debug", "fix", "read", "write", "edit", "find", "search", "scan",
+        "enumerate", "discover", "reproduce", "verify", "install", "uninstall",
+        "dekho", "batao", "dhundo",
+        "use the computer", "use desktop", "in the sandbox", "in sandbox",
+    )
+    has_explicit_action = any(
+        re.search(rf"\b{re.escape(term)}\b", cleaned)
+        if " " not in term
+        else term in cleaned
+        for term in explicit_action_terms
+    )
+    # Short shell requests are explicit operator commands, not prose. Keep
+    # this command grammar narrow; arbitrary one-word messages remain chat.
+    has_explicit_command = bool(
+        re.fullmatch(r"(?:pwd|hostname|whoami|date|uname|ls(?:\s+[-\w]+)?)", cleaned)
+    )
+    has_target_or_artifact = bool(
+        re.search(r"https?://|(?:^|[\s/])(?:[a-zA-Z]:[\\/])|"
+                  r"\b[a-z0-9-]+\.[a-z]{2,}(?:\.[a-z]{2,})?\b|"
+                  r"\b(?:target|program|application|repository|repo|file|binary|"
+                  r"host|domain|url|ip address|port|service|sandbox|desktop|browser|"
+                  r"news|khabar)\b", cleaned)
+    )
+    return has_explicit_action or has_explicit_command or has_target_or_artifact
+
+
+def _is_research_prompt(prompt: str) -> bool:
+    """Keep the removed parallel-research shortcut import-compatible.
+
+    Research objectives now use the normal target-driven mission path rather
+    than a hidden keyword dispatch. Returning False prevents legacy callers
+    from reactivating the retired shortcut.
+    """
+    return False
 
 
 def _is_complex_or_multi_part_objective(prompt: str) -> bool:
@@ -1815,7 +1872,8 @@ def _is_complex_or_multi_part_objective(prompt: str) -> bool:
         "find", "audit", "investigate", "test for", "vulnerability", "sqli",
         "sql injection", "xss", "recon", "reconnaissance", "attack surface",
         "enumerate", "penetration", "exploit", "assess", "scan and",
-        "check all", "analyze", "deep dive",
+        "check all", "analyze", "analysis", "review", "inspect", "deep dive",
+        "program", "source code", "binary", "executable", "application",
     )
     if any(k in p_lower for k in complex_keywords):
         return True
@@ -1823,6 +1881,43 @@ def _is_complex_or_multi_part_objective(prompt: str) -> bool:
     if (" and " in p_lower or " then " in p_lower or "\n" in prompt or ";" in prompt) and len(prompt.split()) > 4:
         return True
     return False
+
+
+def _infer_program_profile(prompt: str, state: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Build a lightweight, evidence-labelled intake profile.
+
+    This is classification only; it never claims that a program, target, or
+    vulnerability exists. The Boss can refine it after observing real files
+    and runtime behavior in the sandbox.
+    """
+    text = prompt.lower()
+    modalities: list[str] = []
+    modality_terms = {
+        "SOURCE": ("source", "code", "repository", "repo", ".py", ".js", ".ts", ".go", ".rs"),
+        "BINARY": ("binary", "executable", ".elf", ".exe", ".bin", "firmware"),
+        "WEB_API": ("api", "http", "url", "endpoint", "web app", "graphql", "rest"),
+        "DESKTOP_APP": ("desktop app", "gui", "graphical application", "window"),
+        "NETWORK_SERVICE": ("network service", "host", "port", "daemon", "socket"),
+        "DATA_FORENSICS": ("pcap", "memory dump", "forensics", "log file", "disk image"),
+    }
+    for modality, terms in modality_terms.items():
+        if any(term in text for term in terms):
+            modalities.append(modality)
+
+    target = _extract_target_url_or_domain(prompt, state)
+    has_objective = bool(re.search(
+        r"\b(?:analy[sz]e|audit|review|inspect|test|run|debug|reproduce|patch|"
+        r"find|check|verify|remediate|assess|investigate)\b",
+        text,
+    ))
+    return {
+        "modalities": modalities or ["UNKNOWN"],
+        "target": target,
+        "objective_present": has_objective,
+        "scope_present": bool(target or (state and state.get("target_sandbox", {}).get("scope_verified"))),
+        "status": "READY_FOR_BOSS" if has_objective else "NEEDS_OBJECTIVE",
+        "evidence_basis": "operator_prompt_and_session_state",
+    }
 
 
 
@@ -2134,6 +2229,9 @@ async def _run_prompt_reasoning(tenant_id: str, session_id: str, prompt: str) ->
     action_blocked = False
     action_observations: list[str] = []
     desktop_context = "No tenant-owned desktop observation is available for this session."
+    action_prompt = _is_action_prompt(prompt)
+    program_profile = _infer_program_profile(prompt, state)
+    state["program_profile"] = program_profile
     try:
 
         from sonic.llm.prompts import WORKSTATION_CHAT_SYSTEM
@@ -2146,7 +2244,10 @@ async def _run_prompt_reasoning(tenant_id: str, session_id: str, prompt: str) ->
         if not desktop_id:
             desktop_id = str(state.get("desktop", {}).get("workspace_id") or state.get("desktop", {}).get("sandbox_id") or "")
 
-        if desktop_id:
+        # Conversational messages must not inspect the desktop.  Observation
+        # is an execution cost and, more importantly, can make a greeting look
+        # like a live mission in the worklog.
+        if desktop_id and action_prompt:
             try:
                 computer = get_daytona_computer()
                 screen = await computer.screenshot(desktop_id)
@@ -2179,7 +2280,7 @@ async def _run_prompt_reasoning(tenant_id: str, session_id: str, prompt: str) ->
                 )
 
             # Execute autonomous action loop if applicable
-            if _is_action_prompt(prompt):
+            if action_prompt:
                 # --- Phase 8: Use ComputerUseAgent for visual computer use ---
                 if desktop_id:
                     try:
@@ -2203,6 +2304,12 @@ async def _run_prompt_reasoning(tenant_id: str, session_id: str, prompt: str) ->
 
                         # Pass authentic user goal directly to ComputerUseAgent without synthetic prompt mutation
                         effective_goal = prompt
+                        if program_profile["status"] == "READY_FOR_BOSS":
+                            effective_goal = (
+                                f"{prompt}\n\n"
+                                "PROGRAM INTAKE PROFILE (classification only; verify in sandbox):\n"
+                                f"{json.dumps(program_profile, ensure_ascii=True)}"
+                            )
 
                         ws_root = "/root" if os.environ.get("SONIC_USE_DAYTONA_CLOUD") != "1" else "/home/daytona"
                         target_domain_or_ip = _extract_target_url_or_domain(effective_goal, state)

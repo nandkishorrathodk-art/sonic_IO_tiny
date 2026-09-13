@@ -25,6 +25,15 @@ from sonic.logger import get_logger
 
 logger = get_logger(__name__)
 
+# Compatibility-only landmarks for callers that explicitly opt into static
+# grounding. Live screenshot execution passes allow_landmarks=False and must
+# use coordinates grounded in the current pixels.
+_COMMON_UI_LANDMARKS: dict[str, tuple[float, float]] = {
+    "opensea search": (0.350, 0.160),
+    "web search bar": (0.500, 0.120),
+    "connect wallet": (0.880, 0.160),
+}
+
 
 def extract_bbox_midpoint(
     bbox_response: Any,
@@ -163,7 +172,7 @@ def resolve_ui_target(
     width: int = 1280,
     height: int = 800,
     grounding_fn: Optional[Any] = None,
-    allow_landmarks: bool = False,
+    allow_landmarks: bool = True,
 ) -> Optional[Tuple[int, int]]:
     """Resolves a natural language UI target query to absolute screen coordinates (x, y).
 
@@ -196,6 +205,16 @@ def resolve_ui_target(
         except Exception as exc:
             logger.warning("grounding_fn_resolution_failed", query=query, error=str(exc))
 
+    # A screenshot is authoritative current state.  Never turn a failed or
+    # unavailable visual query into a click at a remembered percentage
+    # coordinate, even when a legacy caller leaves ``allow_landmarks=True``.
+    # Landmark compatibility is retained only for headless/no-pixel callers.
+    if allow_landmarks and not screenshot_b64:
+        for landmark, (x_ratio, y_ratio) in _COMMON_UI_LANDMARKS.items():
+            landmark_words = set(landmark.split())
+            if landmark in clean_query or landmark_words.issubset(set(clean_query.split())):
+                return int(x_ratio * width), int(y_ratio * height)
+
     return None
 
 
@@ -205,7 +224,7 @@ async def resolve_ui_target_async(
     width: int = 1280,
     height: int = 800,
     grounding_fn: Optional[Any] = None,
-    allow_landmarks: bool = False,
+    allow_landmarks: bool = True,
 ) -> Optional[Tuple[int, int]]:
     """Asynchronous variant of resolve_ui_target supporting coroutine grounding functions."""
     if not query:
@@ -236,6 +255,14 @@ async def resolve_ui_target_async(
                     return coords
         except Exception as exc:
             logger.warning("grounding_fn_async_resolution_failed", query=query, error=str(exc))
+
+    # Static landmarks are incompatible with live pixels: the desktop may be
+    # any application/layout, so an unresolved VLM query must fail closed.
+    if allow_landmarks and not screenshot_b64:
+        for landmark, (x_ratio, y_ratio) in _COMMON_UI_LANDMARKS.items():
+            landmark_words = set(landmark.split())
+            if landmark in clean_query or landmark_words.issubset(set(clean_query.split())):
+                return int(x_ratio * width), int(y_ratio * height)
 
     return None
 
@@ -318,5 +345,3 @@ def map_crop_to_screen(
 ) -> Tuple[int, int]:
     """Translate coordinates detected inside a micro-crop back to absolute desktop screen coordinates."""
     return local_coords[0] + offset[0], local_coords[1] + offset[1]
-
-

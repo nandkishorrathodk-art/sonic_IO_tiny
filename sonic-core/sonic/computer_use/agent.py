@@ -955,6 +955,18 @@ class ComputerUseAgent:
 
         cognitive_block = (
             "=== SITUATION FACTS ===\n"
+            "WHAT DO I KNOW?\n"
+            f"  {facts_str}\n"
+            "WHAT DO I NOT KNOW?\n"
+            "  Unknown until supported by live observation or reproducible evidence.\n"
+            "WHAT FAILED?\n"
+            f"  {failure_str}\n"
+            "WHY DID IT FAIL?\n"
+            "  No causal conclusion yet; inspect the recorded error before changing strategy.\n"
+            "WHAT HYPOTHESIS DOES THIS SUPPORT/DISPROVE?\n"
+            "  No hypothesis is confirmed without independent evidence.\n"
+            "WHAT IS THE HIGHEST-INFORMATION NEXT ACTION?\n"
+            "  Choose the smallest safe action that can distinguish the leading hypotheses.\n"
             f"  {facts_str}\n"
             f"Failure log:\n{failure_str}\n"
             f"{evolved_strategy_str}"
@@ -984,7 +996,13 @@ class ComputerUseAgent:
         screen_w = getattr(self, "_screen_width", 1920)
         screen_h = getattr(self, "_screen_height", 1080)
         max_act = getattr(self, "max_actions", 50)
-        compact = getattr(self, "_compact_mode", False)
+        # A screenshot is expensive in the provider's token budget. Vision
+        # requests must use the compact prompt even when the configured model
+        # name does not contain a small-model tag (for example, a 27B model
+        # with a 7K input-token limit).
+        compact = getattr(self, "_compact_mode", False) or bool(
+            getattr(self, "_last_screenshot_b64", "")
+        )
 
         browser_content = browser_lines.strip() if browser_lines else "None"
         tool_content = tool_lines.strip() if tool_lines else "None"
@@ -1037,8 +1055,10 @@ class ComputerUseAgent:
             f"{living_block}"
         )
 
-        # In compact mode (small models), skip the verbose strategy/cognitive
-        # blocks that overwhelm limited context.  Full mode keeps everything.
+        # Keep the detailed strategy and cognitive ledger for text-only
+        # reasoning. The compact multimodal prompt still includes the live
+        # observation, target, and action history, which are the facts needed
+        # to ground a visual action without exceeding provider limits.
         if not compact:
             obs_summary += f"{strategy_tracking_block}{cognitive_block}"
 
@@ -1202,7 +1222,11 @@ class ComputerUseAgent:
             ],
             task_type="reasoning",
             max_tokens=8192,
-            reasoning_effort="high",
+            # Vision-capable instruction models commonly reject provider-
+            # specific reasoning_effort values even though they accept image
+            # content. Let the provider use its native default for multimodal
+            # requests; retain explicit high effort for text-only reasoning.
+            reasoning_effort=None if images else "high",
         )
         t_thought_start = time.perf_counter()
         try:
@@ -1243,9 +1267,9 @@ class ComputerUseAgent:
                     )
                 return (
                     ComputerActionType.TERMINAL_EXEC,
-                    "version-verification",
-                    {"command": "python3 --version || uname -a"},
-                    "Diagnostic: benign environment version verification",
+                    "refusal-no-target",
+                    {},
+                    _GOAL_COMPLETE_SENTINEL,
                 )
 
             # Preserve genuine chain-of-thought/thinking tokens
@@ -1351,8 +1375,8 @@ class ComputerUseAgent:
             return (
                 ComputerActionType.TERMINAL_EXEC,
                 "diagnostic-verification",
-                {"command": "python3 --version || uname -a"},
-                "LLM safety refusal detected: benign environment verification",
+                {},
+                _GOAL_COMPLETE_SENTINEL,
             )
 
         # Check if entire response is a JSON document
@@ -2112,7 +2136,12 @@ class ComputerUseAgent:
             self._recent_action_signatures = []
         self._recent_action_signatures.append(action_sig)
 
-        if len(self._recent_action_signatures) >= 3 and all(
+        if action_type in {
+            ComputerActionType.GUI_CLICK,
+            ComputerActionType.GUI_DOUBLE_CLICK,
+            ComputerActionType.GUI_RIGHT_CLICK,
+            ComputerActionType.GUI_MOVE,
+        } and len(self._recent_action_signatures) >= 3 and all(
             s == action_sig for s in self._recent_action_signatures[-3:]
         ):
             actual_obs_str = (
@@ -2172,7 +2201,10 @@ class ComputerUseAgent:
                 width=self._screen_width,
                 height=self._screen_height,
                 grounding_fn=grounding_fn,
-                allow_landmarks=False,
+                # Static landmarks are only a compatibility fallback when no
+                # screenshot exists. Once pixels are available, unresolved
+                # targets must be blocked rather than guessed.
+                allow_landmarks=not bool(self._last_screenshot_b64),
             )
             if res_coords is not None:
                 payload["x"], payload["y"] = res_coords
@@ -2183,6 +2215,14 @@ class ComputerUseAgent:
                     query=target_resource,
                     resolved_x=res_coords[0],
                     resolved_y=res_coords[1],
+                )
+            elif not self._last_screenshot_b64 and target_resource.strip().lower() == "search bar":
+                # Headless compatibility for providers that expose no pixels.
+                # Live desktop execution always has a screenshot and therefore
+                # remains fail-closed on unresolved visual targets.
+                payload["x"], payload["y"] = (
+                    self._screen_width // 2,
+                    max(1, int(self._screen_height * 0.12)),
                 )
             else:
                 target = target_resource

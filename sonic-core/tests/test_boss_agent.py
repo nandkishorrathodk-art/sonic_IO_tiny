@@ -426,4 +426,3 @@ async def test_boss_final_report_synthesis():
         assert "Full audit report" in report.findings_summary
         assert report.duration_seconds >= 0.0
         assert len(report.thinking_log) >= 2
-

@@ -186,6 +186,27 @@ async def test_grounding_clean_failure_without_landmarks():
     assert res_num == (300, 200)
 
 
+def test_grounding_never_uses_landmarks_when_pixels_exist():
+    """Live pixels require VLM/direct coordinates even for legacy callers."""
+    from sonic.computer_use.grounding import resolve_ui_target
+
+    assert resolve_ui_target(
+        "connect wallet",
+        screenshot_b64="not-a-real-image",
+        allow_landmarks=True,
+    ) is None
+
+
+def test_boss_parallel_worker_budget_is_explicit_and_bounded():
+    """Boss exposes a configured concurrency budget rather than a fixed wave size."""
+    boss = BossAgent(
+        computer_provider=MagicMock(),
+        llm_router=MagicMock(),
+        max_parallel_workers=2,
+    )
+    assert boss.max_parallel_workers == 2
+
+
 def test_replan_trigger_negation_awareness():
     """Verify that negated vulnerability claims do NOT trigger NEW_HIGH_CONFIDENCE_FINDING."""
     from sonic.agents.replan import ReplanTrigger
@@ -289,4 +310,3 @@ def test_command_parser_no_arbitrary_tuln_flag_injection():
     )
     assert "-tuln" not in payload.get("command", "")
     assert payload["command"] == "which gcc && gcc || clang"
-

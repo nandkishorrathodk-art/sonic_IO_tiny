@@ -102,6 +102,7 @@ def test_is_action_prompt_conversational_greetings():
     """Proves conversational greetings and questions are NOT routed to visual ComputerUseAgent."""
     conversational_inputs = [
         "hi sonic",
+        "buddy",
         "hi sonic ?",
         "hello sonic",
         "hey sonic",
@@ -346,6 +347,5 @@ async def test_run_prompt_reasoning_routes_simple_to_computer_use_agent(monkeypa
     # ComputerUseAgent should have been called
     mock_agent_cls.assert_called_once()
     assert state["status"] == "IDLE"
-
 
 

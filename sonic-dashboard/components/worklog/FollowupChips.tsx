@@ -4,10 +4,8 @@ import React from "react";
 import {
   Search,
   Globe,
-  Zap,
   Key,
   Flame,
-  Terminal,
   ChevronRight,
   Shield,
   Sparkles,
@@ -25,6 +23,12 @@ interface Suggestion {
 }
 
 export function FollowupChips({ onSelect, contextText = "" }: FollowupChipsProps) {
+  const lowerContext = contextText.toLowerCase();
+  const isConversationalResponse =
+    /\b(?:standby|online|standing by|no active (?:task|mission)|waiting for|how can i assist)\b/.test(lowerContext) &&
+    !/\b(?:target|port|scan|vulnerability|endpoint|service)\b/.test(lowerContext);
+  if (isConversationalResponse) return null;
+
   const suggestions = getDynamicSuggestions(contextText);
 
   return (
@@ -63,8 +67,8 @@ function getDynamicSuggestions(context: string): Suggestion[] {
     return [
       {
         icon: <Search className="w-3 h-3" />,
-        label: "Deep Nmap Port Scan",
-        prompt: "Run an authentic Nmap service scan with version detection on the target host.",
+        label: "Inspect Open Ports",
+        prompt: "Inspect the supplied target's open ports and service responses using the safest direct method available.",
       },
       {
         icon: <Globe className="w-3 h-3" />,
@@ -72,9 +76,9 @@ function getDynamicSuggestions(context: string): Suggestion[] {
         prompt: "Crawl web endpoints on open HTTP/HTTPS ports and map attack surface.",
       },
       {
-        icon: <Zap className="w-3 h-3" />,
-        label: "Intercept in Burp Suite",
-        prompt: "Launch Chromium configured to proxy traffic through Burp Suite on 127.0.0.1:8080.",
+        icon: <Shield className="w-3 h-3" />,
+        label: "Inspect Service Responses",
+        prompt: "Inspect the discovered services directly and compare their real responses for useful attack-surface evidence.",
       },
     ];
   }
@@ -93,9 +97,9 @@ function getDynamicSuggestions(context: string): Suggestion[] {
         prompt: "Test authenticated API endpoints for IDOR (Insecure Direct Object Reference) and role escalation.",
       },
       {
-        icon: <Zap className="w-3 h-3" />,
-        label: "Intercept Request in Burp",
-        prompt: "Send auth request to Burp Suite Repeater for tamper testing.",
+        icon: <Shield className="w-3 h-3" />,
+        label: "Verify Authorization Boundaries",
+        prompt: "Use the observed authentication flow to verify authorization boundaries and report only reproduced evidence.",
       },
     ];
   }
@@ -109,11 +113,6 @@ function getDynamicSuggestions(context: string): Suggestion[] {
         prompt: "Crawl the web application routes, forms, and hidden parameters.",
       },
       {
-        icon: <Zap className="w-3 h-3" />,
-        label: "Route Traffic to Burp Proxy",
-        prompt: "Launch Chromium with proxy set to 127.0.0.1:8080 to intercept HTTP/HTTPS requests in Burp Suite.",
-      },
-      {
         icon: <Shield className="w-3 h-3" />,
         label: "Inspect Security Headers",
         prompt: "Analyze HTTP response security headers (CSP, HSTS, CORS, X-Frame-Options).",
@@ -121,7 +120,7 @@ function getDynamicSuggestions(context: string): Suggestion[] {
     ];
   }
 
-  // Default security testing suggestions
+  // Default suggestions remain target-agnostic and never launch a named tool.
   return [
     {
       icon: <Search className="w-3 h-3" />,
@@ -129,14 +128,9 @@ function getDynamicSuggestions(context: string): Suggestion[] {
       prompt: "Perform complete attack surface enumeration and discover active services in the sandbox.",
     },
     {
-      icon: <Zap className="w-3 h-3" />,
-      label: "Launch Burp Suite & Browser",
-      prompt: "Open Chromium and launch Burp Suite side-by-side on the graphical desktop.",
-    },
-    {
-      icon: <Terminal className="w-3 h-3" />,
-      label: "Check Sandbox Environment",
-      prompt: "Inspect sandbox terminal environment, network interfaces, and installed security tools.",
+      icon: <Globe className="w-3 h-3" />,
+      label: "Inspect a Supplied Target",
+      prompt: "Observe the supplied target and determine the most direct evidence-backed next step.",
     },
   ];
 }

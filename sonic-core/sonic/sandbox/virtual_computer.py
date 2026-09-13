@@ -16,6 +16,7 @@ import asyncio
 import json
 import os
 import shutil
+import tempfile
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -421,6 +422,9 @@ class LocalSandbox(VirtualComputer):
     def __init__(self, allow_host_execution: bool = False):
         self.allow_host_execution = allow_host_execution
         self.state = WorkspaceState.RUNNING
+        configured_dir = os.environ.get("SONIC_LOCAL_SANDBOX_DIR")
+        self.base_dir = Path(configured_dir or (Path(tempfile.gettempdir()) / "sonic-local-sandbox")).resolve()
+        self.base_dir.mkdir(parents=True, exist_ok=True)
 
     async def initialize(self) -> bool:
         return True

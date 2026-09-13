@@ -81,10 +81,14 @@ export function ComputerSurface({
   };
 
   useEffect(() => {
+    // VNC Stream is already live and must not trigger background screenshot
+    // capture. Snapshot polling is opt-in so opening the workstation or having
+    // a conversational session never observes the desktop implicitly.
+    if (useStream) return;
     fetchScreenshot();
     const interval = setInterval(fetchScreenshot, 3000);
     return () => clearInterval(interval);
-  }, [sessionId]);
+  }, [sessionId, useStream]);
 
   // Auto-scroll the command log to the newest line.
   useEffect(() => {

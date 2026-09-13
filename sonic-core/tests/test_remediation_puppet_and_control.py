@@ -282,21 +282,22 @@ def test_replan_trigger_broad_offensive_coverage():
 
 
 def test_boss_target_agnostic_fallback_decomposition():
-    """Verify fallback decomposition tailors sub-tasks to target domain and records thinking."""
+    """Fallback stays adaptive instead of forcing a domain-specific pipeline."""
     from sonic.computer_use.boss import BossAgent
 
     boss = BossAgent(computer_provider=MagicMock(), llm_router=MagicMock())
 
-    # Binary target
     phase_bin = boss._fallback_decomposition("Analyze /tmp/firmware.bin and reverse engineer the key")
     assert phase_bin.phase_number == 1
-    assert len(phase_bin.sub_missions) >= 2
-    assert any("binary" in sm.goal.lower() or "checksec" in sm.goal.lower() for sm in phase_bin.sub_missions)
+    assert len(phase_bin.sub_missions) == 1
+    assert phase_bin.sub_missions[0].id == "adaptive-investigator"
+    assert "predefined tool sequence" in phase_bin.sub_missions[0].goal
     assert len(boss.thinking_log) >= 1
 
-    # Network target
     phase_net = boss._fallback_decomposition("Scan network subnet 10.0.0.0/24 for active hosts")
-    assert any("port" in sm.goal.lower() or "host" in sm.goal.lower() for sm in phase_net.sub_missions)
+    assert len(phase_net.sub_missions) == 1
+    assert phase_net.sub_missions[0].depends_on == []
+    assert phase_net.name == "Adaptive Investigation (Fallback)"
 
 
 def test_command_parser_no_arbitrary_tuln_flag_injection():

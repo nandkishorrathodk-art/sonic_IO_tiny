@@ -631,36 +631,34 @@ Rules:
     def _fallback_decomposition(self, objective: str) -> Phase:
         """Provide a tool-agnostic fallback when strategic LLM planning fails.
 
-        This deliberately does not infer an application, scanner, protocol, or
-        exploit recipe from keywords. Workers receive bounded observation and
-        evidence tasks and choose their own modality from live state.
+        This deliberately does not infer an application, scanner, protocol,
+        target class, or exploit recipe from keywords. A single adaptive worker
+        receives the original objective and must choose its next action from
+        live state, then replan when evidence contradicts its hypothesis.
+        Splitting this into a fixed "observe then test" chain would turn the
+        failure path into a scripted puppet.
         """
         budget = max(1, min(int(self.sub_agent_steps), 8))
-        objective_lower = objective.lower()
-        if any(token in objective_lower for token in ("firmware", ".bin", ".elf", ".exe", "reverse")):
-            target_context = "target binary/artifact"
-        elif any(token in objective_lower for token in ("network", "subnet", "cidr", "host", "service")):
-            target_context = "target host/service surface"
-        else:
-            target_context = "target surface"
         sub_missions = [
             SubMission(
-                id="fallback-observe",
-                goal=f"Observe and characterize the {target_context} relevant to this objective, recording only live evidence: {objective}",
-                max_steps=budget,
-                priority=2,
-            ),
-            SubMission(
-                goal=f"Use the observations to test the highest-value hypothesis and verify the result without assumptions on the {target_context}: {objective}",
+                id="adaptive-investigator",
+                goal=(
+                    "Pursue this objective autonomously from the current live state: "
+                    f"{objective}. First establish the smallest useful evidence, "
+                    "choose the least-assumptive execution surface, form a testable "
+                    "hypothesis, and adapt after every result. Do not follow a "
+                    "predefined tool sequence. Record only reproduced evidence and "
+                    "stop when the objective is verified or no safe progress remains."
+                ),
                 max_steps=budget,
                 priority=1,
-                depends_on=["fallback-observe"],
             ),
         ]
 
         thinking_text = (
-            f"LLM strategic decomposition unavailable; activated a tool-agnostic "
-            f"live-observation fallback with {len(sub_missions)} bounded sub-tasks."
+            "LLM strategic decomposition unavailable; delegated the objective to "
+            "one bounded adaptive investigator rather than activating a fixed "
+            "observation/test pipeline."
         )
 
         self.thinking_log.append(BossThinking(
@@ -672,7 +670,7 @@ Rules:
 
         return Phase(
             phase_number=1,
-            name="Deterministic Pipeline (Fallback)",
+            name="Adaptive Investigation (Fallback)",
             thinking=thinking_text,
             sub_missions=sub_missions,
         )

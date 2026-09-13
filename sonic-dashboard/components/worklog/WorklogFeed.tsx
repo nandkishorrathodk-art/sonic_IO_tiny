@@ -37,7 +37,6 @@ import { MarkdownText } from "./MarkdownText";
 import { ThinkingBlock } from "./ThinkingBlock";
 import { CommandBlock } from "./CommandBlock";
 import { FileActionBlock } from "./FileActionBlock";
-import { FollowupChips } from "./FollowupChips";
 
 type Mode = "Normal" | "Autonomous" | "Pair-Program";
 const MODES: Mode[] = ["Normal", "Autonomous", "Pair-Program"];
@@ -426,20 +425,6 @@ export function WorklogFeed({
     }
   };
 
-  const handleTopicClick = (tagPrompt: string) => {
-    setPromptText(tagPrompt);
-    textareaRef.current?.focus();
-  };
-
-  // Find the index of the last response item to display follow-ups underneath
-  let lastResponseIdx = -1;
-  for (let i = displayItems.length - 1; i >= 0; i--) {
-    if (displayItems[i].type === "response" || displayItems[i].title === "SONIC Response") {
-      lastResponseIdx = i;
-      break;
-    }
-  }
-
 
   return (
     <div className="flex flex-col h-full bg-ink-900 text-slate-200 overflow-hidden font-sans">
@@ -691,8 +676,6 @@ export function WorklogFeed({
             if (item.type === "response" || item.title === "SONIC Response") {
               const responseText = item.content || "";
               const isCopied = copiedId === itemId;
-              const isLast = idx === lastResponseIdx;
-
               return (
                 <div key={itemId} className="space-y-1.5 my-2.5 animate-fade-in-up">
                   <div className="flex justify-start pr-4">
@@ -729,12 +712,6 @@ export function WorklogFeed({
                     </div>
                   </div>
 
-                  {/* Contextual Smart Follow-up Chips directly under latest response */}
-                  {isLast && (
-                    <div className="pl-1">
-                      <FollowupChips onSelect={handleTopicClick} contextText={responseText} />
-                    </div>
-                  )}
                 </div>
               );
             }

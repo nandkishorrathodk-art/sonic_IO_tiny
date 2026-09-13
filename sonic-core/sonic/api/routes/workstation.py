@@ -1885,11 +1885,11 @@ def _is_complex_or_multi_part_objective(prompt: str) -> bool:
         return True
     # Security assessments, audits, vulnerabilities, multi-task goals
     complex_keywords = (
-        "find", "audit", "investigate", "test for", "vulnerability", "sqli",
+        "audit", "investigate", "test for", "vulnerability", "sqli",
         "sql injection", "xss", "recon", "reconnaissance", "attack surface",
         "enumerate", "penetration", "exploit", "assess", "scan and",
-        "check all", "analyze", "analysis", "review", "inspect", "deep dive",
-        "program", "source code", "binary", "executable", "application",
+        "check all", "deep dive", "source code", "binary", "executable",
+        "forensics", "reverse engineer",
     )
     if any(k in p_lower for k in complex_keywords):
         return True

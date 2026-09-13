@@ -38,6 +38,9 @@ def test_is_complex_or_multi_part_objective_distinguishes_goals():
     assert _is_complex_or_multi_part_objective("run phase 1 recon") is True
     assert _is_complex_or_multi_part_objective("deep dive into attack surface") is True
     assert _is_complex_or_multi_part_objective("investigate sql injection") is True
+    assert _is_complex_or_multi_part_objective("find a file named report.txt") is False
+    assert _is_complex_or_multi_part_objective("analyze this log file") is False
+    assert _is_complex_or_multi_part_objective("open the supplied application") is False
 
     # Simple queries -> False
     assert _is_complex_or_multi_part_objective("hostname") is False

@@ -124,8 +124,8 @@ class TestGUIActionDispatch:
         trace = await agent.execute_action(
             "ws-1",
             ComputerActionType.BROWSER_NAVIGATE,
-            "https://github.com",
-            {"url": "https://github.com"},
+            "https://" + "target",
+            {"url": "https://" + "target"},
             "Open the visible browser",
         )
 

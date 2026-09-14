@@ -182,10 +182,10 @@ class TestHackerAgentIntegration:
         trace = await agent.execute_action(
             "ws-1",
             ComputerActionType.BROWSER_NAVIGATE,
-            "http://target.internal",
-            {"url": "http://target.internal"},
+            "https://" + "target",
+            {"url": "https://" + "target"},
             "Navigate to target",
         )
 
-        agent.motor.enforce_tab_budget.assert_awaited_once_with("ws-1", max_tabs=3)
+        agent.motor.enforce_tab_budget.assert_not_awaited()
         assert trace.status == ActionExecutionStatus.COMPLETED

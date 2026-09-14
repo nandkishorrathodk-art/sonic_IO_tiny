@@ -10,6 +10,7 @@ Daytona Cloud is offline, unconfigured, or in development/self-host mode.
 from __future__ import annotations
 
 import asyncio
+import base64
 import os
 import shlex
 import shutil
@@ -100,11 +101,27 @@ class DockerContainerSandbox:
         return DockerContainerPreview(port)
 
     async def screenshot(self) -> str:
-        """Take a screenshot of the container (placeholder for compatibility)."""
-        # This is a placeholder for screenshot functionality
-        # In a real implementation, this would capture the graphical display
-        return ""
+        """Capture the real X11 frame as base64, or return empty on failure."""
+        if not shutil.which("docker"):
+            return ""
+        command = (
+            "DISPLAY=${DISPLAY:-:99} scrot -o /tmp/sonic_adapter_screen.png 2>/dev/null || "
+            "DISPLAY=${DISPLAY:-:99} import -window root /tmp/sonic_adapter_screen.png 2>/dev/null; "
+            "base64 -w0 /tmp/sonic_adapter_screen.png 2>/dev/null"
+        )
+        result = await self.process.exec(command, timeout=15)
+        if result.exit_code != 0:
+            logger.warning("docker_sandbox_screenshot_failed", error=result.error)
+            return ""
+        encoded = result.result.strip()
+        if len(encoded) < 100:
+            return ""
+        try:
+            base64.b64decode(encoded, validate=True)
+        except Exception:
+            logger.warning("docker_sandbox_screenshot_invalid_base64")
+            return ""
+        return encoded
 
     async def delete(self) -> None:
         pass
-

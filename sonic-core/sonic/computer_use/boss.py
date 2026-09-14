@@ -93,6 +93,10 @@ class BossAgent:
     ):
         self.computer = computer_provider
         self.llm_router = llm_router
+        if safety is None:
+            from sonic.safety.action_policy import ActionPolicy
+
+            safety = ActionPolicy(tenant_id=tenant_id)
         self.safety = safety
         self.security_tools = security_tools or {}
         self.tenant_id = tenant_id
@@ -830,6 +834,12 @@ Rules:
             except asyncio.TimeoutError:
                 logger.warning("sub_agent_timed_out", sub_id=sub_mission.id, agent_num=sub_agent_num)
                 traces = getattr(agent, "history", [])
+                return SubMissionResult(
+                    sub_mission_id=sub_mission.id, goal=sub_mission.goal, traces=traces,
+                    findings_summary="SubAgent timed out before objective verification.",
+                    success=False, status="TIMED_OUT", evidence_verified=False,
+                    actions_taken=len(traces), duration_seconds=round(time.perf_counter() - t_start, 2),
+                )
 
             duration = round(time.perf_counter() - t_start, 2)
 
@@ -896,6 +906,7 @@ Rules:
                     str(_trace_value(t, "status", "")) == "VERIFIED"
                     for t in traces
                 ),
+                status="SUCCESS" if is_successful else "FAILED",
             )
 
         except Exception as e:
@@ -1163,16 +1174,16 @@ Rules:
     def _result_has_verified_trace(result: SubMissionResult) -> bool:
         """Recognize independently observed, successful sandbox evidence."""
         for trace in result.traces:
+            explicit_evidence = getattr(trace, "verification_evidence", None)
+            if explicit_evidence is None and isinstance(trace, dict):
+                explicit_evidence = trace.get("verification_evidence")
             status = getattr(trace, "status", None)
             if status is None and isinstance(trace, dict):
                 status = trace.get("status")
             status_text = str(status or "").upper()
-            observation = getattr(trace, "actual_observation", None)
-            if observation is None and isinstance(trace, dict):
-                observation = trace.get("actual_observation") or trace.get("observation")
-            if status_text == "VERIFIED" or (
-                status_text in {"SUCCESS", "COMPLETED"}
-                and bool(str(observation or "").strip())
+            if (
+                status_text == "VERIFIED"
+                and str(explicit_evidence or "").strip()
             ):
                 return True
         return False

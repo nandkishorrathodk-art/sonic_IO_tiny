@@ -264,6 +264,7 @@ class DynamicExecutionAgent(BaseAgent):
             "status_code": result.status_code,
             "url": result.url,
             "signals": result.signals,
+            "status": "candidate",
         }
 
     async def _persist_finding(self, finding: dict, engagement_id: str) -> int:

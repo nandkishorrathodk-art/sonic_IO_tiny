@@ -51,6 +51,7 @@ from sonic.mission_engine.executor import MissionToolExecutor
 from sonic.mission_engine.planner import MissionPlanner, PlannedAction
 from sonic.mission_engine.tool_registry import ToolRisk
 from sonic.safety.scope import SafetyVerdict, get_scope_checker
+from sonic.safety.runtime_stop import get_runtime_stop_state
 
 logger = get_logger(__name__)
 
@@ -58,6 +59,15 @@ router = APIRouter()
 
 _primary_computer_instance: Any | None = None
 _daytona_provider_instance: Any | None = None
+
+
+def _assert_runtime_execution_enabled(tenant_id: str) -> None:
+    stop_state = get_runtime_stop_state()
+    if stop_state.is_stopped(tenant_id):
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"Execution stopped by runtime kill switch: {stop_state.reason(tenant_id)}",
+        )
 
 
 def get_computer() -> Any:
@@ -95,10 +105,11 @@ class ExecuteCommandRequest(BaseModel):
 
 
 class DesktopActionRequest(BaseModel):
-    action: str  # click, double_click, type, keypress, move, open_app, close_app
+    action: str  # click, double_click, type, keypress, move, drag, open_app, close_app
     target: str | None = None
     app_name: str | None = None
     coordinates: tuple[int, int] | None = None
+    destination_coordinates: tuple[int, int] | None = None
     text: str | None = None
     key: str | None = None
     session_id: str | None = "default"
@@ -236,7 +247,7 @@ def _get_or_create_session(tenant_id: str, session_id: str = "default") -> dict[
         _tenant_workstations[tenant_id] = {}
 
     env_sandbox_id = os.environ.get("SONIC_DEFAULT_WORKSPACE_ID", os.environ.get("DAYTONA_SANDBOX_ID", "")).strip()
-    active_ws = env_sandbox_id
+    active_ws = env_sandbox_id if os.environ.get("SONIC_ALLOW_SHARED_WORKSTATION", "0") == "1" else ""
     if tenant_id in _tenant_workstations and "default" in _tenant_workstations[tenant_id]:
         def_desk = _tenant_workstations[tenant_id]["default"].get("desktop", {})
         active_ws = str(def_desk.get("workspace_id") or def_desk.get("sandbox_id") or "") or active_ws
@@ -258,15 +269,15 @@ def _get_or_create_session(tenant_id: str, session_id: str = "default") -> dict[
             "evidence": [],
             "desktop": {
                 "os_name": "Linux Cyber Workstation (Docker XFCE4)",
-                "workspace_id": active_ws or "sonic-desktop-workstation",
-                "sandbox_id": active_ws or "sonic-desktop-workstation",
+                "workspace_id": active_ws,
+                "sandbox_id": active_ws,
                 "image": "sonic-workstation:latest",
                 "ssh_command": "",
                 "display": ":99",
                 "vnc_port": 5900,
                 "novnc_port": 6080,
-                "novnc_url": "http://127.0.0.1:6080/vnc.html?autoconnect=true&resize=scale",
-                "status": "LIVE",
+                "novnc_url": "" if not active_ws else "http://127.0.0.1:6080/vnc.html?autoconnect=true&resize=scale",
+                "status": "LIVE" if active_ws else "NO_ACTIVE_WORKSPACE",
                 "active_window": "Desktop",
                 "resolution": {"width": 1280, "height": 800},
                 "running_apps": [],
@@ -349,16 +360,13 @@ def _get_or_create_session(tenant_id: str, session_id: str = "default") -> dict[
 
 def _session_workspace_id(user: User, session_id: str) -> str:
     """Return only a workspace explicitly owned by this tenant/session."""
-    # When not in Daytona cloud mode, always bind to the local Docker workstation container
+    # Local Docker workspaces are tenant-bound only after explicit provisioning.
     if os.environ.get("SONIC_USE_DAYTONA_CLOUD") != "1":
         docker_ws = os.environ.get("SONIC_DOCKER_WORKSTATION_CONTAINER", "sonic-desktop-workstation").strip()
         state = _tenant_workstations.get(user.email, {}).get(session_id)
-        if state:
-            desk = state.setdefault("desktop", {})
-            desk["workspace_id"] = docker_ws
-            desk["sandbox_id"] = docker_ws
-            desk["os_name"] = "Linux Cyber Workstation (Docker XFCE4)"
-        return docker_ws
+        if state and state.get("desktop", {}).get("workspace_id") == docker_ws:
+            return docker_ws
+        return ""
 
     state = _tenant_workstations.get(user.email, {}).get(session_id)
     if state:
@@ -384,15 +392,6 @@ def _session_workspace_id(user: User, session_id: str) -> str:
             state.setdefault("desktop", {})["workspace_id"] = env_sandbox_id
             state.setdefault("desktop", {})["sandbox_id"] = env_sandbox_id
         return env_sandbox_id
-
-    # Fallback to local Docker Workstation container
-    docker_ws = os.environ.get("SONIC_DOCKER_WORKSTATION_CONTAINER", "sonic-desktop-workstation").strip()
-    if docker_ws:
-        if state:
-            state.setdefault("desktop", {})["workspace_id"] = docker_ws
-            state.setdefault("desktop", {})["sandbox_id"] = docker_ws
-            state.setdefault("desktop", {})["os_name"] = "Linux Workstation (Docker XFCE4)"
-        return docker_ws
 
     return ""
 
@@ -534,7 +533,7 @@ async def _run_mission_preflight(tenant_id: str, session_id: str, mission_id: st
         logger.warning("mission_security_tools_registry_failed", error=str(registry_err))
         security_tools = None
     mission_target = str(state.get("target_sandbox", {}).get("target", "") or mission.get("target", "") or "").strip()
-    executor = MissionToolExecutor(comp, security_tools=security_tools, scoped_target=mission_target)
+    executor = MissionToolExecutor(comp, security_tools=security_tools, scoped_target=mission_target, tenant_id=user.email)
 
     # Concrete probes generated by the planner are surfaced immediately as
     # operator-approval proposals — the operator sees real commands, not an
@@ -1006,6 +1005,7 @@ async def provision_target_sandbox(
         "workspace_id": workspace.id,
         "sandbox_id": workspace.id,
         "target": target_host,
+        "scope_config": req.scope_config,
         "image": workspace.image,
         "status": workspace.status.value,
         "scope_verified": True,
@@ -1044,6 +1044,7 @@ async def execute_target_sandbox_command(
     user: User = Depends(require_operator),
 ):
     """Execute an approved command against this session's scoped target lab."""
+    _assert_runtime_execution_enabled(user.email)
     state = _get_or_create_session(user.email, session_id)
     target_box = state["target_sandbox"]
     workspace_id = _session_target_id(user, session_id)
@@ -1153,6 +1154,7 @@ async def execute_desktop_action(
     user: User = Depends(require_operator),
 ):
     """Dispatches a real mouse, keyboard, or window action to the graphical desktop."""
+    _assert_runtime_execution_enabled(user.email)
     try:
         action_type = GUIActionType(req.action.strip().upper())
     except (AttributeError, ValueError) as exc:
@@ -1172,11 +1174,11 @@ async def execute_desktop_action(
 
     workspace_id = _session_workspace_id(user, req.session_id or "default")
     if not workspace_id:
-        # No provisioned workstation: report success with a NO_DISPLAY
-        # observation so the desktop UI degrades gracefully instead of 409.
+        # Keep the UI responsive, but never report an action as successful when
+        # there is no desktop substrate to receive it.
         _get_or_create_session(user.email, req.session_id or "default")["desktop"]["active_window"] = "None"
         return {
-            "status": "success",
+            "status": "BLOCKED",
             "action": req.action,
             "active_window": "None",
             "observation": {
@@ -1190,8 +1192,28 @@ async def execute_desktop_action(
             },
         }
 
-    if action_type in {GUIActionType.CLICK, GUIActionType.DOUBLE_CLICK, GUIActionType.MOVE} and not req.coordinates:
+    coordinate_actions = {
+        GUIActionType.CLICK,
+        GUIActionType.DOUBLE_CLICK,
+        GUIActionType.RIGHT_CLICK,
+        GUIActionType.MOVE,
+        GUIActionType.DRAG,
+    }
+    if action_type in coordinate_actions and not req.coordinates:
         raise HTTPException(status_code=400, detail=f"Desktop action {action_type.value} requires coordinates")
+    if req.coordinates:
+        x, y = req.coordinates
+        screen = await comp.screenshot(workspace_id=workspace_id)
+        width, height = screen.width, screen.height
+        if width <= 0 or height <= 0:
+            raise HTTPException(status_code=503, detail="Desktop did not report valid screen dimensions")
+        points = [(x, y)]
+        if action_type == GUIActionType.DRAG:
+            if not req.destination_coordinates:
+                raise HTTPException(status_code=400, detail="Desktop DRAG requires destination_coordinates")
+            points.append(req.destination_coordinates)
+        if any(px < 0 or py < 0 or px >= width or py >= height for px, py in points):
+            raise HTTPException(status_code=400, detail=f"Desktop coordinates are outside the {width}x{height} screen bounds")
     if action_type == GUIActionType.TYPE and not req.text:
         raise HTTPException(status_code=400, detail="Desktop TYPE action requires text")
     if action_type == GUIActionType.KEYPRESS and not req.key:
@@ -1202,6 +1224,8 @@ async def execute_desktop_action(
         action=action_type,
         x=x,
         y=y,
+        x2=req.destination_coordinates[0] if req.destination_coordinates else None,
+        y2=req.destination_coordinates[1] if req.destination_coordinates else None,
         text=req.text,
         key=req.key,
         app_name=req.app_name or req.target,
@@ -1244,9 +1268,11 @@ async def get_desktop_screenshot(
 
 
 class WorkstationGUIActionRequest(BaseModel):
-    action: str = Field(..., description="CLICK, DOUBLE_CLICK, TYPE, KEYPRESS, MOVE, SCROLL, OPEN_APP, CLOSE_APP")
+    action: str = Field(..., description="CLICK, DOUBLE_CLICK, TYPE, KEYPRESS, MOVE, DRAG, SCROLL, OPEN_APP, CLOSE_APP")
     x: int | None = None
     y: int | None = None
+    x2: int | None = None
+    y2: int | None = None
     text: str | None = None
     key: str | None = None
     app_name: str | None = None
@@ -1260,6 +1286,7 @@ async def dispatch_workstation_gui_action(
     user: User = Depends(require_operator),
 ):
     """Dispatches real interactive mouse/keyboard/app actions directly into the desktop for human takeover."""
+    _assert_runtime_execution_enabled(user.email)
     comp = get_daytona_computer()
 
     try:
@@ -1280,11 +1307,34 @@ async def dispatch_workstation_gui_action(
     target_id = _session_workspace_id(user, session_id)
     if not target_id:
         raise HTTPException(status_code=400, detail="No active desktop session.")
+    coordinate_actions = {
+        GUIActionType.CLICK,
+        GUIActionType.DOUBLE_CLICK,
+        GUIActionType.RIGHT_CLICK,
+        GUIActionType.MOVE,
+        GUIActionType.DRAG,
+    }
+    if action_type in coordinate_actions:
+        if req.x is None or req.y is None:
+            raise HTTPException(status_code=400, detail=f"Desktop {action_type.value} requires x and y coordinates")
+        if action_type == GUIActionType.DRAG and (req.x2 is None or req.y2 is None):
+            raise HTTPException(status_code=400, detail="Desktop DRAG requires x2 and y2 destination coordinates")
+        screen = await comp.screenshot(workspace_id=target_id)
+        width, height = screen.width, screen.height
+        if width <= 0 or height <= 0:
+            raise HTTPException(status_code=503, detail="Desktop did not report valid screen dimensions")
+        points = [(req.x, req.y)]
+        if action_type == GUIActionType.DRAG:
+            points.append((req.x2, req.y2))
+        if any(x < 0 or y < 0 or x >= width or y >= height for x, y in points):
+            raise HTTPException(status_code=400, detail=f"Desktop coordinates are outside the {width}x{height} screen bounds")
 
     action_obj = GUIAction(
         action=action_type,
         x=req.x,
         y=req.y,
+        x2=req.x2,
+        y2=req.y2,
         text=req.text,
         key=req.key,
         app_name=req.app_name,
@@ -1304,11 +1354,14 @@ async def tile_workstation_desktop(
     """Tiles desktop windows side-by-side (50/50 browser and terminal)."""
     comp = get_daytona_computer()
     target_session = (req.session_id if req and req.session_id else None) or session_id or "default"
-    desktop_id = (
+    requested_desktop_id = (
         (req.desktop_id if req and req.desktop_id else None)
         or desktop_id
-        or _session_workspace_id(user, target_session)
     )
+    owned_desktop_id = _session_workspace_id(user, target_session)
+    if requested_desktop_id and requested_desktop_id != owned_desktop_id:
+        raise HTTPException(status_code=403, detail="Desktop workspace is not owned by this tenant/session")
+    desktop_id = owned_desktop_id
     if not desktop_id:
         raise HTTPException(status_code=400, detail="No active desktop session.")
 
@@ -1459,6 +1512,7 @@ async def execute_workstation_command(
     If compute container is unavailable, FAIL CLOSED with 503.
     """
     logger.info("sandbox_command_execution_requested", user=user.email, command=req.command)
+    _assert_runtime_execution_enabled(user.email)
 
     if not (req.command or "").strip():
         raise HTTPException(status_code=400, detail="Command cannot be empty")
@@ -1611,7 +1665,7 @@ async def open_mission_browser(
         risk=ToolRisk.APPROVAL_REQUIRED,
         requires_approval=True,
     )
-    result = await MissionToolExecutor(get_daytona_computer()).execute(
+    result = await MissionToolExecutor(get_daytona_computer(), tenant_id=user.email).execute(
         action,
         target_workspace_id=_session_target_id(user, session_id),
         desktop_workspace_id=desktop_id,
@@ -1671,7 +1725,7 @@ async def approve_workstation_mission_probe(
         security_tools = None
 
     mission_target = str(state.get("target_sandbox", {}).get("target", "") or mission.get("target", "") or "").strip()
-    executor = MissionToolExecutor(comp, security_tools=security_tools, scoped_target=mission_target)
+    executor = MissionToolExecutor(comp, security_tools=security_tools, scoped_target=mission_target, tenant_id=user.email)
 
     action = PlannedAction(**matching_action_dict)
     tool_name = action.input.get("tool", action.tool)
@@ -1740,6 +1794,15 @@ async def approve_workstation_mission_probe(
 
 def _extract_target_url_or_domain(prompt: str, state: dict[str, Any] | None = None) -> str:
     """Extract domain or URL target from prompt or recent worklog context."""
+    from sonic.computer_use.scope_manifest import parse_scope_document
+
+    manifest = parse_scope_document(prompt)
+    if manifest.program_detected and len(manifest.in_scope_assets) == 1:
+        target = manifest.in_scope_assets[0]
+        if state is not None:
+            state["active_target"] = target
+        return target
+
     url_match = re.search(r"https?://([a-zA-Z0-9.-]+\.[a-zA-Z]{2,})(?:[^\s]*)", prompt)
     if url_match:
         target = url_match.group(1).lower()
@@ -1910,7 +1973,10 @@ def _infer_program_profile(prompt: str, state: dict[str, Any] | None = None) -> 
     vulnerability exists. The Boss can refine it after observing real files
     and runtime behavior in the sandbox.
     """
+    from sonic.computer_use.scope_manifest import parse_scope_document
+
     text = prompt.lower()
+    scope_manifest = parse_scope_document(prompt)
     modalities: list[str] = []
     modality_terms = {
         "SOURCE": ("source", "code", "repository", "repo", ".py", ".js", ".ts", ".go", ".rs"),
@@ -1934,8 +2000,17 @@ def _infer_program_profile(prompt: str, state: dict[str, Any] | None = None) -> 
         "modalities": modalities or ["UNKNOWN"],
         "target": target,
         "objective_present": has_objective,
-        "scope_present": bool(target or (state and state.get("target_sandbox", {}).get("scope_verified"))),
-        "status": "READY_FOR_BOSS" if has_objective else "NEEDS_OBJECTIVE",
+        "scope_present": bool(
+            target
+            or scope_manifest.in_scope_assets
+            or (state and state.get("target_sandbox", {}).get("scope_verified"))
+        ),
+        "scope_manifest": scope_manifest.as_context() if scope_manifest.program_detected else None,
+        "status": (
+            "NEEDS_ASSET_SELECTION"
+            if scope_manifest.program_detected and scope_manifest.requires_asset_selection
+            else ("READY_FOR_BOSS" if has_objective else "NEEDS_OBJECTIVE")
+        ),
         "evidence_basis": "operator_prompt_and_session_state",
     }
 
@@ -2254,6 +2329,27 @@ async def _run_prompt_reasoning(tenant_id: str, session_id: str, prompt: str) ->
     program_profile = _infer_program_profile(prompt, state)
     state["program_profile"] = program_profile
     try:
+        scope_manifest = program_profile.get("scope_manifest")
+        if (
+            action_prompt
+            and scope_manifest
+            and scope_manifest.get("requires_asset_selection")
+            and not state.get("active_target")
+        ):
+            assets = scope_manifest.get("in_scope_assets", [])
+            asset_text = ", ".join(assets[:8]) or "the listed in-scope assets"
+            message = (
+                "I parsed this as a security-program scope document, not as an execution command. "
+                f"Please select one authorized asset before I act: {asset_text}. "
+                "Reference links (GitHub, Etherscan, app stores, and provider documentation) "
+                "will remain passive context unless you explicitly choose an in-scope asset."
+            )
+            state["status"] = "IDLE"
+            state["current_action"] = "Awaiting explicit in-scope asset selection."
+            state["thought_summary"] = message
+            _append_worklog(state, "response", "Scope Intake", message)
+            _persist_workstation_state()
+            return
 
         from sonic.llm.prompts import WORKSTATION_CHAT_SYSTEM
         from sonic.llm.providers.custom import CustomLLMProvider
@@ -2329,7 +2425,12 @@ async def _run_prompt_reasoning(tenant_id: str, session_id: str, prompt: str) ->
                         effective_goal = prompt
 
                         ws_root = "/root" if os.environ.get("SONIC_USE_DAYTONA_CLOUD") != "1" else "/home/daytona"
-                        target_domain_or_ip = _extract_target_url_or_domain(effective_goal, state)
+                        target_box = state.get("target_sandbox", {})
+                        # The provisioned target and scope are authoritative.
+                        # Never let a later free-form prompt retarget the
+                        # autonomous agent to a different host.
+                        target_domain_or_ip = str(target_box.get("target") or "").strip().lower()
+                        verified_scope_config = target_box.get("scope_config")
                         scoped_targets = set()
                         is_private_net = False
                         if target_domain_or_ip:
@@ -2346,6 +2447,8 @@ async def _run_prompt_reasoning(tenant_id: str, session_id: str, prompt: str) ->
                             workspace_root=ws_root,
                             allow_security_tool_targets=scoped_targets,
                             allow_private_networks=is_private_net,
+                            scope_config=verified_scope_config,
+                            scope_checker=get_scope_checker(),
                         )
 
                         async def _record_step_trace(trace: Any) -> None:

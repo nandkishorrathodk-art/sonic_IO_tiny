@@ -3714,8 +3714,14 @@ class ComputerUseAgent:
 
                 if verify_cmd and verify_cmd != "OBSERVE_ONLY" and len(verify_cmd) < 500:
                     try:
-                        res = await self.computer.terminal(workspace_id, verify_cmd)
-                        evidence = (res.stdout.strip() if res.stdout else "") or f"Exit {res.exit_code}"
+                        trace = await self.execute_action(
+                            workspace_id=workspace_id,
+                            action_type=ComputerActionType.TERMINAL_EXEC,
+                            target_resource="verification",
+                            payload={"command": verify_cmd},
+                            predicted_outcome="independent verification output",
+                        )
+                        evidence = trace.actual_observation or f"Exit {trace.exit_code}"
                     except Exception as e:
                         evidence = f"Verify probe failed: {e}"
                 else:
@@ -3737,7 +3743,7 @@ class ComputerUseAgent:
                 verified = "YES" in first_line
             except Exception:
                 ev_lower = evidence.lower()
-                verified = bool(evidence) and "error" not in ev_lower and "traceback" not in ev_lower
+                verified = False
 
             return verified, evidence
 
@@ -3765,26 +3771,23 @@ class ComputerUseAgent:
             return verified, evidence
 
         evidence = ""
+        has_independent_probe = bool(verify_cmd)
         if verify_cmd:
             try:
-                res = await self.computer.terminal(workspace_id, verify_cmd)
-                evidence = (res.stdout.strip() if res.stdout else "") or f"Exit {res.exit_code}"
+                trace = await self.execute_action(
+                    workspace_id=workspace_id,
+                    action_type=ComputerActionType.TERMINAL_EXEC,
+                    target_resource="verification",
+                    payload={"command": verify_cmd},
+                    predicted_outcome="independent verification output",
+                )
+                evidence = trace.actual_observation or f"Exit {trace.exit_code}"
             except Exception as e:
                 evidence = f"Verify probe failed: {e}"
         else:
             obs = await self.observe(workspace_id)
             evidence = f"Re-observed: app={obs.active_application}, term={obs.terminal_output[:120]}"
-            successful_traces = [
-                t for t in getattr(self, "traces", [])
-                if (t.status.value if hasattr(t.status, "value") else str(t.status)) in (
-                    ActionExecutionStatus.COMPLETED.value, ActionExecutionStatus.SUCCESS.value, ActionExecutionStatus.VERIFIED.value,
-                    "COMPLETED", "SUCCESS", "VERIFIED"
-                )
-                and t.actual_observation and len(t.actual_observation.strip()) > 0
-            ]
-            if successful_traces:
-                last_trace = successful_traces[-1]
-                evidence += f" | Last output: {last_trace.actual_observation[:180]}"
+            evidence += " | No independent verification probe was inferred."
 
         ev_lower = evidence.lower()
         # Fail-closed verification: reject dummy/placeholder observations as
@@ -3810,7 +3813,7 @@ class ComputerUseAgent:
             and "exception" not in ev_lower
             and "failed" not in ev_lower
         )
-        verified = _has_concrete_evidence and _no_error_markers
+        verified = has_independent_probe and _has_concrete_evidence and _no_error_markers
         return verified, evidence
 
     def _inject_replan(self, goal: str) -> None:
@@ -3905,6 +3908,9 @@ class ComputerUseAgent:
             if expected == _GOAL_COMPLETE_SENTINEL:
                 verified, evidence = await self.verify_goal(workspace_id, goal)
                 if verified:
+                    if self.traces:
+                        self.traces[-1].verification_evidence = evidence[:500]
+                        self.traces[-1].status = ActionExecutionStatus.VERIFIED
                     logger.info(
                         "mission_goal_complete_verified",
                         step=step,
@@ -3951,7 +3957,8 @@ class ComputerUseAgent:
                     "action": f"{action_type.value} {target} (BLOCKED)",
                     "result": rejection,
                 })
-                # Auto-complete if informational/query goal already has successful execution evidence
+                # Successful output is not independent goal verification. Do
+                # not turn a repeated-action guard into a completion shortcut.
                 has_successful_cmds = any(
                     (t.status.value if hasattr(t.status, "value") else str(t.status)) in ("SUCCESS", "SUCCEEDED", "COMPLETED", "VERIFIED")
                     and t.actual_observation and len(t.actual_observation.strip()) > 0
@@ -3959,9 +3966,10 @@ class ComputerUseAgent:
                 )
                 is_query_goal = any(kw in goal.lower() for kw in ("check", "inspect", "show", "display", "get", "what is", "status", "list", "view", "find", "tell me"))
                 if has_successful_cmds and is_query_goal:
-                    logger.info("mission_auto_completed_after_repeat_on_inspection_goal", goal=goal)
-                    goal_reached = True
-                    break
+                    self.history.append({
+                        "action": "VERIFICATION_REQUIRED",
+                        "result": "A prior action produced output, but the goal is not complete until an independent verification succeeds.",
+                    })
                 self._consecutive_failures += 1
                 if self._consecutive_failures >= self._STUCK_THRESHOLD:
                     self._inject_replan(goal)

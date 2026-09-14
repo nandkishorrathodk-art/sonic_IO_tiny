@@ -353,7 +353,7 @@ Scope: {json.dumps(scope, indent=2)[:500]}
 Create an initial plan with:
 1. Key assumptions about the target
 2. Initial unknowns to investigate
-3. Phased tasks (recon first, then analysis, then testing)
+3. Ordered tasks appropriate to the target modality and objective. Do not assume the target is a web application or force a recon/testing order.
 
 Where a gap exists that no registered scanner covers, prefer a toolsmith or
 method-invention task (agent_type "toolsmith" or "method") over forcing a
@@ -375,7 +375,7 @@ Respond with JSON:
 }}
 
 Valid agent types: {json.dumps(sorted(VALID_AGENT_TYPES))}
-Create 3-6 initial tasks. Start with recon."""
+Create 1-6 initial tasks. The first task should establish the most useful target-specific observation, not a fixed reconnaissance phase."""
 
         try:
             response = await self._think(prompt)
@@ -446,34 +446,34 @@ Create 3-6 initial tasks. Start with recon."""
         """Fallback plan when LLM is unavailable."""
         return {
             "assumptions": [
-                f"{target} is a web application with standard HTTP(S) endpoints",
-                "Standard security headers may or may not be configured",
+                f"The target modality for {target} is not yet established",
+                "The available evidence and scope determine the next safe action",
             ],
             "unknowns": [
-                f"What technology stack does {target} use?",
-                f"What subdomains exist for {target}?",
-                f"What authentication mechanism does {target} use?",
+                f"What modality, entry points, and observable behavior does {target} expose?",
+                f"Which evidence-producing action is safe and relevant for {target}?",
+                "",
             ],
             "tasks": [
                 {
-                    "name": f"Recon: Surface discovery for {target}",
+                    "name": f"Target triage for {target}",
                     "agent_type": "recon",
                     "priority": "high",
                     "depends_on": [],
-                    "payload": {"target": target, "task": "full_recon"},
+                    "payload": {"target": target, "task": "establish_target_modality_and_surface"},
                 },
                 {
                     "name": f"Hypothesis: Vulnerability ideation for {target}",
                     "agent_type": "hypothesis",
                     "priority": "medium",
-                    "depends_on": [f"Recon: Surface discovery for {target}"],
+                    "depends_on": [f"Target triage for {target}"],
                     "payload": {"target": target, "task": "generate_hypotheses"},
                 },
                 {
                     "name": f"Static: Configuration analysis for {target}",
                     "agent_type": "static",
                     "priority": "medium",
-                    "depends_on": [f"Recon: Surface discovery for {target}"],
+                    "depends_on": [f"Target triage for {target}"],
                     "payload": {"target": target, "task": "full_analysis"},
                 },
             ],
@@ -912,10 +912,14 @@ Create 3-6 initial tasks. Start with recon."""
         completed = 0
         failed = 0
         all_findings: list[dict[str, Any]] = []
+        stop_evaluation = None
 
         for _iteration in range(max_iterations):
             dispatchable = self.get_dispatchable_tasks(engagement_id)
             if not dispatchable:
+                stop_evaluation = self._evaluate_stop_condition(state, graph)
+                if stop_evaluation.should_stop:
+                    break
                 if graph.is_complete():
                     break
                 if not graph.get_running_tasks():
@@ -930,14 +934,36 @@ Create 3-6 initial tasks. Start with recon."""
                     res = worker_fn(task_payload)
                     if inspect.isawaitable(res):
                         res = await res
-                    await self.on_task_completed(engagement_id, tid, res or {})
-                    completed += 1
-                    if isinstance(res, dict) and "findings" in res and isinstance(res["findings"], list):
-                        all_findings.extend(res["findings"])
+                    result = res if isinstance(res, dict) else {}
+                    result_status = str(result.get("status", "")).lower()
+                    if result_status in {"failed", "error", "timed_out", "timeout"}:
+                        await self.on_task_failed(engagement_id, tid, error=str(result.get("error") or result.get("reason") or result_status))
+                        failed += 1
+                    elif result_status in {"blocked", "not_executed", "skipped"}:
+                        graph.mark_blocked(tid, str(result.get("reason") or result_status))
+                        failed += 1
+                    elif result_status in {"success", "succeeded", "completed", "verified", "recovered"}:
+                        await self.on_task_completed(engagement_id, tid, result)
+                        completed += 1
+                        if result.get("findings") and isinstance(result["findings"], list):
+                            all_findings.extend(result["findings"])
+                    else:
+                        await self.on_task_failed(
+                            engagement_id,
+                            tid,
+                            error="worker returned no explicit successful status",
+                        )
+                        failed += 1
+                    stop_evaluation = self._evaluate_stop_condition(state, graph)
+                    if stop_evaluation.should_stop:
+                        logger.info("director_stop_condition_reached", engagement_id=engagement_id, condition=stop_evaluation.condition.value)
+                        break
                 except Exception as exc:
                     logger.warning("director_worker_task_failed", task_id=tid, error=str(exc))
                     await self.on_task_failed(engagement_id, tid, error=str(exc))
                     failed += 1
+            if stop_evaluation is not None and stop_evaluation.should_stop:
+                break
 
         return {
             "engagement_id": engagement_id,
@@ -946,6 +972,7 @@ Create 3-6 initial tasks. Start with recon."""
             "findings": all_findings,
             "graph_complete": graph.is_complete(),
             "state_summary": state.summary(),
+            "stop_condition": stop_evaluation.model_dump() if stop_evaluation else None,
         }
 
     # ============================================

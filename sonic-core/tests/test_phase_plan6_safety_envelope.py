@@ -399,9 +399,9 @@ def test_scope_checker_active_rules_enforced():
     ):
         v_term = policy.evaluate("TERMINAL_EXEC", "", {"command": evil})
         assert v_term.allowed is False
-    # Control: private IP (not metadata) remains gated only by the URL filter
+    # Terminal egress is now bound to the active engagement scope too.
     v_ctl = policy.evaluate("TERMINAL_EXEC", "", {"command": "curl http://10.0.0.5/"})
-    assert v_ctl.allowed is True
+    assert v_ctl.allowed is False
+    assert "out of engagement scope" in v_ctl.reason
     v_safe = policy.evaluate("TERMINAL_EXEC", "", {"command": "ls -la /home/sonic/workspace"})
     assert v_safe.allowed is True
-

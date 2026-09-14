@@ -16,6 +16,7 @@ from sonic.computer.daytona_computer import DaytonaComputerProvider
 from sonic.mission_engine.planner import PlannedAction
 from sonic.mission_engine.tool_registry import MissionToolRegistry, ToolPlane, ToolRisk
 from sonic.safety.scope import RiskLevel, SafetyVerdict, get_scope_checker
+from sonic.safety.runtime_stop import get_runtime_stop_state
 
 
 @dataclass
@@ -60,8 +61,15 @@ class MissionToolExecutor:
         "echo ",
     )
 
-    def __init__(self, computer: DaytonaComputerProvider, security_tools: Any | None = None, scoped_target: str | None = None):
+    def __init__(
+        self,
+        computer: DaytonaComputerProvider,
+        security_tools: Any | None = None,
+        scoped_target: str | None = None,
+        tenant_id: str = "default",
+    ):
         self.computer = computer
+        self.tenant_id = tenant_id
         # Optional registry of real security scanners (nmap/nuclei/ffuf/http).
         # When wired, `target_security_scan` dispatches a real in-sandbox scan;
         # when None, it BLOCKS with a clear "not configured" status (never the
@@ -82,12 +90,31 @@ class MissionToolExecutor:
         approved: bool = False,
     ) -> ActionExecutionResult:
         spec = MissionToolRegistry.get(action.tool)
+        tenant_id = str(action.input.get("tenant_id") or self.tenant_id or actor)
+        stop_state = get_runtime_stop_state()
+        if stop_state.is_stopped(tenant_id):
+            return ActionExecutionResult(
+                action_id=action.action_id,
+                tool=action.tool,
+                status="BLOCKED",
+                workspace_id="",
+                output=f"Runtime kill switch asserted: {stop_state.reason(tenant_id)}",
+            )
         workspace_id = target_workspace_id if spec.plane == ToolPlane.TARGET_SANDBOX else desktop_workspace_id
         if not workspace_id:
             return ActionExecutionResult(action_id=action.action_id, tool=action.tool, status="BLOCKED", workspace_id="", output="Required workspace is not provisioned")
 
         if spec.risk == ToolRisk.APPROVAL_REQUIRED and not approved:
             return ActionExecutionResult(action_id=action.action_id, tool=action.tool, status="AWAITING_APPROVAL", workspace_id=workspace_id, output="Operator approval is required before this action can run")
+
+        if stop_state.is_stopped(tenant_id):
+            return ActionExecutionResult(
+                action_id=action.action_id,
+                tool=action.tool,
+                status="BLOCKED",
+                workspace_id=workspace_id,
+                output=f"Runtime kill switch asserted: {stop_state.reason(tenant_id)}",
+            )
 
         try:
             if action.tool in {"target_shell_readonly", "target_shell_approved", "desktop_terminal"}:

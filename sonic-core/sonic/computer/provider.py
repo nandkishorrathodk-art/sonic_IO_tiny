@@ -9,6 +9,7 @@ Applications, Git, Services, and Process management on top of ComputeProviders.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+import shlex
 from typing import Any
 
 from sonic.computer.models import (
@@ -469,7 +470,11 @@ class UnifiedComputerProvider(ComputerProvider):
 
     async def launch_application(self, workspace_id: str, app_name: str, actor: str = "operator") -> bool:
         ws = self._require_workspace(workspace_id)
-        result = await self.compute.execute(workspace_id, f"DISPLAY=:99 {app_name} >/tmp/sonic-app.log 2>&1 &")
+        parts = shlex.split(app_name)
+        if not parts:
+            return False
+        command = f"DISPLAY=:99 nohup {' '.join(shlex.quote(part) for part in parts)} >/tmp/sonic-app.log 2>&1 &"
+        result = await self.compute.execute(workspace_id, command)
         self._record_audit(
             session_id=actor,
             workspace_id=workspace_id,
@@ -478,13 +483,15 @@ class UnifiedComputerProvider(ComputerProvider):
             action="LAUNCH_APP",
             application=app_name,
             resource=app_name,
-            result="SUCCESS",
+            result="SUCCESS" if result.exit_code == 0 else f"EXIT_{result.exit_code}",
         )
         return result.exit_code == 0
 
     async def close_application(self, workspace_id: str, app_name: str, actor: str = "operator") -> bool:
         ws = self._require_workspace(workspace_id)
-        result = await self.compute.execute(workspace_id, f"pkill -f -- '{app_name}'")
+        if not app_name.strip():
+            return False
+        result = await self.compute.execute(workspace_id, f"pkill -f -- {shlex.quote(app_name)}")
         self._record_audit(
             session_id=actor,
             workspace_id=workspace_id,
@@ -493,7 +500,7 @@ class UnifiedComputerProvider(ComputerProvider):
             action="CLOSE_APP",
             application=app_name,
             resource=app_name,
-            result="SUCCESS",
+            result="SUCCESS" if result.exit_code == 0 else f"EXIT_{result.exit_code}",
         )
         return result.exit_code == 0
 
@@ -519,7 +526,8 @@ class UnifiedComputerProvider(ComputerProvider):
             )
             return False, reason
 
-        cmd = f"apt-get update -qq && apt-get install -y -qq {package_name} || pip install {package_name}"
+        quoted_package = shlex.quote(package_name)
+        cmd = f"apt-get update -qq && apt-get install -y -qq {quoted_package} || pip install {quoted_package}"
         res = await self.compute.execute(workspace_id, cmd)
         success = res.exit_code == 0
 
@@ -545,7 +553,7 @@ class UnifiedComputerProvider(ComputerProvider):
         actor: str = "operator",
     ) -> bool:
         ws = self._require_workspace(workspace_id)
-        result = await self.compute.execute(workspace_id, f"apt-get remove -y -- '{package_name}'")
+        result = await self.compute.execute(workspace_id, f"apt-get remove -y -- {shlex.quote(package_name)}")
 
         self._record_audit(
             session_id=actor,
@@ -570,7 +578,9 @@ class UnifiedComputerProvider(ComputerProvider):
         actor: str = "operator",
     ) -> ServiceInfo:
         ws = self._require_workspace(workspace_id)
-        result = await self.compute.execute(workspace_id, f"service '{service_name}' '{action}'")
+        if action not in {"start", "stop", "restart", "logs", "status"}:
+            raise ValueError(f"Unsupported service action: {action}")
+        result = await self.compute.execute(workspace_id, f"service {shlex.quote(service_name)} {shlex.quote(action)}")
         status_value = "RUNNING" if result.exit_code == 0 and action in {"start", "restart"} else action.upper()
         svc = ServiceInfo(
             name=service_name,
@@ -704,5 +714,4 @@ def __getattr__(name: str) -> Any:
         from sonic.computer.headless import HeadlessComputeProvider
         return HeadlessComputeProvider
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-
 

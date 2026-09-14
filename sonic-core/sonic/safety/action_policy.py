@@ -1,20 +1,20 @@
 """
-SONIC-REDA — Action Policy / Self-Host Safety Envelope (PLAN Phase 6)
+SONIC-REDA ??? Action Policy / Self-Host Safety Envelope (PLAN Phase 6)
 =====================================================================
 
 A fail-closed gate the autonomous computer-use loop consults BEFORE executing
-ANY action — operator-issued OR self-directed (curiosity). It is the safety
+ANY action ??? operator-issued OR self-directed (curiosity). It is the safety
 envelope required when SONIC runs as a long-lived process on a self-hosted
 VPS: the agent may act autonomously, but every action must pass the policy.
 
 The policy composes existing primitives instead of reinventing them:
-    * path confinement — FILE_READ/FILE_WRITE confined to the workspace root
-    * egress filter — reuses sonic.sandbox.egress.is_target_allowed for
+    * path confinement ??? FILE_READ/FILE_WRITE confined to the workspace root
+    * egress filter ??? reuses sonic.sandbox.egress.is_target_allowed for
       SECURITY_TOOL targets and BROWSER_NAVIGATE urls (blocks private/metadata)
-    * destructive-op gating — reuses sonic.safety.scope.classify_command_risk
+    * destructive-op gating ??? reuses sonic.safety.scope.classify_command_risk
       for TERMINAL_EXEC (L2 forbidden -> block; L1 -> needs approval)
-    * action-type allowlist — unknown action types are DENIED by default
-    * rate limit — a per-agent max-actions-per-minute cap
+    * action-type allowlist ??? unknown action types are DENIED by default
+    * rate limit ??? a per-agent max-actions-per-minute cap
 
 It is fail-closed: an unknown action type, an escaped path, a private target,
 or a destructive command is DENIED and never reaches the provider. The gate
@@ -37,6 +37,7 @@ from typing import Any
 
 from sonic.logger import get_logger
 from sonic.safety.scope import RiskLevel, ScopeChecker
+from sonic.safety.runtime_stop import get_runtime_stop_state
 from sonic.sandbox import egress
 
 logger = get_logger(__name__)
@@ -111,6 +112,7 @@ class ActionPolicy:
         scope_checker: ScopeChecker | None = None,
         scope_config: dict | None = None,
         allow_private_networks: bool = False,
+        tenant_id: str = "default",
     ):
         self.workspace_root = Path(workspace_root).resolve()
         self.allowed_types = frozenset(allowed_action_types or self.DEFAULT_ALLOWED_TYPES)
@@ -122,6 +124,7 @@ class ActionPolicy:
         self.scope_checker = scope_checker or ScopeChecker()
         self.scope_config = scope_config
         self.allow_private_networks = allow_private_networks
+        self.tenant_id = tenant_id
         # The scope checker's check_action is fail-closed only when rules are
         # loaded; for the command-risk classifier we don't need rules loaded.
         self._rate = _RateWindow()
@@ -137,16 +140,22 @@ class ActionPolicy:
             scope_checker=self.scope_checker,
             scope_config=self.scope_config,
             allow_private_networks=self.allow_private_networks,
+            tenant_id=self.tenant_id,
         )
 
     # ------------------------------------------------------------------
     def evaluate(self, action_type_name: str, target: str, payload: dict[str, Any]) -> PolicyVerdict:
         """Evaluate one action. Returns a fail-closed PolicyVerdict.
 
-        Never raises for policy reasons — a verdict is always returned so the
+        Never raises for policy reasons ??? a verdict is always returned so the
         caller can record it as a blocked trace instead of crashing the loop.
         """
         now = time.time()
+        if not self.scope_checker.kill_switch_enabled:
+            return PolicyVerdict(False, "configured kill switch is disabled")
+        stop_state = get_runtime_stop_state()
+        if stop_state.is_stopped(self.tenant_id):
+            return PolicyVerdict(False, f"runtime kill switch asserted: {stop_state.reason(self.tenant_id)}")
         if not self._rate.consume(now, self.max_actions_per_minute):
             return PolicyVerdict(False, f"rate limit exceeded ({self.max_actions_per_minute}/min)")
 
@@ -157,7 +166,7 @@ class ActionPolicy:
         # 2. Path confinement for file operations. TOOL_AUTHOR writes its
         # source under a hardcoded workspace-subdir (toolsmith hardcodes
         # /home/sonic/workspace/toolsmith/<name>.py), so confinement is
-        # structural — it does not need a payload path to validate.
+        # structural ??? it does not need a payload path to validate.
         if action_type_name in ("FILE_READ", "FILE_WRITE"):
             path = payload.get("path") or target
             verdict = self._check_path(path, action_type_name)
@@ -220,10 +229,19 @@ class ActionPolicy:
     def _check_command(self, command: str) -> PolicyVerdict:
         # TERMINAL_EXEC bypasses the URL-egress filter (it runs shell howeverthe
         # operator/being chooses). Close the metadata hole explicitly: a shell
-        # command must never reach the cloud metadata endpoint — on the host Or
-        # inside an egress-unrestricted container。
+        # command must never reach the cloud metadata endpoint ??? on the host Or
+        # inside an egress-unrestricted container???
         if self._CLOUD_METADATA_RE.search(command or ""):
             return PolicyVerdict(False, "cloud metadata access blocked in terminal command")
+        # Shell commands are another egress surface (curl, wget, python
+        # requests, etc.). When an engagement target allowlist is active,
+        # validate every explicit URL before the command reaches the provider.
+        # This keeps verification probes and model-authored commands bound to
+        # the same target as browser/security-tool actions.
+        for candidate in re.findall(r"https?://[^\s'\"`;&|)]+", command or "", re.IGNORECASE):
+            verdict = self._check_egress(candidate, "terminal")
+            if not verdict.allowed:
+                return verdict
         try:
             risk = self.scope_checker.classify_command_risk(command)
         except Exception:
@@ -344,7 +362,7 @@ class RiskPortfolioGovernor:
 
     The ActionPolicy gates every single action (fail-closed). The RiskGovernor
     additionally enforces that a *portfolio* of offensive actions does not
-    exceed a cumulative risk budget — preventing a campaign of individually
+    exceed a cumulative risk budget ??? preventing a campaign of individually
     legal actions from compounding into an unsafe overreach abroad.
 
     Budget model: 1.0 initial. Each action draws `severity` weight

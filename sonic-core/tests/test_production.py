@@ -37,6 +37,7 @@ def test_exploit_validator_evaluation():
             # P0 security hardening), so supply evidence + a sandbox-derived
             # confidence/blast radius.
             "execution_evidence": "HTTP/1.1 200 OK\n{\"tokens\":[...]}  (sandbox reproduction confirmed unauthorized access to user 10 tokens)",
+            "evidence_provenance": {"execution_id": "exec-99", "sandbox_id": "sandbox-99", "source_agent": "verifier-99", "gate_passed": True},
             "confidence_score": 90,
             "blast_radius": "tenant_wide",
         }

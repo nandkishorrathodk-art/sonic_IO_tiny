@@ -46,6 +46,7 @@ class SubMissionResult(BaseModel):
     actions_taken: int = 0
     duration_seconds: float = 0.0
     evidence_verified: bool = False
+    status: str = "FAILED"  # SUCCESS | FAILED | TIMED_OUT | BLOCKED
 
 
 class Phase(BaseModel):

@@ -1,5 +1,5 @@
 """
-SONIC-REDA — Sealed (Tamper-Evident) Safety Policy
+SONIC-REDA ??? Sealed (Tamper-Evident) Safety Policy
 ====================================================
 
 Closes the PLAN.md audit item:
@@ -12,7 +12,7 @@ are reassignable, ``security_tool_targets`` is a mutable set, and the egress
 filter consults a module-level *mutable* ``BLOCKED_NETWORKS`` list. A
 self-evolving being running in-process could widen the envelope at runtime
 (``policy.security_tool_targets.add(...)``, ``policy.self_host = False``, or
-``egress.BLOCKED_NETWORKS.clear()``) and then act — the guards would no longer
+``egress.BLOCKED_NETWORKS.clear()``) and then act ??? the guards would no longer
 protect it.
 
 ``SealedActionPolicy`` makes the safety-relevant config tamper-evident:
@@ -26,7 +26,7 @@ protect it.
       frozenset, and the blocked-networks snapshot as a tuple.
     * On every ``evaluate()`` the seal hash is recomputed and compared; any
       mismatch (i.e. the config was somehow altered) makes the verdict
-      fail-closed DENY and logs ``safety_policy_tampered`` — the being may NOT
+      fail-closed DENY and logs ``safety_policy_tampered`` ??? the being may NOT
       act under a policy whose integrity cannot be proven.
     * The egress check uses the frozen blocked-networks snapshot, so a runtime
       mutation of ``egress.BLOCKED_NETWORKS`` cannot widen what this policy
@@ -61,6 +61,7 @@ _SEALED_FIELDS = (
     "scope_checker",
     "scope_config",
     "allow_private_networks",
+    "tenant_id",
     "_sealed",
     "_seal_hash",
     "_blocked_networks_snapshot",
@@ -85,6 +86,7 @@ class SealedActionPolicy(ActionPolicy):
         scope_checker: ScopeChecker | None = None,
         scope_config: dict | None = None,
         allow_private_networks: bool = False,
+        tenant_id: str = "default",
     ):
         super().__init__(
             workspace_root=workspace_root,
@@ -95,6 +97,7 @@ class SealedActionPolicy(ActionPolicy):
             scope_checker=scope_checker,
             scope_config=scope_config,
             allow_private_networks=allow_private_networks,
+            tenant_id=tenant_id,
         )
         # Freeze the mutable target set into a frozenset immediately.
         self.security_tool_targets = frozenset(self.security_tool_targets)
@@ -136,6 +139,7 @@ class SealedActionPolicy(ActionPolicy):
             "require_approval_for_intrusive": self.require_approval_for_intrusive,
             "workspace_root": str(self.workspace_root),
             "allow_private_networks": bool(getattr(self, "allow_private_networks", False)),
+            "tenant_id": self.tenant_id,
             "blocked_networks": [str(n) for n in self._blocked_networks_snapshot],
             "scope_intrusive_patterns": sorted(
                 [getattr(p, "pattern", str(p)) for p in getattr(ScopeChecker, "_INTRUSIVE_PATTERNS", [])]
@@ -185,7 +189,7 @@ class SealedActionPolicy(ActionPolicy):
                 actual=self._compute_seal_hash()[:12],
             )
             return PolicyVerdict(
-                False, "safety policy seal mismatch — refusing to act (tamper-evident)"
+                False, "safety policy seal mismatch ??? refusing to act (tamper-evident)"
             )
         return super().evaluate(action_type_name, target, payload)
 
@@ -232,6 +236,7 @@ def seal_default(
     allow_private_networks: bool = False,
     scope_config: dict[str, Any] | None = None,
     scope_checker: Any | None = None,
+    tenant_id: str = "default",
 ) -> SealedActionPolicy:
     """Build + seal the standard production policy for the being life loop or mission."""
     return SealedActionPolicy(
@@ -240,4 +245,5 @@ def seal_default(
         allow_private_networks=allow_private_networks,
         scope_config=scope_config,
         scope_checker=scope_checker,
+        tenant_id=tenant_id,
     ).seal()

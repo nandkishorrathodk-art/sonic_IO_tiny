@@ -59,10 +59,13 @@ export default function SonicDevinWorkstation() {
   const [sessionList, setSessionList] = useState<SessionItem[]>([]);
   const abortPollRef = useRef<boolean>(false);
   const activePromptSessionRef = useRef<string | null>(null);
+  const fetchGenerationRef = useRef(0);
 
   const fetchWorkstationData = async (targetSession = sessionId) => {
+    const generation = ++fetchGenerationRef.current;
     try {
       const state = await api.getWorkstationState(targetSession);
+      if (generation !== fetchGenerationRef.current) return;
       setWorkstationState(state);
       setConnectionStatus("LIVE");
       setErrorMessage(null);

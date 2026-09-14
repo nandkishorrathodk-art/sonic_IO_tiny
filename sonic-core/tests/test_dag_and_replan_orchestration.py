@@ -102,7 +102,8 @@ async def test_boss_agent_tracks_task_graph_lifecycle_during_run():
         target_resource="curl /api",
         predicted_outcome="Discover endpoints",
         actual_observation="Found /login and /api",
-        status=ActionExecutionStatus.COMPLETED,
+        status=ActionExecutionStatus.VERIFIED,
+        verification_evidence="Test fixture independently verified the discovered endpoints.",
     )
 
     with patch("sonic.computer_use.agent.ComputerUseAgent") as MockAgentClass:
@@ -284,6 +285,7 @@ async def test_director_run_engagement_loop_completes_graph():
     async def test_worker(payload):
         executed.append(payload["task_id"])
         return {
+            "status": "success",
             "observations": [{"description": "Port 80 open"}],
             "facts": [{"description": "HTTP server running"}],
             "findings": [{"title": "Exposed Port 80", "severity": "low"}],

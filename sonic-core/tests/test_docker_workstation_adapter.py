@@ -4,6 +4,8 @@ Tests for DockerContainerSandbox and DaytonaComputerProvider local fallback.
 
 import pytest
 import shutil
+import base64
+from unittest.mock import AsyncMock
 from sonic.computer.docker_sandbox import DockerContainerSandbox
 from sonic.computer.daytona_computer import DaytonaComputerProvider
 from sonic.computer.models import GUIAction, GUIActionType
@@ -26,6 +28,21 @@ async def test_docker_container_sandbox_interface():
         # In environments where the container is running:
         if res.exit_code == 0:
             assert "hello_test" in res.result
+
+
+@pytest.mark.no_live_infra
+@pytest.mark.asyncio
+async def test_docker_container_sandbox_screenshot_uses_real_capture():
+    sb = DockerContainerSandbox("sonic-desktop-workstation")
+    encoded = base64.b64encode(b"pixel-data" * 20).decode()
+    sb.process.exec = AsyncMock(return_value=type(
+        "Result",
+        (),
+        {"exit_code": 0, "result": encoded, "error": ""},
+    )())
+
+    assert await sb.screenshot() == encoded
+    sb.process.exec.assert_awaited_once()
 
 
 @pytest.mark.no_live_infra

@@ -53,6 +53,7 @@ export function ComputerSurface({
   const [showCmdPanel, setShowCmdPanel] = useState(false);
   const [cmdInput, setCmdInput] = useState("");
   const [cmdRunning, setCmdRunning] = useState(false);
+  const [takeoverPending, setTakeoverPending] = useState(false);
   const [useStream, setUseStream] = useState(true);
   const canvasRef = useRef<HTMLDivElement>(null);
   const imgRef = useRef<HTMLImageElement>(null);
@@ -60,7 +61,7 @@ export function ComputerSurface({
   const followCommandTailRef = useRef(true);
   const isFetchingScreenshot = useRef(false);
 
-  const streamUrl = desktopState?.novnc_url || (desktopState as any)?.vnc_url || "http://localhost:6080/vnc.html?autoconnect=true&resize=scale";
+  const streamUrl = desktopState?.novnc_url || (desktopState as any)?.vnc_url || "";
 
   const fetchScreenshot = async () => {
     if (isFetchingScreenshot.current) return;
@@ -186,18 +187,24 @@ export function ComputerSurface({
 
   const handleToggleTakeover = async () => {
     const nextState = !isInteractive;
-    setIsInteractive(nextState);
     if (nextState && onInterrupt) {
+      setTakeoverPending(true);
       try {
         await onInterrupt();
+        setIsInteractive(true);
       } catch (err) {
         console.error("Failed to trigger onInterrupt during human takeover:", err);
+        setIsInteractive(false);
+      } finally {
+        setTakeoverPending(false);
       }
+      return;
     }
+    setIsInteractive(nextState);
   };
 
   const hasScreenshot = Boolean(screenshotBase64 && screenshotBase64.length > 100);
-  const isLive = Boolean(hasScreenshot || desktopState?.status === "RUNNING" || desktopState?.status === "LIVE");
+  const isLive = Boolean(hasScreenshot || (desktopState?.status === "LIVE" && streamUrl));
   const resolution = desktopState?.resolution;
   const displayLabel = [
     desktopState?.display,
@@ -259,6 +266,7 @@ export function ComputerSurface({
 
           <button
             onClick={handleToggleTakeover}
+            disabled={takeoverPending}
             className={`px-2.5 py-0.5 rounded text-[10px] font-mono font-semibold flex items-center gap-1.5 transition border ${
               isInteractive
                 ? "bg-warning/20 text-warning border-warning/60 shadow-glow"
@@ -267,7 +275,7 @@ export function ComputerSurface({
             title="Toggle direct mouse & keyboard control"
           >
             <MousePointer className={`w-3 h-3 ${isInteractive ? "text-warning animate-bounce" : ""}`} />
-            <span>{isInteractive ? "HUMAN TAKEOVER (ACTIVE)" : "TAKE OVER"}</span>
+            <span>{takeoverPending ? "PAUSING AGENT..." : isInteractive ? "HUMAN TAKEOVER (ACTIVE)" : "TAKE OVER"}</span>
           </button>
 
           <button
@@ -292,7 +300,7 @@ export function ComputerSurface({
         className="flex-1 bg-ink-950 relative flex flex-col items-center justify-center overflow-hidden select-none"
         style={{ minHeight: 0 }}
       >
-        {useStream && (isLive || streamUrl) ? (
+        {useStream && isLive && streamUrl ? (
           <div className="w-full h-full flex flex-col items-center justify-center p-2 relative">
             <div
               className="w-full h-full max-w-[1280px] max-h-[800px] aspect-[16/10] rounded border border-ink-700 bg-black relative shadow-2xl overflow-hidden flex items-center justify-center"

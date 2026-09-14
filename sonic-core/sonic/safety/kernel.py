@@ -86,7 +86,10 @@ class SafetyKernel:
     ):
         if policy is None:
             # Default to production-sealed policy
-            self.policy = seal_default(workspace_root=workspace_root)
+            self.policy = seal_default(
+                workspace_root=workspace_root,
+                tenant_id=tenant_id,
+            )
         elif isinstance(policy, SealedActionPolicy):
             self.policy = policy
             if not getattr(policy, "_sealed", False):
@@ -101,6 +104,7 @@ class SafetyKernel:
                 require_approval_for_intrusive=policy.require_approval_for_intrusive,
                 scope_checker=policy.scope_checker,
                 scope_config=policy.scope_config,
+                tenant_id=tenant_id,
             )
             sealed.seal()
             self.policy = sealed

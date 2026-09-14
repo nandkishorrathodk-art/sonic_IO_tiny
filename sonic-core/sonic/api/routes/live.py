@@ -301,7 +301,7 @@ async def get_live_evidence(user: User = Depends(require_auth)):
                 "title": ev.get("title"),
                 "target": ev.get("target"),
                 "severity": ev.get("severity", "INFORMATIONAL"),
-                "verified": ev.get("verified", True),
+                "verified": ev.get("verified", False),
                 "manifest_hash": ev.get("sha256"),
                 "output": ev.get("output", ""),
                 "captured_at": ev.get("captured_at"),

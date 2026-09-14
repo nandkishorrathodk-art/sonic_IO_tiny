@@ -3,6 +3,7 @@ Unit tests for DockerComputerProvider (Native Workstation Engine).
 """
 
 import os
+import base64
 import shutil
 import subprocess
 from unittest.mock import AsyncMock
@@ -88,6 +89,25 @@ async def test_docker_computer_provider_files_and_apps():
 
 
 @pytest.mark.no_live_infra
+@pytest.mark.asyncio
+async def test_docker_screenshot_does_not_reuse_stale_pixels_after_capture_failure():
+    provider = DockerComputerProvider(container_name="sonic-desktop-workstation")
+    encoded = base64.b64encode(b"pixel-data" * 20).decode()
+    provider._docker_exec = AsyncMock(side_effect=[
+        (0, encoded, ""),
+        (126, "", "display unavailable"),
+    ])
+
+    first = await provider.screenshot("ws-1")
+    provider._last_screenshot_time = 0.0
+    second = await provider.screenshot("ws-1")
+
+    assert first.desktop_state == "INTERACTIVE"
+    assert second.desktop_state == "NO_DISPLAY"
+    assert second.screenshot_base64 == ""
+
+
+@pytest.mark.no_live_infra
 def test_docker_computer_display_resolution(monkeypatch):
     """Proves dynamic display resolution helper checks environment and defaults to :99."""
     monkeypatch.delenv("DISPLAY", raising=False)
@@ -152,5 +172,3 @@ async def test_daytona_computer_display_and_launch_quoting(monkeypatch):
     called_cmd2 = provider.terminal.call_args[0][1]
     expected_spawn2 = "DISPLAY=:1 nohup chromium 'https://target.local/search?q=1&v=2' >/dev/null 2>&1 &"
     assert called_cmd2 == expected_spawn2
-
-

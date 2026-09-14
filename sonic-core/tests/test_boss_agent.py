@@ -60,9 +60,10 @@ def _make_trace(
         target_resource=target,
         predicted_outcome="expected outcome",
         actual_observation=observation,
-        status=ActionExecutionStatus.COMPLETED
+        status=ActionExecutionStatus.VERIFIED
         if status == "COMPLETED"
         else ActionExecutionStatus.FAILED,
+        verification_evidence="Test fixture independently verified the observed result.",
     )
 
 

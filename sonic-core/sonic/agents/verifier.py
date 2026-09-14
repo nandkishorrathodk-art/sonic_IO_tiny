@@ -1,8 +1,8 @@
 """
-SONIC-REDA — Verifier / FP Filter Agent
+SONIC-REDA ??? Verifier / FP Filter Agent
 ============================================
 Evidence validation, false positive filtering, and confidence scoring.
-The final gatekeeper — no finding passes without Verifier approval.
+The final gatekeeper ??? no finding passes without Verifier approval.
 
 This agent:
     - Reviews each finding's evidence for completeness
@@ -35,15 +35,15 @@ logger = get_logger(__name__)
 
 class VerifierAgent(BaseAgent):
     """
-    Verification agent — validates findings and filters false positives.
+    Verification agent ??? validates findings and filters false positives.
     Every finding MUST pass through the Verifier before being reported.
 
     Verification is layered, strictest-first:
-        1. HTTP reproduction (HTTPProbe) — re-fire the saved request and check
+        1. HTTP reproduction (HTTPProbe) ??? re-fire the saved request and check
            the same vulnerability signal re-appears in the REAL response.
         2. ReproductionEngine / AdversarialReviewer / IndependentVerifier
            (sandbox PoC reproduction + falsification), when supplied.
-        3. LLM heuristic verdict — strict, evidence-focused.
+        3. LLM heuristic verdict ??? strict, evidence-focused.
 
     A finding only becomes "verified" when concrete proof survives.
     """
@@ -122,7 +122,7 @@ class VerifierAgent(BaseAgent):
 
     async def _verify_finding(self, finding: dict) -> dict:
         """Verify a single finding, layered strictest-first."""
-        # 1. HTTP reproduction (real re-fire) — strongest concrete proof
+        # 1. HTTP reproduction (real re-fire) ??? strongest concrete proof
         repro = await self._http_reproduce(finding)
         if repro is not None:
             return repro
@@ -133,7 +133,13 @@ class VerifierAgent(BaseAgent):
             return engine_verdict
 
         # 3. LLM heuristic fallback
-        return await self._llm_verify(finding)
+        verdict = await self._llm_verify(finding)
+        if verdict.get("status") == "verified":
+            verdict["status"] = "needs_more_evidence"
+            verdict["evidence_quality"] = "insufficient"
+            verdict["confidence_score"] = min(int(verdict.get("confidence_score", 0) or 0), 30)
+            verdict["verification_notes"] = (str(verdict.get("verification_notes", "")) + " LLM-only assessment cannot establish verification without empirical reproduction.").strip()
+        return verdict
 
     async def _http_reproduce(self, finding: dict) -> dict | None:
         """
@@ -205,7 +211,7 @@ class VerifierAgent(BaseAgent):
                 fp_indicators=[],
                 recommendations="",
             )
-        # Signal absent in the re-fire → likely false positive or environment change.
+        # Signal absent in the re-fire ??? likely false positive or environment change.
         self.fp_count += 1
         return self._repro_verdict(
             finding, result, status="false_positive", confidence=20,
@@ -320,7 +326,7 @@ class VerifierAgent(BaseAgent):
         status = "needs_more_evidence"
         reproducible = False
 
-        # 1. ReproductionEngine — concrete PoC reproduction in sandbox
+        # 1. ReproductionEngine ??? concrete PoC reproduction in sandbox
         if self.reproduction_engine is not None and pf.reproduction_plan is not None:
             success, output, evidence = await self.reproduction_engine.execute_reproduction(
                 pf, pf.reproduction_plan
@@ -334,7 +340,7 @@ class VerifierAgent(BaseAgent):
         else:
             notes_parts.append("Reproduction: skipped (no engine or reproduction_plan).")
 
-        # 2. AdversarialReviewer — falsification challenge
+        # 2. AdversarialReviewer ??? falsification challenge
         if self.adversarial_reviewer is not None:
             # Use reproduction result as the adversarial challenge outcome.
             challenge_result = {
@@ -355,7 +361,7 @@ class VerifierAgent(BaseAgent):
                 status = "verified"
                 confidence = max(confidence, 75)
 
-        # 3. IndependentVerifier — build unbiased package and record lineage
+        # 3. IndependentVerifier ??? build unbiased package and record lineage
         if self.independent_verifier is not None:
             pkg = self.independent_verifier.create_unbiased_verification_package(pf)
             notes_parts.append(
@@ -436,7 +442,7 @@ BE STRICT. Only "verified" if you are genuinely confident."""
                 "finding_uid": finding.get("uid", ""),
                 "status": "needs_more_evidence",
                 "confidence_score": 30,
-                "verification_notes": "Verification parsing failed — needs manual review",
+                "verification_notes": "Verification parsing failed ??? needs manual review",
             }
 
     async def batch_verify(self, engagement_id: str) -> dict[str, Any]:

@@ -65,6 +65,7 @@ class MetaOrchestrator(BaseAgent):
         all_findings: list[dict[str, Any]] = []
         phases = plan.get("phases", [])
         phases_completed: list[str] = []
+        loop_res: dict[str, Any] = {}
 
         if self.director is not None:
             # Wire execution through Director
@@ -79,7 +80,11 @@ class MetaOrchestrator(BaseAgent):
                     worker_fn=worker_fn,
                 )
                 all_findings.extend(loop_res.get("findings", []))
-            phases_completed = [p.get("name", "") for p in phases if p.get("name")]
+            phases_completed = (
+                [p.get("name", "") for p in phases if p.get("name")]
+                if loop_res.get("graph_complete") and not loop_res.get("failed")
+                else []
+            )
         else:
             # Build and execute via TaskGraph DAG
             graph = TaskGraph(engagement_id=engagement_id, tenant_id=tenant_id)
@@ -115,14 +120,18 @@ class MetaOrchestrator(BaseAgent):
                             res = worker_fn(task_dict)
                             if inspect.isawaitable(res):
                                 res = await res
-                            graph.mark_completed(r_task.id, res or {})
+                            worker_status = str(res.get("status", "")).lower() if isinstance(res, dict) else ""
+                            if worker_status not in {"success", "succeeded", "completed", "verified", "recovered"}:
+                                graph.mark_failed(r_task.id, "Worker did not report explicit successful execution")
+                                continue
+                            graph.mark_completed(r_task.id, res)
                             if isinstance(res, dict) and "findings" in res and isinstance(res["findings"], list):
                                 all_findings.extend(res["findings"])
                         except Exception as exc:
                             logger.warning("orchestrator_worker_failed", task_id=r_task.id, error=str(exc))
                             graph.mark_failed(r_task.id, str(exc))
 
-            phases_completed = [p.get("name", "") for p in phases if p.get("name")]
+            phases_completed = self._completed_phase_names(graph, phases)
 
         # Evaluate findings if any were generated
         eval_decision: dict[str, Any] = {}
@@ -138,7 +147,8 @@ class MetaOrchestrator(BaseAgent):
             "evaluation": eval_decision,
         }
 
-        self.status = "completed"
+        executed = bool(worker_fn)
+        self.status = "completed" if executed and phases_completed else ("planned" if not executed else "incomplete")
         return results
 
     async def _create_plan(self, target: str, scope: dict) -> dict[str, Any]:
@@ -186,15 +196,16 @@ Return as JSON with this structure:
         except (json.JSONDecodeError, IndexError):
             plan = {
                 "target_summary": target,
-                "estimated_phases": 4,
-                "phases": [
-                    {"name": "Recon", "agent": "recon", "tasks": ["subdomain_enum", "tech_detect", "port_scan"], "priority": "high"},
-                    {"name": "Static Analysis", "agent": "static", "tasks": ["code_review", "config_analysis"], "priority": "high"},
-                    {"name": "Dynamic Testing", "agent": "dynamic", "tasks": ["fuzz_endpoints", "auth_testing"], "priority": "high"},
-                    {"name": "Verification", "agent": "verifier", "tasks": ["validate_findings", "score_confidence"], "priority": "critical"},
-                ],
-                "priority_vuln_classes": ["XSS", "SQLi", "IDOR", "SSRF", "Auth Bypass"],
-                "estimated_time_minutes": 30,
+                "estimated_phases": 1,
+                "phases": [{
+                    "name": "Target triage",
+                    "agent": "recon",
+                    "tasks": ["classify target modality and identify the next evidence-producing observation"],
+                    "priority": "high",
+                }],
+                "priority_vuln_classes": [],
+                "estimated_time_minutes": 5,
+                "planning_status": "fallback_triage_only",
             }
 
         self.engagement_plan = plan
@@ -215,6 +226,16 @@ Return as JSON with this structure:
                 })
         return tasks
 
+    @staticmethod
+    def _completed_phase_names(graph: TaskGraph, phases: list[dict[str, Any]]) -> list[str]:
+        """Report phases only when every phase task actually succeeded."""
+        completed: list[str] = []
+        for phase in phases:
+            name = phase.get("name", "")
+            tasks = [task for task in graph.tasks.values() if task.name.startswith(f"{name}: ")]
+            if tasks and all(task.status.value == "succeeded" for task in tasks):
+                completed.append(name)
+        return completed
     async def evaluate_findings(self, findings: list[dict]) -> dict[str, Any]:
         """Evaluate all findings and decide next steps."""
         if not findings:

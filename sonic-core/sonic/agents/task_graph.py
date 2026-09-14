@@ -332,6 +332,27 @@ class TaskGraph:
         elif all_met:
             task.status = TaskStatus.READY
 
+    def mark_blocked(self, task_id: str, reason: str) -> list[str]:
+        """Mark a task blocked without presenting it as an executed failure."""
+        task = self._tasks.get(task_id)
+        if not task:
+            raise TaskGraphError(f"Task '{task_id}' not found")
+        task.status = TaskStatus.BLOCKED
+        task.error = reason
+        task.completed_at = _now()
+        blocked_ids: list[str] = []
+        to_block: deque[str] = deque(self._dependents.get(task_id, set()))
+        while to_block:
+            dependent_id = to_block.popleft()
+            dependent = self._tasks.get(dependent_id)
+            if dependent and dependent.status in (TaskStatus.PENDING, TaskStatus.READY):
+                dependent.status = TaskStatus.BLOCKED
+                dependent.error = f"Blocked by '{task_id}': {reason}"
+                dependent.completed_at = _now()
+                blocked_ids.append(dependent_id)
+                to_block.extend(self._dependents.get(dependent_id, set()))
+        return blocked_ids
+
     def get_ready_tasks(self) -> list[TaskNode]:
         """
         Get tasks whose ALL dependencies are SUCCEEDED.

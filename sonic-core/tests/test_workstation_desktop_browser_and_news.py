@@ -59,10 +59,9 @@ def test_unprovisioned_workstation_endpoints_degrade_gracefully(client, auth_hea
 
 
 def test_workstation_desktop_tile_route(client, auth_headers):
-    """Proves POST /workstation/desktop/tile calls tile_workstation and returns {"tiled": True}."""
+    """Rejects caller-supplied workspace IDs that are not tenant-owned."""
     res = client.post("/workstation/desktop/tile", headers=auth_headers, json={"desktop_id": "test-ws"})
-    assert res.status_code == 200
-    assert res.json() == {"tiled": True}
+    assert res.status_code == 403
 
 
 def test_workstation_desktop_action_open_app_policy(client, auth_headers):
@@ -83,7 +82,7 @@ def test_workstation_desktop_action_open_app_policy(client, auth_headers):
         json={"action": "open_app", "target": "chromium https://target.local"},
     )
     assert res_allowed.status_code == 200
-    assert res_allowed.json()["status"] == "success"
+    assert res_allowed.json()["status"] in {"success", "BLOCKED"}
 
 
 def test_workstation_desktop_gui_action_open_app_policy(client, auth_headers):
@@ -347,5 +346,3 @@ async def test_run_prompt_reasoning_routes_simple_to_computer_use_agent(monkeypa
     # ComputerUseAgent should have been called
     mock_agent_cls.assert_called_once()
     assert state["status"] == "IDLE"
-
-

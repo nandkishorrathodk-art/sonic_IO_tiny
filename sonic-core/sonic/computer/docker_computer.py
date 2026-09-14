@@ -427,8 +427,6 @@ class DockerComputerProvider(ComputerProvider):
         if b64:
             self._last_screenshot = obs
             self._last_screenshot_time = now
-        elif self._last_screenshot is not None:
-            return self._last_screenshot
         return obs
 
     # -------------------------------------------------------------
@@ -445,51 +443,56 @@ class DockerComputerProvider(ComputerProvider):
             atype = action.action
             disp = self._get_display(workspace_id)
 
+            async def exec_gui(command: str) -> None:
+                code, _, err = await self._docker_exec(command)
+                if code != 0:
+                    raise RuntimeError(f"GUI action failed with exit code {code}: {err.strip()}")
+
             if atype in (GUIActionType.CLICK, GUIActionType.DOUBLE_CLICK):
                 repeat = 2 if atype == GUIActionType.DOUBLE_CLICK else 1
                 if action.x is not None and action.y is not None:
-                    await self._docker_exec(f"DISPLAY={disp} xdotool mousemove {action.x} {action.y} click --repeat {repeat} 1")
+                    await exec_gui(f"DISPLAY={disp} xdotool mousemove {action.x} {action.y} click --repeat {repeat} 1")
                 else:
-                    await self._docker_exec(f"DISPLAY={disp} xdotool click --repeat {repeat} 1")
+                    await exec_gui(f"DISPLAY={disp} xdotool click --repeat {repeat} 1")
 
             elif atype == GUIActionType.RIGHT_CLICK:
                 if action.x is not None and action.y is not None:
-                    await self._docker_exec(f"DISPLAY={disp} xdotool mousemove {action.x} {action.y} click 3")
+                    await exec_gui(f"DISPLAY={disp} xdotool mousemove {action.x} {action.y} click 3")
                 else:
-                    await self._docker_exec(f"DISPLAY={disp} xdotool click 3")
+                    await exec_gui(f"DISPLAY={disp} xdotool click 3")
 
             elif atype == GUIActionType.MOVE and action.x is not None and action.y is not None:
-                await self._docker_exec(f"DISPLAY={disp} xdotool mousemove {action.x} {action.y}")
+                await exec_gui(f"DISPLAY={disp} xdotool mousemove {action.x} {action.y}")
 
             elif atype == GUIActionType.DRAG:
                 sx, sy = action.x or 0, action.y or 0
                 dx = action.x2 if action.x2 is not None else sx
                 dy = action.y2 if action.y2 is not None else sy
-                await self._docker_exec(f"DISPLAY={disp} xdotool mousemove {sx} {sy} mousedown 1 mousemove {dx} {dy} mouseup 1")
+                await exec_gui(f"DISPLAY={disp} xdotool mousemove {sx} {sy} mousedown 1 mousemove {dx} {dy} mouseup 1")
 
             elif atype == GUIActionType.TYPE and action.text:
                 safe_text = shlex.quote(action.text)
-                await self._docker_exec(f"DISPLAY={disp} xdotool type --delay 25 --clearmodifiers {safe_text}")
+                await exec_gui(f"DISPLAY={disp} xdotool type --delay 25 --clearmodifiers {safe_text}")
 
             elif atype == GUIActionType.KEYPRESS and action.key:
                 safe_key = shlex.quote(action.key)
-                await self._docker_exec(f"DISPLAY={disp} xdotool key {safe_key}")
+                await exec_gui(f"DISPLAY={disp} xdotool key {safe_key}")
 
             elif atype == GUIActionType.SCROLL:
                 btn = 5 if action.scroll_delta < 0 else 4
                 times = abs(action.scroll_delta) if action.scroll_delta != 0 else 3
-                await self._docker_exec(f"DISPLAY={disp} xdotool click --repeat {times} {btn}")
+                await exec_gui(f"DISPLAY={disp} xdotool click --repeat {times} {btn}")
 
             elif atype == GUIActionType.OPEN_APP and action.app_name:
                 clean_app = action.app_name.strip()
                 parts = shlex.split(clean_app) if clean_app else []
                 if parts:
                     spawn = f"DISPLAY={disp} nohup {' '.join(shlex.quote(p) for p in parts)} >/dev/null 2>&1 &"
-                    await self._docker_exec(spawn)
+                    await exec_gui(spawn)
                     self._active_windows[workspace_id] = parts[0]
 
             elif atype == GUIActionType.CLOSE_APP and action.app_name:
-                await self._docker_exec(f"pkill -f -- {shlex.quote(action.app_name)}")
+                await exec_gui(f"pkill -f -- {shlex.quote(action.app_name)}")
 
             elif atype == GUIActionType.SELECT_WINDOW:
                 target = action.window_id or action.app_name

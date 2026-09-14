@@ -1,17 +1,17 @@
 """
-SONIC-REDA — Engagement Manager
+SONIC-REDA ??? Engagement Manager
 ===================================
 Manages the full lifecycle of a security engagement.
 Coordinates agents, manages state, and produces reports.
 
 Lifecycle:
     1. CREATE: Initialize engagement with target + scope
-    2. RECON: Run Recon Agent → discover attack surface
-    3. HYPOTHESIZE: Run Hypothesis Generator → creative ideation
-    4. ANALYZE: Run Static Reasoning → code/config analysis
-    5. TEST: Run Dynamic Execution → active testing
-    6. VERIFY: Run Verifier → validate findings
-    7. REPORT: Compile results → generate report
+    2. RECON: Run Recon Agent ??? discover attack surface
+    3. HYPOTHESIZE: Run Hypothesis Generator ??? creative ideation
+    4. ANALYZE: Run Static Reasoning ??? code/config analysis
+    5. TEST: Run Dynamic Execution ??? active testing
+    6. VERIFY: Run Verifier ??? validate findings
+    7. REPORT: Compile results ??? generate report
 """
 
 from __future__ import annotations
@@ -214,7 +214,7 @@ class EngagementManager:
         """
         Run a full engagement pipeline.
 
-        Default phases: recon → hypothesis → static → dynamic → verify → report
+        Default phases: recon ??? hypothesis ??? static ??? dynamic ??? verify ??? report
         """
         eng = self.active_engagements.get(engagement_id)
         if not eng:
@@ -305,12 +305,11 @@ class EngagementManager:
             results["findings"] = all_findings
             results["summary"] = self._build_summary(target, all_findings, results)
 
-            # Mark complete
-            eng["status"] = EngagementStatus.COMPLETED
+            phase_states = [v.get("status") for v in results.values() if isinstance(v, dict) and "status" in v]
+            final_status = EngagementStatus.FAILED if any(status in {"FAILED", "NOT_EXECUTED"} for status in phase_states) else EngagementStatus.COMPLETED
+            eng["status"] = final_status
             eng["results"] = results
-            await self.memory.update_engagement(
-                engagement_id, status=EngagementStatus.COMPLETED
-            )
+            await self.memory.update_engagement(engagement_id, status=final_status)
 
         except Exception as e:
             logger.error("engagement_failed", id=engagement_id, error=str(e))
@@ -529,14 +528,15 @@ class EngagementManager:
                         questions=len(mgr.questions),
                         hypotheses=len(mgr.portfolio.hypotheses))
             return {
+                "status": "COMPLETED", "executed": True,
                 "questions": len(mgr.questions),
                 "hypotheses": len(mgr.portfolio.hypotheses),
                 "report_summary": report.summary if hasattr(report, "summary") else str(report),
                 "initial_facts": initial_facts,
             }
         except Exception as e:
-            logger.warning("research_phase_skipped", error=str(e))
-            return {"skipped": True, "reason": str(e)}
+            logger.warning("research_phase_failed", error=str(e))
+            return {"status": "FAILED", "executed": False, "reason": str(e)}
 
     async def _run_computer_dynamic(
         self, engagement_id: str, target: str,
@@ -557,15 +557,20 @@ class EngagementManager:
             logger.info("computer_dynamic_skipped_no_provider",
                         engagement=engagement_id)
             return {
+                "status": "NOT_EXECUTED",
+                "executed": False,
                 "skipped": True,
-                "reason": "No ComputeProvider available — GUI desktop/sandbox required for real tool execution",
+                "reason": "No ComputeProvider available ??? GUI desktop/sandbox required for real tool execution",
             }
 
         try:
             from sonic.computer_use.agent import ComputerUseAgent
             from sonic.safety.sealed import seal_default
 
-            safety = seal_default(workspace_root="/home/sonic/workspace")
+            eng = self.active_engagements.get(engagement_id, {})
+            tenant_id = eng.get("tenant_id", "default")
+            scope_config = eng.get("scope") or {}
+            safety = seal_default(workspace_root="/home/sonic/workspace", scope_checker=self.scope, scope_config=scope_config, tenant_id=tenant_id)
 
             # Optionally wire Toolsmith + MethodLab for self-evolution during engagement
             extra_agent_kwargs: dict[str, Any] = {}
@@ -605,7 +610,7 @@ class EngagementManager:
 
             # Create the agent with direct reasoning and sealed safety boundary.
             # Uses the GUI-capable computer_provider (DockerComputerProvider/
-            # DaytonaComputerProvider) — screenshot/gui_action/launch_application
+            # DaytonaComputerProvider) ??? screenshot/gui_action/launch_application
             # all route to the real desktop, not the raw sandbox exec provider.
             agent = ComputerUseAgent(
                 computer_provider=provider,
@@ -694,7 +699,7 @@ class EngagementManager:
         except Exception as e:
             logger.warning("computer_dynamic_failed", error=str(e),
                           engagement=engagement_id)
-            return {"skipped": True, "reason": str(e)}
+            return {"status": "FAILED", "executed": False, "reason": str(e)}
 
     async def _run_chain(self, engagement_id: str, results: dict) -> dict:
         """Run exploit chaining analysis on verified findings (Gap #8).
@@ -735,7 +740,7 @@ class EngagementManager:
 
         When a BugBountyClient is configured, formats verified findings
         as platform-ready draft reports. Does NOT auto-submit without
-        explicit confirmation — generates drafts for operator review.
+        explicit confirmation ??? generates drafts for operator review.
         """
         client = self.bug_bounty_client or self.bugbounty_client
         if client is None:
@@ -792,7 +797,7 @@ class EngagementManager:
                 continue
             for key in ("findings",):
                 for f in phase_data.get(key, []) or []:
-                    if isinstance(f, dict):
+                    if isinstance(f, dict) and f.get("status") != "candidate":
                         collected.append(f)
         # De-duplicate by title+url
         seen = set()
@@ -881,7 +886,7 @@ class EngagementManager:
         This wires the (previously dead) BugBountyClient into the engagement
         pipeline: verified findings no longer sit idle in graph memory, they
         become submission-ready reports. Returns the reports without submitting
-        them anywhere — submission to HackerOne/Bugcrowd still requires API
+        them anywhere ??? submission to HackerOne/Bugcrowd still requires API
         keys and an explicit operator action.
         """
         report = await self.get_findings_report(engagement_id, tenant_id=tenant_id)
@@ -924,7 +929,7 @@ class EngagementManager:
         return [agent.get_status() for agent in self.agents.values()]
 
     async def kill_all(self) -> dict:
-        """Emergency stop — halt all agents."""
+        """Emergency stop ??? halt all agents."""
         for agent in self.agents.values():
             agent.status = "killed"
 

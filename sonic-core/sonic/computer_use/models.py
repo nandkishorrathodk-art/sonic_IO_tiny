@@ -280,6 +280,7 @@ class ComputerDecisionTrace(BaseModel):
     duration_seconds: float = 0.0
     thought_duration_seconds: float = 0.0
     exit_code: int | None = None
+    verification_evidence: str = ""
     timestamp: str = Field(default_factory=_now)
 
     @property

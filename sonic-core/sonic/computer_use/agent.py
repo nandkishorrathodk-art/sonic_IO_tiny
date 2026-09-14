@@ -1347,7 +1347,20 @@ class ComputerUseAgent:
         else:
             user_text = obs_summary
 
-        action_schema = "|".join(action.value for action in ComputerActionType)
+        available_actions = (
+            self._GUI_ONLY_ACTIONS
+            if self.gui_only
+            else frozenset(ComputerActionType)
+        )
+        action_schema = "|".join(
+            action.value for action in ComputerActionType if action in available_actions
+        )
+        efficiency_directive = (
+            "2. DIRECT & EFFICIENT: solve the objective with the fewest necessary visible GUI actions.\n"
+            if self.gui_only
+            else
+            "2. DIRECT & EFFICIENT: solve the objective in minimal actions. Combine commands with && if appropriate (e.g. `hostname && df -h`).\n"
+        )
         user_text += (
             "\n\n================================================================================\n"
             "CRITICAL INSTRUCTIONS FOR YOUR NEXT IMMEDIATE ACTION:\n"
@@ -1357,7 +1370,7 @@ class ComputerUseAgent:
             "TARGET: <target or command>\n"
             "PAYLOAD: {\"command\": \"...\"} or other payload json\n"
             "EXPECTED: <expected outcome>\n"
-            "2. DIRECT & EFFICIENT: solve the objective in minimal actions. Combine commands with && if appropriate (e.g. `hostname && df -h`).\n"
+            f"{efficiency_directive}"
             "3. EARLY COMPLETION: If the command output or screen above ALREADY contains the requested information, declare IMMEDIATELY:\n"
             "THOUGHT: All requested information has been collected.\n"
             "ACTION: GOAL_COMPLETE\n"
@@ -1698,8 +1711,9 @@ class ComputerUseAgent:
                         f"Execute {cmd_cand}",
                     )
 
-        raw_action = fields.get("ACTION", "TERMINAL_EXEC").upper()
-        action_word = raw_action.split()[0] if raw_action.split() else "TERMINAL_EXEC"
+        default_action = "TERMINAL_EXEC"
+        raw_action = fields.get("ACTION", default_action).upper()
+        action_word = raw_action.split()[0] if raw_action.split() else default_action
         action_str = action_word.strip(" *_\n\r\t`\"'")
         action_type = action_map.get(action_str, ComputerActionType.TERMINAL_EXEC)
 
@@ -2629,7 +2643,17 @@ class ComputerUseAgent:
                 pre_screen_b64 = getattr(self, "_last_screenshot_b64", "")
                 obs_after = None
                 if hasattr(self, "motor") and self.motor:
-                    await self.motor.human_type(workspace_id, text, delay_ms=payload.get("delay_ms", 25))
+                    if self.gui_only:
+                        obs_after = await self.computer.gui_action(
+                            workspace_id,
+                            GUIAction(
+                                action=GUIActionType.TYPE,
+                                text=text,
+                                delay_ms=payload.get("delay_ms", 25),
+                            ),
+                        )
+                    else:
+                        await self.motor.human_type(workspace_id, text, delay_ms=payload.get("delay_ms", 25))
                 else:
                     obs_after = await self.computer.gui_action(
                         workspace_id,
@@ -2917,12 +2941,20 @@ class ComputerUseAgent:
                     self._last_navigated_url = url
                     actual_obs_str = f"Navigated to {getattr(snap, 'url', url)} (title: {getattr(snap, 'title', '')})"
                 elif self.gui_only:
-                    status = ActionExecutionStatus.BLOCKED
-                    actual_obs_str = (
-                        "BROWSER_NAVIGATE requires a visible browser window in GUI-only mode. "
-                        "Launch or focus the requested application, then use GUI_KEYPRESS/GUI_TYPE "
-                        "on its visible address bar; no hidden browser or terminal fallback is allowed."
+                    await self.computer.gui_action(
+                        workspace_id,
+                        GUIAction(action=GUIActionType.KEYPRESS, key="ctrl+l"),
                     )
+                    await self.computer.gui_action(
+                        workspace_id,
+                        GUIAction(action=GUIActionType.TYPE, text=url, delay_ms=25),
+                    )
+                    await self.computer.gui_action(
+                        workspace_id,
+                        GUIAction(action=GUIActionType.KEYPRESS, key="Return"),
+                    )
+                    self._last_navigated_url = url
+                    actual_obs_str = f"Navigated visible browser application to {url}"
                 else:
                     is_same_url = getattr(self, "_last_navigated_url", "") == url
                     self._last_navigated_url = url
@@ -2976,7 +3008,8 @@ class ComputerUseAgent:
                         recovery_needed = True
                     await self.check_and_resolve_intercept_deadlock(workspace_id)
                 else:
-                    actual_obs_str = f"Browser DOM click '{selector}' not available without BrowserAgent; use GUI_CLICK"
+                    actual_obs_str = f"Browser DOM click '{selector}' requires visible GUI grounding; use GUI_CLICK"
+                    status = ActionExecutionStatus.BLOCKED
 
             elif action_type == ComputerActionType.BROWSER_TYPE:
                 selector = str(payload.get("selector") or target_resource or "").strip(" *_\n\r\t`\"'")
@@ -3793,6 +3826,29 @@ class ComputerUseAgent:
 
         Returns (verified, evidence). verified=True only on real evidence.
         """
+        if self.gui_only:
+            obs = await self.observe(workspace_id)
+            visible = " ".join(
+                part for part in (
+                    obs.active_application,
+                    obs.visible_text,
+                    getattr(obs.screen, "visible_text", ""),
+                )
+                if part
+            )
+            evidence = (
+                f"Visible GUI state: application={obs.active_application!r}; "
+                f"windows={obs.windows!r}; text={visible[:1500]!r}"
+            )
+            goal_terms = [
+                term for term in re.findall(r"[a-zA-Z0-9]{3,}", goal.lower())
+                if term not in {"open", "look", "find", "the", "and", "use", "for"}
+            ]
+            visible_lower = visible.lower()
+            matched = sum(1 for term in goal_terms if term in visible_lower)
+            verified = bool(goal_terms) and matched >= max(1, len(goal_terms) // 3)
+            return verified, evidence
+
         do_llm = use_llm if use_llm is not None else getattr(self, "enable_llm_verification", False)
 
         if do_llm and self.llm_router is not None:
@@ -3984,8 +4040,9 @@ class ComputerUseAgent:
             else:
                 self.checklist = None
 
-        # Autonomous Workstation Environment Bootstrap & Audit (Phase 8)
-        if not getattr(self, "_bootstrap_performed", False):
+        # Backend bootstrap may inspect/install packages through a shell. It is
+        # intentionally unavailable on the GUI-only Computer plane.
+        if not self.gui_only and not getattr(self, "_bootstrap_performed", False):
             try:
                 from sonic.computer.bootstrap import WorkstationBootstrapEngine
                 bootstrap = WorkstationBootstrapEngine(self.computer)

@@ -105,6 +105,26 @@ class TestGUIActionDispatch:
         provider.git_action.assert_not_awaited()
 
     @pytest.mark.asyncio
+    async def test_gui_only_browser_navigation_uses_visible_keyboard_actions(self):
+        provider = _mock_provider()
+        agent = ComputerUseAgent(computer_provider=provider, gui_only=True)
+
+        trace = await agent.execute_action(
+            "ws-1",
+            ComputerActionType.BROWSER_NAVIGATE,
+            "https://github.com",
+            {"url": "https://github.com"},
+            "Open the visible browser",
+        )
+
+        assert trace.status == "SUCCESS"
+        assert "visible browser" in trace.actual_observation.lower()
+        assert provider.terminal.await_count == 0
+        assert provider.gui_action.await_count == 3
+        actions = [call.args[1].action for call in provider.gui_action.call_args_list]
+        assert [action.value for action in actions] == ["KEYPRESS", "TYPE", "KEYPRESS"]
+
+    @pytest.mark.asyncio
     async def test_gui_double_click_dispatches(self):
         provider = _mock_provider()
         agent = ComputerUseAgent(computer_provider=provider)

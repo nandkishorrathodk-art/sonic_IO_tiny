@@ -386,7 +386,6 @@ class SettingsUpdate(BaseModel):
     llm_model: str | None = None
     daytona_url: str | None = None
     proxy_url: str | None = None
-    burp_url: str | None = None  # Backward-compatible alias for proxy_url
     allowed_domains: list[str] | None = None
 
 
@@ -395,8 +394,7 @@ _runtime_config = {
     "llm_model": "Claude 3.5 Sonnet",
     "llm_api_key_set": False,
     "daytona_url": "http://localhost:3986",
-    "proxy_url": "http://localhost:1337",
-    "burp_url": "http://localhost:1337",  # Alias for proxy_url
+    "proxy_url": "",
     "allowed_domains": ["*.example.com", "localhost", "127.0.0.1"],
 }
 
@@ -440,10 +438,8 @@ async def update_runtime_settings(
 
     if update.daytona_url is not None:
         _runtime_config["daytona_url"] = update.daytona_url
-    proxy_setting = update.proxy_url if update.proxy_url is not None else update.burp_url
-    if proxy_setting is not None:
-        _runtime_config["proxy_url"] = proxy_setting
-        _runtime_config["burp_url"] = proxy_setting
+    if update.proxy_url is not None:
+        _runtime_config["proxy_url"] = update.proxy_url
     if update.allowed_domains is not None:
         _runtime_config["allowed_domains"] = update.allowed_domains
 

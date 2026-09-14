@@ -1,10 +1,10 @@
 """
 Adapter exposing a ``ComputerProvider`` (Daytona) as a ``ComputeProvider``.
 
-The security tool adapters (nmap/nuclei/ffuf/http) are bound to the
+Explicitly registered security capabilities are bound to the
 ``ComputeProvider`` interface (``.execute(workspace_id, command, timeout)``),
 while the mission executor operates on a ``ComputerProvider`` (Daytona, with
-``.terminal``). This thin adapter bridges the two so the real security scanners
+``.terminal``). This thin adapter bridges the two so registered capabilities
 can run against the same target sandbox the mission executor already uses —
 without a second provisioning hierarchy.
 

@@ -27,10 +27,11 @@ from sonic.mission_engine.planner import MissionPlanner
 from sonic.mission_engine.tool_registry import ToolRisk
 
 
-def _plan(objective):
+def _plan(objective, capabilities=None):
     return MissionPlanner().build_plan(
         mission_id="m1", objective=objective,
         target="target-1", target_workspace_id="ws-1",
+        available_capabilities=capabilities,
     )
 
 
@@ -76,11 +77,12 @@ def test_different_intents_produce_different_sets():
 
 def test_active_probe_is_approval_required_not_silent():
     plan = _plan("pentest the target and scan it")
-    probe = [a for a in plan.actions if a.requires_approval]
-    assert probe, "an active-probe objective must add an approval-required action"
-    assert all(a.risk == ToolRisk.APPROVAL_REQUIRED for a in probe)
-    # No action is silently an active probe (all non-approval are read-only).
-    assert all(a.risk == ToolRisk.READ_ONLY for a in plan.actions if not a.requires_approval)
+    assert not any(a.requires_approval for a in plan.actions)
+    registered = _plan("pentest the target and scan it", {"target-specific-capability"})
+    probe = [a for a in registered.actions if a.requires_approval]
+    assert len(probe) == 1
+    assert probe[0].input["tool"] == "target-specific-capability"
+    assert all(a.risk == ToolRisk.READ_ONLY for a in plan.actions)
 
 
 def test_no_active_probe_when_objective_is_readonly_inspection():
@@ -137,7 +139,10 @@ class TestLongHorizonPlan:
     def test_active_test_stage_is_approval_required(self):
         """The active-test stage (stage 4) is APPROVAL_REQUIRED and never auto-run
         — honouring the safety envelope even in long-horizon mode."""
-        plan = _long_plan("scan and probe the target")
+        plan = MissionPlanner().build_long_horizon_plan(
+            "m-lh", "scan and probe the target", "target.com", "ws-1",
+            available_capabilities={"target-specific-capability"},
+        )
         active = [a for a in plan.actions if a.requires_approval]
         assert active, "an active-probe objective must gate the test stage"
         assert all(a.risk == ToolRisk.APPROVAL_REQUIRED for a in active)
@@ -172,4 +177,3 @@ class TestLongHorizonPlan:
         long = _long_plan("pentest the target web app")
         assert len(long.actions) > len(baseline.actions)
         assert long.stage_count() > baseline.stage_count()
-

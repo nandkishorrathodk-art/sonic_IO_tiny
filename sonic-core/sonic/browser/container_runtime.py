@@ -18,6 +18,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from sonic.logger import get_logger
+from sonic.sandbox.egress import is_target_allowed
 from sonic.sandbox.provider import ComputeProvider, ExecResult
 
 logger = get_logger(__name__)
@@ -56,8 +57,11 @@ class ContainerizedBrowser:
     Manages Playwright browser automation inside a ComputeProvider workspace.
     """
 
-    def __init__(self, provider: ComputeProvider):
+    def __init__(self, provider: ComputeProvider, *, allow_javascript: bool = False, scope_checker: Any | None = None, scope_config: dict[str, Any] | None = None):
         self.provider = provider
+        self.allow_javascript = allow_javascript
+        self.scope_checker = scope_checker
+        self.scope_config = scope_config
 
     async def execute_browser_script(
         self,
@@ -82,11 +86,30 @@ class ContainerizedBrowser:
             "timeout_ms": a.timeout_ms,
         } for a in actions])
 
+        from urllib.parse import urlparse
+        for action in actions:
+            if action.action == "evaluate" and not self.allow_javascript:
+                raise PermissionError("arbitrary JavaScript execution is disabled by default")
+            if action.action == "navigate":
+                parsed = urlparse((action.url or "").strip())
+                if parsed.scheme.lower() not in {"http", "https"} or not parsed.hostname:
+                    raise ValueError("browser navigation only permits http/https URLs with a host")
+                if parsed.username or parsed.password:
+                    raise ValueError("browser navigation forbids embedded URL credentials")
+                if self.scope_checker and self.scope_config and not self.scope_checker.is_target_in_scope(parsed.hostname, self.scope_config):
+                    raise ValueError("browser URL is outside the configured engagement scope")
+                allowed, reason = is_target_allowed(action.url or "")
+                if not allowed:
+                    raise ValueError(f"browser URL blocked by egress policy: {reason}")
+
         runner_code = f"""
 import json
 import base64
 import sys
 import asyncio
+import socket
+import ipaddress
+from urllib.parse import urlparse
 
 actions = {actions_json}
 
@@ -118,8 +141,34 @@ async def run_actions():
 
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True, args=['--no-sandbox', '--disable-dev-shm-usage'])
-        context = await browser.new_context(ignore_https_errors=True)
+        context = await browser.new_context(ignore_https_errors=False)
         page = await context.new_page()
+
+        def safe_url(value):
+            try:
+                parsed = urlparse(value)
+                if parsed.scheme.lower() not in ("http", "https") or not parsed.hostname:
+                    return False
+                if parsed.username or parsed.password:
+                    return False
+                addresses = socket.getaddrinfo(parsed.hostname, None)
+                return all(
+                    not (ipaddress.ip_address(item[4][0]).is_private
+                         or ipaddress.ip_address(item[4][0]).is_loopback
+                         or ipaddress.ip_address(item[4][0]).is_link_local)
+                    for item in addresses
+                )
+            except Exception:
+                return False
+
+        async def guard_route(route):
+            url = route.request.url
+            if url.startswith(("data:", "blob:", "about:")) or safe_url(url):
+                await route.continue_()
+            else:
+                await route.abort("blockedbyclient")
+
+        await page.route("**/*", guard_route)
 
         logs = []
         page.on("console", lambda msg: logs.append(f"[{{msg.type}}] {{msg.text}}"))

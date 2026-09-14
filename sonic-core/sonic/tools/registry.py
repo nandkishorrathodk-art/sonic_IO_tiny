@@ -1,79 +1,52 @@
 """
-SONIC-REDA — Security Tool Adapter Registry
-==========================================
+SONIC-REDA — Runtime Capability Registry
+========================================
 
-A single, shared factory + registry for the real SecurityTool adapters
-(nmap / nuclei / ffuf / http_client). Before this, each caller built its own
-hardcoded adapter dict (or, worse, passed none at all) — so the production
-paths (mission director, the AI-Human being life loop) constructed a
-``ComputerUseAgent`` with an EMPTY ``security_tools`` map, meaning the agent
-could advertise a ``SECURITY_TOOL`` action to the LLM but could never actually
-dispatch a scan. The real adapters existed but were unreachable from deployed
-code; only the queue worker wired them up, privately.
-
-This module fixes that gap:
-
-    * ``build_security_tools(provider)`` — construct the full real adapter set
-      bound to a ComputeProvider (every tool runs in-sandbox, fail-closed —
-      the SecurityTool base enforces "zero host OS execution").
-    * ``SecurityToolRegistry`` — a thin registry: name -> SecurityTool, with
-      ``register()`` (extension point for plugins) and ``get()``.
-    * ``get_default_registry(provider)`` — the production entry point: builds
-      and caches the standard adapter set for a provider.
-
-Design notes:
-    * The registry is provider-scoped, not a process-global singleton, because
-      adapters are bound to a specific ComputeProvider (Docker/Daytona/E2B) and
-      a tenant's sandbox. A process-global would leak a provider across tenants.
-    * Real adapters only — no stubs. Stub tools are for tests; the production
-      registry must never silently substitute a fake for a real scanner, since
-      that would fabricate findings (a security-system correctness invariant).
+The registry is deliberately empty at startup. Capabilities are registered
+only after the agent authors or explicitly supplies one for the current
+target. There is no built-in scanner catalog, adapter factory, or preferred
+tool sequence for the model to discover.
 """
 
 from __future__ import annotations
 
 from sonic.logger import get_logger
 from sonic.sandbox.provider import ComputeProvider
-from sonic.tools.adapters.burpsuite_adapter import BurpSuiteAdapter
-from sonic.tools.adapters.ffuf_adapter import FFUFAdapter
-from sonic.tools.adapters.http_adapter import HTTPClientAdapter
-from sonic.tools.adapters.nmap_adapter import NmapAdapter
-from sonic.tools.adapters.nuclei_adapter import NucleiAdapter
 from sonic.tools.base import SecurityTool
 
 logger = get_logger(__name__)
 
 
-def build_security_tools(provider: ComputeProvider) -> dict[str, SecurityTool]:
-    """Construct the full real adapter set bound to ``provider``.
+def build_security_tools(
+    provider: ComputeProvider,
+    enabled_tools: set[str] | None = None,
+) -> dict[str, SecurityTool]:
+    """Return no implicit capabilities.
 
-    Every adapter delegates binary execution to the provider's sandbox
-    (SecurityTool.execute -> provider.execute), so no tool ever runs on the
-    host. Returns a name->tool dict ready to pass as ``ComputerUseAgent(
-    security_tools=...)``.
+    ``enabled_tools`` is retained only for API compatibility. Named external
+    tools are not resolved here; callers must register a concrete capability
+    explicitly after target-driven reasoning and safety review.
     """
-    return {
-        "nmap": NmapAdapter(provider),
-        "nuclei": NucleiAdapter(provider),
-        "ffuf": FFUFAdapter(provider),
-        "http_client": HTTPClientAdapter(provider),
-        "burpsuite": BurpSuiteAdapter(provider),
-    }
+    if enabled_tools:
+        raise ValueError(
+            "Built-in named capabilities are not available; register an "
+            "explicit runtime capability instead"
+        )
+    return {}
 
 
 class SecurityToolRegistry:
-    """Provider-scoped registry of SecurityTool adapters (name -> tool).
+    """Provider-scoped registry for explicitly registered runtime capabilities."""
 
-    Production callers should use ``get_default_registry(provider)`` rather
-    than constructing this directly. ``register()`` is the extension point for
-    adding plugin/custom tools beyond the default four.
-    """
-
-    def __init__(self, provider: ComputeProvider):
+    def __init__(
+        self,
+        provider: ComputeProvider,
+        enabled_tools: set[str] | None = None,
+    ):
         self._provider = provider
         self._tools: dict[str, SecurityTool] = {}
-        for name, tool in build_security_tools(provider).items():
-            self._tools[name] = tool
+        if enabled_tools:
+            build_security_tools(provider, enabled_tools)
 
     def register(self, name: str, tool: SecurityTool) -> None:
         """Register (or replace) a tool by name. Extension point for plugins."""
@@ -101,12 +74,13 @@ class SecurityToolRegistry:
 # Production entry point (provider-scoped; NOT a process-global singleton)
 # ---------------------------------------------------------------------------
 
-def get_default_registry(provider: ComputeProvider) -> SecurityToolRegistry:
-    """Build the standard real-adapter registry for ``provider``.
+def get_default_registry(
+    provider: ComputeProvider,
+    enabled_tools: set[str] | None = None,
+) -> SecurityToolRegistry:
+    """Return an empty provider-scoped registry.
 
-    Provider-scoped by design: adapters bind to a specific ComputeProvider /
-    tenant sandbox, so we deliberately do not cache across providers (that would
-    leak a sandbox across tenants). The same provider passed twice returns a
-    fresh registry — cheap, and avoids stale-handle bugs.
+    The provider is retained for runtime plugins, but no named capability is
+    auto-created or advertised.
     """
-    return SecurityToolRegistry(provider)
+    return SecurityToolRegistry(provider, enabled_tools=enabled_tools)

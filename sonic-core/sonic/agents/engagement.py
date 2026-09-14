@@ -924,15 +924,19 @@ class EngagementManager:
         """List all agents and their status."""
         return [agent.get_status() for agent in self.agents.values()]
 
-    async def kill_all(self) -> dict:
-        """Emergency stop ??? halt all agents."""
+    async def kill_all(self, tenant_id: str | None = None) -> dict:
+        """Emergency stop, optionally restricted to one tenant."""
         for agent in self.agents.values():
-            agent.status = "killed"
+            if tenant_id is None or getattr(agent, "tenant_id", None) == tenant_id:
+                agent.status = "killed"
 
         for eng_id, eng in self.active_engagements.items():
-            if eng["status"] == EngagementStatus.RUNNING:
+            if (
+                eng["status"] == EngagementStatus.RUNNING
+                and (tenant_id is None or eng.get("tenant_id") == tenant_id)
+            ):
                 eng["status"] = EngagementStatus.FAILED
                 await self.memory.update_engagement(eng_id, status=EngagementStatus.FAILED)
 
         logger.warning("kill_all_executed", agents=len(self.agents))
-        return {"killed_agents": len(self.agents), "status": "all_stopped"}
+        return {"killed_agents": len(self.agents), "status": "all_stopped", "tenant_id": tenant_id}

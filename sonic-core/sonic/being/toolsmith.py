@@ -38,12 +38,6 @@ from sonic.logger import get_logger
 
 logger = get_logger(__name__)
 
-# Names an authored tool may NOT take — reserved/already-known, to prevent the
-# being from "authoring" a name that collides with a real adapter it should use.
-_RESERVED_TOOL_NAMES = frozenset({
-    "nmap", "nuclei", "ffuf", "http_client",
-})
-
 # A modest safety lint over the authored source. This is NOT a sandbox (the
 # sandbox is the real guard); it is a cheap first filter that rejects source
 # obviously not meant as a security tool (e.g. host-wiping). The provider's
@@ -75,11 +69,11 @@ class AuthoredTool:
     confirmed_workspace_id: str = ""
 
 
-def _is_valid_tool_name(name: str) -> bool:
-    """Tool names must be lowercase identifiers, not reserved."""
+def _is_valid_tool_name(name: str, existing: set[str] | None = None) -> bool:
+    """Tool names must be lowercase identifiers and not collide with live tools."""
     if not name or not re.fullmatch(r"[a-z][a-z0-9_]*", name):
         return False
-    return name not in _RESERVED_TOOL_NAMES
+    return name not in (existing or set())
 
 
 def _source_safety_lint(source: str) -> tuple[bool, str]:
@@ -127,7 +121,7 @@ class ToolsmithLoop:
         Returns ``{"name", "source", "rationale"}`` or ``None`` if the LLM
         declines / proposes a duplicate / proposes a reserved name. The proposal
         is explicitly biased away from ``existing`` so the being does not
-        re-author nmap/nuclei/etc.
+        duplicate a capability that is already registered.
         """
         from sonic.llm.schemas import LLMRequest, Message, MessageRole
 
@@ -164,7 +158,7 @@ class ToolsmithLoop:
             if line.strip().upper().startswith("NAME:"):
                 name = line.split(":", 1)[1].strip().lower()
                 break
-        if not name or not _is_valid_tool_name(name) or name in existing:
+        if not name or not _is_valid_tool_name(name, existing):
             return None
         # RATIONALE
         rationale = ""
@@ -219,7 +213,7 @@ class ToolsmithLoop:
 
         if name and source:
             clean_name = str(name).strip().lower()
-            if not _is_valid_tool_name(clean_name) or clean_name in existing:
+            if not _is_valid_tool_name(clean_name, existing):
                 logger.info("toolsmith_direct_authoring_rejected_name", name=clean_name)
                 return None
             clean_source = source
@@ -354,7 +348,7 @@ class AuthoredToolAdapter:
     Implements the SecurityTool contract (name/version/build_command/parse_output/
     execute) bound to the provider that confirmed it, so the being can call its
     own tools through the same ``SECURITY_TOOL`` action path it uses for
-    nmap/nuclei. Zero host execution, exit 126 => BLOCKED.
+    preinstalled scanners. Zero host execution, exit 126 => BLOCKED.
     """
 
     def __init__(self, tool: AuthoredTool, provider: Any):
@@ -504,4 +498,3 @@ async def author_tool(
         source=source,
         rationale=rationale,
     )
-

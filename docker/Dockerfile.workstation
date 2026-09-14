@@ -1,5 +1,5 @@
 # ==============================================================================
-# SONIC-REDA — Interactive Graphical Desktop Workstation (noVNC + X11 + Browser)
+# SONIC-REDA — Interactive Graphical Desktop Workstation (noVNC + X11)
 # ==============================================================================
 # Build:  docker build -t sonic-workstation:latest -f docker/Dockerfile.workstation .
 #
@@ -7,8 +7,8 @@
 # MISSION_COMPUTER for the SONIC control plane (see docker-compose.yml:
 # service `workstation`). Matches docker/entrypoint-workstation.sh expectations:
 # Xvfb :99 1280x800, XFCE4 session, x11vnc on 5900, websockify/noVNC
-# on 6080, plus Google Chrome (--no-sandbox wrapper) and the XFCE app set
-# (xfce4-terminal, thunar) the control plane probes via wmctrl/xdotool.
+# on 6080. Applications and target-specific capabilities are supplied only
+# when explicitly requested; this image does not force a tool workflow.
 
 
 FROM debian:12
@@ -38,59 +38,23 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     python3-venv \
     openjdk-17-jre-headless \
     libnss3-tools \
-    nmap \
-    ffuf \
+    libnss3-tools \
     xvfb \
     x11vnc \
     xfce4 \
-    xfce4-terminal \
-    thunar \
     dbus-x11 \
     x11-utils \
     xdotool \
     wmctrl \
     imagemagick \
     scrot \
-    unzip \
     websockify \
     novnc \
-    chromium \
     fonts-liberation \
     && rm -rf /var/lib/apt/lists/*
 
-# ProjectDiscovery Nuclei vulnerability scanner
-RUN curl -sL https://github.com/projectdiscovery/nuclei/releases/download/v3.3.7/nuclei_3.3.7_linux_amd64.zip -o /tmp/nuclei.zip \
-    && unzip -q /tmp/nuclei.zip -d /usr/local/bin/ nuclei \
-    && chmod +x /usr/local/bin/nuclei \
-    && rm -f /tmp/nuclei.zip || true
-
-# Google Chrome (stable) — optional: entrypoint auto-patches it if present.
-RUN if apt-get install -y --no-install-recommends google-chrome-stable >/dev/null 2>&1; then \
-        echo "google-chrome-stable installed"; \
-    else \
-        echo "google-chrome-stable unavailable; using chromium wrapper"; \
-    fi
-
-# Chrome wrapper behaves like the entrypoint expects (--no-sandbox in docker).
-RUN printf '#!/bin/bash\nexec /usr/bin/chromium --no-sandbox --disable-dev-shm-usage "$@"\n' > /usr/local/bin/chrome \
-    && printf '#!/bin/bash\nexec /usr/bin/chromium --no-sandbox --disable-dev-shm-usage "$@"\n' > /usr/local/bin/chromium \
-    && printf '#!/bin/bash\nexec /usr/bin/chromium --no-sandbox --disable-dev-shm-usage "$@"\n' > /usr/local/bin/chromium-browser \
-    && chmod +x /usr/local/bin/chrome /usr/local/bin/chromium /usr/local/bin/chromium-browser
-
-# Desktop files for the operator's root session (used bye application_list probes
-# and the shortcut launchers).
-RUN mkdir -p /root/Desktop \
-    && printf '[Desktop Entry]\nVersion=1.0\nType=Application\nName=Google Chrome\nComment=Access the Internet\nExec=/usr/local/bin/chrome %%U\nIcon=chromium\nPath=/root\nTerminal=false\nStartupNotify=true\nCategories=Network;WebBrowser;\n' > /root/Desktop/google-chrome.desktop \
-    && printf '[Desktop Entry]\nVersion=1.0\nType=Application\nName=Terminal\nComment=Use the command line\nExec=xfce4-terminal\nIcon=utilities-terminal\nPath=/root\nTerminal=false\nStartupNotify=true\nCategories=System;TerminalEmulator;\n' > /root/Desktop/xfce4-terminal.desktop \
-    && printf '[Desktop Entry]\nVersion=1.0\nType=Application\nName=File Manager\nComment=Browse the file system\nExec=thunar\nIcon=system-file-manager\nPath=/root\nTerminal=false\nStartupNotify=true\nCategories=System;FileManager;\n' > /root/Desktop/thunar.desktop \
-    && chmod +x /root/Desktop/*.desktop
-
 # Ensure python symlink exists for scripts expecting `python`
 RUN ln -sf /usr/bin/python3 /usr/local/bin/python
-
-# Pre-initialize Chromium NSS certificate store
-RUN mkdir -p /root/.pki/nssdb \
-    && certutil -d sql:/root/.pki/nssdb -N --empty-password 2>/dev/null || true
 
 WORKDIR /root
 CMD ["tail", "-f", "/dev/null"]

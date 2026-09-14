@@ -74,10 +74,10 @@ async def test_agent_goal_decomposition_web_intent():
     agent = ComputerUseAgent.__new__(ComputerUseAgent)
     agent.llm_router = None
 
-    prompt = "Go to https://opensea.io and search for doodles"
+    prompt = "Go to https://target.test and search for records"
     checklist = await agent.decompose_goal(prompt)
     assert len(checklist.sub_goals) >= 2
-    assert any("https://opensea.io" in sg.description for sg in checklist.sub_goals)
+    assert any("https://target.test" in sg.description for sg in checklist.sub_goals)
 
 
 def test_agent_replan_advances_failed_subgoal():

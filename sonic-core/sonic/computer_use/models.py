@@ -239,6 +239,7 @@ class ComputerWorldObservation(BaseModel):
     windows: list[str] = Field(default_factory=lambda: ["Desktop", "Terminal"])
     visible_text: str = ""
     filesystem_files: list[str] = Field(default_factory=list)
+    installed_applications: list[str] = Field(default_factory=list)
     processes: list[str] = Field(default_factory=list)
     terminal_output: str = ""
     working_directory: str = "/home/daytona"

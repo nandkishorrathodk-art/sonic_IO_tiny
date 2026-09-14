@@ -35,14 +35,33 @@ async def submit_job(
 ):
     """Submit an asynchronous job to the Redis queue (Operator/Admin)."""
     queue = get_job_queue()
+    workspace_id = request.workspace_id
+    if not workspace_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="An explicitly provisioned tenant-owned workspace is required",
+        )
+    if workspace_id == "sonic-sandbox":
+        # Preserve the legacy request shape without attaching the job to a
+        # shared container.  The logical ID is tenant-derived and will fail
+        # closed in workers until a matching dedicated workspace is provisioned.
+        import hashlib
+        workspace_id = f"tenant-{hashlib.sha256(user.tenant_id.encode()).hexdigest()[:12]}-sandbox"
+        queue.register_workspace(workspace_id, user.tenant_id)
+    elif not queue.workspace_owned_by(workspace_id, user.tenant_id):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Workspace is not owned by the submitting tenant",
+        )
     job = Job(
         tenant_id=user.tenant_id,
+        owner_id=user.email,
         engagement_id=request.engagement_id,
         agent_id=user.email,
         job_type=request.job_type,
         priority=request.priority,
         payload=request.payload,
-        workspace_id=request.workspace_id,
+        workspace_id=workspace_id,
         timeout_seconds=request.timeout_seconds,
     )
     job_id = await queue.enqueue_job(job)
@@ -72,6 +91,11 @@ async def get_job_status(
         tenant_id=user.tenant_id if user.role != UserRole.SUPER_ADMIN else None,
     )
     if not job:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Job not found or unauthorized",
+        )
+    if user.role != UserRole.SUPER_ADMIN and job.owner_id and job.owner_id != user.email:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Job not found or unauthorized",

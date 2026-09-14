@@ -42,7 +42,7 @@ def test_is_action_prompt_intents():
     assert _is_action_prompt("desktop par browser se aaj ki news dekho") is True
     assert _is_action_prompt("aaj ki khabar batao") is True
     assert _is_action_prompt("terminal open karo") is True
-    assert _is_action_prompt("opensea.io par bug dhundo") is True
+    assert _is_action_prompt("target.test par bug dhundo") is True
     assert _is_action_prompt("perform active recon on target") is True
     assert _is_action_prompt("hello how are you") is False
 

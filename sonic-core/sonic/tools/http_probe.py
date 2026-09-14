@@ -292,7 +292,7 @@ class HTTPProbe:
             self._client = httpx.AsyncClient(
                 timeout=self.timeout,
                 follow_redirects=False,
-                verify=False,
+                verify=True,
             )
         return self
 

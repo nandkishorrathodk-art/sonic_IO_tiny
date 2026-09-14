@@ -65,13 +65,18 @@ services:
       - NEO4J_USER=neo4j
       - NEO4J_PASSWORD=${NEO4J_PASSWORD:?NEO4J_PASSWORD must be set in .env}
       - REDIS_URL=redis://redis:6379/0
+      # Production workstation actions require an explicitly configured,
+      # tenant-aware remote desktop provider. The API must not silently fall
+      # back to a local Docker workstation without an isolated substrate.
+      - SONIC_USE_DAYTONA_CLOUD=1
+      - DAYTONA_API_KEY=${DAYTONA_API_KEY:?DAYTONA_API_KEY must be set in .env}
+      - DAYTONA_API_URL=${DAYTONA_API_URL:-https://app.daytona.io/api}
       # SECRET_KEY must be a strong (>=32 byte) random value; the API refuses
       # to boot in production if this is unset or a known default.
       - SECRET_KEY=${SECRET_KEY:?SECRET_KEY must be set in .env}
     volumes:
       - ./configs:/app/configs:ro
       - ./evidence_store:/app/evidence_store
-      - /var/run/docker.sock:/var/run/docker.sock:ro
     networks:
       - sonic-control-net
 
@@ -107,7 +112,7 @@ services:
     volumes:
       - kali_workspace_prod:/workspace
     networks:
-      - sonic-sandbox-net
+      - sonic-kali-net
     restart: always
 
   # 6. Isolated Debian 12 General Workspace (Browser/Playwright)
@@ -125,13 +130,17 @@ services:
     volumes:
       - debian_workspace_prod:/workspace
     networks:
-      - sonic-sandbox-net
+      - sonic-browser-net
     restart: always
 
 networks:
   sonic-control-net:
     driver: bridge
   sonic-sandbox-net:
+    driver: bridge
+  sonic-kali-net:
+    driver: bridge
+  sonic-browser-net:
     driver: bridge
 
 volumes:

@@ -196,16 +196,6 @@ class MotorReflexes:
                     pass
 
         excess = max(0, count - max_tabs)
-        if excess > 0:
-            disp = self._get_display(workspace_id)
-            focus_browser_cmd = (
-                f"DISPLAY={disp} wmctrl -a 'Chrome' 2>/dev/null || "
-                f"DISPLAY={disp} wmctrl -a 'Chromium' 2>/dev/null || "
-                f"DISPLAY={disp} xdotool search --class 'google-chrome' windowactivate --sync 2>/dev/null || true"
-            )
-            await self._exec_cmd(focus_browser_cmd, workspace_id)
-            await asyncio.sleep(0.05)
-
         for _ in range(excess):
             await self.hotkey_close_tab(workspace_id)
             await asyncio.sleep(0.15)
@@ -284,4 +274,3 @@ class MotorReflexes:
         """Send a standard keyboard shortcut (e.g. 'ctrl+r', 'f5', 'ctrl+f') to the active application."""
         await self._send_hotkey(workspace_id, shortcut)
         return f"shortcut_sent: {shortcut}"
-

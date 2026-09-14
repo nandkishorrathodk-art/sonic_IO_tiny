@@ -442,7 +442,7 @@ class CodebaseEvolver:
         target_component: str,
         description: str,
         code_diff: str,
-        auto_promote: bool = True,
+        auto_promote: bool = False,
         push: bool = False,
         test_paths: list[str] | None = None,
     ) -> EvolutionSummaryReport:
@@ -453,7 +453,7 @@ class CodebaseEvolver:
         3. Snapshot staging & file patch
         4. Targeted component unit tests
         5. Security regression verification
-        6. Auto-commit & git push if auto_promote is active
+        6. Optional auto-commit & git push only when explicitly approved
         7. Rollback and lesson learning on any failure
         8. Automatically appends audit notes to evolution.md
         9. Returns rich EvolutionSummaryReport
@@ -502,7 +502,7 @@ class CodebaseEvolver:
         target_component: str,
         description: str,
         code_diff: str,
-        auto_promote: bool = True,
+        auto_promote: bool = False,
         push: bool = False,
         test_paths: list[str] | None = None,
     ) -> EvolutionSummaryReport:

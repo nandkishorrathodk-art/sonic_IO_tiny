@@ -17,6 +17,9 @@ import base64
 import hashlib
 import hmac
 import json
+import secrets
+from threading import RLock
+from urllib.parse import urlencode
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -70,6 +73,37 @@ GOOGLE_SCOPES = [
     "https://www.googleapis.com/auth/userinfo.profile",
 ]
 
+_oauth_states: dict[str, tuple[datetime, str]] = {}
+_oauth_states_lock = RLock()
+_OAUTH_STATE_TTL = timedelta(minutes=10)
+
+
+def create_oauth_state(redirect_url: str = "") -> str:
+    """Create a one-time, short-lived OAuth state value.
+
+    The redirect is stored server-side instead of being trusted from the
+    callback query string, preventing login-CSRF and open-redirect attacks.
+    """
+    state = secrets.token_urlsafe(32)
+    with _oauth_states_lock:
+        now = datetime.now(UTC)
+        _oauth_states[state] = (now + _OAUTH_STATE_TTL, redirect_url)
+        for key, (expires, _) in list(_oauth_states.items()):
+            if expires <= now:
+                _oauth_states.pop(key, None)
+    return state
+
+
+def consume_oauth_state(state: str) -> str | None:
+    """Atomically consume and validate a one-time OAuth state."""
+    if not state:
+        return None
+    with _oauth_states_lock:
+        entry = _oauth_states.pop(state, None)
+    if not entry or entry[0] <= datetime.now(UTC):
+        return None
+    return entry[1]
+
 
 def get_google_login_url(state: str = "") -> str:
     """
@@ -88,7 +122,7 @@ def get_google_login_url(state: str = "") -> str:
     if state:
         params["state"] = state
 
-    query = "&".join(f"{k}={v}" for k, v in params.items())
+    query = urlencode(params)
     return f"{GOOGLE_AUTH_URL}?{query}"
 
 

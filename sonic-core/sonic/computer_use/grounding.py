@@ -25,14 +25,9 @@ from sonic.logger import get_logger
 
 logger = get_logger(__name__)
 
-# Compatibility-only landmarks for callers that explicitly opt into static
-# grounding. Live screenshot execution passes allow_landmarks=False and must
-# use coordinates grounded in the current pixels.
-_COMMON_UI_LANDMARKS: dict[str, tuple[float, float]] = {
-    "opensea search": (0.350, 0.160),
-    "web search bar": (0.500, 0.120),
-    "connect wallet": (0.880, 0.160),
-}
+# Static coordinates are intentionally not provided. UI targets must be
+# resolved from the current DOM/accessibility tree or screenshot pixels.
+_COMMON_UI_LANDMARKS: dict[str, tuple[float, float]] = {}
 
 
 def extract_bbox_midpoint(

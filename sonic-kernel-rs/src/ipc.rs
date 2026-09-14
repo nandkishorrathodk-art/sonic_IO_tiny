@@ -267,7 +267,7 @@ mod tests {
             method: "authorize".to_string(),
             params: serde_json::json!({
                 "action_type": "TERMINAL_EXEC",
-                "target": "nmap -sV target",
+                "target": "operator-supplied isolated command",
                 "is_isolated": true
             }),
         };

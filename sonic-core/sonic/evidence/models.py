@@ -103,7 +103,7 @@ class EvidenceItem(BaseModel):
     # Provenance
     source_type: str = "tool"               # "tool", "browser", "verifier_agent", "discovery_agent"
     source_agent: str = ""                  # Agent ID that produced this
-    tool_name: str = ""                     # Tool used (e.g. "nmap", "ffuf", "chromium")
+    tool_name: str = ""                     # Runtime capability used, if any
     tool_version: str = "1.0.0"
     execution_id: str = ""                  # Task / Execution ID
     sandbox_id: str = ""                    # Sandbox container/VM ID

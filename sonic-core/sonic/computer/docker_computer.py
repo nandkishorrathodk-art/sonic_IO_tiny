@@ -6,8 +6,7 @@ First-class native Linux Workstation provider operating inside Docker
 with a full, unrestricted, self-contained cyber environment:
 - Desktop GUI: XFCE4, Xvfb :99 (1280x800x24), xdotool, wmctrl, ImageMagick
 - Interactive Streaming: x11vnc (:5900) + noVNC websockify (:6080)
-- Web Browser: Google Chrome Stable (unrestricted internet)
-- Terminal & Security Tools: nmap, net-tools, python3, bash, git
+- Graphical desktop applications and an isolated operator workspace
 - Zero cloud rate limits or connection resets.
 """
 
@@ -80,6 +79,10 @@ class DockerComputerProvider(ComputerProvider):
         self._container_running_cache: bool = False
         self._container_checked_at: float | None = None
         self._default_workspace_id = self.container_name
+        # A single Docker desktop is not a tenant-isolated resource.  Refuse
+        # cross-tenant reuse rather than silently moving ownership on every
+        # create() call.
+        self._workspace_owner: str | None = None
         self._exec_semaphore = asyncio.Semaphore(10)
         self._gui_lock = asyncio.Lock()
         self._last_screenshot: ScreenObservation | None = None
@@ -234,7 +237,13 @@ class DockerComputerProvider(ComputerProvider):
         workspace_type: ComputerWorkspaceType = ComputerWorkspaceType.MISSION_COMPUTER,
         profile: ComputerProfile = ComputerProfile.KALI_SECURITY,
     ) -> ComputerWorkspace:
+        if self._workspace_owner and self._workspace_owner != tenant_id:
+            raise RuntimeError(
+                "shared Docker workstation is already owned by another tenant; "
+                "provision a dedicated workstation"
+            )
         ws = self._ensure_default_workspace(tenant_id)
+        self._workspace_owner = tenant_id
         ws.tenant_id = tenant_id
         ws.engagement_id = engagement_id
         if not await self._container_is_running():
@@ -265,6 +274,10 @@ class DockerComputerProvider(ComputerProvider):
 
     async def get_or_create_home(self, tenant_id: str) -> ComputerWorkspace:
         """Return the tenant's long-lived MISSION_COMPUTER home (persistent body)."""
+        if self._workspace_owner and self._workspace_owner != tenant_id:
+            raise RuntimeError(
+                "shared Docker workstation is already owned by another tenant"
+            )
         for ws in self.workspaces.values():
             if (
                 ws.tenant_id == tenant_id
@@ -285,12 +298,15 @@ class DockerComputerProvider(ComputerProvider):
             status=ComputerWorkspaceStatus.RUNNING,
         )
         self.workspaces[ws.id] = ws
+        self._workspace_owner = tenant_id
         return ws
 
     async def destroy(self, workspace_id: str) -> bool:
         if workspace_id in self.workspaces:
 
             del self.workspaces[workspace_id]
+        if workspace_id == self._default_workspace_id:
+            self._workspace_owner = None
         return True
 
     async def close(self) -> None:
@@ -511,8 +527,8 @@ class DockerComputerProvider(ComputerProvider):
     async def tile_workstation(self, workspace_id: str) -> bool:
         """
         Executes wmctrl commands to tile windows side-by-side:
-        - Google Chrome / primary window: left half 0, 0, 640, 800 (wmctrl -r "Google Chrome" -e 0,0,0,640,800)
-        - Terminal / secondary window: right half 640, 0, 640, 800 (wmctrl -r "Terminal" -e 0,640,0,640,800)
+        - First discovered application window: left half
+        - Second discovered application window: right half
         Discovers open windows dynamically via wmctrl while maintaining compatibility
         with direct wmctrl targeting.
         """
@@ -537,16 +553,12 @@ class DockerComputerProvider(ComputerProvider):
             None,
         )
 
-        code1, _, _ = await self._docker_exec(f'DISPLAY={disp} wmctrl -r "Google Chrome" -e 0,0,0,640,800')
-        if code1 != 0:
-            code1, _, _ = await self._docker_exec(f'DISPLAY={disp} wmctrl -r "Chromium" -e 0,0,0,640,800')
-        if code1 != 0 and browser_candidate:
+        code1 = 1
+        if browser_candidate:
             code1, _, _ = await self._docker_exec(f'DISPLAY={disp} wmctrl -i -r "{browser_candidate[0]}" -e 0,0,0,640,800')
 
-        code2, _, _ = await self._docker_exec(f'DISPLAY={disp} wmctrl -r "Terminal" -e 0,640,0,640,800')
-        if code2 != 0:
-            code2, _, _ = await self._docker_exec(f'DISPLAY={disp} wmctrl -r "xfce4-terminal" -e 0,640,0,640,800')
-        if code2 != 0 and term_candidate:
+        code2 = 1
+        if term_candidate:
             code2, _, _ = await self._docker_exec(f'DISPLAY={disp} wmctrl -i -r "{term_candidate[0]}" -e 0,640,0,640,800')
 
         # If standard candidates were not matched and arbitrary windows are open, tile them flexibly
@@ -557,7 +569,7 @@ class DockerComputerProvider(ComputerProvider):
                 fallback_right = windows[1]
                 code2, _, _ = await self._docker_exec(f'DISPLAY={disp} wmctrl -i -r "{fallback_right[0]}" -e 0,640,0,640,800')
 
-        return code1 == 0 or code2 == 0
+        return (not windows and code_l == 0) or code1 == 0 or code2 == 0
 
     async def settle_screen(
         self,
@@ -716,11 +728,7 @@ class DockerComputerProvider(ComputerProvider):
         return code == 0
 
     async def application_list(self, workspace_id: str) -> list[str]:
-        std_utils = list(dict.fromkeys([
-            "google-chrome-stable", "chromium", "chromium-browser", "xfce4-terminal",
-            "thunar", "nmap", "nuclei", "ffuf", "xdotool", "wmctrl", "python3", "bash",
-            "git", "curl", "wget", "code-server"
-        ] + self.app_policy.allowed_packages))
+        std_utils = list(dict.fromkeys(self.app_policy.allowed_packages))
         utils_str = " ".join(std_utils)
         discovery_cmd = (
             "find /usr/share/applications /usr/local/share/applications ~/.local/share/applications -name '*.desktop' 2>/dev/null | while read -r f; do "

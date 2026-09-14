@@ -18,11 +18,11 @@ def test_models_yaml_kimi_k3_routing():
     
     prov_vision, model_vision = router._resolve_provider(task_type="vision")
     assert prov_vision.name == "nvidia"
-    assert model_vision == "meta/llama-3.2-11b-vision-instruct"
+    assert model_vision == "moonshotai/kimi-k3"
 
     prov_cu, model_cu = router._resolve_provider(task_type="computer_use")
     assert prov_cu.name == "nvidia"
-    assert model_cu == "meta/llama-3.2-11b-vision-instruct"
+    assert model_cu == "moonshotai/kimi-k3"
 
     prov_reasoning, model_reasoning = router._resolve_provider(task_type="reasoning")
     assert prov_reasoning.name == "groq"
@@ -78,17 +78,7 @@ def test_bbox_parsing_accuracy():
 
 
 def test_expanded_web_landmarks():
-    """Verify new web, dApp, and marketplace landmarks resolve accurately."""
-    assert "opensea search" in _COMMON_UI_LANDMARKS
-    assert "connect wallet" in _COMMON_UI_LANDMARKS
-    assert "web search bar" in _COMMON_UI_LANDMARKS
-
-    opensea_coords = resolve_ui_target("search opensea", width=1280, height=800)
-    assert opensea_coords is not None
-    assert opensea_coords[0] == int(0.350 * 1280)
-    assert opensea_coords[1] == int(0.160 * 800)
-
-    wallet_coords = resolve_ui_target("connect wallet", width=1280, height=800)
-    assert wallet_coords is not None
-    assert wallet_coords[0] == int(0.880 * 1280)
-    assert wallet_coords[1] == int(0.160 * 800)
+    """Vendor-specific landmarks are not embedded in the grounding catalog."""
+    assert _COMMON_UI_LANDMARKS == {}
+    assert resolve_ui_target("search field", width=1280, height=800) is None
+    assert resolve_ui_target("connect wallet", width=1280, height=800) is None

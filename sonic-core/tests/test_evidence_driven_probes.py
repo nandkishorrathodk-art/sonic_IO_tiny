@@ -39,8 +39,11 @@ from sonic.sandbox.provider import ExecResult
 from sonic.tools.base import SecurityTool, ToolRequest, ToolResult, ToolStatus
 
 
-def _plan(objective, target="https://api.internal.target:8443/v1"):
-    return MissionPlanner().build_plan("m-evidence", objective, target, "ws-1")
+def _plan(objective, target="https://api.internal.target:8443/v1", capabilities=None):
+    return MissionPlanner().build_plan(
+        "m-evidence", objective, target, "ws-1",
+        available_capabilities=capabilities,
+    )
 
 
 def _probes(plan):
@@ -58,8 +61,7 @@ def test_no_dummy_echo_approval_gate():
     texts = [str(a.model_dump()) for a in plan.actions]
     assert not any("echo APPROVAL_REQUIRED" in t for t in texts), \
         "the puppet `echo APPROVAL_REQUIRED` stub must be gone"
-    probes = _probes(plan)
-    assert probes, "an active-test objective MUST produce concrete probes"
+    assert not _probes(plan), "no capability should be proposed without runtime registration"
 
 
 # =====================================================================
@@ -67,37 +69,33 @@ def test_no_dummy_echo_approval_gate():
 # =====================================================================
 
 def test_probes_are_concrete_and_scoped_to_target():
-    plan = _plan("scan and audit the target for open ports")
+    plan = _plan("scan and audit the target for open ports", capabilities={"custom-capability"})
     probes = _probes(plan)
     assert probes
     for probe in probes:
         assert probe.risk == ToolRisk.APPROVAL_REQUIRED
         assert probe.requires_approval is True
         tool = probe.input["tool"]
-        assert tool in {"nmap", "http_client", "nuclei", "ffuf"}
+        assert tool == "custom-capability"
         target = probe.input["target"]
         # The probe must be scoped to the mission target, never a random host.
-        assert "api.internal.target" in target or target == "api.internal.target", \
-            f"probe target {target!r} must stay within the in-scope target"
+        assert target == "https://api.internal.target:8443/v1"
         # A human-readable command preview exists for the operator.
         assert "command" in probe.input and probe.input["command"].strip()
-        # Options exist and keep the scan bounded/non-destructive.
-        assert probe.input.get("options")
+        # Capability options are owned by the registered capability, not by
+        # the planner.
+        assert probe.input["options"] == {}
 
 
-def test_nmap_probe_uses_bounded_options():
-    plan = _plan("scan the target")
-    nmap = next(p for p in _probes(plan) if p.input["tool"] == "nmap")
-    opts = nmap.input["options"]
-    assert opts.get("ports") == "top-100"
-    assert opts.get("timing") == "T4"
-    assert "--open" in opts.get("extra_args", "")
+def test_registered_capability_has_no_scripted_options():
+    plan = _plan("scan the target", capabilities={"custom-capability"})
+    capability = next(iter(_probes(plan)))
+    assert capability.input["options"] == {}
 
 
-def test_web_intent_gets_http_probe():
+def test_web_intent_does_not_select_a_tool():
     plan = _plan("audit the http api endpoints")
-    http = next(p for p in _probes(plan) if p.input["tool"] == "http_client")
-    assert http.input["target"].startswith("https://api.internal.target:8443")  # port preserved
+    assert not _probes(plan)
 
 
 def test_readonly_objective_produces_no_probes():
@@ -159,10 +157,17 @@ class _StubComputer:
 
 
 def test_probe_executes_only_with_approval():
-    scanner = _FakeScanner(_StubComputer(), name="nmap")
-    executor = MissionToolExecutor(_StubComputer(), security_tools={"nmap": scanner}, scoped_target="api.internal.target")
+    scanner = _FakeScanner(_StubComputer(), name="custom-capability")
+    executor = MissionToolExecutor(
+        _StubComputer(),
+        security_tools={"custom-capability": scanner},
+        scoped_target="internal.target",
+    )
 
-    probe = next(p for p in _probes(_plan("scan the target")) if p.input["tool"] == "nmap")
+    probe = next(
+        p for p in _probes(_plan("scan the target", capabilities={"custom-capability"}))
+        if p.input["tool"] == "custom-capability"
+    )
 
     # Without approval → AWAITING_APPROVAL, scanner never invoked.
     res = asyncio.run(executor.execute(probe, target_workspace_id="ws-1", approved=False))
@@ -173,8 +178,8 @@ def test_probe_executes_only_with_approval():
     res = asyncio.run(executor.execute(probe, target_workspace_id="ws-1", approved=True))
     assert res.status == "SUCCESS"
     assert scanner.last_request is not None
-    assert scanner.last_request.target == "api.internal.target"
-    assert scanner.last_request.options.get("ports") == "top-100"
+    assert scanner.last_request.target == "https://api.internal.target:8443/v1"
+    assert scanner.last_request.options == {}
 
 
 def test_executor_blocks_out_of_scope_probe_even_when_approved():
@@ -283,7 +288,7 @@ async def test_approve_workstation_mission_probe_endpoint(monkeypatch):
     }
 
     app = FastAPI()
-    app.include_router(router)
+    app.include_router(getattr(router, "original_router", router))
 
     class _MockComputer:
         async def terminal(self, *args, **kwargs):
@@ -336,7 +341,7 @@ async def test_dismiss_workstation_mission_probe_endpoint(monkeypatch):
     }
 
     app = FastAPI()
-    app.include_router(router)
+    app.include_router(getattr(router, "original_router", router))
     app.dependency_overrides[require_operator] = lambda: User(email="op@corp.com", name="Operator", role=UserRole.OPERATOR, tenant_id="tenant-1")
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:

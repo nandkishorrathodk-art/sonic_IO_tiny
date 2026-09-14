@@ -123,10 +123,17 @@ class HealthChecker:
     async def check_daytona(cls) -> ComponentHealth:
         api_key = os.environ.get("DAYTONA_API_KEY")
         if not api_key:
+            if os.environ.get("SONIC_USE_DAYTONA_CLOUD") == "1":
+                return ComponentHealth(
+                    name="daytona_cloud",
+                    status=HealthStatus.UNAVAILABLE,
+                    message="Daytona cloud is required but DAYTONA_API_KEY is not configured.",
+                    is_critical=True,
+                )
             return ComponentHealth(
                 name="daytona_cloud",
                 status=HealthStatus.DEGRADED,
-                message="DAYTONA_API_KEY not set. Daytona cloud is inactive; local Docker workstation fallback will be used.",
+                message="Daytona cloud is inactive; local Docker workstation mode is configured.",
                 is_critical=False,
             )
         return ComponentHealth(

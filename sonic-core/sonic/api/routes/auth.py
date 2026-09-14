@@ -20,6 +20,8 @@ from fastapi.responses import RedirectResponse
 
 from sonic.auth.google_auth import (
     authenticate_with_google,
+    consume_oauth_state,
+    create_oauth_state,
     create_jwt_token,
     get_google_login_url,
 )
@@ -127,19 +129,26 @@ async def google_login(redirect_url: str = Query(default="")):
 
     After login, Google redirects back to /auth/google/callback
     """
-    login_url = get_google_login_url(state=redirect_url)
+    # Only retain a server-side opaque state token.  Never reflect an
+    # operator-controlled redirect URL directly into OAuth state.
+    login_url = get_google_login_url(state=create_oauth_state(redirect_url))
     return RedirectResponse(url=login_url)
 
 
 @router.get("/google/callback")
 async def google_callback(
     code: str = Query(...),
-    state: str = Query(default=""),
+    state: str = Query(..., min_length=16),
 ):
     """
     Handle Google OAuth2 callback.
     Exchanges authorization code for JWT token.
     """
+    if consume_oauth_state(state) is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid or expired OAuth state",
+        )
     try:
         auth_token = await authenticate_with_google(code)
         return {

@@ -91,7 +91,7 @@ class CapabilityRouter:
                 * APP_* (launch, focus, close, install) -> COMPUTER
                 * BROWSER_* (click, type, screenshot, wait, download) -> COMPUTER
             - Operator Toolkit actions:
-                * SECURITY_TOOL (nmap, nuclei, ffuf, http_client) -> HEADLESS
+                * SECURITY_TOOL (registered target-specific capability) -> HEADLESS
                 * TERMINAL_EXEC (shell commands) -> HEADLESS
                 * FILE_* (file read/write) -> HEADLESS
                 * TOOL_AUTHOR, TOOL_RUN, METHOD_INVENT, GIT_* -> HEADLESS

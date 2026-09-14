@@ -46,6 +46,7 @@ async def propose_experiment(
         target_component=req.target_component,
         diff_or_payload=req.diff_or_payload,
         author=user.email,
+        tenant_id=user.tenant_id,
     )
     if not ok:
         raise HTTPException(status_code=400, detail=message)
@@ -58,7 +59,7 @@ async def list_experiments(
     user: User = Depends(require_auth),
 ):
     """List all proposed, active, and past self-dev experiments."""
-    return {"experiments": _experiment_manager.list_experiments(status=status)}
+    return {"experiments": _experiment_manager.list_experiments(status=status, tenant_id=user.tenant_id)}
 
 
 @router.get("/{experiment_id}")
@@ -67,7 +68,9 @@ async def get_experiment(
     user: User = Depends(require_auth),
 ):
     """Get detailed status of a specific experiment."""
-    exp = _experiment_manager.get_experiment(experiment_id)
+    exp = _experiment_manager.get_experiment(experiment_id, tenant_id=user.tenant_id)
+    if user.role.value == "super_admin":
+        exp = _experiment_manager.get_experiment(experiment_id)
     if not exp:
         raise HTTPException(status_code=404, detail="Experiment not found")
     return {"experiment": exp}
@@ -83,6 +86,7 @@ async def rollback_experiment(
         experiment_id,
         ExperimentStatus.ROLLED_BACK,
         f"Manual rollback requested by {user.email}",
+        tenant_id=None if user.role.value == "super_admin" else user.tenant_id,
     )
     if not ok:
         raise HTTPException(status_code=404, detail="Experiment not found")
@@ -95,7 +99,10 @@ async def approve_experiment(
     user: User = Depends(require_operator),
 ):
     """Human approval to advance an experiment to canary testing (Operator only)."""
-    exp = _experiment_manager.get_experiment(experiment_id)
+    exp = _experiment_manager.get_experiment(
+        experiment_id,
+        tenant_id=None if user.role.value == "super_admin" else user.tenant_id,
+    )
     if not exp:
         raise HTTPException(status_code=404, detail="Experiment not found")
     if exp.status not in (ExperimentStatus.PROPOSED, ExperimentStatus.DRAFT):
@@ -107,6 +114,7 @@ async def approve_experiment(
         experiment_id,
         ExperimentStatus.CANARY_TESTING,
         f"Human approval by {user.email}",
+        tenant_id=None if user.role.value == "super_admin" else user.tenant_id,
     )
     return {"status": "approved", "experiment_id": experiment_id, "new_state": "canary_testing"}
 
@@ -122,6 +130,7 @@ async def reject_experiment(
         experiment_id,
         ExperimentStatus.REJECTED,
         f"{reason} (by {user.email})",
+        tenant_id=None if user.role.value == "super_admin" else user.tenant_id,
     )
     if not ok:
         raise HTTPException(status_code=404, detail="Experiment not found")
@@ -134,7 +143,10 @@ async def promote_experiment(
     user: User = Depends(require_operator),
 ):
     """Promote a benchmarked/verified experiment to the active production version (Operator only)."""
-    exp = _experiment_manager.get_experiment(experiment_id)
+    exp = _experiment_manager.get_experiment(
+        experiment_id,
+        tenant_id=None if user.role.value == "super_admin" else user.tenant_id,
+    )
     if not exp:
         raise HTTPException(status_code=404, detail="Experiment not found")
     if exp.status not in (ExperimentStatus.CANARY_TESTING, ExperimentStatus.BENCHMARKING):
@@ -146,9 +158,11 @@ async def promote_experiment(
         experiment_id,
         ExperimentStatus.PROMOTED,
         f"Promoted to production by {user.email}",
+        tenant_id=None if user.role.value == "super_admin" else user.tenant_id,
     )
     if ok:
-        _experiment_manager.version_history.append(
+        _experiment_manager.record_promotion(
+            exp.tenant_id,
             {
                 "experiment_id": experiment_id,
                 "title": exp.title,
@@ -157,9 +171,14 @@ async def promote_experiment(
                 "promoted_at": datetime.now(UTC).isoformat(),
                 "baseline_score": exp.baseline_score,
                 "candidate_score": exp.candidate_score,
-            }
+                "version": _experiment_manager.active_version_for(exp.tenant_id),
+            },
         )
-    return {"status": "promoted", "experiment_id": experiment_id, "active_version": _experiment_manager.active_version}
+    return {
+        "status": "promoted",
+        "experiment_id": experiment_id,
+        "active_version": _experiment_manager.active_version_for(exp.tenant_id),
+    }
 
 
 @router.get("/weaknesses/summary")
@@ -167,7 +186,9 @@ async def get_weaknesses(
     user: User = Depends(require_auth),
 ):
     """List mined failure patterns — rejected/rolled-back experiments and safety violations."""
-    experiments = _experiment_manager.list_experiments()
+    experiments = _experiment_manager.list_experiments(
+        tenant_id=None if user.role.value == "super_admin" else user.tenant_id,
+    )
     weaknesses = [
         {
             "experiment_id": e.id,
@@ -189,10 +210,15 @@ async def get_history(
     user: User = Depends(require_auth),
 ):
     """Display the multi-generation evolution progression timeline."""
+    tenant_id = None if user.role.value == "super_admin" else user.tenant_id
+    history = [
+        item for item in _experiment_manager.version_history
+        if tenant_id is None or item.get("tenant_id") == tenant_id
+    ]
     return {
-        "active_version": _experiment_manager.active_version,
-        "version_history": _experiment_manager.version_history,
-        "total_generations": len(_experiment_manager.version_history),
+        "active_version": _experiment_manager.active_version if tenant_id is None else _experiment_manager.active_version_for(tenant_id),
+        "version_history": history,
+        "total_generations": len(history),
         "all_experiments": [
             {
                 "id": e.id,
@@ -203,6 +229,8 @@ async def get_history(
                 "created_at": e.created_at,
                 "updated_at": e.updated_at,
             }
-            for e in _experiment_manager.list_experiments()
+            for e in _experiment_manager.list_experiments(
+                tenant_id=None if user.role.value == "super_admin" else user.tenant_id,
+            )
         ],
     }

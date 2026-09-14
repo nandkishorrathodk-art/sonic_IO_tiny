@@ -51,6 +51,7 @@ class ExperimentProposal:
     target_component: str = ""  # e.g., "agents/hypothesis.py", "prompts/recon.txt"
     diff_or_payload: str = ""
     author: str = "SelfDevAgent"
+    tenant_id: str = "default"
     status: ExperimentStatus = ExperimentStatus.PROPOSED
     baseline_score: float = 0.0
     candidate_score: float = 0.0
@@ -78,7 +79,20 @@ class ExperimentManager:
     def __init__(self):
         self.experiments: dict[str, ExperimentProposal] = {}
         self.active_version: str = "v1.0.0"
+        self.active_versions: dict[str, str] = {}
         self.version_history: list[dict[str, Any]] = []
+
+    def active_version_for(self, tenant_id: str) -> str:
+        return self.active_versions.get(tenant_id, "v1.0.0")
+
+    def record_promotion(self, tenant_id: str, entry: dict[str, Any]) -> None:
+        """Record a promotion without mixing tenants' version timelines."""
+        version = entry.get("version", self.active_version_for(tenant_id))
+        self.active_versions[tenant_id] = version
+        self.active_version = version
+        entry = dict(entry)
+        entry["tenant_id"] = tenant_id
+        self.version_history.append(entry)
 
     def propose(
         self,
@@ -88,6 +102,7 @@ class ExperimentManager:
         target_component: str,
         diff_or_payload: str,
         author: str = "SelfDevAgent",
+        tenant_id: str = "default",
     ) -> tuple[bool, ExperimentProposal, str]:
         """
         Propose a new self-evolution experiment with strict safety validation.
@@ -99,6 +114,7 @@ class ExperimentManager:
             target_component=target_component,
             diff_or_payload=diff_or_payload,
             author=author,
+            tenant_id=tenant_id,
         )
 
         # 1. Check Immutable Safety Boundary
@@ -123,17 +139,36 @@ class ExperimentManager:
         content_lower = content.lower()
         return bool("disable_safety" in content_lower or "bypass_scope" in content_lower or "l2_forbidden = l0" in content_lower)
 
-    def get_experiment(self, exp_id: str) -> ExperimentProposal | None:
-        return self.experiments.get(exp_id)
+    def get_experiment(self, exp_id: str, tenant_id: str | None = None) -> ExperimentProposal | None:
+        experiment = self.experiments.get(exp_id)
+        if experiment and tenant_id is not None and experiment.tenant_id != tenant_id:
+            return None
+        return experiment
 
-    def list_experiments(self, status: ExperimentStatus | None = None) -> list[ExperimentProposal]:
+    def list_experiments(
+        self,
+        status: ExperimentStatus | None = None,
+        tenant_id: str | None = None,
+    ) -> list[ExperimentProposal]:
         if status:
-            return [e for e in self.experiments.values() if e.status == status]
-        return list(self.experiments.values())
+            return [
+                e for e in self.experiments.values()
+                if e.status == status and (tenant_id is None or e.tenant_id == tenant_id)
+            ]
+        return [
+            e for e in self.experiments.values()
+            if tenant_id is None or e.tenant_id == tenant_id
+        ]
 
-    def update_status(self, exp_id: str, status: ExperimentStatus, notes: str = "") -> bool:
+    def update_status(
+        self,
+        exp_id: str,
+        status: ExperimentStatus,
+        notes: str = "",
+        tenant_id: str | None = None,
+    ) -> bool:
         """Update lifecycle status of an experiment."""
-        exp = self.experiments.get(exp_id)
+        exp = self.get_experiment(exp_id, tenant_id=tenant_id)
         if not exp:
             return False
         exp.status = status
@@ -152,4 +187,3 @@ def get_experiment_manager() -> ExperimentManager:
     if _global_experiment_manager is None:
         _global_experiment_manager = ExperimentManager()
     return _global_experiment_manager
-

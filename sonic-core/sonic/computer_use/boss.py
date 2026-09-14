@@ -91,6 +91,8 @@ class BossAgent:
         evolution_engine: Any = None,
         initial_context: dict[str, Any] | None = None,
         gui_only: bool = False,
+        operator_plane: bool = False,
+        skill_ledger: Any | None = None,
     ):
         self.computer = computer_provider
         self.llm_router = llm_router
@@ -121,6 +123,8 @@ class BossAgent:
         self.evolution_engine = evolution_engine
         self.initial_context = dict(initial_context or {})
         self.gui_only = gui_only
+        self.operator_plane = operator_plane
+        self.skill_ledger = skill_ledger
         if self.evolution_engine is None:
             try:
                 from sonic.evolution.engine import EvolutionEngine
@@ -782,6 +786,8 @@ Rules:
                 lessons_ledger=self.lessons_ledger,
                 evolution_engine=self.evolution_engine,
                 gui_only=self.gui_only,
+                operator_plane=self.operator_plane,
+                skill_ledger=self.skill_ledger,
                 initial_context=self.initial_context,
             )
 
@@ -1060,7 +1066,7 @@ Rules:
                 lower_line = line_str.lower()
                 # Skip tool noise and startup banners
                 if any(noise in lower_line for noise in (
-                    "starting nmap", "nmap scan report", "reading package lists",
+                    "starting scan", "scan report", "reading package lists",
                     "building dependency tree", "need to get", "after this operation",
                     "=== test session", "platform win32", "rootdir:", "plugins:",
                     "collected ", "total duration", "exit 0", "exit 127",

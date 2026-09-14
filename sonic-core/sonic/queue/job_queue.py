@@ -32,6 +32,7 @@ class RedisJobQueue:
             JobPriority.LOW: asyncio.Queue(),
         }
         self._jobs_store: dict[str, Job] = {}
+        self._workspace_tenants: dict[str, str] = {}
         self._event_listeners: list[asyncio.Queue[JobEvent]] = []
 
     async def connect(self) -> bool:
@@ -88,6 +89,18 @@ class RedisJobQueue:
 
         logger.info("job_enqueued", job_id=job.id, tenant_id=job.tenant_id, priority=job.priority.value)
         return job.id
+
+    def register_workspace(self, workspace_id: str, tenant_id: str) -> None:
+        """Register an explicitly provisioned workspace for tenant-bound jobs."""
+        if not workspace_id or not tenant_id:
+            raise ValueError("workspace and tenant are required")
+        existing = self._workspace_tenants.get(workspace_id)
+        if existing and existing != tenant_id:
+            raise PermissionError("workspace is already owned by another tenant")
+        self._workspace_tenants[workspace_id] = tenant_id
+
+    def workspace_owned_by(self, workspace_id: str, tenant_id: str) -> bool:
+        return self._workspace_tenants.get(workspace_id) == tenant_id
 
     async def dequeue_job(self, timeout_seconds: float = 1.0) -> Job | None:
         """Fetch highest priority available job."""

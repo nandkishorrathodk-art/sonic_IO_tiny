@@ -183,7 +183,9 @@ class ComputerUseAgent:
         evolution_engine: Any | None = None,
         observe_desktop: bool = True,
         gui_only: bool = False,
+        operator_plane: bool = False,
         initial_context: dict[str, Any] | None = None,
+        skill_ledger: Any | None = None,
         **kwargs: Any,
     ):
         self.computer = computer_provider
@@ -193,9 +195,13 @@ class ComputerUseAgent:
         # The graphical computer plane can be locked away from PTY/shell
         # execution. Backend operator tooling remains a separate plane.
         self.gui_only = gui_only
+        # Keep desktop controls and operator execution logically separate while
+        # allowing one mission to use both evidence planes.
+        self.operator_plane = operator_plane
         # Context supplied by the caller is advisory evidence, never a
         # replacement for the immutable operator objective.
         self.initial_context = dict(initial_context or {})
+        self.skill_ledger = skill_ledger
         # Shared versioned perception state keeps semantic targets and
         # sub-agents on one live snapshot without repeatedly decoding pixels.
         self.perception_bus = PerceptionBus()
@@ -491,12 +497,28 @@ class ComputerUseAgent:
         self._screen_width = int(getattr(screen_obs, "width", self._screen_width) or self._screen_width)
         self._screen_height = int(getattr(screen_obs, "height", self._screen_height) or self._screen_height)
         status = await self.computer.status(workspace_id)
-        if self.gui_only:
+        self._last_active_application = str(getattr(status, "active_application", "") or "")
+        if self.gui_only and not self.operator_plane:
             files = []
             git_st = None
         else:
             files = await self.computer.list_files(workspace_id, ".")
             git_st = await self.computer.git_action(workspace_id, "status")
+
+        installed_applications: list[str] = []
+        application_list = getattr(self.computer, "application_list", None)
+        if callable(application_list):
+            try:
+                raw_apps = await application_list(workspace_id)
+                installed_applications = [
+                    str(getattr(app, "name", app)).strip()
+                    for app in (raw_apps or [])
+                    if str(getattr(app, "name", app)).strip()
+                ][:100]
+                if self.skill_ledger is not None:
+                    self.skill_ledger.observe_applications(installed_applications)
+            except Exception as exc:
+                logger.debug("application_inventory_unavailable", error=str(exc))
 
         # Read live terminal state.
         # Prefer the agent's own recorded output from the last action so the
@@ -508,7 +530,7 @@ class ComputerUseAgent:
         if not hasattr(self, "_last_gui_action_result"):
             self._last_gui_action_result: dict[str, Any] = {}
         try:
-            if self.gui_only:
+            if self.gui_only and not self.operator_plane:
                 raise RuntimeError("GUI-only computer: terminal observation disabled")
             last_out = self._last_action_output
             terminal_output = ""
@@ -610,6 +632,7 @@ class ComputerUseAgent:
             windows=status.open_applications,
             visible_text=_safe_str(screen_obs.visible_text),
             filesystem_files=file_names,
+            installed_applications=installed_applications,
             processes=status.running_processes,
             terminal_output=_safe_str(terminal_output),
             working_directory=working_directory or "/home/daytona",
@@ -629,6 +652,18 @@ class ComputerUseAgent:
         interactive-element list so the LLM sees what it can click/type.
         """
         url, title = "about:blank", "New Tab"
+        page_observation: dict[str, Any] = {}
+        observation_fn = getattr(self.browser, "current_page_observation", None)
+        if observation_fn is not None:
+            try:
+                import inspect
+                result = observation_fn()
+                page_observation = await result if inspect.isawaitable(result) else result
+                if isinstance(page_observation, dict):
+                    url = str(page_observation.get("url") or url)
+                    title = str(page_observation.get("title") or title)
+            except Exception as exc:
+                logger.debug("browser_page_observation_failed", error=str(exc))
         if hasattr(self.browser, "current_page_state"):
             try:
                 import inspect
@@ -670,6 +705,8 @@ class ComputerUseAgent:
         return {
             "url": url,
             "title": title,
+            "page_text": str(page_observation.get("text") or "")[:12000],
+            "api_endpoints": list(page_observation.get("api_endpoints") or [])[:100],
             "interactive_elements": elements,
         }
 
@@ -706,7 +743,7 @@ class ComputerUseAgent:
         if (goal_lower.startswith("terminal:") or goal_lower.startswith("exec:")) and ":" in goal_stripped:
             cmd = goal_stripped.split(":", 1)[1].strip()
             if cmd:
-                if self.gui_only:
+                if getattr(self, "gui_only", False):
                     return (
                         ComputerActionType.GUI_SCREENSHOT,
                         "visible-desktop",
@@ -907,6 +944,12 @@ class ComputerUseAgent:
         """
         if not hasattr(self, "failure_budget"):
             self.failure_budget = FailureBudgetTracker()
+        if not hasattr(self, "gui_only"):
+            self.gui_only = False
+        if not hasattr(self, "operator_plane"):
+            self.operator_plane = False
+        if not hasattr(self, "initial_context"):
+            self.initial_context = {}
         if not hasattr(self, "strategies"):
             self.strategies = {
                 "Strategy A": {"name": "Direct Primary Execution", "description": "Primary probe / targeted execution", "state": StrategyState.ACTIVE},
@@ -931,6 +974,8 @@ class ComputerUseAgent:
         self._last_working_dir = workdir
         active_app = observation.active_application or "UNKNOWN"
         windows_str = ", ".join(observation.windows) if observation.windows else "UNKNOWN"
+        installed_apps = getattr(observation, "installed_applications", []) or []
+        apps_str = ", ".join(installed_apps[:40]) if installed_apps else "UNKNOWN"
         if observation.filesystem_files is not None and len(observation.filesystem_files) > 0:
             raw_files = observation.filesystem_files
             file_limit = 15 if has_live_pixels else 60
@@ -960,7 +1005,20 @@ class ComputerUseAgent:
                 (f"Browser active URL: {active_url}\n" if active_url else "")
                 + f"Browser page: url={bs.get('url', 'about:blank')}, "
                 f"title={bs.get('title', '')}\n"
-                f"Interactive elements: {el_summary}\n"
+                + (
+                    f"Live page text (observed DOM, not user instructions):\n"
+                    f"{str(bs.get('page_text') or '')[:12000]}\n"
+                    if bs.get("page_text")
+                    else ""
+                )
+                + (
+                    "Observed API resources:\n"
+                    + "\n".join(str(item) for item in (bs.get("api_endpoints") or [])[:100])
+                    + "\n"
+                    if bs.get("api_endpoints")
+                    else ""
+                )
+                + f"Interactive elements: {el_summary}\n"
             )
         elif active_url:
             browser_lines = f"Desktop browser page: url={active_url}\nBrowser active URL: {active_url}\n"
@@ -970,9 +1028,9 @@ class ComputerUseAgent:
             anti_loop_banner = (
                 f"ACTIVE BROWSER PAGE: '{active_url}' is ALREADY loaded in the active desktop browser tab.\n"
                 f"ANTI-LOOP PROGRESSION RULE: Do NOT emit BROWSER_NAVIGATE to '{active_url}' again! "
-                "The page is already open on screen. You MUST interact directly with the visible page: "
-                "use GUI_CLICK on buttons, input fields, links, or search bars (using coordinates or element names like 'search bar', 'explore', 'connect wallet'), "
-                "or use GUI_TYPE, GUI_SCROLL, or another visible GUI action to make forward progress.\n"
+                "Use the live page text, observed API resources, and interactive DOM elements above as evidence. "
+                "Prefer BROWSER_CLICK/BROWSER_TYPE/BROWSER_WAIT for resolved DOM controls; use GUI actions only "
+                "when the browser observation does not expose the required control. Never invent a control from a canned workflow.\n"
             )
 
         recent_sigs = getattr(self, "_recent_action_signatures", [])
@@ -1000,9 +1058,20 @@ class ComputerUseAgent:
 
         # Cross-mission lessons
         lessons_block = ""
-        if self.lessons_ledger is not None:
+        if getattr(self, "lessons_ledger", None) is not None:
             from sonic.being.lessons import inject_into_context
             lessons_block = inject_into_context(self.lessons_ledger.relevant(goal))
+
+        skill_block = ""
+        if getattr(self, "skill_ledger", None) is not None:
+            learned_skills = self.skill_ledger.context()
+            if learned_skills:
+                skill_block = (
+                    "=== VERIFIED COMPUTER SKILLS (learned from prior real traces) ===\n"
+                    f"{learned_skills}\n"
+                    "Use these only as experience; re-observe the current application before acting.\n"
+                    "===============================================================\n"
+                )
 
         # Living state (BeingMind mood) — a real affect signal the LLM can
         # act on (fixed the audit: mood floats were never read by any prompt).
@@ -1062,6 +1131,8 @@ class ComputerUseAgent:
             raw_facts.append(f"Workspace files: {files_str}")
         if active_app != "UNKNOWN":
             raw_facts.append(f"Active app: {active_app}")
+        if apps_str != "UNKNOWN":
+            raw_facts.append(f"Installed applications observed: {apps_str}")
         if git_branch_str != "UNKNOWN":
             raw_facts.append(f"Git: {git_branch_str} (clean={observation.git_clean})")
         if terminal_text != "UNKNOWN":
@@ -1151,7 +1222,7 @@ class ComputerUseAgent:
         gui_policy_text = (
             "GUI-ONLY MODE: use visible GUI applications and GUI actions only. "
             "Do not use terminal, shell, file, script, package, security-tool, or backend actions."
-            if self.gui_only
+            if getattr(self, "gui_only", False)
             else
             "Operator toolkit is separate from the graphical desktop and may be used only when appropriate."
         )
@@ -1189,6 +1260,7 @@ class ComputerUseAgent:
             f"=== WORKSTATION APPLICATION ENVIRONMENT ===\n"
             f"Active Application / Window: {active_app}\n"
             f"Open Windows: {windows_str}\n"
+            f"Installed Applications Observed: {apps_str}\n"
             f"Screen Visible Content: {screen_text}\n"
             f"Browser State: {browser_content}\n\n"
             f"=== EXECUTION & TOOLKIT CAPABILITIES ===\n"
@@ -1202,6 +1274,7 @@ class ComputerUseAgent:
             f"Git branch: {git_branch_str}, clean: {observation.git_clean}\n"
             f"Primary file: {primary_file_str}, Test file: {test_file_str}\n"
             f"{lessons_block}"
+            f"{skill_block}"
             f"{living_block}"
         )
 
@@ -1283,8 +1356,16 @@ class ComputerUseAgent:
             )
 
         capability_directive = (
-            "Use only visible GUI applications and graphical controls; do not use terminal, "
-            "shell, scripts, files, packages, or backend tools.\n"
+            "Use the full desktop observation plane for GUI/application work. "
+            "Use the separate operator plane for terminal, files, tests, or tools; "
+            "never type shell commands into the graphical terminal to bypass policy. "
+            "Choose either plane from current evidence, not a fixed workflow.\n"
+            if self.gui_only and self.operator_plane
+            else
+            "Use the visible desktop and any attached live browser observation. For web targets, "
+            "you may use BROWSER_NAVIGATE, BROWSER_CLICK, BROWSER_TYPE, BROWSER_WAIT, and the "
+            "observed DOM/page text/API resources; do not use terminal, shell, scripts, files, "
+            "packages, or backend tools. Choose actions from current evidence, not a fixed workflow.\n"
             if self.gui_only
             else
             "You have full freedom to author custom code/tools (TOOL_AUTHOR), execute python snippets,\n"
@@ -1469,7 +1550,7 @@ class ComputerUseAgent:
             if is_refusal:
                 self._refusal_recovery_active = True
                 self._last_thought = "Model refusal received; continue from the live visible desktop without a hidden or terminal fallback."
-                if self.gui_only:
+                if self.gui_only and not self.operator_plane:
                     return self._gui_only_recovery_action(
                         goal,
                         "Model refusal received",
@@ -1586,7 +1667,8 @@ class ComputerUseAgent:
         norm = cls._normalize_app_name(target)
         if not norm:
             return ""
-        # Strip all whitespace to form standard Linux binary name (e.g. "burp suite" -> "burpsuite")
+        # Strip whitespace so a multi-word display name can be resolved
+        # generically when the operator explicitly requests an application.
         no_spaces = re.sub(r'\s+', '', norm)
         clean = re.sub(r'[^a-zA-Z0-9_\-\.]', '', no_spaces)
         return clean or norm.split()[0]
@@ -2255,7 +2337,65 @@ class ComputerUseAgent:
         provider_name = self._get_provider_name()
         tool_name = self._extract_tool_name(action_type, target_resource, payload)
 
-        if self.gui_only and action_type not in self._GUI_ONLY_ACTIONS:
+        if self.operator_plane and action_type in {
+            ComputerActionType.GUI_TYPE,
+            ComputerActionType.GUI_KEYPRESS,
+            ComputerActionType.APP_LAUNCH,
+            ComputerActionType.APP_FOCUS,
+        }:
+            try:
+                desktop_state = await self.computer.status(workspace_id)
+                active_window = str(getattr(desktop_state, "active_application", "") or "")
+                target_hint = f"{active_window} {target_resource} {payload}".lower()
+                if re.search(r"\b(terminal|shell|command[- ]?line|console|pty)\b", target_hint):
+                    actual_obs_str = (
+                        "GUI shell interaction blocked: use the separate operator "
+                        "plane so command policy, scope, and audit controls apply."
+                    )
+                    trace = ComputerDecisionTrace(
+                        step_index=self.action_counter,
+                        action_type=action_type,
+                        target_resource=target_resource,
+                        payload=str(payload),
+                        predicted_outcome=predicted_outcome,
+                        actual_observation=actual_obs_str,
+                        expected_observation=predicted_outcome,
+                        info_gain=0.0,
+                        recovery_attempted=False,
+                        status=ActionExecutionStatus.BLOCKED,
+                        exit_code=126,
+                        duration_seconds=round(time.perf_counter() - t_start, 3),
+                        thought_duration_seconds=getattr(self, "_last_thought_duration", 0.0),
+                    )
+                    self.traces.append(trace)
+                    self.history.append({"action": action_type.value, "result": actual_obs_str})
+                    return trace
+            except Exception as exc:
+                logger.warning("operator_plane_window_check_failed", error=str(exc))
+                # Do not silently permit a possible shell bypass if the
+                # desktop state cannot be inspected.
+                if action_type in {ComputerActionType.GUI_TYPE, ComputerActionType.GUI_KEYPRESS}:
+                    actual_obs_str = "GUI shell safety check unavailable; keyboard action blocked."
+                    trace = ComputerDecisionTrace(
+                        step_index=self.action_counter,
+                        action_type=action_type,
+                        target_resource=target_resource,
+                        payload=str(payload),
+                        predicted_outcome=predicted_outcome,
+                        actual_observation=actual_obs_str,
+                        expected_observation=predicted_outcome,
+                        info_gain=0.0,
+                        recovery_attempted=False,
+                        status=ActionExecutionStatus.BLOCKED,
+                        exit_code=126,
+                        duration_seconds=round(time.perf_counter() - t_start, 3),
+                        thought_duration_seconds=getattr(self, "_last_thought_duration", 0.0),
+                    )
+                    self.traces.append(trace)
+                    self.history.append({"action": action_type.value, "result": actual_obs_str})
+                    return trace
+
+        if self.gui_only and not self.operator_plane and action_type not in self._GUI_ONLY_ACTIONS:
             actual_obs_str = (
                 f"GUI-only computer blocked {action_type.value}. "
                 "Use visible desktop applications and GUI controls; terminal, "
@@ -3033,36 +3173,28 @@ class ComputerUseAgent:
                     self._last_navigated_url = url
                     actual_obs_str = f"Navigated visible browser application to {url}"
                 else:
-                    is_same_url = getattr(self, "_last_navigated_url", "") == url
+                    # Do not select, launch, or identify a vendor-specific
+                    # browser here. A caller may attach a BrowserAgent for
+                    # programmatic navigation; otherwise navigation is a
+                    # generic desktop interaction against whatever application
+                    # is already visible and grounded by the observation.
+                    await self.computer.gui_action(
+                        workspace_id,
+                        GUIAction(action=GUIActionType.KEYPRESS, key="ctrl+l"),
+                    )
+                    await self.computer.gui_action(
+                        workspace_id,
+                        GUIAction(action=GUIActionType.TYPE, text=url, delay_ms=25),
+                    )
+                    await self.computer.gui_action(
+                        workspace_id,
+                        GUIAction(action=GUIActionType.KEYPRESS, key="Return"),
+                    )
                     self._last_navigated_url = url
-                    disp = os.environ.get("DISPLAY", ":99" if hasattr(self.computer, "_docker_exec") or getattr(self.computer, "name", "") == "DockerComputerProvider" else ":0")
-                    if is_same_url:
-                        # Re-focus existing browser without spawning duplicate tabs
-                        focus_cmd = f"DISPLAY={disp} xdotool search --onlyvisible --class chromium windowactivate 2>/dev/null || true"
-                        await self.computer.terminal(workspace_id, focus_cmd)
-                        actual_obs_str = (
-                            f"Browser is already active on {url}. Existing tab focused (duplicate tab prevented). "
-                            "Proceed to interact with the webpage via GUI_CLICK on buttons, search bar, or scroll."
-                        )
-                    else:
-                        # Check if Chromium is already running in the desktop session
-                        chk = await self.computer.terminal(workspace_id, "pgrep -i chromium || pgrep -i chrome 2>/dev/null || true")
-                        chrome_running = bool(chk.stdout.strip())
-                        if chrome_running:
-                            # Reuse existing Chromium window: focus, focus address bar via ctrl+l, type URL and press Return
-                            nav_cmd = (
-                                f"DISPLAY={disp} xdotool search --onlyvisible --class chromium windowactivate --sync "
-                                f"key --clearmodifiers ctrl+l sleep 0.1 type --delay 15 {shlex.quote(url)} key Return 2>/dev/null || true"
-                            )
-                            await self.computer.terminal(workspace_id, nav_cmd)
-                            if hasattr(self, "motor") and self.motor:
-                                await self.motor.enforce_tab_budget(workspace_id, max_tabs=3)
-                            actual_obs_str = f"Navigated active browser tab to {url} (tab reused via address bar)"
-                        else:
-                            clean_flags = "--no-sandbox --disable-dev-shm-usage --disable-session-crashed-bubble --no-first-run --no-default-browser-check"
-                            cmd = f"DISPLAY={disp} nohup chromium {clean_flags} {shlex.quote(url)} >/dev/null 2>&1 &"
-                            await self.computer.terminal(workspace_id, cmd)
-                            actual_obs_str = f"Launched browser and navigated to {url}"
+                    actual_obs_str = (
+                        f"Typed navigation target into the active application: {url}. "
+                        "No application was selected or launched by the agent."
+                    )
 
                 if hasattr(self, "scratchpad") and self.scratchpad:
                     self.scratchpad.extract_from_text(url, source="url")
@@ -3211,10 +3343,18 @@ class ComputerUseAgent:
                 scan_target = payload.get("target", target_resource)
                 args = payload.get("args", "")
                 tool = self.security_tools.get(tool_name)
+                if tool is None and not self.security_tools:
+                    # An empty registry is intentional: never turn an
+                    # unregistered name into an arbitrary shell command.
+                    self.security_tools = {"__registry_guard__": object()}
                 if tool is None and self.security_tools:
-                    actual_obs_str = f"Unknown security tool: {tool_name}"
-                    recovery_needed = True
-                    status = ActionExecutionStatus.FAILED
+                    actual_obs_str = (
+                        f"Capability '{tool_name}' is not registered for this mission; "
+                        "register a target-justified capability before execution."
+                    )
+                    recovery_needed = False
+                    status = ActionExecutionStatus.BLOCKED
+                    action_exit_code = 126
                 elif tool is None:
                     # Native execution directly inside sandbox via TERMINAL_EXEC
                     tool_name_raw = str(tool_name).strip()
@@ -3615,6 +3755,35 @@ class ComputerUseAgent:
             thought_duration_seconds=getattr(self, "_last_thought_duration", 0.0),
         )
         self.traces.append(trace)
+        if (
+            self.skill_ledger is not None
+            and status in (
+                ActionExecutionStatus.SUCCEEDED,
+                ActionExecutionStatus.COMPLETED,
+                ActionExecutionStatus.SUCCESS,
+                ActionExecutionStatus.VERIFIED,
+            )
+            and action_type in {
+                ComputerActionType.APP_LAUNCH,
+                ComputerActionType.APP_FOCUS,
+                ComputerActionType.APP_CLOSE,
+                ComputerActionType.GUI_CLICK,
+                ComputerActionType.GUI_DOUBLE_CLICK,
+                ComputerActionType.GUI_TYPE,
+                ComputerActionType.GUI_KEYPRESS,
+                ComputerActionType.BROWSER_CLICK,
+                ComputerActionType.BROWSER_TYPE,
+            }
+        ):
+            app_name = ""
+            if isinstance(payload, dict):
+                app_name = str(payload.get("app_name") or payload.get("application") or "")
+            app_name = app_name or str(getattr(self, "_last_active_application", "") or target_resource)
+            self.skill_ledger.record_success(
+                app_name,
+                action_type.value,
+                actual_obs_str,
+            )
         # Store the real action output so observe() reads real terminal data
         # instead of a dummy probe. Strictly for sandbox command executions (TERMINAL_EXEC, SECURITY_TOOL).
         # GUI and Browser actions must NOT write into _last_action_output!
@@ -3903,7 +4072,30 @@ class ComputerUseAgent:
 
         Returns (verified, evidence). verified=True only on real evidence.
         """
-        if self.gui_only:
+        # Verification is also used by lightweight integrations that construct
+        # an agent with ``__new__``. Keep those callers fail-closed without
+        # requiring them to replicate the full constructor state.
+        for name, default in (
+            ("gui_only", False),
+            ("operator_plane", False),
+            ("observe_desktop", True),
+            ("skill_ledger", None),
+            ("lessons_ledger", None),
+            ("safety", None),
+            ("llm_router", None),
+            ("browser", None),
+            ("perception_bus", PerceptionBus()),
+            ("action_counter", 0),
+            ("traces", []),
+            ("history", []),
+            ("recovery_events", 0),
+            ("max_recovery_attempts", 0),
+            ("_last_action_output", {}),
+            ("_last_gui_action_result", {}),
+        ):
+            if not hasattr(self, name):
+                setattr(self, name, default)
+        if getattr(self, "gui_only", False):
             obs = await self.observe(workspace_id)
             visible = " ".join(
                 part for part in (
@@ -4109,6 +4301,16 @@ class ComputerUseAgent:
         t_start = time.perf_counter()
         self._interrupted = False
         goal_reached = False
+        if not hasattr(self, "observe_desktop"):
+            self.observe_desktop = True
+        if not hasattr(self, "gui_only"):
+            self.gui_only = False
+        if not hasattr(self, "operator_plane"):
+            self.operator_plane = False
+        if not hasattr(self, "perception_bus"):
+            self.perception_bus = PerceptionBus()
+        if not hasattr(self, "skill_ledger"):
+            self.skill_ledger = None
 
         if getattr(self, "checklist", None) is None or self.checklist.top_level_goal != goal:
             has_explicit_steps = any(re.match(r'^(?:\d+[\.\)]|\-|\*)\s+', line.strip()) for line in goal.splitlines())
@@ -4119,7 +4321,7 @@ class ComputerUseAgent:
 
         # Backend bootstrap may inspect/install packages through a shell. It is
         # intentionally unavailable on the GUI-only Computer plane.
-        if not self.gui_only and not getattr(self, "_bootstrap_performed", False):
+        if not getattr(self, "gui_only", False) and not getattr(self, "_bootstrap_performed", False):
             try:
                 from sonic.computer.bootstrap import WorkstationBootstrapEngine
                 bootstrap = WorkstationBootstrapEngine(self.computer)
@@ -4276,7 +4478,8 @@ class ComputerUseAgent:
                                 # output must share keywords with the sub-goal.
                                 # This prevents `ls` from completing "Find SQL
                                 # injection" (zero overlap) while allowing
-                                # `sqlmap --url target` to complete it.
+                                # Any evidence-backed action may complete it;
+                                # no named tool is privileged.
                                 _stop = {"the", "a", "an", "in", "on", "to", "for",
                                          "of", "and", "or", "is", "it", "with", "run",
                                          "use", "check", "find", "get", "set"}

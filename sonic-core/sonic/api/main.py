@@ -65,23 +65,30 @@ async def _maybe_start_being_life_loop(settings):
         tenant_id = os.environ.get("SONIC_BEING_TENANT", "default")
         being = get_or_create_being(tenant_id)
 
-        # Re-attach the home desktop (Phase 2 persistent body).
-        # Prefer the native Docker cyber-workstation (real GUI + terminal +
-        # browser) when the daemon is reachable; fall back to the generic
-        # sandbox provider (container or fail-closed local). Both providers
-        # now expose get_or_create_home, so the always-on being has a home instead
-        # of aborting at boot (the pre-fix VirtualComputer had no such method).
+        # Re-attach the home desktop (Phase 2 persistent body). Respect the
+        # configured substrate: production/cloud mode must use Daytona, while
+        # local development may use the native Docker workstation.
         provider = None
         try:
-            import shutil
-            from sonic.computer.docker_computer import DockerComputerProvider
             from sonic.computer.models import ComputerState
-            if shutil.which("docker"):
-                candidate = DockerComputerProvider()
-                if await candidate.status(candidate.container_name) != ComputerState.FAILED:
+            if os.environ.get("SONIC_USE_DAYTONA_CLOUD") == "1":
+                from sonic.computer.daytona_computer import DaytonaComputerProvider
+                candidate = DaytonaComputerProvider()
+                persisted_workspace_id = next(iter(candidate.workspaces), "")
+                if (
+                    persisted_workspace_id
+                    and await candidate.status(persisted_workspace_id) != ComputerState.FAILED
+                ):
                     provider = candidate
+            else:
+                import shutil
+                from sonic.computer.docker_computer import DockerComputerProvider
+                if shutil.which("docker"):
+                    candidate = DockerComputerProvider()
+                    if await candidate.status(candidate.container_name) != ComputerState.FAILED:
+                        provider = candidate
         except Exception as e:
-            logger.warning("being_provider_docker_unavailable", error=str(e))
+            logger.warning("being_computer_provider_unavailable", error=str(e))
         if provider is None:
             provider = await get_sandbox_provider()
         # The life loop is a computer-use actor, not a generic command worker.
@@ -120,8 +127,8 @@ async def _maybe_start_being_life_loop(settings):
         gui_only = callable(getattr(provider, "gui_action", None)) and callable(
             getattr(provider, "screenshot", None)
         )
-        # Wire security tools so the being can actually run real scans
-        # (nmap/nuclei/ffuf/http) during self-directed curiosity.
+        # Keep the initial capability set empty. The being may opt into a
+        # registered capability only when target evidence justifies it.
         from sonic.tools.registry import get_default_registry
         security_registry = get_default_registry(provider)
         # Toolsmith loop (Phase A, AIOSR): the being authors NEW tools for

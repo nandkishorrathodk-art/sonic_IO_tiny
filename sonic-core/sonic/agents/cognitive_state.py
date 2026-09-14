@@ -82,7 +82,7 @@ class Provenance(BaseModel):
     """Tracks the origin of any piece of knowledge."""
     source_type: str = ""        # "tool", "agent", "llm", "user", "system"
     source_agent: str = ""       # Agent ID that produced this
-    tool: str = ""               # Tool name (nmap, nuclei, etc.)
+    tool: str = ""               # Runtime capability name
     execution_id: str = ""       # Job/execution ID
     sandbox_id: str = ""         # Sandbox that produced the data
     timestamp: str = Field(default_factory=_now)

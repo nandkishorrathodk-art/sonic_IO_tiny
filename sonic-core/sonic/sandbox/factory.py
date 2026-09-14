@@ -25,14 +25,22 @@ def get_compute_provider(force_provider: str | None = None) -> ComputeProvider:
     """
     Get or initialize the global ComputeProvider.
     Preference Order:
-      1. Docker (if Docker daemon available)
-      2. LocalDevProvider (safe offline fallback; host execution refused outside dev)
+      Local development: Docker, then fail-closed LocalDevProvider.
+      Cloud production: no implicit Docker or host fallback.
     """
     global _active_provider
     if _active_provider is not None and not force_provider:
         return _active_provider
 
     provider_name = force_provider or os.environ.get("SONIC_COMPUTE_PROVIDER", "").lower()
+
+    if os.environ.get("SONIC_USE_DAYTONA_CLOUD") == "1" and provider_name != "docker":
+        # There is no generic Daytona ComputeProvider in this deployment yet.
+        # Refuse to silently put the operator plane on the local Docker daemon.
+        raise RuntimeError(
+            "SONIC_USE_DAYTONA_CLOUD=1 requires an explicitly wired remote "
+            "compute provider; refusing local Docker fallback"
+        )
 
     if provider_name == "docker" or (not provider_name and shutil.which("docker")):
         _active_provider = DockerProvider()

@@ -7,7 +7,7 @@ FROM debian:12-slim
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PYTHONUNBUFFERED=1
 
-# Install system utilities, python, node, and chromium dependencies
+# Install generic compute dependencies only; applications are target-driven.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     curl \
@@ -17,7 +17,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     python3-venv \
     nodejs \
     npm \
-    chromium \
     procps \
     iproute2 \
     iptables \

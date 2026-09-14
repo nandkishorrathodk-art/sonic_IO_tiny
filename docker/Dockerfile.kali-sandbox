@@ -12,15 +12,12 @@ FROM kalilinux/kali-rolling
 
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Install core security toolchain
+# Install generic execution prerequisites only. Target-specific capabilities
+# are supplied explicitly at runtime.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     curl \
     git \
-    nmap \
-    nuclei \
-    ffuf \
-    wordlists \
     python3 \
     python3-pip \
     iproute2 \

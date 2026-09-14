@@ -202,7 +202,7 @@ class EvolutionEngine:
         target_component: str,
         description: str,
         code_diff: str,
-        auto_promote: bool = True,
+        auto_promote: bool = False,
         push: bool = False,
         test_paths: list[str] | None = None,
     ) -> EvolutionSummaryReport:
@@ -212,7 +212,7 @@ class EvolutionEngine:
         2. Validates AST / syntax pre-flight.
         3. Staged patch application with zero-corrupt atomic rollback snapshot.
         4. Runs component unit tests & security regression suite.
-        5. Auto-promotes (git commit + optional git push) without human approval if tests pass 100%.
+        5. Promotes only when explicitly requested after tests pass 100%.
         6. Generates and returns a structured EvolutionSummaryReport.
         """
         return self.codebase_evolver.evolve(
@@ -247,7 +247,7 @@ class EvolutionEngine:
         self,
         goal_id: str,
         custom_patch: str | None = None,
-        auto_promote: bool = True,
+        auto_promote: bool = False,
         push: bool = False,
         test_paths: list[str] | None = None,
     ) -> EvolutionSummaryReport:

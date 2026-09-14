@@ -13,10 +13,10 @@ from __future__ import annotations
 
 import json
 import re
+import shlex
 import uuid
 from datetime import UTC, datetime
 from typing import Any
-from urllib.parse import urlparse
 
 from pydantic import BaseModel, Field
 
@@ -96,69 +96,17 @@ def _intent_of(objective: str) -> str:
         return "db"
     return "recon"  # default: reconnaissance-style inspection
 
-def _probe_target(target: str) -> tuple[str, str]:
-    """Split a mission target into (host, base_url) for probe generation.
-
-    Handles URLs (``https://api.example.com:8443/v1``), bare hosts
-    (``api.example.com``), and paths/workspace targets. Returns empty strings
-    when nothing usable can be extracted; probe generation then skips that
-    category.
-    """
-    raw = (target or "").strip()
-    if not raw:
-        return "", ""
-
-    # URL target: keep scheme+host+port so HTTP probes preserve any port.
-    if "://" in raw:
-        parsed = urlparse(raw)
-        if not parsed.hostname:
-            return "", ""
-        netloc = parsed.netloc.split("@")[-1]  # strip any userinfo
-        return parsed.hostname, f"{parsed.scheme}://{netloc}"
-
-    # A path (absolute or relative) is not a network target — treat as none so
-    # no network probe is suggested for a workspace/file target.
-    if "/" in raw or "\\" in raw or raw.startswith(".") or raw in (".", ".."):
-        return "", ""
-
-    # Bare host or host:port (IPv4/6, domain).
-    return raw.split(":", 1)[0].strip(), ""
-
-
-def _probe_command_preview(tool: str, target: str, options: dict[str, Any]) -> str:
-    """Render a concrete probe command for the operator approval preview.
-
-    Mirrors the adapter build_command output so the preview matches what would
-    actually run inside the sandbox. Safe and purely informational — execution
-    always goes through the fail-closed executor + safety layer.
-    """
-    if tool == "nmap":
-        ports = options.get("ports", "top-100")
-        timing = options.get("timing", "T4")
-        extra = options.get("extra_args", "-sV --open")
-        port_arg = "--top-ports 100" if ports == "top-100" else ("-p-" if ports == "all" else f"-p {ports}")
-        return f"nmap -{timing} {port_arg} {extra} {target}".strip()
-    if tool == "http_client":
-        method = str(options.get("method", "GET")).upper()
-        return f"curl -i -s -L -X {method} --max-time 120 '{target}'"
-    if tool == "ffuf":
-        wordlist = options.get("wordlist", "/usr/share/wordlists/dirb/common.txt")
-        fc = options.get("filter_status", "404")
-        threads = options.get("threads", 40)
-        url = f"{target.rstrip('/')}/FUZZ"
-        return f"ffuf -u '{url}' -w '{wordlist}' -fc {fc} -t {threads} -o - -of json -s"
-    if tool == "nuclei":
-        tags = options.get("tags", "cve,misconfig,exposure")
-        severity = options.get("severity", "critical,high,medium")
-        rl = options.get("rate_limit", 50)
-        return f"nuclei -u {target} -tags {tags} -severity {severity} -rate-limit {rl} -jsonl -silent"
-    return f"{tool} {target}"
-
-
 class MissionPlanner:
     """Build an objective-adaptive read-only baseline plan from a mission."""
 
-    def build_plan(self, mission_id: str, objective: str, target: str, target_workspace_id: str) -> MissionActionPlan:
+    def build_plan(
+        self,
+        mission_id: str,
+        objective: str,
+        target: str,
+        target_workspace_id: str,
+        available_capabilities: set[str] | None = None,
+    ) -> MissionActionPlan:
         if not objective.strip() or not target.strip() or not target_workspace_id.strip():
             raise ValueError("Mission objective, target, and target workspace are required")
 
@@ -193,13 +141,23 @@ class MissionPlanner:
             if any(sep in target for sep in ("/", "\\")):
                 actions.append(PlannedAction(
                     tool="target_shell_readonly",
-                    input={"command": f"ls -ld {target.strip()} 2>/dev/null || find . -path '*{target_clean}*' | head -50"},
+                    input={
+                        "command": (
+                            f"ls -ld {shlex.quote(target.strip())} 2>/dev/null || "
+                            f"find . -path {shlex.quote(f'*{target_clean}*')} | head -50"
+                        )
+                    },
                     risk=ToolRisk.READ_ONLY,
                 ))
             else:
                 actions.append(PlannedAction(
                     tool="target_shell_readonly",
-                    input={"command": f"find . -maxdepth 3 -name '*{target_clean}*' | head -50"},
+                    input={
+                        "command": (
+                            f"find . -maxdepth 3 -name "
+                            f"{shlex.quote(f'*{target_clean}*')} | head -50"
+                        )
+                    },
                     risk=ToolRisk.READ_ONLY,
                 ))
 
@@ -212,19 +170,16 @@ class MissionPlanner:
                 risk=ToolRisk.READ_ONLY,
             ))
 
-        # Active probes are represented as approval-required actions, but are
-        # not silently executed by the baseline planner. Instead of a no-op
-        # ``echo APPROVAL_REQUIRED`` placeholder, the planner now emits concrete,
-        # typed ``target_security_scan`` probes derived from the objective and
-        # the target. The executor still refuses to run them without operator
-        # approval, so the operator sees a REAL command to approve — not a
-        # scripted puppet gate.
+        # Active probes are represented as approval-required actions only when
+        # the caller explicitly supplies runtime capabilities. The planner
+        # never invents a command or a built-in scanner choice.
         if any(word in objective.lower() for word in ("scan", "test", "probe", "audit", "pentest")):
             actions.extend(
                 self.build_probe_actions(
                     mission_id=mission_id,
                     objective=objective,
                     target=target,
+                    available_capabilities=available_capabilities,
                 )
             )
         for action in actions:
@@ -246,73 +201,33 @@ class MissionPlanner:
         mission_id: str,
         objective: str,
         target: str,
+        available_capabilities: set[str] | None = None,
     ) -> list[PlannedAction]:
-        """Derive concrete, typed security probes from the objective and target.
+        """Propose only capabilities explicitly supplied by the runtime.
 
-        This is the anti-puppet replacement for the old ``echo APPROVAL_REQUIRED``
-        gate: the planner now emits REAL ``target_security_scan`` actions (nmap,
-        http_client, nuclei, ffuf) whose inputs are concrete and derived from the
-        mission objective's intent and the in-scope target. The executor still
-        refuses to run them until an operator approves (APPROVAL_REQUIRED), so the
-        operator is asked to approve an actual command — never a no-op echo.
-
-        Determinism and safety:
-          * Every probe uses the allowlisted ``target_security_scan`` tool, which
-            routes through the SecurityToolRegistry and safety layer.
-          * Probes are scoped to the given target only; options keep scans bounded
-            (top ports, small wordlist, rate-limited) and non-destructive.
-          * Only benign, read-only probes are suggested. Anything intrusive still
-            requires the operator to review and approve before dispatch.
+        There is no built-in scanner catalog. An empty capability set produces
+        no active proposal; the agent can observe the target and author/register
+        a capability when evidence shows that one is needed.
         """
         if not target.strip():
             return []
-
-        intent = _intent_of(objective)
-        obj_lower = objective.lower()
-
-        # Normalize the target to a usable atomic value for the tool input.
-        target_host, target_url = _probe_target(target)
-
+        capabilities = sorted(
+            {str(name).strip() for name in (available_capabilities or set()) if str(name).strip()}
+        )
         probes: list[PlannedAction] = []
-
-        def scan(action_tool: str, scan_target: str, options: dict[str, Any], rationale: str) -> None:
+        for capability in capabilities:
             probes.append(PlannedAction(
                 tool="target_security_scan",
                 input={
-                    "tool": action_tool,
-                    "target": scan_target,
-                    "options": options,
-                    "rationale": rationale,
-                    # Human/preview representation of the concrete probe so the
-                    # operator sees the real command in the approval UI.
-                    "command": _probe_command_preview(action_tool, scan_target, options),
+                    "tool": capability,
+                    "target": target.strip(),
+                    "options": {},
+                    "rationale": "Explicitly registered capability selected for operator review.",
+                    "command": f"{capability} <authorized-target>",
                 },
                 risk=ToolRisk.APPROVAL_REQUIRED,
                 requires_approval=True,
             ))
-
-        # Port/service discovery — always relevant to an active-test objective.
-        if target_host:
-            scan("nmap", target_host, {"ports": "top-100", "timing": "T4", "extra_args": "--open"},
-                 "Enumerate open TCP ports and services on the in-scope target host.")
-
-        # Web/API surface probing for web-intent or any mission carrying a URL.
-        if target_url or intent in ("web", "db") or ("http" in obj_lower or "web" in obj_lower or "api" in obj_lower):
-            web_base = target_url if target_url else f"http://{target_host}"
-            scan("http_client", web_base, {"method": "GET", "follow_redirects": True},
-                 "Probe the primary web/API endpoint, capture status, headers, and body.")
-
-        # Content/directory discovery for full web assessments.
-        if intent == "web" and target_url:
-            scan("ffuf", target_url, {"wordlist": "/usr/share/wordlists/dirb/common.txt", "filter_status": "404", "threads": 20},
-                 "Discover hidden content paths under the scoped web root.")
-
-        # Template-based vulnerability assessment for audit/pentest intent.
-        if intent in ("recon", "web") or any(w in obj_lower for w in ("vulner", "audit", "pentest", "cve")):
-            if target_url or target_host:
-                scan("nuclei", target_url or f"{target_host}", {"tags": "cve,misconfig,exposure", "severity": "critical,high,medium", "rate_limit": 50},
-                     "Passive/template-driven vulnerability assessment of the scoped target.")
-
         return probes
 
     def build_follow_up_actions(
@@ -389,6 +304,7 @@ class MissionPlanner:
         objective: str,
         target: str,
         target_workspace_id: str,
+        available_capabilities: set[str] | None = None,
     ) -> MissionActionPlan:
         """Decompose an objective into a 10-20 step ordered chain.
 
@@ -435,7 +351,11 @@ class MissionPlanner:
             target_clean = target_clean.split("://", 1)[1]
         target_clean = target_clean.split(":", 1)[0].split("?", 1)[0].strip("/")
         if target_clean and target_clean not in (".", "/"):
-            add_stage("target_shell_readonly", f"find . -maxdepth 3 -name '*{target_clean}*' | head -50", 0)
+            add_stage(
+                "target_shell_readonly",
+                f"find . -maxdepth 3 -name {shlex.quote(f'*{target_clean}*')} | head -50",
+                0,
+            )
         # Stage 1 — surface map: top-level file tree + config landmarks.
         add_stage("target_shell_readonly", "find . -maxdepth 2 -type f | head -120", 1)
         add_stage("target_shell_readonly", "find . -maxdepth 3 -type f \\( -name '*.py' -o -name '*.js' -o -name '*.go' -o -name '*.rb' \\) | head -120", 1)
@@ -451,7 +371,12 @@ class MissionPlanner:
         # generator and the executor keep them operator-gated.
         active = any(w in objective.lower() for w in ("scan", "test", "probe", "audit", "pentest"))
         if active:
-            for probe in self.build_probe_actions(mission_id, objective, target):
+            for probe in self.build_probe_actions(
+                mission_id,
+                objective,
+                target,
+                available_capabilities=available_capabilities,
+            ):
                 probe.stage = 4
                 probe.depends_on = prev_id
                 actions.append(probe)

@@ -403,7 +403,7 @@ class EvolutionGoalDirector:
         self,
         goal_id: str,
         custom_patch: str | None = None,
-        auto_promote: bool = True,
+        auto_promote: bool = False,
         push: bool = False,
         test_paths: list[str] | None = None,
     ) -> EvolutionSummaryReport:

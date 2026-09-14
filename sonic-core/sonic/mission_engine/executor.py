@@ -13,6 +13,7 @@ import uuid
 from dataclasses import dataclass, field
 
 from sonic.computer.daytona_computer import DaytonaComputerProvider
+from sonic.computer.models import GUIAction, GUIActionType
 from sonic.mission_engine.planner import PlannedAction
 from sonic.mission_engine.tool_registry import MissionToolRegistry, ToolPlane, ToolRisk
 from sonic.safety.scope import RiskLevel, SafetyVerdict, get_scope_checker
@@ -70,7 +71,7 @@ class MissionToolExecutor:
     ):
         self.computer = computer
         self.tenant_id = tenant_id
-        # Optional registry of real security scanners (nmap/nuclei/ffuf/http).
+        # Optional registry of explicitly registered target capabilities.
         # When wired, `target_security_scan` dispatches a real in-sandbox scan;
         # when None, it BLOCKS with a clear "not configured" status (never the
         # generic "not implemented" — so callers know scanners exist but aren't
@@ -165,16 +166,36 @@ class MissionToolExecutor:
                     return ActionExecutionResult(action_id=action.action_id, tool=action.tool, status="BLOCKED", workspace_id=workspace_id, output="Browser URL and explicit allowed target are required")
                 if host != allowed_target and not host.endswith("." + allowed_target):
                     return ActionExecutionResult(action_id=action.action_id, tool=action.tool, status="BLOCKED", workspace_id=workspace_id, output="Browser URL is outside the authorized target")
-                command = f"DISPLAY=:99 chromium --new-window {shlex.quote(url)} >/tmp/sonic-browser.log 2>&1 &"
-                result = await self.computer.terminal(workspace_id, command, timeout=30, actor=actor)
-                output = (result.stdout + ("\n" + result.stderr if result.stderr else "")).strip()
-                return ActionExecutionResult(action_id=action.action_id, tool=action.tool, status="SUCCESS" if result.exit_code == 0 else "FAILED", exit_code=result.exit_code, output=output[:4000], workspace_id=workspace_id, evidence={"url": url, "allowed_target": allowed_target})
+                await self.computer.gui_action(
+                    desktop_workspace_id,
+                    GUIAction(action=GUIActionType.KEYPRESS, key="ctrl+l"),
+                    actor=actor,
+                )
+                await self.computer.gui_action(
+                    desktop_workspace_id,
+                    GUIAction(action=GUIActionType.TYPE, text=url, delay_ms=25),
+                    actor=actor,
+                )
+                await self.computer.gui_action(
+                    desktop_workspace_id,
+                    GUIAction(action=GUIActionType.KEYPRESS, key="Return"),
+                    actor=actor,
+                )
+                return ActionExecutionResult(
+                    action_id=action.action_id,
+                    tool=action.tool,
+                    status="SUCCESS",
+                    exit_code=0,
+                    output="Navigation target entered into the active desktop application",
+                    workspace_id=desktop_workspace_id,
+                    evidence={"url": url, "allowed_target": allowed_target},
+                )
 
             if action.tool == "target_security_scan":
                 tool_name = str(action.input.get("tool", "")).strip()
                 target = str(action.input.get("target", "")).strip()
                 if not tool_name or not target:
-                    return ActionExecutionResult(action_id=action.action_id, tool=action.tool, status="BLOCKED", workspace_id=workspace_id, output="Security scan requires a 'tool' (nmap/nuclei/ffuf/http_client) and a 'target'")
+                    return ActionExecutionResult(action_id=action.action_id, tool=action.tool, status="BLOCKED", workspace_id=workspace_id, output="Security capability and target are required")
                 if not self._probe_in_scope(target):
                     return ActionExecutionResult(
                         action_id=action.action_id,
@@ -184,7 +205,7 @@ class MissionToolExecutor:
                         output=f"Security probe target {target!r} is outside the engagement scope {self.scoped_target!r}",
                     )
                 if self.security_tools is None:
-                    return ActionExecutionResult(action_id=action.action_id, tool=action.tool, status="BLOCKED", workspace_id=workspace_id, output="Security tool registry is not configured for this executor — scanners exist but are not provisioned")
+                    return ActionExecutionResult(action_id=action.action_id, tool=action.tool, status="BLOCKED", workspace_id=workspace_id, output="Security capability registry is not configured for this executor")
                 scanner = self.security_tools.get(tool_name) if hasattr(self.security_tools, "get") else None
                 if scanner is None:
                     available = self.security_tools.names() if hasattr(self.security_tools, "names") else (list(self.security_tools.keys()) if hasattr(self.security_tools, "keys") else [])

@@ -59,7 +59,7 @@ class MissionToolRegistry:
         ),
         "target_security_scan": ToolSpec(
             "target_security_scan", ToolPlane.TARGET_SANDBOX, ToolRisk.APPROVAL_REQUIRED,
-            "Run a real security scanner (nmap/nuclei/ffuf/http) in-sandbox against the target.",
+            "Run an explicitly registered security capability in-sandbox against the target.",
         ),
     }
 

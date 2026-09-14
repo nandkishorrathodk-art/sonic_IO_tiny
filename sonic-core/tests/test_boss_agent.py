@@ -108,6 +108,26 @@ async def test_boss_planning_only_result_is_not_reported_complete():
 
 
 @pytest.mark.asyncio
+async def test_boss_delegates_when_llm_omits_workers_for_actionable_objective():
+    """A non-trivial objective must not be dropped as a planning no-op."""
+    llm = _make_llm_mock([json.dumps({
+        "domain": "WEB",
+        "thinking": "The objective requires live browser navigation and repository discovery.",
+        "phase_name": "Target Discovery",
+        "sub_missions": [],
+    })])
+    boss = BossAgent(computer_provider=_make_computer_mock(), llm_router=llm)
+
+    phase = await boss._strategic_decomposition(
+        "open the browser and look for a new repository on GitHub"
+    )
+
+    assert phase is not None
+    assert len(phase.sub_missions) == 1
+    assert "open the browser" in phase.sub_missions[0].goal.lower()
+
+
+@pytest.mark.asyncio
 async def test_boss_sub_agent_dispatch_creates_focused_agent():
     """Dispatching a sub-mission creates a focused ComputerUseAgent."""
     summary_json = "Found 3 endpoints with parameters."

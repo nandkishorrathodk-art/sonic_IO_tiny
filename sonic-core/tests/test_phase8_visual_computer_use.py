@@ -79,6 +79,32 @@ class TestGUIActionDispatch:
         assert "Pressed key: Return" in trace.actual_observation
 
     @pytest.mark.asyncio
+    async def test_gui_only_blocks_terminal_before_provider_execution(self):
+        provider = _mock_provider()
+        agent = ComputerUseAgent(computer_provider=provider, gui_only=True)
+
+        trace = await agent.execute_action(
+            "ws-1", ComputerActionType.TERMINAL_EXEC, "uname -a",
+            {"command": "uname -a"}, "Inspect the desktop host"
+        )
+
+        assert trace.status == "BLOCKED"
+        assert trace.exit_code == 126
+        provider.terminal.assert_not_awaited()
+        provider.gui_action.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_gui_only_observation_does_not_probe_files_git_or_terminal(self):
+        provider = _mock_provider()
+        agent = ComputerUseAgent(computer_provider=provider, gui_only=True)
+
+        await agent.observe("ws-1")
+
+        provider.terminal.assert_not_awaited()
+        provider.list_files.assert_not_awaited()
+        provider.git_action.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_gui_double_click_dispatches(self):
         provider = _mock_provider()
         agent = ComputerUseAgent(computer_provider=provider)

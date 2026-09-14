@@ -182,6 +182,7 @@ class ComputerUseAgent:
         being_mind: Any | None = None,
         evolution_engine: Any | None = None,
         observe_desktop: bool = True,
+        gui_only: bool = False,
         initial_context: dict[str, Any] | None = None,
         **kwargs: Any,
     ):
@@ -189,6 +190,9 @@ class ComputerUseAgent:
         # Keep the application desktop optional. Sandbox/operator missions
         # should not capture pixels merely because a workstation exists.
         self.observe_desktop = observe_desktop
+        # The graphical computer plane can be locked away from PTY/shell
+        # execution. Backend operator tooling remains a separate plane.
+        self.gui_only = gui_only
         # Context supplied by the caller is advisory evidence, never a
         # replacement for the immutable operator objective.
         self.initial_context = dict(initial_context or {})
@@ -479,8 +483,12 @@ class ComputerUseAgent:
         self._screen_width = int(getattr(screen_obs, "width", self._screen_width) or self._screen_width)
         self._screen_height = int(getattr(screen_obs, "height", self._screen_height) or self._screen_height)
         status = await self.computer.status(workspace_id)
-        files = await self.computer.list_files(workspace_id, ".")
-        git_st = await self.computer.git_action(workspace_id, "status")
+        if self.gui_only:
+            files = []
+            git_st = None
+        else:
+            files = await self.computer.list_files(workspace_id, ".")
+            git_st = await self.computer.git_action(workspace_id, "status")
 
         # Read live terminal state.
         # Prefer the agent's own recorded output from the last action so the
@@ -492,6 +500,8 @@ class ComputerUseAgent:
         if not hasattr(self, "_last_gui_action_result"):
             self._last_gui_action_result: dict[str, Any] = {}
         try:
+            if self.gui_only:
+                raise RuntimeError("GUI-only computer: terminal observation disabled")
             last_out = self._last_action_output
             terminal_output = ""
             if last_out and last_out.get("stdout", "").strip():
@@ -533,7 +543,11 @@ class ComputerUseAgent:
                 term_out = _safe_str(raw_stdout.strip())
                 terminal_output = term_out or f"Exit {getattr(term_res, 'exit_code', 0)}"
         except Exception:
-            terminal_output = f"Terminal Ready ({len(status.running_processes)} procs)"
+            terminal_output = (
+                "GUI-only computer: terminal observation disabled"
+                if self.gui_only
+                else f"Terminal Ready ({len(status.running_processes)} procs)"
+            )
         
         if not hasattr(self, "_last_navigated_url"):
             self._last_navigated_url = ""
@@ -579,6 +593,9 @@ class ComputerUseAgent:
                 )
 
         file_names = [f.name for f in files]
+        working_directory = getattr(status, "working_directory", "")
+        if not isinstance(working_directory, str):
+            working_directory = ""
         return ComputerWorldObservation(
             screen=screen_obs,
             active_application=status.active_application,
@@ -587,7 +604,7 @@ class ComputerUseAgent:
             filesystem_files=file_names,
             processes=status.running_processes,
             terminal_output=_safe_str(terminal_output),
-            working_directory=getattr(status, "working_directory", "") or "/home/daytona",
+            working_directory=working_directory or "/home/daytona",
             browser_state=browser_state,
             ide_state={"active_file": file_names[0] if file_names else "", "cursor_line": 1},
             git_branch=git_st.branch if hasattr(git_st, "branch") else "main",
@@ -1074,6 +1091,13 @@ class ComputerUseAgent:
 
         browser_content = browser_lines.strip() if browser_lines else "None"
         tool_content = tool_lines.strip() if tool_lines else "None"
+        gui_policy_text = (
+            "GUI-ONLY MODE: use visible GUI applications and GUI actions only. "
+            "Do not use terminal, shell, file, script, package, security-tool, or backend actions."
+            if self.gui_only
+            else
+            "Operator toolkit is separate from the graphical desktop and may be used only when appropriate."
+        )
 
         targets = self._extract_targets_from_goal(goal)
         primary_dest = targets.get("primary_target") or (
@@ -1111,10 +1135,11 @@ class ComputerUseAgent:
             f"Screen Visible Content: {screen_text}\n"
             f"Browser State: {browser_content}\n\n"
             f"=== EXECUTION & TOOLKIT CAPABILITIES ===\n"
+            f"{gui_policy_text}\n"
             f"Last Command Output: {terminal_text}\n"
             f"Optional Registered Tools: {available_tools} (use only if helpful; no tool is forced)\n"
             f"Last Tool Result: {tool_content}\n\n"
-            f"AUTONOMOUS TARGETING & CODE AUTHORING: You are an autonomous architect, not a scripted puppet. You have full freedom to author custom code/scripts (TOOL_AUTHOR), run python snippets, send curl queries, or interact with apps.\n\n"
+            f"AUTONOMOUS TARGETING: You are an autonomous architect, not a scripted puppet. Choose the most direct observable action for the current GUI state.\n\n"
             f"{anti_loop_banner}"
             f"Files in workspace: {files_str}\n"
             f"Git branch: {git_branch_str}, clean: {observation.git_clean}\n"
@@ -1900,6 +1925,27 @@ class ComputerUseAgent:
     _COORDINATE_ACTIONS: frozenset[str] = frozenset({
         "GUI_CLICK", "GUI_DOUBLE_CLICK", "GUI_RIGHT_CLICK", "GUI_MOVE", "GUI_SCROLL", "GUI_DRAG",
     })
+    _GUI_ONLY_ACTIONS: frozenset[ComputerActionType] = frozenset({
+        ComputerActionType.GUI_CLICK,
+        ComputerActionType.GUI_DOUBLE_CLICK,
+        ComputerActionType.GUI_RIGHT_CLICK,
+        ComputerActionType.GUI_TYPE,
+        ComputerActionType.GUI_KEYPRESS,
+        ComputerActionType.GUI_MOVE,
+        ComputerActionType.GUI_SCROLL,
+        ComputerActionType.GUI_SCREENSHOT,
+        ComputerActionType.GUI_DRAG,
+        ComputerActionType.GUI_WAIT,
+        ComputerActionType.APP_LAUNCH,
+        ComputerActionType.APP_CLOSE,
+        ComputerActionType.APP_FOCUS,
+        ComputerActionType.BROWSER_NAVIGATE,
+        ComputerActionType.BROWSER_CLICK,
+        ComputerActionType.BROWSER_TYPE,
+        ComputerActionType.BROWSER_SCREENSHOT,
+        ComputerActionType.BROWSER_WAIT,
+        ComputerActionType.BROWSER_DOWNLOAD,
+    })
 
     def _validate_coordinates(
         self, action_type: ComputerActionType, payload: dict[str, Any],
@@ -2103,6 +2149,31 @@ class ComputerUseAgent:
 
         provider_name = self._get_provider_name()
         tool_name = self._extract_tool_name(action_type, target_resource, payload)
+
+        if self.gui_only and action_type not in self._GUI_ONLY_ACTIONS:
+            actual_obs_str = (
+                f"GUI-only computer blocked {action_type.value}. "
+                "Use visible desktop applications and GUI controls; terminal, "
+                "shell, file, security-tool, and backend execution are unavailable."
+            )
+            trace = ComputerDecisionTrace(
+                step_index=self.action_counter,
+                action_type=action_type,
+                target_resource=target_resource,
+                payload=str(payload),
+                predicted_outcome=predicted_outcome,
+                actual_observation=actual_obs_str,
+                expected_observation=predicted_outcome,
+                info_gain=0.0,
+                recovery_attempted=False,
+                status=ActionExecutionStatus.BLOCKED,
+                exit_code=126,
+                duration_seconds=round(time.perf_counter() - t_start, 3),
+                thought_duration_seconds=getattr(self, "_last_thought_duration", 0.0),
+            )
+            self.traces.append(trace)
+            self.history.append({"action": action_type.value, "result": actual_obs_str})
+            return trace
 
         # ----- PLAN Phase 6: fail-closed safety envelope -----
         # Every action — operator-issued OR self-directed (curiosity) — must pass
@@ -2831,6 +2902,13 @@ class ComputerUseAgent:
                     self._last_browser_snapshot = snap
                     self._last_navigated_url = url
                     actual_obs_str = f"Navigated to {getattr(snap, 'url', url)} (title: {getattr(snap, 'title', '')})"
+                elif self.gui_only:
+                    status = ActionExecutionStatus.BLOCKED
+                    actual_obs_str = (
+                        "BROWSER_NAVIGATE requires a visible browser window in GUI-only mode. "
+                        "Launch or focus the requested application, then use GUI_KEYPRESS/GUI_TYPE "
+                        "on its visible address bar; no hidden browser or terminal fallback is allowed."
+                    )
                 else:
                     is_same_url = getattr(self, "_last_navigated_url", "") == url
                     self._last_navigated_url = url

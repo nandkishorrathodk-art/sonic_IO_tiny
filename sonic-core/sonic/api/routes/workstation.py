@@ -2369,18 +2369,10 @@ async def _run_prompt_reasoning(tenant_id: str, session_id: str, prompt: str) ->
                 computer = get_daytona_computer()
                 if desktop_prompt:
                     screen = await computer.screenshot(desktop_id)
-                    terminal = await computer.terminal(desktop_id, "pwd", actor=tenant_id)
-                    inventory = await computer.terminal(
-                        desktop_id,
-                        "ls -la /root 2>/dev/null || ls -la /home 2>/dev/null || ls -la",
-                        actor=tenant_id,
-                    )
 
                     desktop_context = (
                         f"Live desktop state: {screen.desktop_state}; resolution={screen.width}x{screen.height}; "
-                        f"visible_text={screen.visible_text!r}; controls={screen.detected_controls!r}; "
-                        f"sandbox_pwd={terminal.stdout.strip()!r}; "
-                        f"workspace_inventory={inventory.stdout.strip()!r}."
+                        f"visible_text={screen.visible_text!r}; controls={screen.detected_controls!r}."
                     )
                     _append_worklog(
                         state,
@@ -2417,6 +2409,10 @@ async def _run_prompt_reasoning(tenant_id: str, session_id: str, prompt: str) ->
 
                         from sonic.execution.capability_router import CapabilityRouter
                         computer = CapabilityRouter.resolve_provider(computer, "agent")
+                        # The visible X11 desktop is the only Computer surface.
+                        # Do not create a hidden Playwright browser with an
+                        # independent page state.
+                        browser_agent = None
                         from sonic.safety.sealed import seal_default
                         state["interrupted"] = False
 
@@ -2597,9 +2593,11 @@ async def _run_prompt_reasoning(tenant_id: str, session_id: str, prompt: str) ->
                                 llm_router=llm_router,
                                 safety=safety_policy,
                                 security_tools=getattr(computer, "security_tools", None),
+                                browser=browser_agent,
                                 tenant_id=tenant_id,
                                 max_phases=3,
                                 sub_agent_steps=5,
+                                gui_only=True,
                                 initial_context={"program_profile": program_profile},
                             )
 
@@ -2674,12 +2672,16 @@ async def _run_prompt_reasoning(tenant_id: str, session_id: str, prompt: str) ->
                                     )
                                 _persist_workstation_state()
 
-                            report = await boss.run(
-                                workspace_id=desktop_id,
-                                objective=effective_goal,
-                                phase_callback=_on_boss_event,
-                                interrupt_check=lambda: bool(state.get("interrupted")),
-                            )
+                            try:
+                                report = await boss.run(
+                                    workspace_id=desktop_id,
+                                    objective=effective_goal,
+                                    phase_callback=_on_boss_event,
+                                    interrupt_check=lambda: bool(state.get("interrupted")),
+                                )
+                            finally:
+                                if browser_agent is not None:
+                                    await browser_agent.close()
                             summary_msg = report.findings_summary
 
                             if state.get("interrupted"):
@@ -2709,6 +2711,8 @@ async def _run_prompt_reasoning(tenant_id: str, session_id: str, prompt: str) ->
                                 tenant_id=tenant_id,
                                 safety=safety_policy,
                                 self_host=True,
+                                browser=browser_agent,
+                                gui_only=True,
                                 enable_llm_decomposition=False,
                                 observe_desktop=desktop_prompt,
                                 initial_context={"program_profile": program_profile},
@@ -2722,13 +2726,17 @@ async def _run_prompt_reasoning(tenant_id: str, session_id: str, prompt: str) ->
                             async def _on_step(trace):
                                 await _record_step_trace(trace)
 
-                            traces = await agent.run_mission(
-                                workspace_id=desktop_id,
-                                goal=effective_goal,
-                                steps=agent.max_actions,
-                                step_callback=_on_step,
-                                interrupt_check=lambda: bool(state.get("interrupted")),
-                            )
+                            try:
+                                traces = await agent.run_mission(
+                                    workspace_id=desktop_id,
+                                    goal=effective_goal,
+                                    steps=agent.max_actions,
+                                    step_callback=_on_step,
+                                    interrupt_check=lambda: bool(state.get("interrupted")),
+                                )
+                            finally:
+                                if browser_agent is not None:
+                                    await browser_agent.close()
 
                             # Final summary
                             succeeded = sum(1 for t in traces if t.status in ("SUCCESS", "RECOVERED"))

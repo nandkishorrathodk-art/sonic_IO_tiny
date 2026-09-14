@@ -90,6 +90,7 @@ class BossAgent:
         lessons_ledger: Any = None,
         evolution_engine: Any = None,
         initial_context: dict[str, Any] | None = None,
+        gui_only: bool = False,
     ):
         self.computer = computer_provider
         self.llm_router = llm_router
@@ -119,6 +120,7 @@ class BossAgent:
         self.lessons_ledger = lessons_ledger
         self.evolution_engine = evolution_engine
         self.initial_context = dict(initial_context or {})
+        self.gui_only = gui_only
         if self.evolution_engine is None:
             try:
                 from sonic.evolution.engine import EvolutionEngine
@@ -639,7 +641,14 @@ Rules:
         sub_missions_raw = parsed.get("sub_missions", [])
 
         if not sub_missions_raw:
-            return None  # Too simple for Boss
+            # An LLM may understand a multi-step objective but omit the
+            # worker list. Do not turn that planning glitch into a silent
+            # no-op: preserve the user's objective and delegate one bounded,
+            # adaptive worker. Keep an explicitly empty/minimal response
+            # honest for genuinely trivial objectives and legacy callers.
+            if len(objective.split()) > 3:
+                return self._fallback_decomposition(objective)
+            return None
 
         sub_missions = []
         for sm in sub_missions_raw[:5]:  # Cap planning fan-out per phase
@@ -664,6 +673,9 @@ Rules:
             content=thinking,
             duration_seconds=duration,
         ))
+
+        if not sub_missions and len(objective.split()) > 3:
+            return self._fallback_decomposition(objective)
 
         return Phase(
             phase_number=1,
@@ -769,6 +781,7 @@ Rules:
                 method_lab=self.method_lab,
                 lessons_ledger=self.lessons_ledger,
                 evolution_engine=self.evolution_engine,
+                gui_only=self.gui_only,
                 initial_context=self.initial_context,
             )
 

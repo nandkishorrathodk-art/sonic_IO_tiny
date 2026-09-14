@@ -115,11 +115,11 @@ async def _maybe_start_being_life_loop(settings):
                 require_approval_for_intrusive=False
             ).seal()
         # Reuse a shared LLM router if available; curiosity needs an LLM.
-        from sonic.agents.browser_agent import BrowserAgent
         from sonic.llm.router import ModelRouter
         router = ModelRouter.for_default() if hasattr(ModelRouter, "for_default") else ModelRouter()
-        browser = BrowserAgent(headless=True)
-        await browser.launch()
+        gui_only = callable(getattr(provider, "gui_action", None)) and callable(
+            getattr(provider, "screenshot", None)
+        )
         # Wire security tools so the being can actually run real scans
         # (nmap/nuclei/ffuf/http) during self-directed curiosity.
         from sonic.tools.registry import get_default_registry
@@ -157,7 +157,8 @@ async def _maybe_start_being_life_loop(settings):
             safety=safety, self_host=True, tenant_id=tenant_id, agent_id=being.being_id,
             # Wire the browser so the being can navigate/click/type/screenshot as
             # a first-class reasoning action (was orphaned before).
-            browser=browser,
+            browser=None,
+            gui_only=gui_only,
             # Wire the toolsmith so the being can author + run its own tools.
             toolsmith=toolsmith,
             # Wire the method lab so the being can invent new techniques.

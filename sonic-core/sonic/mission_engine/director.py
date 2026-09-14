@@ -481,14 +481,14 @@ class MissionDirector:
                 except Exception:
                     pass
 
-            from sonic.agents.browser_agent import BrowserAgent
             from sonic.being.toolsmith import ToolsmithLoop
             from sonic.being.method_lab import MethodLab
             from sonic.being.craft import BeingCraft
             from sonic.memory.vector import get_vector_memory
             from sonic.safety.sealed import seal_default
-            browser = BrowserAgent(headless=True)
-            await browser.launch()
+            gui_only = callable(getattr(provider, "gui_action", None)) and callable(
+                getattr(provider, "screenshot", None)
+            )
             toolsmith = ToolsmithLoop(
                 craft=BeingCraft(being_id=f"mission-{mission_id}"),
                 llm=self.model_router,
@@ -537,6 +537,7 @@ class MissionDirector:
                         method_lab=method_lab,
                         lessons_ledger=lessons_ledger,
                         evolution_engine=evolution_engine,
+                        gui_only=gui_only,
                     )
                     report = await boss.run(
                         workspace_id=ws.workspace_id,
@@ -555,7 +556,8 @@ class MissionDirector:
                     security_tools=sec_tools,
                     autonomy_level=self.autonomy_level,
                     mode=EngineeringMissionMode.ENGINEERING_MODE,
-                    browser=browser,
+                    browser=None,
+                    gui_only=gui_only,
                     safety=safety_policy,
                     toolsmith=toolsmith,
                     method_lab=method_lab,

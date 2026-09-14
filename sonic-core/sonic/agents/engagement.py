@@ -596,14 +596,9 @@ class EngagementManager:
             except Exception as e:
                 logger.debug("toolsmith_wiring_skipped", error=str(e))
 
-            # Optionally wire browser
-            browser = None
-            try:
-                from sonic.agents.browser_agent import BrowserAgent
-                browser = BrowserAgent(headless=True)
-                await browser.launch()
-            except Exception as e:
-                logger.debug("browser_wiring_skipped", error=str(e))
+            gui_only = callable(getattr(provider, "gui_action", None)) and callable(
+                getattr(provider, "screenshot", None)
+            )
 
             eng = self.active_engagements.get(engagement_id, {})
             tenant_id = eng.get("tenant_id", "default")
@@ -615,7 +610,8 @@ class EngagementManager:
             agent = ComputerUseAgent(
                 computer_provider=provider,
                 safety=safety,
-                browser=browser,
+                browser=None,
+                gui_only=gui_only,
                 tenant_id=tenant_id,
                 **extra_agent_kwargs,
             )

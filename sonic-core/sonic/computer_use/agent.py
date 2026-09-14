@@ -724,13 +724,48 @@ class ComputerUseAgent:
             return await self._llm_choose_action(goal, observation, step_index, primary_file, test_file)
 
         if self.gui_only:
-            return (
-                ComputerActionType.GUI_SCREENSHOT,
-                "visible-desktop",
-                {},
-                "No reasoning model is available; inspect the visible desktop and continue from observed state",
+            return self._gui_only_recovery_action(
+                goal,
+                "No reasoning model is available; continue from the visible desktop",
             )
         return self._diagnostic_fallback(primary_file)
+
+    @staticmethod
+    def _gui_only_recovery_action(
+        goal: str,
+        reason: str,
+    ) -> tuple[ComputerActionType, str, dict[str, Any], str]:
+        """Recover a rejected Computer decision with a safe visible action.
+
+        This intentionally handles only generic desktop intent. It prevents a
+        blocked backend proposal from becoming a screenshot-only dead loop,
+        while leaving application and target selection to the live GUI state.
+        """
+        goal_lower = goal.lower()
+        if "close" in goal_lower and any(
+            word in goal_lower for word in ("tab", "tabs")
+        ):
+            return (
+                ComputerActionType.GUI_KEYPRESS,
+                "visible-active-window",
+                {"key": "ctrl+w"},
+                f"{reason}; close one visible tab with Ctrl+W",
+            )
+        if "close" in goal_lower and any(
+            word in goal_lower for word in ("window", "browser", "application", "app")
+        ):
+            return (
+                ComputerActionType.GUI_KEYPRESS,
+                "visible-active-window",
+                {"key": "alt+F4"},
+                f"{reason}; close the visible active window with Alt+F4",
+            )
+        return (
+            ComputerActionType.GUI_SCREENSHOT,
+            "visible-desktop",
+            {},
+            f"{reason}; inspect the visible desktop before choosing another GUI action",
+        )
 
     @staticmethod
     def _is_ip_tagged_as_egress(ip: str, text: str) -> bool:
@@ -1435,11 +1470,9 @@ class ComputerUseAgent:
                 self._refusal_recovery_active = True
                 self._last_thought = "Model refusal received; continue from the live visible desktop without a hidden or terminal fallback."
                 if self.gui_only:
-                    return (
-                        ComputerActionType.GUI_SCREENSHOT,
-                        "visible-desktop",
-                        {},
-                        "Re-observe the visible desktop and choose a graphical action",
+                    return self._gui_only_recovery_action(
+                        goal,
+                        "Model refusal received",
                     )
                 targets = self._extract_targets_from_goal(goal)
                 primary_target = targets.get("primary_target") or ""
@@ -1482,22 +1515,18 @@ class ComputerUseAgent:
                     "The model proposed a non-GUI action; discard it and re-observe "
                     "the visible desktop instead."
                 )
-                return (
-                    ComputerActionType.GUI_SCREENSHOT,
-                    "visible-desktop",
-                    {},
-                    "Non-GUI proposal discarded; continue with visible GUI interaction",
+                return self._gui_only_recovery_action(
+                    goal,
+                    "Non-GUI proposal discarded",
                 )
 
             if target == "diagnostic-verification" and "LLM safety refusal detected" in expected:
                 self._refusal_recovery_active = True
                 self._last_thought = "Model refusal received; continue from the live visible desktop."
                 if self.gui_only:
-                    return (
-                        ComputerActionType.GUI_SCREENSHOT,
-                        "visible-desktop",
-                        {},
-                        "Re-observe the visible desktop and choose a graphical action",
+                    return self._gui_only_recovery_action(
+                        goal,
+                        "Model refusal received",
                     )
                 targets = self._extract_targets_from_goal(goal)
                 primary_target = targets.get("primary_target") or ""
@@ -1529,11 +1558,9 @@ class ComputerUseAgent:
             logger.warning("computer_llm_action_failed_diagnostic_fallback", error=str(e))
             self._last_thought = ""
             if self.gui_only:
-                return (
-                    ComputerActionType.GUI_SCREENSHOT,
-                    "visible-desktop",
-                    {},
-                    "Reasoning failed; re-observe the visible desktop without a backend fallback",
+                return self._gui_only_recovery_action(
+                    goal,
+                    "Reasoning failed",
                 )
             return self._diagnostic_fallback(primary_file)
 

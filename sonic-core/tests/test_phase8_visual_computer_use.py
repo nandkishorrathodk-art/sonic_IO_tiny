@@ -94,6 +94,18 @@ class TestGUIActionDispatch:
         provider.gui_action.assert_not_called()
 
     @pytest.mark.asyncio
+    async def test_gui_only_rejected_close_tabs_proposal_uses_visible_keypress(self):
+        action_type, target, payload, expected = ComputerUseAgent._gui_only_recovery_action(
+            "hi sonic, close browser and close all tabs",
+            "Non-GUI proposal discarded",
+        )
+
+        assert action_type == ComputerActionType.GUI_KEYPRESS
+        assert target == "visible-active-window"
+        assert payload == {"key": "ctrl+w"}
+        assert "Ctrl+W" in expected
+
+    @pytest.mark.asyncio
     async def test_gui_only_observation_does_not_probe_files_git_or_terminal(self):
         provider = _mock_provider()
         agent = ComputerUseAgent(computer_provider=provider, gui_only=True)

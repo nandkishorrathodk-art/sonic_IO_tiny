@@ -257,7 +257,14 @@ async def kill_all(
 ):
     """Emergency stop — kill all agents and halt operations (Tenant Admin only)."""
     manager = get_engagement_manager()
-    result = await manager.kill_all()
+    from sonic.safety.runtime_stop import get_runtime_stop_state
+    stop_state = get_runtime_stop_state()
+    tenant_id = None if user.role == UserRole.SUPER_ADMIN else user.tenant_id
+    if tenant_id is None:
+        stop_state.stop_all(f"Emergency stop requested by {user.email}")
+    else:
+        stop_state.stop(tenant_id, f"Emergency stop requested by {user.email}")
+    result = await manager.kill_all(tenant_id=tenant_id)
     return result
 
 

@@ -238,11 +238,9 @@ async def test_docker_computer_tile_workstation():
     assert success is True
 
     executed_cmds = [call_args[0][0] for call_args in provider._docker_exec.call_args_list]
-    # Check wmctrl commands for Chrome (left half) and Terminal (right half)
-    chrome_tile = [c for c in executed_cmds if 'wmctrl -r "Google Chrome" -e 0,0,0,640,800' in c]
-    term_tile = [c for c in executed_cmds if 'wmctrl -r "Terminal" -e 0,640,0,640,800' in c]
-    assert len(chrome_tile) >= 1
-    assert len(term_tile) >= 1
+    # Tiling discovers windows at runtime rather than targeting named apps.
+    assert any("wmctrl -l" in c for c in executed_cmds)
+    assert all("Google Chrome" not in c and '"Terminal"' not in c for c in executed_cmds)
 
 
 @pytest.mark.asyncio

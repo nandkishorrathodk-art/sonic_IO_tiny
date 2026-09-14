@@ -45,6 +45,7 @@ from sonic.computer.models import (
     _new_id,
     _now,
 )
+from sonic.net.tls import tls_verify
 from sonic.computer.provider import ComputerProvider
 from sonic.logger import get_logger
 from sonic.sandbox.provider import (
@@ -410,7 +411,7 @@ class HeadlessComputeProvider(ComputerProvider, ComputeProvider):
         Returns status_code, headers, and body snippet.
         """
         try:
-            async with httpx.AsyncClient(timeout=timeout, verify=False, follow_redirects=True) as client:
+            async with httpx.AsyncClient(timeout=timeout, verify=tls_verify(url), follow_redirects=True) as client:
                 resp = await client.request(
                     method=method.upper(),
                     url=url,
@@ -568,10 +569,9 @@ class HeadlessComputeProvider(ComputerProvider, ComputeProvider):
                 except Exception:
                     pass
 
-        # 2. Dynamic discovery of common utilities and policy-defined packages on PATH
-        probe_candidates = set(self.app_policy.allowed_packages) | {
-            "python3", "python", "git", "curl", "wget", "bash", "sh", "node", "npm", "zsh", "tmux"
-        }
+        # 2. Only explicitly configured packages are probed. The default
+        # policy must not teach the agent a preferred tool vocabulary.
+        probe_candidates = set(self.app_policy.allowed_packages)
         for cmd in probe_candidates:
             if shutil.which(cmd):
                 installed.add(cmd)

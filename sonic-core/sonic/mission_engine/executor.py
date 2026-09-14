@@ -92,6 +92,14 @@ class MissionToolExecutor:
         spec = MissionToolRegistry.get(action.tool)
         tenant_id = str(action.input.get("tenant_id") or self.tenant_id or actor)
         stop_state = get_runtime_stop_state()
+        if not get_scope_checker().kill_switch_enabled:
+            return ActionExecutionResult(
+                action_id=action.action_id,
+                tool=action.tool,
+                status="BLOCKED",
+                workspace_id="",
+                output="Safety kill switch is disabled; execution is fail-closed",
+            )
         if stop_state.is_stopped(tenant_id):
             return ActionExecutionResult(
                 action_id=action.action_id,

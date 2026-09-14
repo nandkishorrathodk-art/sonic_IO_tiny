@@ -94,9 +94,17 @@ echo "[*] Starting XFCE4 desktop session..."
 startxfce4 &
 sleep 2
 
-# Start x11vnc server on port 5900
+# Start x11vnc server on port 5900.  Passwordless VNC is never acceptable:
+# the compose stack must provide a secret explicitly.
 echo "[*] Starting x11vnc on port 5900..."
-x11vnc -display :99 -forever -nopw -shared -rfbport 5900 -bg
+if [ -z "${SONIC_VNC_PASSWORD:-}" ]; then
+  echo "[!] SONIC_VNC_PASSWORD is required; refusing to expose the desktop."
+  exit 1
+fi
+mkdir -p /run/sonic
+x11vnc -storepasswd "$SONIC_VNC_PASSWORD" /run/sonic/vnc.pass >/dev/null
+chmod 600 /run/sonic/vnc.pass
+x11vnc -display :99 -forever -rfbauth /run/sonic/vnc.pass -shared -rfbport 5900 -bg
 
 # Start noVNC websockify bridge on port 6080
 echo "[*] Starting noVNC websockify bridge on port 6080..."
@@ -110,4 +118,3 @@ DISPLAY=:99 xfce4-terminal --geometry=80x24+50+50 --title="SONIC Workstation Ter
 
 # Keep container alive
 exec tail -f /dev/null
-

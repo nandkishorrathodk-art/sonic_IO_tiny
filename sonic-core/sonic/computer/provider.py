@@ -437,11 +437,6 @@ class UnifiedComputerProvider(ComputerProvider):
     # -------------------------------------------------------------
     async def application_list(self, workspace_id: str) -> list[str]:
         self._require_workspace(workspace_id)
-        std_utils = list(dict.fromkeys([
-            "git", "curl", "wget", "python3", "bash", "node", "npm", "chromium",
-            "code-server", "nmap", "nuclei", "ffuf", "xfce4-terminal", "thunar", "xdotool", "wmctrl"
-        ] + self.app_policy.allowed_packages))
-        utils_str = " ".join(std_utils)
         discovery_cmd = (
             "find /usr/share/applications /usr/local/share/applications ~/.local/share/applications -name '*.desktop' 2>/dev/null | while read -r f; do "
             "[ -f \"$f\" ] || continue; "
@@ -450,7 +445,8 @@ class UnifiedComputerProvider(ComputerProvider):
             "[ -n \"$ex\" ] && basename \"$ex\"; "
             "done; "
             "find /usr/local/bin -maxdepth 1 -type f 2>/dev/null | while read -r p; do [ -x \"$p\" ] && basename \"$p\"; done; "
-            f"for b in {utils_str}; do command -v \"$b\" 2>/dev/null; done; true"
+            "find /usr/bin /bin -maxdepth 1 -type f -executable 2>/dev/null | while read -r p; do basename \"$p\"; done; "
+            "true"
         )
         result = await self.compute.execute(workspace_id, discovery_cmd)
         if result.exit_code != 0 and not result.stdout.strip():
@@ -714,4 +710,3 @@ def __getattr__(name: str) -> Any:
         from sonic.computer.headless import HeadlessComputeProvider
         return HeadlessComputeProvider
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-

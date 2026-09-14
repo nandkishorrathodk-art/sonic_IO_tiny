@@ -4,7 +4,7 @@ Tests for Workstation Self-Bootstrap & CA Trust Handshake (Phase 8)
 Verifies:
   1. Environment auditing and automated toolchain remediation (`ensure_workstation_ready`).
   2. TCP socket port waiting (`wait_for_port_open`).
-  3. Deterministic Burp Suite CA certificate trust handshake (`setup_burp_ca_trust`).
+  3. Deterministic proxy CA certificate trust handshake (`setup_proxy_ca_trust`).
   4. Integration with ComputerUseAgent.run_mission lifecycle.
 """
 
@@ -34,9 +34,9 @@ class _MockBootstrapComputer:
         self.commands_executed.append(cmd)
 
         # 1. Dependency probe command
-        if "which" in cmd and "MISSING:" in cmd:
+        if "which" in cmd:
             output_lines = []
-            for b in DEFAULT_REQUIRED_BINARIES:
+            for b in self.missing_binaries:
                 if b in self.missing_binaries:
                     output_lines.append(f"MISSING:{b}")
             return 0, "\n".join(output_lines), ""
@@ -53,7 +53,7 @@ class _MockBootstrapComputer:
             return 0, "CLOSED", ""
 
         # 4. Cert fetch command
-        if "http://burp/cert" in cmd or "/tmp/cacert.der" in cmd:
+        if "http://proxy/cert" in cmd or "/tmp/cacert.der" in cmd:
             return 0, "DER bytes fetched", ""
 
         # 5. OpenSSL / certutil / update-ca-certificates
@@ -72,10 +72,13 @@ async def test_bootstrap_ensure_workstation_ready_all_present():
     comp = _MockBootstrapComputer(missing_binaries=[])
     engine = WorkstationBootstrapEngine(comp)
 
-    res = await engine.ensure_workstation_ready("ws-1")
+    res = await engine.ensure_workstation_ready(
+        "ws-1",
+        required_binaries=["python3", "curl", "git", "certutil", "xdotool", "wmctrl"],
+    )
     assert res["status"] == "READY"
     assert len(res["missing"]) == 0
-    assert len(res["present"]) == len(DEFAULT_REQUIRED_BINARIES)
+    assert len(res["present"]) == 6
     assert len(res["installed"]) == 0
 
 
@@ -84,17 +87,20 @@ async def test_bootstrap_ensure_workstation_ready_remediation():
     comp = _MockBootstrapComputer(missing_binaries=["certutil", "ffuf"])
     engine = WorkstationBootstrapEngine(comp)
 
-    res = await engine.ensure_workstation_ready("ws-1")
+    res = await engine.ensure_workstation_ready(
+        "ws-1",
+        required_binaries=["certutil", "ffuf"],
+    )
     assert res["status"] == "REMEDIATED"
     assert "certutil" in res["missing"]
     assert "ffuf" in res["missing"]
-    assert "libnss3-tools" in res["installed"]
+    assert res["installed"] == ["certutil", "ffuf"]
     assert "ffuf" in res["installed"]
 
     # Verify apt install command was dispatched
     apt_cmds = [c for c in comp.commands_executed if "apt-get install" in c]
     assert len(apt_cmds) >= 1
-    assert "libnss3-tools" in apt_cmds[0]
+    assert "certutil ffuf" in apt_cmds[0]
     assert "ffuf" in apt_cmds[0]
 
 
@@ -122,11 +128,11 @@ async def test_bootstrap_wait_for_port_open_timeout():
 
 
 @pytest.mark.asyncio
-async def test_bootstrap_setup_burp_ca_trust_success():
+async def test_bootstrap_setup_proxy_ca_trust_success():
     comp = _MockBootstrapComputer(port_open_attempts=1)
     engine = WorkstationBootstrapEngine(comp)
 
-    res = await engine.setup_burp_ca_trust(
+    res = await engine.setup_proxy_ca_trust(
         workspace_id="ws-1", proxy_host="127.0.0.1", proxy_port=8080, wait_timeout=1.0
     )
     assert res["proxy_live"] is True
@@ -141,11 +147,11 @@ async def test_bootstrap_setup_burp_ca_trust_success():
 
 
 @pytest.mark.asyncio
-async def test_bootstrap_setup_burp_ca_trust_port_closed():
+async def test_bootstrap_setup_proxy_ca_trust_port_closed():
     comp = _MockBootstrapComputer(port_open_attempts=999)
     engine = WorkstationBootstrapEngine(comp)
 
-    res = await engine.setup_burp_ca_trust(
+    res = await engine.setup_proxy_ca_trust(
         workspace_id="ws-1", proxy_host="127.0.0.1", proxy_port=8080, wait_timeout=0.02
     )
     assert res["proxy_live"] is False

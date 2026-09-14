@@ -14,8 +14,11 @@ import base64
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
+from urllib.parse import urlparse
 
 from sonic.logger import get_logger
+from sonic.net.tls import tls_verify
+from sonic.sandbox.egress import is_target_allowed
 
 logger = get_logger(__name__)
 
@@ -51,7 +54,16 @@ class BrowserAgent:
     Uses Playwright when available, falls back to httpx for basic HTTP.
     """
 
-    def __init__(self, headless: bool = True, timeout: int = 30000):
+    def __init__(
+        self,
+        headless: bool = True,
+        timeout: int = 30000,
+        *,
+        scope_checker: Any | None = None,
+        scope_config: dict[str, Any] | None = None,
+        allow_javascript: bool = False,
+        require_scope: bool = False,
+    ):
         self.headless = headless
         self.timeout = timeout
         self._browser = None
@@ -59,6 +71,26 @@ class BrowserAgent:
         self._page = None
         self._playwright = None
         self._using_playwright = False
+        self.scope_checker = scope_checker
+        self.scope_config = scope_config
+        self.allow_javascript = allow_javascript
+        self.require_scope = require_scope
+
+    def _validate_url(self, url: str) -> None:
+        """Reject unsafe browser destinations before any network request."""
+        parsed = urlparse((url or "").strip())
+        if parsed.scheme.lower() not in {"http", "https"}:
+            raise ValueError("browser navigation only supports http and https URLs")
+        if not parsed.hostname or parsed.username or parsed.password:
+            raise ValueError("browser navigation requires a host without embedded credentials")
+        if self.require_scope and (self.scope_checker is None or not self.scope_config):
+            raise ValueError("browser navigation requires an explicit engagement scope")
+        if self.scope_checker is not None and self.scope_config:
+            if not self.scope_checker.is_target_in_scope(parsed.hostname, self.scope_config):
+                raise ValueError("browser URL is outside the configured engagement scope")
+        allowed, reason = is_target_allowed(url)
+        if not allowed:
+            raise ValueError(f"browser URL blocked by egress policy: {reason}")
 
     async def launch(self) -> bool:
         """Launch browser instance."""
@@ -69,10 +101,14 @@ class BrowserAgent:
             self._context = await self._browser.new_context(
                 viewport={"width": 1920, "height": 1080},
                 user_agent="Mozilla/5.0 (SONIC-REDA Browser Agent) Chrome/120",
-                ignore_https_errors=True,
+                # Certificate verification is part of the browser security
+                # boundary.  Lab exceptions must be configured explicitly in
+                # the network client, never enabled globally here.
+                ignore_https_errors=False,
                 accept_downloads=True,
             )
             self._page = await self._context.new_page()
+            await self._page.route("**/*", self._guard_request)
             self._using_playwright = True
             logger.info("browser_agent_launched", engine="playwright")
             return True
@@ -84,8 +120,23 @@ class BrowserAgent:
             logger.error("browser_launch_failed", error=str(e))
             return False
 
+    async def _guard_request(self, route: Any) -> None:
+        """Apply the same scheme/egress guard to redirects and subresources."""
+        request_url = route.request.url
+        parsed = urlparse(request_url)
+        if parsed.scheme.lower() in {"data", "blob", "about"}:
+            await route.continue_()
+            return
+        try:
+            self._validate_url(request_url)
+        except ValueError:
+            await route.abort("blockedbyclient")
+            return
+        await route.continue_()
+
     async def navigate(self, url: str) -> PageSnapshot:
         """Navigate to URL and capture full page state."""
+        self._validate_url(url)
         if self._using_playwright and self._page:
             return await self._playwright_navigate(url)
         return await self._httpx_navigate(url)
@@ -102,6 +153,8 @@ class BrowserAgent:
 
         response = await self._page.goto(url, timeout=self.timeout, wait_until="networkidle")
         status = response.status if response else 0
+        final_url = self._page.url or url
+        self._validate_url(final_url)
 
         # Wait for dynamic content
         await self._page.wait_for_timeout(1000)
@@ -114,7 +167,7 @@ class BrowserAgent:
         cookies = await self._context.cookies()
 
         return PageSnapshot(
-            url=url,
+            url=final_url,
             title=title,
             status_code=status,
             html_content=html[:50000],
@@ -127,8 +180,25 @@ class BrowserAgent:
     async def _httpx_navigate(self, url: str) -> PageSnapshot:
         """Fallback HTTP-only navigation without browser rendering."""
         import httpx
-        async with httpx.AsyncClient(verify=False, timeout=15, follow_redirects=True) as client:
-            response = await client.get(url)
+        async with httpx.AsyncClient(
+            verify=tls_verify(url),
+            timeout=15,
+            follow_redirects=False,
+        ) as client:
+            current_url = url
+            response = None
+            for _ in range(10):
+                self._validate_url(current_url)
+                response = await client.get(current_url)
+                if response.status_code not in {301, 302, 303, 307, 308}:
+                    break
+                location = response.headers.get("location")
+                if not location:
+                    break
+                current_url = str(response.url.join(location))
+            if response is None:
+                raise RuntimeError("browser navigation did not receive a response")
+            self._validate_url(str(response.url))
             return PageSnapshot(
                 url=str(response.url),
                 title="",
@@ -139,6 +209,16 @@ class BrowserAgent:
                 console_logs=[],
                 network_requests=[],
             )
+
+    async def evaluate_javascript(self, expression: str) -> Any:
+        """Evaluate JavaScript only when explicitly enabled by the caller."""
+        if not self.allow_javascript:
+            raise PermissionError("arbitrary JavaScript execution is disabled by default")
+        if not self._using_playwright or not self._page:
+            raise RuntimeError("JavaScript evaluation requires a Playwright page")
+        if not isinstance(expression, str) or not expression.strip():
+            raise ValueError("JavaScript expression cannot be empty")
+        return await self._page.evaluate(expression)
 
     async def click(self, selector: str) -> bool:
         """Click an element by CSS selector."""
@@ -389,3 +469,44 @@ class BrowserAgent:
             except Exception:
                 return "about:blank", ""
         return "about:blank", ""
+
+    async def current_page_observation(self) -> dict[str, Any]:
+        """Return bounded, live browser evidence for the reasoning loop.
+
+        URL/title alone is not enough for target-first analysis. The agent
+        reasons from the loaded page while excluding cookies and local storage.
+        """
+        url, title = await self.current_page_state()
+        observation: dict[str, Any] = {
+            "url": url,
+            "title": title,
+            "text": "",
+            "api_endpoints": [],
+            "interactive_elements": [],
+        }
+        if not self._using_playwright or not self._page:
+            return observation
+        try:
+            text = await self._page.locator("body").inner_text(timeout=3000)
+            observation["text"] = (text or "")[:12000]
+        except Exception as exc:
+            logger.debug("browser_body_text_failed", error=str(exc))
+        try:
+            observation["api_endpoints"] = (await self.extract_api_endpoints())[:100]
+        except Exception as exc:
+            logger.debug("browser_api_endpoint_extraction_failed", error=str(exc))
+        try:
+            observation["interactive_elements"] = [
+                {
+                    "tag": e.tag,
+                    "text": e.text,
+                    "selector": e.selector,
+                    "visible": e.is_visible,
+                    "bbox": e.bbox,
+                    "attributes": e.attributes,
+                }
+                for e in (await self.find_interactive_elements())[:100]
+            ]
+        except Exception as exc:
+            logger.debug("browser_interactive_observation_failed", error=str(exc))
+        return observation

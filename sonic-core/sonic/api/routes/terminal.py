@@ -13,6 +13,8 @@ SECURITY ENFORCEMENT:
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import os
 import shutil
 import uuid
 
@@ -21,6 +23,7 @@ from fastapi import APIRouter, Depends, Query, WebSocket, WebSocketDisconnect, s
 from sonic.auth.middleware import require_auth, verify_ws_token
 from sonic.auth.models import User
 from sonic.logger import get_logger
+from sonic.safety.runtime_stop import get_runtime_stop_state
 
 logger = get_logger(__name__)
 
@@ -34,12 +37,27 @@ _ALLOWED_TERMINAL_CONTAINERS = {"sonic-sandbox-debian", "sonic-sandbox-kali"}
 _DEFAULT_TERMINAL_CONTAINER = "sonic-sandbox-debian"
 
 
+def _tenant_terminal_container(tenant_id: str) -> str:
+    return f"sonic-terminal-{hashlib.sha256(tenant_id.encode()).hexdigest()[:12]}"
+
+
 class ContainerTerminalSession:
     """Manages an isolated container PTY terminal session."""
 
-    def __init__(self, session_id: str, container_name: str = _DEFAULT_TERMINAL_CONTAINER, cols: int = 120, rows: int = 30):
+    def __init__(
+        self,
+        session_id: str,
+        container_name: str = _DEFAULT_TERMINAL_CONTAINER,
+        cols: int = 120,
+        rows: int = 30,
+        *,
+        owner_id: str = "",
+        tenant_id: str = "",
+    ):
         self.session_id = session_id
         self.container_name = container_name
+        self.owner_id = owner_id
+        self.tenant_id = tenant_id
         self.cols = cols
         self.rows = rows
         self.process: asyncio.subprocess.Process | None = None
@@ -136,8 +154,17 @@ async def terminal_websocket(
         })
         await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
         return
+    stop_state = get_runtime_stop_state()
+    if stop_state.is_stopped(user.tenant_id):
+        await websocket.send_json({
+            "type": "error",
+            "data": "\x1b[1;31m[POLICY ERROR] Runtime kill switch is asserted.\x1b[0m\r\n",
+        })
+        await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+        return
 
-    if container not in _ALLOWED_TERMINAL_CONTAINERS:
+    dedicated = _tenant_terminal_container(user.tenant_id)
+    if container not in _ALLOWED_TERMINAL_CONTAINERS and container != dedicated:
         logger.warning("terminal_ws_container_rejected", user=user.email, container=container)
         await websocket.send_json({
             "type": "error",
@@ -145,10 +172,26 @@ async def terminal_websocket(
         })
         await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
         return
+    # The compose sandbox names are shared across tenants and cannot provide
+    # resource ownership for an interactive shell.  Require a dedicated,
+    # tenant-derived container; a shared-container exception is explicit and
+    # disabled by default.
+    if container != dedicated and os.environ.get("SONIC_ALLOW_SHARED_TERMINAL") != "1":
+        await websocket.send_json({
+            "type": "error",
+            "data": "\x1b[1;31m[POLICY ERROR] A tenant-dedicated terminal sandbox is required.\x1b[0m\r\n",
+        })
+        await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+        return
 
     # 2. CONTAINER PTY BINDING
     session_id = f"term-{uuid.uuid4().hex[:8]}"
-    session = ContainerTerminalSession(session_id, container_name=container)
+    session = ContainerTerminalSession(
+        session_id,
+        container_name=container,
+        owner_id=user.email,
+        tenant_id=user.tenant_id,
+    )
     _sessions[session_id] = session
 
     started, msg = await session.start()
@@ -214,5 +257,6 @@ async def list_terminal_sessions(user: User = Depends(require_auth)):
                 "rows": s.rows,
             }
             for s in _sessions.values()
+            if s.owner_id == user.email and s.tenant_id == user.tenant_id
         ]
     }

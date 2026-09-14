@@ -45,6 +45,19 @@ class SonicWorker:
 
     async def execute_job(self, job: Job) -> Job:
         """Execute a single job and update its lifecycle state."""
+        from sonic.safety.runtime_stop import get_runtime_stop_state
+        stop_state = get_runtime_stop_state()
+        from sonic.safety.scope import get_scope_checker
+        if not get_scope_checker().kill_switch_enabled or stop_state.is_stopped(job.tenant_id):
+            job.status = JobStatus.CANCELLED
+            job.error_message = (
+                "safety kill switch is disabled"
+                if not get_scope_checker().kill_switch_enabled
+                else f"runtime kill switch asserted: {stop_state.reason(job.tenant_id)}"
+            )
+            job.completed_at = datetime.now(UTC).isoformat()
+            await self.queue.update_job(job)
+            return job
         job.status = JobStatus.RUNNING
         job.started_at = datetime.now(UTC).isoformat()
         await self.queue.update_job(job)
@@ -296,4 +309,3 @@ class SonicWorker:
         if job:
             return await self.execute_job(job)
         return None
-

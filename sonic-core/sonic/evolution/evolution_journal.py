@@ -176,10 +176,10 @@ class EvolutionJournal:
             "",
             f"- **Goal ID:** `{entry.goal_id}`",
             f"- **Status:** {status_emoji}",
-            f"- **Version:** `{entry.version_before}` ➔ `{entry.version_after}`",
+            f"- **Version:** {entry.version_before} ➔ {entry.version_after}",
             f"- **Category:** `{entry.category}`",
             f"- **Files Edited:** {files_formatted}",
-            f"- **Diff Metrics:** `+{entry.lines_added}` lines, `-{entry.lines_removed}` lines",
+            f"- **Diff Metrics:** +{entry.lines_added} lines, -{entry.lines_removed} lines",
         ]
 
         if entry.commit_hash:
@@ -281,4 +281,3 @@ class EvolutionJournal:
             lines.append("")
 
         return "\n".join(lines)
-

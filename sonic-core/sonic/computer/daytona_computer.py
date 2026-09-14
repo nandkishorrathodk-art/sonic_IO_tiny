@@ -1076,10 +1076,7 @@ class DaytonaComputerProvider(ComputerProvider):
     async def application_list(self, workspace_id: str) -> list[str]:
         """Lists installed applications in the sandbox by dynamically discovering desktop entries and real binaries."""
         apps: list[str] = []
-        std_utils = list(dict.fromkeys([
-            "xfce4-terminal", "code-server", "chromium", "git", "python3", "bash",
-            "curl", "wget", "nmap", "nuclei", "ffuf", "thunar", "xdotool", "wmctrl"
-        ] + self.app_policy.allowed_packages))
+        std_utils = list(dict.fromkeys(self.app_policy.allowed_packages))
         utils_str = " ".join(std_utils)
         discovery_cmd = (
             "find /usr/share/applications /usr/local/share/applications ~/.local/share/applications -name '*.desktop' 2>/dev/null | while read -r f; do "
@@ -1149,9 +1146,14 @@ class DaytonaComputerProvider(ComputerProvider):
     async def tile_workstation(self, workspace_id: str) -> bool:
         """Executes wmctrl commands to tile windows side-by-side."""
         disp = self._get_display(workspace_id)
-        code1 = await self.terminal(workspace_id, f'DISPLAY={disp} wmctrl -r "Google Chrome" -e 0,0,0,640,800')
-        code2 = await self.terminal(workspace_id, f'DISPLAY={disp} wmctrl -r "Terminal" -e 0,640,0,640,800')
-        return code1.exit_code == 0 or code2.exit_code == 0
+        result = await self.terminal(
+            workspace_id,
+            f"DISPLAY={disp} wmctrl -l 2>/dev/null | "
+            "awk 'BEGIN {i=0} {if (NF >= 4) {x=(i++ % 2) * 640; "
+            "printf \"wmctrl -i -r %s -e 0,%d,0,640,800; \", $1, x}}' | "
+            "sh",
+        )
+        return result.exit_code == 0
 
     async def close(self) -> None:
         """Close the underlying Daytona SDK client (releases its aiohttp session)."""

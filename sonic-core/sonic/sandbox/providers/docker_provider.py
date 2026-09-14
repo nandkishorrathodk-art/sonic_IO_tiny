@@ -45,9 +45,12 @@ class DockerProvider(ComputeProvider):
         self._workspaces: dict[str, WorkspaceConfig] = {}
         self._states: dict[str, WorkspaceState] = {}
 
-    async def _resolve_network(self) -> str:
-        """Return the designated sandbox network iff it actually exists, else the
-        default bridge (fail-closed: never invent a network; never bind to host)."""
+    async def _resolve_network(self) -> str | None:
+        """Return the designated isolated network, or ``None`` on failure.
+
+        Falling back to Docker's shared bridge silently defeats the isolation
+        contract, so an unavailable network now blocks workspace creation.
+        """
         if self._network_ok is None:
             probe = await asyncio.create_subprocess_exec(
                 "docker", "network", "inspect", self.default_network,
@@ -56,7 +59,7 @@ class DockerProvider(ComputeProvider):
             )
             _, _ = await asyncio.wait_for(probe.communicate(), timeout=10)
             self._network_ok = probe.returncode == 0
-        return self.default_network if self._network_ok else "bridge"
+        return self.default_network if self._network_ok else None
 
     async def create_workspace(self, config: WorkspaceConfig) -> bool:
         """Create and start a new container workspace."""
@@ -78,7 +81,15 @@ class DockerProvider(ComputeProvider):
             "--label", f"workspace_type={config.workspace_type.value}",
         ]
 
-        net = "bridge" if not config.network_isolated else await self._resolve_network()
+        net = await self._resolve_network() if config.network_isolated else "bridge"
+        if not net:
+            self._states[config.workspace_id] = WorkspaceState.ERROR
+            logger.error(
+                "docker_isolated_network_unavailable",
+                network=self.default_network,
+                workspace_id=config.workspace_id,
+            )
+            return False
         cmd.extend(["--network", net])
 
         for k, v in config.env_vars.items():

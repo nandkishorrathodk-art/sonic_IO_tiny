@@ -169,12 +169,14 @@ class ComputerState(BaseModel):
 
 
 class ApplicationPolicy(BaseModel):
-    """Security rules governing application and package installations."""
-    allowed_packages: list[str] = Field(default_factory=lambda: [
-        "nmap", "nuclei", "ffuf", "git", "curl", "wget", "jq", "python3-pip",
-        "playwright", "chromium", "nodejs", "npm", "zsh", "tmux", "vim", "code-server",
-        "wireshark", "gdb", "sqlmap", "nikto", "zap", "burpsuite"
-    ])
+    """Security rules governing application and package installations.
+
+    The default policy deliberately has no preferred application or tool list.
+    A target-driven agent may use an already-installed capability, author a
+    focused probe, or request an explicitly approved package when evidence
+    shows it is useful.
+    """
+    allowed_packages: list[str] = Field(default_factory=list)
     forbidden_packages: list[str] = Field(default_factory=lambda: [
         "wireshark-root", "tor-relay", "cryptominer", "kernel-mod", "ddos-bot"
     ])
@@ -186,7 +188,7 @@ class ApplicationPolicy(BaseModel):
         if any(f in pkg for f in self.forbidden_packages):
             return False, f"Package '{pkg}' is strictly prohibited by security policy."
         if pkg in self.allowed_packages:
-            return True, f"Package '{pkg}' is on the pre-approved allowlist."
+            return True, f"Package '{pkg}' is explicitly allowed by this workspace policy."
         return True, f"Package '{pkg}' permitted under developer engineering policy."
 
 

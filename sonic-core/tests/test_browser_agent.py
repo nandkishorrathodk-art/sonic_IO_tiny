@@ -46,6 +46,19 @@ def test_bug_bounty_report_formatter():
     assert "SONIC-REDA" in report.description
 
 
+def test_browser_agent_requires_explicit_scope_when_configured():
+    agent = BrowserAgent(
+        scope_checker=type("Checker", (), {"is_target_in_scope": lambda *_: True})(),
+        require_scope=True,
+    )
+
+    async def _run():
+        with pytest.raises(ValueError, match="explicit engagement scope"):
+            await agent.navigate("https://example.com")
+
+    asyncio.run(_run())
+
+
 def test_bug_bounty_scope_to_yaml():
     """Test scope auto-import → YAML conversion."""
     program = BugBountyProgram(

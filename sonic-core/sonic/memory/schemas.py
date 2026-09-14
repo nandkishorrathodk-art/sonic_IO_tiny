@@ -199,7 +199,7 @@ class TechniqueNode(BaseModel):
     name: str  # e.g., "Reflected XSS via URL parameter"
     category: str = ""  # "injection", "auth_bypass", "info_disclosure"
     description: str = ""
-    tools_used: str = ""  # Comma-separated: "nuclei,ffuf"
+    tools_used: str = ""  # Comma-separated runtime capability names
     success_rate: float = 0.0  # Historical success rate
     created_at: str = Field(default_factory=_now)
 

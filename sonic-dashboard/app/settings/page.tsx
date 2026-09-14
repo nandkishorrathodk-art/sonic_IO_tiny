@@ -10,7 +10,6 @@ export default function SettingsPage() {
   const [llmApiKey, setLlmApiKey] = useState("");
   const [llmModel, setLlmModel] = useState("gpt-4o");
   const [daytonaUrl, setDaytonaUrl] = useState("http://localhost:12000");
-  const [burpUrl, setBurpUrl] = useState("http://localhost:1337");
   const [allowedDomains, setAllowedDomains] = useState("*.example.com, localhost, 127.0.0.1");
 
   const [saving, setSaving] = useState(false);
@@ -28,7 +27,6 @@ export default function SettingsPage() {
         if (data.llm_base_url) setLlmBaseUrl(data.llm_base_url);
         if (data.llm_model) setLlmModel(data.llm_model);
         if (data.daytona_url) setDaytonaUrl(data.daytona_url);
-        if (data.burp_url) setBurpUrl(data.burp_url);
         if (data.allowed_domains) setAllowedDomains(data.allowed_domains.join(", "));
         setApiKeySet(data.llm_api_key_set || false);
       }
@@ -55,7 +53,6 @@ export default function SettingsPage() {
         llm_api_key: llmApiKey || undefined,
         llm_model: llmModel,
         daytona_url: daytonaUrl,
-        burp_url: burpUrl,
         allowed_domains: domains,
       });
 
@@ -143,14 +140,10 @@ export default function SettingsPage() {
           <Settings className="w-4 h-4 text-secondary-400" />
           <h3 className="text-sm font-bold text-muted-bright uppercase tracking-wider">Integration Endpoints</h3>
         </div>
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs font-mono">
+        <div className="grid grid-cols-1 gap-3 text-xs font-mono">
           <div>
             <label className="text-muted block mb-1">Workstation Compute URL</label>
             <input type="text" value={daytonaUrl} onChange={(e) => setDaytonaUrl(e.target.value)} className="input-field !text-xs" />
-          </div>
-          <div>
-            <label className="text-muted block mb-1">Burp Suite API URL</label>
-            <input type="text" value={burpUrl} onChange={(e) => setBurpUrl(e.target.value)} className="input-field !text-xs" />
           </div>
         </div>
       </div>

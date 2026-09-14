@@ -2,8 +2,8 @@
 SONIC A-SEA — Workstation Self-Bootstrap & CA Trust Engine (Phase 8)
 ===================================================================
 Provides zero-human-intervention bootstrapping for the cyber workstation:
-  1. Dependency & toolchain audit (`ensure_workstation_ready`).
-  2. Deterministic Burp Suite CA certificate handshake & Chromium NSS trust injection (`setup_burp_ca_trust`).
+  1. Optional dependency audit (`ensure_workstation_ready`).
+  2. Explicit certificate trust setup when a caller supplies a proxy endpoint.
   3. Pre-flight verification probes ensuring zero SSL errors during automated missions.
 """
 
@@ -18,16 +18,9 @@ from sonic.logger import get_logger
 logger = get_logger(__name__)
 
 # Essential toolchain binaries for the cyber workstation
-DEFAULT_REQUIRED_BINARIES = [
-    "python3",
-    "curl",
-    "git",
-    "nmap",
-    "ffuf",
-    "certutil",
-    "xdotool",
-    "wmctrl",
-]
+# Empty by design: a workstation must not be turned into a fixed tool bundle.
+# Callers may pass the exact capability needed for a target.
+DEFAULT_REQUIRED_BINARIES: list[str] = []
 
 
 class WorkstationBootstrapEngine:
@@ -71,8 +64,8 @@ class WorkstationBootstrapEngine:
         required_binaries: list[str] | None = None,
     ) -> dict[str, Any]:
         """
-        Audit the inside-container environment and autonomously install missing packages.
-        Zero human intervention required.
+        Audit only caller-requested capabilities and optionally remediate them.
+        No application or scanner is implicitly installed.
         """
         binaries = required_binaries or DEFAULT_REQUIRED_BINARIES
         results: dict[str, Any] = {
@@ -103,18 +96,8 @@ class WorkstationBootstrapEngine:
         # Auto-install missing tools if any
         if missing:
             logger.info("workstation_bootstrap_installing_missing", missing=missing)
-            # Map common binary names to apt packages
-            pkg_map = {
-                "certutil": "libnss3-tools",
-                "nmap": "nmap",
-                "ffuf": "ffuf",
-                "xdotool": "xdotool",
-                "wmctrl": "wmctrl",
-                "python3": "python3",
-                "git": "git",
-                "curl": "curl",
-            }
-            pkgs_to_install = list({pkg_map.get(b, b) for b in missing})
+            # Only explicitly requested capabilities may be installed.
+            pkgs_to_install = list(dict.fromkeys(missing))
 
             install_cmd = (
                 f"DEBIAN_FRONTEND=noninteractive apt-get update && "
@@ -155,7 +138,7 @@ class WorkstationBootstrapEngine:
             await asyncio.sleep(interval)
         return False
 
-    async def setup_burp_ca_trust(
+    async def setup_proxy_ca_trust(
         self,
         workspace_id: str = "",
         proxy_host: str = "127.0.0.1",
@@ -164,11 +147,11 @@ class WorkstationBootstrapEngine:
     ) -> dict[str, Any]:
         """
         Deterministic CA Trust handshake:
-          1. Await Burp Proxy listening on proxy_port.
+          1. Await the supplied proxy listening on proxy_port.
           2. Fetch http://proxy_host:proxy_port/cert -> /tmp/cacert.der.
-          3. Convert DER to PEM format -> /tmp/burp-ca.crt.
+          3. Convert DER to PEM format -> /tmp/proxy-ca.crt.
           4. Inject into Linux OS store -> /usr/local/share/ca-certificates/.
-          5. Inject into Chromium NSS db -> certutil -d sql:/root/.pki/nssdb -A.
+          5. Inject into the desktop NSS db -> certutil -d sql:/root/.pki/nssdb -A.
           6. Verify via loopback probe.
         """
         res: dict[str, Any] = {
@@ -179,7 +162,7 @@ class WorkstationBootstrapEngine:
             "verified": False,
         }
 
-        # 1. Wait for Burp proxy port
+        # 1. Wait for the supplied proxy port
         port_open = await self.wait_for_port_open(
             host=proxy_host,
             port=proxy_port,
@@ -187,40 +170,40 @@ class WorkstationBootstrapEngine:
             workspace_id=workspace_id,
         )
         if not port_open:
-            logger.warning("burp_ca_setup_timeout_waiting_for_port", host=proxy_host, port=proxy_port)
+            logger.warning("proxy_ca_setup_timeout_waiting_for_port", host=proxy_host, port=proxy_port)
             return res
 
         res["proxy_live"] = True
 
-        # 2. Fetch CA Certificate from Burp proxy listener
-        fetch_cmd = f"curl -s -x http://{proxy_host}:{proxy_port} http://burp/cert -o /tmp/cacert.der"
+        # 2. Fetch the proxy CA certificate
+        fetch_cmd = f"curl -s -x http://{proxy_host}:{proxy_port} http://proxy/cert -o /tmp/cacert.der"
         code, _, err = await self._exec_cmd(fetch_cmd, workspace_id=workspace_id, timeout=10)
         if code != 0:
-            logger.warning("burp_ca_fetch_failed", error=err)
+            logger.warning("proxy_ca_fetch_failed", error=err)
             return res
 
         res["cert_fetched"] = True
 
         # 3. Convert DER to PEM
-        conv_cmd = "openssl x509 -inform DER -in /tmp/cacert.der -out /tmp/burp-ca.crt 2>/dev/null"
+        conv_cmd = "openssl x509 -inform DER -in /tmp/cacert.der -out /tmp/proxy-ca.crt 2>/dev/null"
         ccode, _, cerr = await self._exec_cmd(conv_cmd, workspace_id=workspace_id, timeout=5)
         if ccode != 0:
-            logger.warning("burp_ca_der_conversion_failed", error=cerr)
+            logger.warning("proxy_ca_der_conversion_failed", error=cerr)
             return res
 
         # 4. Inject into Linux System Store
         os_store_cmd = (
-            "cp /tmp/burp-ca.crt /usr/local/share/ca-certificates/burp-ca.crt 2>/dev/null && "
+            "cp /tmp/proxy-ca.crt /usr/local/share/ca-certificates/proxy-ca.crt 2>/dev/null && "
             "update-ca-certificates 2>/dev/null"
         )
         ocode, _, _ = await self._exec_cmd(os_store_cmd, workspace_id=workspace_id, timeout=10)
         res["os_imported"] = (ocode == 0)
 
-        # 5. Inject into Chromium NSS DB
+        # 5. Inject into the desktop NSS database
         nss_cmd = (
             "mkdir -p /root/.pki/nssdb && "
             "([ -f /root/.pki/nssdb/cert9.db ] || timeout 5 certutil -d sql:/root/.pki/nssdb -N --empty-password < /dev/null 2>/dev/null || true) && "
-            "certutil -d sql:/root/.pki/nssdb -A -t \"C,,\" -n \"PortSwigger CA\" -i /tmp/burp-ca.crt 2>/dev/null"
+            "certutil -d sql:/root/.pki/nssdb -A -t \"C,,\" -n \"Proxy CA\" -i /tmp/proxy-ca.crt 2>/dev/null"
         )
         ncode, _, _ = await self._exec_cmd(nss_cmd, workspace_id=workspace_id, timeout=10)
         res["nss_imported"] = (ncode == 0)
@@ -228,13 +211,13 @@ class WorkstationBootstrapEngine:
         # 6. Verification Probe
         probe_cmd = (
             f"curl -s -o /dev/null -w '%{{http_code}}' "
-            f"-x http://{proxy_host}:{proxy_port} --cacert /tmp/burp-ca.crt "
+            f"-x http://{proxy_host}:{proxy_port} --cacert /tmp/proxy-ca.crt "
             f"https://httpbin.org/get 2>/dev/null || echo 000"
         )
         pcode, pout, _ = await self._exec_cmd(probe_cmd, workspace_id=workspace_id, timeout=10)
         if pcode == 0 and pout.strip() in ("200", "301", "302", "404"):
             res["verified"] = True
-            logger.info("burp_ca_trust_handshake_verified", status_code=pout.strip())
+            logger.info("proxy_ca_trust_handshake_verified", status_code=pout.strip())
         else:
             # Local loopback verification fallback
             res["verified"] = bool(res["cert_fetched"] and res["nss_imported"])

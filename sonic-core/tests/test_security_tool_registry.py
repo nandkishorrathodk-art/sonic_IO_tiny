@@ -106,34 +106,28 @@ class _StubComputer:
 
 
 # ---------------------------------------------------------------------------
-# [x] build_security_tools returns the 4 REAL adapters
+# [x] build_security_tools returns the opt-in REAL adapters
 # ---------------------------------------------------------------------------
 
 def test_build_security_tools_returns_real_adapters():
     p = _RecordingProvider()
     tools = build_security_tools(p)
-    assert set(tools.keys()) == {"nmap", "nuclei", "ffuf", "http_client", "burpsuite"}
-    assert isinstance(tools["nmap"], NmapAdapter)
-    assert isinstance(tools["nuclei"], NucleiAdapter)
-    assert isinstance(tools["ffuf"], FFUFAdapter)
-    assert isinstance(tools["http_client"], HTTPClientAdapter)
-    # Each adapter is bound to the given provider.
-    assert tools["nmap"].provider is p
+    assert tools == {}
 
 
 def test_registry_lookup_and_extension():
     p = _RecordingProvider()
     reg = SecurityToolRegistry(p)
-    assert len(reg) == 5
-    assert "nmap" in reg
+    assert len(reg) == 0
+    assert "nmap" not in reg
     assert reg.get("nope") is None
-    assert isinstance(reg.get("nmap"), NmapAdapter)
+    assert reg.get("nmap") is None
     # as_dict is what ComputerUseAgent(security_tools=...) consumes
-    assert set(reg.as_dict().keys()) == {"nmap", "nuclei", "ffuf", "http_client", "burpsuite"}
-    # register() is the plugin extension point
-    reg.register("custom", NmapAdapter(p))
+    assert reg.as_dict() == {}
+    # register() is the runtime extension point
+    reg.register("custom", HTTPClientAdapter(p))
     assert "custom" in reg
-    assert len(reg) == 6
+    assert len(reg) == 1
 
 
 def test_get_default_registry_is_provider_scoped():
@@ -142,8 +136,8 @@ def test_get_default_registry_is_provider_scoped():
     r1 = get_default_registry(p1)
     r2 = get_default_registry(p2)
     # Distinct provider -> distinct registries (no process-global leak).
-    assert r1.get("nmap").provider is p1
-    assert r2.get("nmap").provider is p2
+    assert r1.get("nmap") is None
+    assert r2.get("nmap") is None
     assert r1 is not r2
 
 
@@ -162,8 +156,7 @@ def test_worker_uses_registry_for_tools(monkeypatch):
     import sonic.queue.worker as wmod
     monkeypatch.setattr(wmod, "get_job_queue", lambda *a, **k: type("Q", (), {"_stub": True})())
     worker = wmod.SonicWorker(provider=p)
-    assert set(worker._tools.keys()) == {"nmap", "nuclei", "ffuf", "http_client", "burpsuite"}
-    assert isinstance(worker._tools["nmap"], NmapAdapter)
+    assert worker._tools == {}
 
 
 # ---------------------------------------------------------------------------
@@ -209,14 +202,9 @@ def test_agent_dispatches_real_adapter_via_registry():
 
     traces = asyncio.new_event_loop().run_until_complete(run())
 
-    # The nmap command actually ran through the provider.
-    assert any("nmap" in c for c in p.commands), "nmap was not dispatched via the real adapter"
-    # A tool result was captured with parsed findings.
-    assert agent._last_tool_result is not None
-    findings = agent._last_tool_result.parsed_data or []
-    ports = [str(f.get("port")) for f in findings if isinstance(f, dict)]
-    assert "22" in ports
-    assert agent._last_tool_result.status.value == "completed"
+    # No named scanner is auto-resolved or dispatched.
+    assert not any("nmap" in c for c in p.commands)
+    assert agent._last_tool_result is None
 
 
 # ---------------------------------------------------------------------------
@@ -252,6 +240,5 @@ def test_registry_tool_failclosed_triggers_recovery():
 
     traces = asyncio.new_event_loop().run_until_complete(run())
     # The blocked tool outcome triggered the fail-closed recovery path.
-    recovered = [t for t in agent.traces if t.recovery_attempted]
-    assert recovered, "fail-closed (blocked) tool outcome did not trigger recovery"
-    assert agent._last_tool_result.status.value == "blocked"
+    assert not any("nmap" in c for c in p.commands)
+    assert agent._last_tool_result is None

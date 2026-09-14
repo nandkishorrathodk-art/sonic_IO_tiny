@@ -97,7 +97,8 @@ async def test_browser_tab_dedup_first_open_then_refocus():
     comp = _MockComputerProvider()
     agent = ComputerUseAgent(computer_provider=comp)
 
-    # 1. First navigation launches Chromium
+    # Navigation uses the already-visible application and never selects a
+    # vendor-specific browser binary.
     trace1 = await agent.execute_action(
         comp.workspace_id,
         ComputerActionType.BROWSER_NAVIGATE,
@@ -106,8 +107,8 @@ async def test_browser_tab_dedup_first_open_then_refocus():
         "open opensea",
     )
     assert trace1.status == ActionExecutionStatus.COMPLETED
-    assert "Launched browser" in trace1.actual_observation
-    assert comp.is_chromium_running is True
+    assert "No application was selected or launched" in trace1.actual_observation
+    assert comp.is_chromium_running is False
 
     # 2. Duplicate navigation to exact same URL focuses existing tab without opening a new one
     trace2 = await agent.execute_action(
@@ -118,10 +119,8 @@ async def test_browser_tab_dedup_first_open_then_refocus():
         "open opensea again",
     )
     assert trace2.status == ActionExecutionStatus.COMPLETED
-    assert "duplicate tab prevented" in trace2.actual_observation.lower()
-    # Ensure nohup chromium was NOT called a second time
-    chromium_launches = [cmd for cmd in comp.commands_executed if "nohup chromium" in cmd]
-    assert len(chromium_launches) == 1
+    assert "No application was selected or launched" in trace2.actual_observation
+    assert not any("chromium" in cmd.lower() for cmd in comp.commands_executed)
 
 
 @pytest.mark.asyncio
@@ -131,7 +130,7 @@ async def test_browser_tab_reuse_via_address_bar():
     agent = ComputerUseAgent(computer_provider=comp)
     agent._last_navigated_url = "https://opensea.io"
 
-    # Navigate to a new domain while Chromium is already running
+    # Navigate to a new domain without a hardcoded process/window lookup.
     trace = await agent.execute_action(
         comp.workspace_id,
         ComputerActionType.BROWSER_NAVIGATE,
@@ -140,12 +139,8 @@ async def test_browser_tab_reuse_via_address_bar():
         "open github",
     )
     assert trace.status == ActionExecutionStatus.COMPLETED
-    assert "tab reused via address bar" in trace.actual_observation.lower()
-
-    # Verify xdotool ctrl+l was used to type into address bar
-    xdotool_cmds = [cmd for cmd in comp.commands_executed if "ctrl+l" in cmd]
-    assert len(xdotool_cmds) >= 1
-    assert "https://github.com" in xdotool_cmds[0]
+    assert "No application was selected or launched" in trace.actual_observation
+    assert comp.commands_executed == []
 
 
 @pytest.mark.asyncio
@@ -198,4 +193,3 @@ async def test_anti_loop_banner_in_reasoning_prompt():
     assert "ANTI-LOOP PROGRESSION RULE: Do NOT emit BROWSER_NAVIGATE" in user_prompt
     assert "Browser active URL: https://opensea.io" in user_prompt
     assert "CRITICAL ANTI-LOOPING AND PROGRESSION RULES:" in sys_prompt
-

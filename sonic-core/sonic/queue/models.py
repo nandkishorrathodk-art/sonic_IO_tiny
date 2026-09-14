@@ -45,6 +45,7 @@ class Job(BaseModel):
     """Asynchronous job descriptor managed by Redis task queue."""
     id: str = Field(default_factory=lambda: f"job-{uuid.uuid4().hex[:12]}")
     tenant_id: str
+    owner_id: str = ""
     engagement_id: str
     agent_id: str = "orchestrator"
     task_id: str = ""  # Director task graph task_id for tracing

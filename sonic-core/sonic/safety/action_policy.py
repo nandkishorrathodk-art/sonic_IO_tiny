@@ -34,6 +34,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 from sonic.logger import get_logger
 from sonic.safety.scope import RiskLevel, ScopeChecker
@@ -190,6 +191,11 @@ class ActionPolicy:
                 return verdict
         elif action_type_name == "BROWSER_NAVIGATE":
             url = payload.get("url") or target
+            parsed = urlparse(str(url).strip())
+            if parsed.scheme.lower() not in {"http", "https"}:
+                return PolicyVerdict(False, "browser navigation only permits http/https URLs")
+            if parsed.username or parsed.password:
+                return PolicyVerdict(False, "browser navigation forbids embedded URL credentials")
             verdict = self._check_egress(url, "browser")
             if not verdict.allowed:
                 return verdict

@@ -69,7 +69,7 @@ services:
     volumes:
       - kali_workspace:/workspace
     networks:
-      - sonic-sandbox-net
+      - sonic-kali-net
     restart: unless-stopped
 
   # ---- Isolated Debian 12 General Workspace (Browser/Scripts) ----
@@ -87,7 +87,7 @@ services:
     volumes:
       - debian_workspace:/workspace
     networks:
-      - sonic-sandbox-net
+      - sonic-browser-net
     restart: unless-stopped
 
   # ---- Interactive Graphical Linux Desktop Workstation (noVNC + X11 + Internet) ----
@@ -98,21 +98,32 @@ services:
     image: sonic-workstation:latest
     container_name: sonic-desktop-workstation
     ports:
-      - "6080:6080"
-      - "5900:5900"
+      # Desktop streams are local-only.  Remote access must go through an
+      # authenticated API/VPN; never publish raw VNC/noVNC to the LAN.
+      - "127.0.0.1:6080:6080"
+      - "127.0.0.1:5900:5900"
+    environment:
+      # Required by entrypoint-workstation.sh; x11vnc refuses passwordless mode.
+      SONIC_VNC_PASSWORD: ${SONIC_VNC_PASSWORD:?SONIC_VNC_PASSWORD must be set}
     volumes:
       - ./docker/entrypoint-workstation.sh:/entrypoint-workstation.sh:ro
       - workstation_workspace:/workspace
     entrypoint: ["/bin/bash", "/entrypoint-workstation.sh"]
     init: true
     networks:
-      - sonic-sandbox-net
+      - sonic-workstation-net
     restart: unless-stopped
 
 networks:
   sonic-control-net:
     driver: bridge
   sonic-sandbox-net:
+    driver: bridge
+  sonic-kali-net:
+    driver: bridge
+  sonic-browser-net:
+    driver: bridge
+  sonic-workstation-net:
     driver: bridge
 
 volumes:

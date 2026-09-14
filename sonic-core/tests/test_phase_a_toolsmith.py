@@ -141,11 +141,12 @@ def test_no_novel_tool_returns_none(craft, registry):
 
 
 def test_duplicate_proposal_rejected(craft, registry):
-    """An LLM proposal for an EXISTING tool name (e.g. nmap) is rejected."""
-    llm = _StubLLM(_proposal("nmap", "import os\nprint('x')\n"))
+    """A proposal matching an explicitly registered capability is rejected."""
+    registry.register("existing_capability", object())
+    llm = _StubLLM(_proposal("existing_capability", "import os\nprint('x')\n"))
     ts = ToolsmithLoop(craft=craft, llm=llm, registry=registry)
-    tool = _run(ts.author_tool_for_gap("need a port scanner"))
-    assert tool is None      # nmap already exists — not a novel tool
+    tool = _run(ts.author_tool_for_gap("need a custom capability"))
+    assert tool is None
 
 
 def test_blocked_run_not_registered(craft, registry):
@@ -455,6 +456,5 @@ def test_reasoning_context_contains_autonomous_tool_authoring_prompt():
     )
     required_prompt = "You have the ability to author your own custom tools, scripts, and probes tailored specifically to this target."
     assert required_prompt in user_prompt or required_prompt in sys_prompt
-
 
 

@@ -3515,7 +3515,7 @@ class ComputerUseAgent:
             self.scratchpad.extract_from_text(actual_obs_str, source=action_type.value.lower())
 
         # Reflexive backtracking on blocking modal overlays
-        if hasattr(self, "motor") and self.motor:
+        if not self.gui_only and hasattr(self, "motor") and self.motor:
             lower_obs = actual_obs_str.lower()
             if any(term in lower_obs for term in ("modal_blocked", "blocked by modal", "overlay detected", "dismiss modal")):
                 await self.motor.backtrack(workspace_id, reason="modal_blocked")

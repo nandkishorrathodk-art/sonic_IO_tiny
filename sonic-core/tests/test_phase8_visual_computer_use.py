@@ -125,6 +125,25 @@ class TestGUIActionDispatch:
         assert [action.value for action in actions] == ["KEYPRESS", "TYPE", "KEYPRESS"]
 
     @pytest.mark.asyncio
+    async def test_gui_only_modal_recovery_does_not_use_motor_backtrack(self):
+        provider = _mock_provider()
+        motor = MagicMock()
+        motor.backtrack = AsyncMock()
+        agent = ComputerUseAgent(computer_provider=provider, gui_only=True, motor=motor)
+
+        async def blocked_gui_action(*args, **kwargs):
+            raise RuntimeError("modal_blocked")
+
+        provider.gui_action.side_effect = blocked_gui_action
+        trace = await agent.execute_action(
+            "ws-1", ComputerActionType.GUI_CLICK, "100,100",
+            {"x": 100, "y": 100}, "Click visible control",
+        )
+
+        assert trace.status in ("FAILED", "RECOVERED", "BLOCKED")
+        motor.backtrack.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_gui_double_click_dispatches(self):
         provider = _mock_provider()
         agent = ComputerUseAgent(computer_provider=provider)

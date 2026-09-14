@@ -128,15 +128,17 @@ async def test_browser_tab_reuse_via_address_bar():
     comp = _MockComputerProvider()
     comp.is_chromium_running = True
     agent = ComputerUseAgent(computer_provider=comp)
-    agent._last_navigated_url = "https://opensea.io"
+    previous_target = "https://previous-target.invalid"
+    next_target = "https://next-target.invalid"
+    agent._last_navigated_url = previous_target
 
     # Navigate to a new domain without a hardcoded process/window lookup.
     trace = await agent.execute_action(
         comp.workspace_id,
         ComputerActionType.BROWSER_NAVIGATE,
-        "https://github.com",
-        {"url": "https://github.com"},
-        "open github",
+        next_target,
+        {"url": next_target},
+        "open target",
     )
     assert trace.status == ActionExecutionStatus.COMPLETED
     assert "No application was selected or launched" in trace.actual_observation

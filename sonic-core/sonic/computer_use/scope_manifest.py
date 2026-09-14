@@ -68,7 +68,6 @@ def parse_scope_document(text: str) -> ScopeManifest:
     hosts.extend(
         host.lower().rstrip(".")
         for host in _HOST_RE.findall(text)
-        if host.lower() not in {"bugcrowd.com", "github.com", "etherscan.io"}
     )
 
     in_scope: list[str] = []
@@ -88,7 +87,7 @@ def parse_scope_document(text: str) -> ScopeManifest:
                 references.append(url)
 
     for host in hosts:
-        if host in in_scope or host in {"bugcrowd.com", "github.com", "etherscan.io"}:
+        if host in in_scope:
             continue
         position = lower.find(host)
         nearby = lower[max(0, position - 180): position + len(host) + 80]

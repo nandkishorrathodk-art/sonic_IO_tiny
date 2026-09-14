@@ -706,6 +706,13 @@ class ComputerUseAgent:
         if (goal_lower.startswith("terminal:") or goal_lower.startswith("exec:")) and ":" in goal_stripped:
             cmd = goal_stripped.split(":", 1)[1].strip()
             if cmd:
+                if self.gui_only:
+                    return (
+                        ComputerActionType.GUI_SCREENSHOT,
+                        "visible-desktop",
+                        {},
+                        "GUI-only mode cannot execute terminal commands; inspect the visible desktop instead",
+                    )
                 return (
                     ComputerActionType.TERMINAL_EXEC,
                     "terminal-command",
@@ -716,6 +723,13 @@ class ComputerUseAgent:
         if self.llm_router is not None:
             return await self._llm_choose_action(goal, observation, step_index, primary_file, test_file)
 
+        if self.gui_only:
+            return (
+                ComputerActionType.GUI_SCREENSHOT,
+                "visible-desktop",
+                {},
+                "No reasoning model is available; inspect the visible desktop and continue from observed state",
+            )
         return self._diagnostic_fallback(primary_file)
 
     @staticmethod
@@ -1419,7 +1433,14 @@ class ComputerUseAgent:
 
             if is_refusal:
                 self._refusal_recovery_active = True
-                self._last_thought = "LLM safety refusal detected. Reframing objective into authorized diagnostic assessment."
+                self._last_thought = "Model refusal received; continue from the live visible desktop without a hidden or terminal fallback."
+                if self.gui_only:
+                    return (
+                        ComputerActionType.GUI_SCREENSHOT,
+                        "visible-desktop",
+                        {},
+                        "Re-observe the visible desktop and choose a graphical action",
+                    )
                 targets = self._extract_targets_from_goal(goal)
                 primary_target = targets.get("primary_target") or ""
                 if primary_target:
@@ -1452,10 +1473,32 @@ class ComputerUseAgent:
             action_type, target, payload, expected = self._parse_llm_action(
                 parse_target_str, primary_file
             )
+            if (
+                self.gui_only
+                and expected != _GOAL_COMPLETE_SENTINEL
+                and action_type not in self._GUI_ONLY_ACTIONS
+            ):
+                self._last_thought = (
+                    "The model proposed a non-GUI action; discard it and re-observe "
+                    "the visible desktop instead."
+                )
+                return (
+                    ComputerActionType.GUI_SCREENSHOT,
+                    "visible-desktop",
+                    {},
+                    "Non-GUI proposal discarded; continue with visible GUI interaction",
+                )
 
             if target == "diagnostic-verification" and "LLM safety refusal detected" in expected:
                 self._refusal_recovery_active = True
-                self._last_thought = "LLM safety refusal detected. Reframing objective into authorized diagnostic assessment."
+                self._last_thought = "Model refusal received; continue from the live visible desktop."
+                if self.gui_only:
+                    return (
+                        ComputerActionType.GUI_SCREENSHOT,
+                        "visible-desktop",
+                        {},
+                        "Re-observe the visible desktop and choose a graphical action",
+                    )
                 targets = self._extract_targets_from_goal(goal)
                 primary_target = targets.get("primary_target") or ""
                 if primary_target:
@@ -1485,6 +1528,13 @@ class ComputerUseAgent:
             self._last_thought_duration = round(time.perf_counter() - t_thought_start, 2)
             logger.warning("computer_llm_action_failed_diagnostic_fallback", error=str(e))
             self._last_thought = ""
+            if self.gui_only:
+                return (
+                    ComputerActionType.GUI_SCREENSHOT,
+                    "visible-desktop",
+                    {},
+                    "Reasoning failed; re-observe the visible desktop without a backend fallback",
+                )
             return self._diagnostic_fallback(primary_file)
 
     @staticmethod

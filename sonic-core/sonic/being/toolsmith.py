@@ -29,6 +29,7 @@ SECURITY INVARIANT:
 from __future__ import annotations
 
 import re
+import shlex
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
@@ -298,7 +299,8 @@ class ToolsmithLoop:
 
         target_arg = target or getattr(tool, "target", None) or "127.0.0.1"
         try:
-            res = await provider.execute(workspace_id, f"python {path} {target_arg}", timeout=timeout)
+            command = f"python {shlex.quote(path)} {shlex.quote(str(target_arg))}"
+            res = await provider.execute(workspace_id, command, timeout=timeout)
         except Exception as e:
             logger.warning("toolsmith_run_failed", name=tool.name, error=str(e))
             return tool

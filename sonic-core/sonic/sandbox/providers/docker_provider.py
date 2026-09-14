@@ -46,11 +46,7 @@ class DockerProvider(ComputeProvider):
         self._states: dict[str, WorkspaceState] = {}
 
     async def _resolve_network(self) -> str | None:
-        """Return the designated isolated network, or ``None`` on failure.
-
-        Falling back to Docker's shared bridge silently defeats the isolation
-        contract, so an unavailable network now blocks workspace creation.
-        """
+        """Return the designated sandbox network, or ``None`` if it is unavailable."""
         if self._network_ok is None:
             probe = await asyncio.create_subprocess_exec(
                 "docker", "network", "inspect", self.default_network,
@@ -81,14 +77,14 @@ class DockerProvider(ComputeProvider):
             "--label", f"workspace_type={config.workspace_type.value}",
         ]
 
-        net = await self._resolve_network() if config.network_isolated else "bridge"
-        if not net:
-            self._states[config.workspace_id] = WorkspaceState.ERROR
+        net = "bridge" if not config.network_isolated else await self._resolve_network()
+        if config.network_isolated and net is None:
             logger.error(
                 "docker_isolated_network_unavailable",
-                network=self.default_network,
                 workspace_id=config.workspace_id,
+                network=self.default_network,
             )
+            self._states[config.workspace_id] = WorkspaceState.ERROR
             return False
         cmd.extend(["--network", net])
 

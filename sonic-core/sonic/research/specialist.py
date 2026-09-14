@@ -1063,7 +1063,7 @@ class FalsificationSpecialist(SpecialistAgent):
             else:
                 vuln_class = "Vulnerability"
 
-        target = context.get("target", "target.local")
+        target = str(context.get("target", "") or "").strip()
 
         # Check plan vs context
         plan = self.falsification_plan or context.get("falsification_plan", {})
@@ -1086,6 +1086,18 @@ class FalsificationSpecialist(SpecialistAgent):
             return {"falsified": True, "hypothesis_id": hypo_id}
         verification_details = plan.get("verification_details") or context.get("verification_details")
         if verification_details:
+            if not target:
+                logger.warning(
+                    "falsification_verification_blocked_missing_target",
+                    hypothesis_id=hypo_id,
+                )
+                return {
+                    "falsified": False,
+                    "verified": False,
+                    "hypothesis_id": hypo_id,
+                    "status": "INCONCLUSIVE",
+                    "reason": "Cannot verify a vulnerability without an explicit target.",
+                }
             await self.verify_vulnerability(
                 vulnerability_id=f"vuln-{uuid.uuid4().hex[:8]}",
                 title=verification_details,

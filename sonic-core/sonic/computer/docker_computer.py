@@ -56,6 +56,24 @@ def _get_display(workspace_id: str | None = None) -> str:
     return os.environ.get("DISPLAY") or ":99"
 
 
+def _docker_binary() -> str | None:
+    """Resolve Docker even when the backend is launched without the user PATH."""
+    configured = os.environ.get("SONIC_DOCKER_BIN", "").strip()
+    if configured:
+        return configured if Path(configured).exists() else None
+    found = shutil.which("docker")
+    if found:
+        return found
+    if os.name == "nt":
+        for candidate in (
+            r"C:\Program Files\Docker\Docker\resources\bin\docker.exe",
+            r"C:\ProgramData\DockerDesktop\version-bin\docker.exe",
+        ):
+            if Path(candidate).exists():
+                return candidate
+    return None
+
+
 class DockerComputerProvider(ComputerProvider):
     """Native Docker-based Workstation Provider for SONIC A-SEA."""
 
@@ -109,7 +127,8 @@ class DockerComputerProvider(ComputerProvider):
 
     async def _container_is_running(self) -> bool:
         """Probe the real Docker container state (fail-closed, short TTL cache)."""
-        if not shutil.which("docker"):
+        docker = _docker_binary()
+        if not docker:
             return False
         now = asyncio.get_event_loop().time()
         if self._container_checked_at is not None and (now - self._container_checked_at) < 1.5:
@@ -117,7 +136,7 @@ class DockerComputerProvider(ComputerProvider):
         try:
             probe = await asyncio.to_thread(
                 subprocess.run,
-                ["docker", "inspect", "-f", "{{.State.Running}}", self.container_name],
+                [docker, "inspect", "-f", "{{.State.Running}}", self.container_name],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.DEVNULL,
                 timeout=5,
@@ -138,7 +157,8 @@ class DockerComputerProvider(ComputerProvider):
         """
         if os.environ.get("SONIC_AUTO_PROVISION_WORKSTATION", "0").strip() != "1":
             return False
-        if not shutil.which("docker"):
+        docker = _docker_binary()
+        if not docker:
             return False
 
         candidates = [
@@ -153,7 +173,7 @@ class DockerComputerProvider(ComputerProvider):
             return False
         try:
             proc = await asyncio.create_subprocess_exec(
-                "docker", "compose", "-f", str(compose_file), "up", "-d", "workstation",
+                docker, "compose", "-f", str(compose_file), "up", "-d", "workstation",
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
@@ -169,7 +189,8 @@ class DockerComputerProvider(ComputerProvider):
 
     async def _docker_exec(self, cmd: str, timeout: int = 60) -> tuple[int, str, str]:
         """Execute a bash command inside the docker container."""
-        if not shutil.which("docker"):
+        docker = _docker_binary()
+        if not docker:
             return 127, "", "docker binary not found on host"
         if not await self._container_is_running():
             return 125, "", f"container {self.container_name} is not running; command blocked fail-closed"
@@ -182,7 +203,7 @@ class DockerComputerProvider(ComputerProvider):
             try:
                 probe = await asyncio.to_thread(
                     subprocess.run,
-                    ["docker", "info", "--format", "{{.ServerVersion}}"],
+                    [docker, "info", "--format", "{{.ServerVersion}}"],
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
                     timeout=10,
@@ -196,7 +217,7 @@ class DockerComputerProvider(ComputerProvider):
             return 126, "", "docker daemon is unreachable; command execution failed-closed"
         async with self._exec_semaphore:
             try:
-                exec_args = ["docker", "exec", self.container_name, "bash", "-c", cmd]
+                exec_args = [docker, "exec", self.container_name, "bash", "-c", cmd]
                 proc = await asyncio.create_subprocess_exec(
                     *exec_args,
                     stdout=asyncio.subprocess.PIPE,
@@ -253,7 +274,7 @@ class DockerComputerProvider(ComputerProvider):
                 try:
                     await asyncio.to_thread(
                         subprocess.run,
-                        ["docker", "start", self.container_name],
+                        [docker, "start", self.container_name],
                         stdout=subprocess.PIPE,
                         stderr=subprocess.DEVNULL,
                         timeout=10,
@@ -264,7 +285,7 @@ class DockerComputerProvider(ComputerProvider):
                     self._container_checked_at = asyncio.get_event_loop().time()
                 except Exception:
                     # Fail-closed: never report a desktop that was not actually provisioned.
-                    ws.status = ComputerWorkspaceStatus.STOPPED if shutil.which("docker") else ComputerWorkspaceStatus.FAILED
+                    ws.status = ComputerWorkspaceStatus.STOPPED if _docker_binary() else ComputerWorkspaceStatus.FAILED
                     return ws
             else:
                 self._container_running_cache = True

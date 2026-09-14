@@ -172,6 +172,28 @@ def test_traversal_path_denied():
     assert comp.written == []
 
 
+def test_policy_block_stops_mission_without_scripted_retries():
+    comp = _StubComputer()
+    blocked_navigation = _act(
+        "BROWSER_NAVIGATE",
+        "https://unauthorized.example",
+        '{"url": "https://unauthorized.example"}',
+    )
+    llm = _StubLLM([blocked_navigation, blocked_navigation])
+    agent = ComputerUseAgent(
+        computer_provider=comp,
+        llm_router=llm,
+        safety=_policy(allow_security_tool_targets={"authorized.example"}),
+    )
+
+    traces = _run(agent.run_mission(comp.workspace_id, "research the authorized target", steps=5))
+
+    assert len(traces) == 1
+    assert traces[0].status == "BLOCKED"
+    assert "target not in allowlist" in traces[0].actual_observation
+    assert all("unauthorized.example" not in command for command in comp.commands)
+
+
 # ---------------------------------------------------------------------------
 # [x] Destructive command denied (fail-closed)
 # ---------------------------------------------------------------------------

@@ -99,6 +99,7 @@ export interface SessionItem {
   session_id: string;
   mission_name: string;
   status: string;
+  workspace_id?: string;
   git_branch: string;
   log_count?: number;
   last_action?: string;
@@ -140,6 +141,7 @@ export function normalizeSessionList(raw: unknown): SessionItem[] {
       status: typeof item.status === "string" && item.status.trim()
         ? item.status.trim()
         : "IDLE",
+      workspace_id: typeof item.workspace_id === "string" ? item.workspace_id : "",
       git_branch: typeof item.git_branch === "string" ? item.git_branch : "",
       log_count: typeof item.log_count === "number" ? item.log_count : 0,
       last_action: typeof item.last_action === "string" ? item.last_action : "Ready when you are.",
@@ -193,4 +195,3 @@ export function sanitizeCurrentAction(
 
   return raw;
 }
-

@@ -91,8 +91,6 @@ class BossAgent:
         evolution_engine: Any = None,
         initial_context: dict[str, Any] | None = None,
         gui_only: bool = False,
-        operator_plane: bool = False,
-        skill_ledger: Any | None = None,
     ):
         self.computer = computer_provider
         self.llm_router = llm_router
@@ -123,8 +121,6 @@ class BossAgent:
         self.evolution_engine = evolution_engine
         self.initial_context = dict(initial_context or {})
         self.gui_only = gui_only
-        self.operator_plane = operator_plane
-        self.skill_ledger = skill_ledger
         if self.evolution_engine is None:
             try:
                 from sonic.evolution.engine import EvolutionEngine
@@ -292,19 +288,25 @@ class BossAgent:
         if not self.phases:
             first_phase = await self._strategic_decomposition(objective)
             if not first_phase or not first_phase.sub_missions:
-                # Boss did not execute anything. Keep the result honest so a
-                # caller can route the objective to direct execution instead
-                # of treating planning-only output as completed work.
-                logger.info("boss_agent_simple_objective", objective=objective[:100])
-                return BossReport(
-                    objective=objective,
-                    status="INCOMPLETE",
-                    findings_summary=(
-                        "No sub-missions were created; no execution or verification "
-                        "was performed. Route this objective to direct execution."
-                    ),
-                    duration_seconds=round(time.perf_counter() - t_start, 2),
-                )
+                if len(objective.split()) > 3:
+                    # Planning must never prevent a real observation. If the
+                    # planner emits no workers for a substantive objective,
+                    # delegate the original objective to one bounded,
+                    # adaptive worker instead of returning a planning-only
+                    # no-op.
+                    first_phase = self._fallback_decomposition(objective)
+                else:
+                    # Truly trivial objectives may remain planning-only.
+                    logger.info("boss_agent_simple_objective", objective=objective[:100])
+                    return BossReport(
+                        objective=objective,
+                        status="INCOMPLETE",
+                        findings_summary=(
+                            "No sub-missions were created; no execution or verification "
+                            "was performed. Route this objective to direct execution."
+                        ),
+                        duration_seconds=round(time.perf_counter() - t_start, 2),
+                    )
 
             self.phases.append(first_phase)
             self._sync_phase_to_graph(first_phase)
@@ -786,8 +788,7 @@ Rules:
                 lessons_ledger=self.lessons_ledger,
                 evolution_engine=self.evolution_engine,
                 gui_only=self.gui_only,
-                operator_plane=self.operator_plane,
-                skill_ledger=self.skill_ledger,
+                observe_desktop=True,
                 initial_context=self.initial_context,
             )
 
@@ -1066,7 +1067,7 @@ Rules:
                 lower_line = line_str.lower()
                 # Skip tool noise and startup banners
                 if any(noise in lower_line for noise in (
-                    "starting scan", "scan report", "reading package lists",
+                    "starting nmap", "nmap scan report", "reading package lists",
                     "building dependency tree", "need to get", "after this operation",
                     "=== test session", "platform win32", "rootdir:", "plugins:",
                     "collected ", "total duration", "exit 0", "exit 127",

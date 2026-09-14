@@ -42,6 +42,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shlex
 import sqlite3
 import uuid
 from dataclasses import dataclass, field
@@ -294,9 +295,8 @@ class MethodLab:
             try:
                 if hasattr(provider, "write_file"):
                     await provider.write_file(workspace_id, path, technique.probe_source)
-                res = await provider.execute(
-                    workspace_id, f"python {path} {run_target}", timeout=timeout,
-                )
+                command = f"python {shlex.quote(path)} {shlex.quote(str(run_target))}"
+                res = await provider.execute(workspace_id, command, timeout=timeout)
                 technique.run_exit_code = getattr(res, "exit_code", None)
                 technique.reproduction_output = getattr(res, "stdout", "") or ""
                 output_lower = technique.reproduction_output.lower()

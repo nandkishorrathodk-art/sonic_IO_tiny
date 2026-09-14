@@ -15,6 +15,9 @@ from sonic.api.main import app
 from sonic.api.routes.workstation import (
     _is_action_prompt,
     _is_complex_or_multi_part_objective,
+    _session_workspace_id,
+    _session_workspace_id_for_tenant,
+    _tenant_workstations,
 )
 from sonic.auth.google_auth import create_jwt_token
 from sonic.auth.models import User, UserRole
@@ -35,6 +38,21 @@ def auth_headers():
     )
     auth_token = create_jwt_token(user)
     return {"Authorization": f"Bearer {auth_token.access_token}"}
+
+
+def test_prompt_tenant_lookup_uses_loaded_tenant_session():
+    """Prompt lookup must use its tenant key, not a reconstructed actor email."""
+    tenant_id = "tenant-observation"
+    session_id = "desktop-session"
+    _tenant_workstations[tenant_id] = {
+        session_id: {"desktop": {"workspace_id": "ws-owned-by-tenant"}}
+    }
+    try:
+        assert _session_workspace_id_for_tenant(tenant_id, session_id) == "ws-owned-by-tenant"
+        other = User(email="operator@example.test", name="Operator", tenant_id=tenant_id, role=UserRole.OPERATOR)
+        assert _session_workspace_id(other, session_id) == ""
+    finally:
+        _tenant_workstations.pop(tenant_id, None)
 
 
 def test_is_action_prompt_intents():
@@ -172,6 +190,21 @@ def test_grounded_conversational_responses():
     status_res = _generate_grounded_workstation_response("status", "s1", state, "ws-123", "context")
     assert "SONIC Workstation Status" in status_res
     assert "ws-123" in status_res
+
+
+def test_grounded_response_reports_live_observation_when_vision_provider_fails():
+    from sonic.api.routes.workstation import _generate_grounded_workstation_response
+
+    response = _generate_grounded_workstation_response(
+        "analyze the current screen",
+        "s1",
+        {"status": "RUNNING", "current_action": "Thinking..."},
+        "sonic-desktop-workstation",
+        "CURRENT LIVE DESKTOP OBSERVATION: state=INTERACTIVE; active_window='Desktop'.",
+    )
+    assert "SONIC Live Observation" in response
+    assert "No desktop action was executed" in response
+    assert "No tenant-owned desktop observation" not in response
 
 
 def test_is_complex_or_multi_part_objective():

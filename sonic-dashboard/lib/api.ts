@@ -230,6 +230,9 @@ export const api = {
   sendPrompt: (prompt: string, sessionId = "default", mode = "normal") =>
     apiClient<any>("/workstation/prompt", {
       method: "POST",
+      // Prompt submission may cold-start the provider/router and must not
+      // be confused with the background mission duration.
+      timeout: 30000,
       body: JSON.stringify({ prompt, session_id: sessionId, mode }),
     }),
 

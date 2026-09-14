@@ -45,9 +45,9 @@ from sonic.computer.models import (
     _new_id,
     _now,
 )
-from sonic.net.tls import tls_verify
 from sonic.computer.provider import ComputerProvider
 from sonic.logger import get_logger
+from sonic.sandbox.egress import is_target_allowed
 from sonic.sandbox.provider import (
     ComputeProvider,
     ExecResult,
@@ -411,13 +411,32 @@ class HeadlessComputeProvider(ComputerProvider, ComputeProvider):
         Returns status_code, headers, and body snippet.
         """
         try:
-            async with httpx.AsyncClient(timeout=timeout, verify=tls_verify(url), follow_redirects=True) as client:
-                resp = await client.request(
-                    method=method.upper(),
-                    url=url,
-                    headers=headers,
-                    content=body.encode("utf-8") if body is not None else None,
-                )
+            current_url = url
+            async with httpx.AsyncClient(timeout=timeout, verify=True, follow_redirects=False) as client:
+                for _ in range(5):
+                    allowed, reason = is_target_allowed(current_url)
+                    if not allowed:
+                        return {
+                            "status_code": 0,
+                            "headers": {},
+                            "body": "",
+                            "body_snippet": "",
+                            "url": current_url,
+                            "ok": False,
+                            "error": f"Egress blocked: {reason}",
+                        }
+                    resp = await client.request(
+                        method=method.upper(),
+                        url=current_url,
+                        headers=headers,
+                        content=body.encode("utf-8") if body is not None else None,
+                    )
+                    if not resp.is_redirect:
+                        break
+                    location = resp.headers.get("location")
+                    if not location:
+                        break
+                    current_url = str(httpx.URL(current_url).join(location))
                 body_snippet = resp.text[:2000] if resp.text else ""
                 return {
                     "status_code": resp.status_code,
@@ -569,9 +588,10 @@ class HeadlessComputeProvider(ComputerProvider, ComputeProvider):
                 except Exception:
                     pass
 
-        # 2. Only explicitly configured packages are probed. The default
-        # policy must not teach the agent a preferred tool vocabulary.
-        probe_candidates = set(self.app_policy.allowed_packages)
+        # 2. Dynamic discovery of common utilities and policy-defined packages on PATH
+        probe_candidates = set(self.app_policy.allowed_packages) | {
+            "python3", "python", "git", "curl", "wget", "bash", "sh", "node", "npm", "zsh", "tmux"
+        }
         for cmd in probe_candidates:
             if shutil.which(cmd):
                 installed.add(cmd)

@@ -60,6 +60,12 @@ class NativeKernelClient:
             str(Path(__file__).resolve().parents[3] / "sonic-kernel-rs" / "target" / "release" / "sonic-kernel"),
         ]
         for c in candidates:
+            # The checked-in Rust target is a Linux ELF binary. Do not select
+            # it on Windows, where spawning it only produces WinError 193 on
+            # every first safety check; an explicit SONIC_KERNEL_BIN remains
+            # available for a compatible Windows build.
+            if os.name == "nt" and not c.lower().endswith(".exe"):
+                continue
             if Path(c).is_file() and os.access(c, os.X_OK):
                 return c
 

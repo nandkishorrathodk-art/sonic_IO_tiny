@@ -270,7 +270,10 @@ async def test_falsification_specialist_challenges_hypothesis():
         falsification_plan={"should_falsify": False, "verification_details": "SQL error reproducibly triggered across multiple probes"},
     )
 
-    await verifier.run({"hypotheses": [{"id": "hyp-real-sqli", "statement": "Unescaped search parameter allows SQL Injection"}]}, bus)
+    await verifier.run({
+        "target": "https://authorized.example",
+        "hypotheses": [{"id": "hyp-real-sqli", "statement": "Unescaped search parameter allows SQL Injection"}],
+    }, bus)
     assert len(verified_events) == 1
     assert verified_events[0].vulnerability_class == "SQL Injection"
 
@@ -681,5 +684,4 @@ async def test_state_resumption_preserving_findings_and_attack_graph():
     assert len(blackboard.endpoints) >= 1
     assert any(t.port == 8080 for t in blackboard.targets.values())
     assert "target-web" in attack_graph.nodes
-
 

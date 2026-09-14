@@ -77,7 +77,18 @@ export default function SonicDevinWorkstation() {
 
       try {
         const rawSessions = await api.listSessions();
-        setSessionList(normalizeSessionList(rawSessions));
+        const sessions = normalizeSessionList(rawSessions);
+        setSessionList(sessions);
+        if (
+          targetSession === "fresh" &&
+          !state?.desktop?.workspace_id
+        ) {
+          const attachedSession = sessions.find((session: any) => session.workspace_id);
+          if (attachedSession?.session_id) {
+            setSessionId(attachedSession.session_id);
+            return;
+          }
+        }
       } catch {
         // keep current list safely on error
       }

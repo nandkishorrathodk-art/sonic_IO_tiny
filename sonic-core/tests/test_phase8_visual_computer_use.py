@@ -11,7 +11,7 @@ import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from sonic.computer.models import GUIAction, GUIActionType, ScreenObservation
-from sonic.computer_use.models import ComputerActionType
+from sonic.computer_use.models import ComputerActionType, ComputerWorldObservation
 from sonic.computer_use.agent import ComputerUseAgent
 from sonic.safety.action_policy import ActionPolicy
 
@@ -104,6 +104,26 @@ class TestGUIActionDispatch:
         assert target == "visible-active-window"
         assert payload == {"key": "ctrl+w"}
         assert "Ctrl+W" in expected
+
+    @pytest.mark.asyncio
+    async def test_gui_only_close_tabs_intent_bypasses_vision_grounding(self):
+        provider = _mock_provider()
+        router = MagicMock()
+        agent = ComputerUseAgent(
+            computer_provider=provider,
+            llm_router=router,
+            gui_only=True,
+        )
+
+        action_type, target, payload, _ = await agent.choose_action(
+            "hi sonic, close browser and close all tabs",
+            ComputerWorldObservation(),
+        )
+
+        assert action_type == ComputerActionType.GUI_KEYPRESS
+        assert target == "visible-active-window"
+        assert payload == {"key": "ctrl+w"}
+        router.complete.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_gui_only_observation_does_not_probe_files_git_or_terminal(self):

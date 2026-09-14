@@ -9,6 +9,7 @@ from sonic.api.routes.workstation import (
     _get_or_create_session,
     _infer_program_profile,
     _is_action_prompt,
+    _is_observation_only_prompt,
     _requires_desktop_observation,
     _is_complex_or_multi_part_objective,
     _run_prompt_reasoning,
@@ -83,6 +84,13 @@ def test_desktop_observation_is_explicit_not_implicit():
     assert _requires_desktop_observation("click the submit button") is True
     assert _requires_desktop_observation("check open ports and running services") is False
     assert _requires_desktop_observation("analyze this source repository") is False
+
+
+def test_screen_analysis_observes_without_starting_an_action_loop():
+    assert _is_observation_only_prompt("an analysis of the current screen and tell me") is True
+    assert _is_action_prompt("an analysis of the current screen and tell me") is False
+    assert _is_observation_only_prompt("open the browser and inspect the current screen") is False
+    assert _is_observation_only_prompt("click the visible button") is False
 
 
 @pytest.mark.asyncio

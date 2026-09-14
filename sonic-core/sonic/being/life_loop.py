@@ -44,6 +44,26 @@ from sonic.logger import get_logger
 
 logger = get_logger(__name__)
 
+_active_life_loop: "BeingLifeLoop | None" = None
+
+
+def register_life_loop(loop: "BeingLifeLoop") -> None:
+    """Expose the process-local idle actor to the foreground control plane."""
+    global _active_life_loop
+    _active_life_loop = loop
+
+
+def pause_for_operator() -> None:
+    """Prevent new idle cycles while an operator mission owns the workstation."""
+    if _active_life_loop is not None:
+        _active_life_loop.pause_for_operator()
+
+
+def resume_after_operator() -> None:
+    """Release the workstation back to idle autonomy after a mission ends."""
+    if _active_life_loop is not None:
+        _active_life_loop.resume_after_operator()
+
 
 # ---------------------------------------------------------------------------
 # NEXUS L1 -- EventBus (Continuous Infinity Loop event surface)
@@ -166,9 +186,18 @@ class BeingLifeLoop:
         self.tick_interval = tick_interval
         self._task: asyncio.Task | None = None
         self._stop = asyncio.Event()
+        self._operator_active = asyncio.Event()
         self.cycles_completed = 0
         self.before_tick_hooks: list = []
         self.bus: EventBus = EventBus()
+
+    def pause_for_operator(self) -> None:
+        self._operator_active.set()
+        logger.info("being_life_loop_paused_for_operator", being_id=self.being.being_id)
+
+    def resume_after_operator(self) -> None:
+        self._operator_active.clear()
+        logger.info("being_life_loop_resumed_after_operator", being_id=self.being.being_id)
 
     # ------------------------------------------------------------------
     def mind(self) -> BeingMind:
@@ -225,6 +254,12 @@ class BeingLifeLoop:
         would starve the loop and never observe the stop signal.
         """
         while not self._stop.is_set():
+            if self._operator_active.is_set():
+                try:
+                    await asyncio.wait_for(self._stop.wait(), timeout=0.25)
+                except TimeoutError:
+                    pass
+                continue
             await self.tick()
             interval = self.tick_interval if self.tick_interval > 0 else 0.01
             try:

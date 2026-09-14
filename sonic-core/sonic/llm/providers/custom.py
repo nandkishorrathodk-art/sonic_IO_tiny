@@ -149,6 +149,27 @@ def _is_transient_error(error: Exception) -> bool:
     return _is_transport_error(error)
 
 
+def _is_quota_exhausted_error(error: Exception) -> bool:
+    """Return true for provider quotas that cannot recover by immediate retry."""
+    error_text = f"{type(error).__name__} {error}".lower()
+    return (
+        ("tokens per day" in error_text or "tpd" in error_text)
+        and ("429" in error_text or "rate limit" in error_text or "rate_limit" in error_text)
+    )
+
+
+def _provider_reasoning_effort(model: str, requested: str | None) -> str | None:
+    """Normalize reasoning controls for provider-specific OpenAI-compatible APIs."""
+    if requested is None:
+        return None
+    # Groq's Qwen reasoning models accept only these two values. Sending
+    # medium/high produces a non-transient 400 and needlessly burns fallback
+    # latency before the provider can answer.
+    if "qwen3.6" in model.lower() or "qwen3.8" in model.lower():
+        return requested if requested in {"none", "default"} else "default"
+    return requested
+
+
 def _extract_json_object(raw: str) -> dict | None:
     """Best-effort extraction of a JSON object from an LLM tool-call argument string.
 
@@ -436,7 +457,11 @@ class CustomLLMProvider(LLMProvider):
                 return await call(request)
             except Exception as e:
                 last_error = e
-                if not _is_transient_error(e) or attempt == self.max_retries:
+                if (
+                    not _is_transient_error(e)
+                    or _is_quota_exhausted_error(e)
+                    or attempt == self.max_retries
+                ):
                     raise
                 # Exponential backoff with full jitter, capped at retry_max_delay.
                 import random
@@ -503,8 +528,9 @@ class CustomLLMProvider(LLMProvider):
             # Use official SDK
             extra_body: dict[str, Any] = dict(request.extra_body)
             reasoning_models = ("gpt-oss", "deepseek-r1", "deepseek-reasoner", "reasoning", "o1", "o3")
-            if request.reasoning_effort:
-                extra_body["reasoning_effort"] = request.reasoning_effort
+            reasoning_effort = _provider_reasoning_effort(model, request.reasoning_effort)
+            if reasoning_effort:
+                extra_body["reasoning_effort"] = reasoning_effort
             elif any(rm in model.lower() for rm in reasoning_models):
                 extra_body.setdefault("reasoning_effort", "high")
 
@@ -603,8 +629,9 @@ class CustomLLMProvider(LLMProvider):
             "top_p": eff_top_p,
         }
         reasoning_models = ("gpt-oss", "deepseek-r1", "deepseek-reasoner", "reasoning", "o1", "o3")
-        if request.reasoning_effort:
-            payload["reasoning_effort"] = request.reasoning_effort
+        reasoning_effort = _provider_reasoning_effort(model, request.reasoning_effort)
+        if reasoning_effort:
+            payload["reasoning_effort"] = reasoning_effort
         elif any(rm in model.lower() for rm in reasoning_models):
             payload["reasoning_effort"] = "high"
         if request.extra_body:

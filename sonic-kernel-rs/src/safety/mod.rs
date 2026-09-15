@@ -395,7 +395,7 @@ mod tests {
         }
 
         // Public authorized target allowed
-        let public_auth = kernel.authorize("SECURITY_TOOL", "https://authorized-ctf.example.com/api", true);
+        let public_auth = kernel.authorize("SECURITY_TOOL", "https://198.51.100.1/api", true);
         assert_eq!(public_auth.verdict, KernelVerdict::Allow);
     }
 

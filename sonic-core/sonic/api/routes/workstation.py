@@ -1991,7 +1991,7 @@ def _requires_desktop_observation(prompt: str) -> bool:
     desktop_terms = (
         "desktop", "screen", "screenshot", "gui", "visual", "mouse", "click",
         "double-click", "right-click", "type into", "keyboard", "window",
-        "browser", "chrome", "firefox", "focus ", "scroll", "drag", "download",
+        "browser", "app", "application", "focus ", "scroll", "drag", "download",
     )
     return any(term in lower for term in desktop_terms)
 
@@ -3153,6 +3153,7 @@ async def send_workstation_prompt(
 @router.get("/workstation/services")
 async def list_workstation_services(
     session_id: str = Query("default"),
+    service_names: str | None = Query(None, description="Comma-separated service names to probe"),
     user: User = Depends(require_auth),
 ):
     """List background services managed inside the workstation sandbox."""
@@ -3161,9 +3162,23 @@ async def list_workstation_services(
         return {"services": [], "note": "No active workstation workspace for this session."}
     comp = get_daytona_computer()
     services = []
-    # Probe a small set of well-known services that the policy declares.
-    known = ["xvfb", "code-server", "chromium", "nginx"]
-    for name in known:
+    
+    # Query running services dynamically from the OS service table
+    target_names: list[str] = []
+    if service_names:
+        target_names = [s.strip() for s in service_names.split(",") if s.strip()]
+    else:
+        try:
+            res = await comp.terminal(
+                workspace_id,
+                "systemctl list-units --type=service --state=running --no-legend 2>/dev/null | awk '{print $1}' | sed 's/\\.service$//' | head -n 15 || service --status-all 2>/dev/null | grep '\\[ + \\]' | awk '{print $NF}' | head -n 15 || true"
+            )
+            out = getattr(res, "stdout", "") or ""
+            target_names = [line.strip() for line in out.splitlines() if line.strip()]
+        except Exception:
+            target_names = []
+
+    for name in target_names:
         try:
             info = await comp.service_action(workspace_id, name, "status")
             services.append({"name": name, "status": getattr(info, "status", "unknown")})

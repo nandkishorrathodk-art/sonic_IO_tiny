@@ -19,6 +19,26 @@ Architecture: FastAPI backend (`sonic-core/`), Next.js dashboard
 (`sonic-dashboard/`), Docker sandbox execution, Neo4j graph memory,
 multi-tenant RBAC.
 
+## Core Architecture: AI-Human Being with Dedicated Computer Workstation
+SONIC is designed as an autonomous **AI-Human Hacker Being** operating its own dedicated personal computer workstation, combining human-grade cognitive intuition with native execution capabilities.
+
+### 1. Dual-Plane Operational Model
+SONIC operates concurrently across two clean execution planes:
+- **Workstation Application Plane (Computer-Use)**: Interacts with the full graphical desktop environment (X11/Wayland via `GUI_*`, `APP_*`, `BROWSER_*`). It is capable of operating **ANY arbitrary desktop application, tool, editor, console, network analyzer, debugger, or browser** requested by the user or required by the engagement. It dynamically manages multiple windows, interacts with GUI controls via visual perception, and settles displays without assumptions of a single fixed tool.
+- **Operator & Sandbox Plane (Direct Headless Execution)**: Direct, non-graphical execution plane (`TERMINAL_EXEC`, `SECURITY_TOOL`, `FILE_*`, `GIT_*`, Toolsmith, and native Rust `sonic-kernel-rs`). High-throughput, precise tasks (custom Python probes, socket listeners, source code auditing, AST manipulation, git commits, tool compilation) execute directly in the sandbox without cluttering the desktop GUI or wasting perception tokens.
+
+### 2. Autonomous Epistemics & Self-Evolution
+- **Always-On Life & Curiosity Loop**: When no operator task is active, the being explores, hypothesizes, and learns autonomously under the sealed safety envelope.
+- **Durable Craft & Memory**: Persists identity, affect, learned knowledge, and authored artifacts across boots and restarts without amnesia.
+- **Empirical Falsification**: Zero success-by-decree. Hypotheses and security claims require verified reproduction receipts from real in-sandbox execution.
+- **Toolsmith & Method Lab**: Autonomously authors its own specialized scripts (Toolsmith) and synthesizes novel offensive techniques (Method Lab) rather than relying on static exploit libraries.
+
+### 3. Strict Core Mandate & Prohibitions (Aisa Karna Mana Hai)
+1. **Zero Hardcoded Application Names**: Control flow, perception parsing, window tiling, intent routing, and prompt templates must NEVER hardcode or favor specific application or binary names (e.g. no chrome, chromium, firefox, burp, caido, wireshark, vscode). All applications must be dynamically discovered from the operating system environment (via `$PATH`, `which`, POSIX alternatives like `x-www-browser`/`sensible-browser`/`xdg-open`, desktop `.desktop` entries, and active OS window titles).
+2. **Zero Scripted Puppet Heuristics**: Rigid keyword-matching trees, canned 3-step checklists, hardcoded refusal fallbacks, and regex string manipulation of model intent are strictly prohibited. The agent must reason freely and adaptively from live observations.
+3. **Zero External/Mock Domains & Endpoints**: Hardcoded external domains (e.g. `example.com`, `google.com`, `httpbin.org`, `target.com`) and fake proxy endpoints (e.g. `http://proxy/cert`) are strictly forbidden in production logic, prompts, and tests. All URLs must be operator-supplied, dynamically discovered in-scope targets, or RFC 5737 test documentation network addresses (`198.51.100.1`).
+4. **Dynamic Perception Grounding**: All UI interactions must derive strictly from real multimodal visual perception and dynamic window/accessibility coordinates. Static coordinate lookup tables, landmark percentage fallbacks, and canned prompt-based fallbacks are prohibited.
+
 ## Layout
 - `sonic-core/` — Python backend (uv workspace, Python 3.12+). `pip install -e sonic-core[dev]`.
 - `sonic-dashboard/` — Next.js 14 dashboard. `npm install` then `npm run dev`.

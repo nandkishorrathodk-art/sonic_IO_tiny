@@ -370,3 +370,21 @@ class NativeKernelClient:
             for s in (steps or [])
         ]
         return self._execute_rpc("nexus_world_twin_roll_forward", {"steps": norm_steps})
+
+    def find_attack_chains(
+        self,
+        start_node: str,
+        target_node: str,
+        nodes: list[dict[str, Any]] | None = None,
+        transitions: list[dict[str, Any]] | None = None,
+    ) -> list[dict[str, Any]] | None:
+        """Finds multi-hop attack paths via native Rust AttackGraph traversal."""
+        return self._execute_rpc(
+            "find_attack_chains",
+            {
+                "start_node": str(start_node),
+                "target_node": str(target_node),
+                "nodes": nodes or [],
+                "transitions": transitions or [],
+            },
+        )

@@ -565,30 +565,15 @@ class DockerComputerProvider(ComputerProvider):
                     if title and title not in ("xfce4-panel", "Desktop"):
                         windows.append((win_id, title))
 
-        browser_candidate = next(
-            (w for w in windows if any(k in w[1].lower() for k in ("chrome", "chromium", "firefox", "browser", "web"))),
-            None,
-        )
-        term_candidate = next(
-            (w for w in windows if any(k in w[1].lower() for k in ("terminal", "bash", "sh", "zsh", "console", "xterm"))),
-            None,
-        )
-
         code1 = 1
-        if browser_candidate:
-            code1, _, _ = await self._docker_exec(f'DISPLAY={disp} wmctrl -i -r "{browser_candidate[0]}" -e 0,0,0,640,800')
-
         code2 = 1
-        if term_candidate:
-            code2, _, _ = await self._docker_exec(f'DISPLAY={disp} wmctrl -i -r "{term_candidate[0]}" -e 0,640,0,640,800')
-
-        # If standard candidates were not matched and arbitrary windows are open, tile them flexibly
-        if code1 != 0 and windows:
-            fallback_left = windows[0]
-            code1, _, _ = await self._docker_exec(f'DISPLAY={disp} wmctrl -i -r "{fallback_left[0]}" -e 0,0,0,640,800')
-            if code2 != 0 and len(windows) > 1:
-                fallback_right = windows[1]
-                code2, _, _ = await self._docker_exec(f'DISPLAY={disp} wmctrl -i -r "{fallback_right[0]}" -e 0,640,0,640,800')
+        client_windows = [w for w in windows if w[1] not in ("xfce4-panel", "Desktop", "desktop")]
+        if client_windows:
+            left_win = client_windows[0]
+            code1, _, _ = await self._docker_exec(f'DISPLAY={disp} wmctrl -i -r "{left_win[0]}" -e 0,0,0,640,800')
+            if len(client_windows) > 1:
+                right_win = client_windows[1]
+                code2, _, _ = await self._docker_exec(f'DISPLAY={disp} wmctrl -i -r "{right_win[0]}" -e 0,640,0,640,800')
 
         return (not windows and code_l == 0) or code1 == 0 or code2 == 0
 

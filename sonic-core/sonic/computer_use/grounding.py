@@ -25,9 +25,7 @@ from sonic.logger import get_logger
 
 logger = get_logger(__name__)
 
-# Static coordinates are intentionally not provided. UI targets must be
-# resolved from the current DOM/accessibility tree or screenshot pixels.
-_COMMON_UI_LANDMARKS: dict[str, tuple[float, float]] = {}
+# UI targets must be resolved from the current DOM/accessibility tree or screenshot pixels.
 
 
 def extract_bbox_midpoint(
@@ -200,16 +198,6 @@ def resolve_ui_target(
         except Exception as exc:
             logger.warning("grounding_fn_resolution_failed", query=query, error=str(exc))
 
-    # A screenshot is authoritative current state.  Never turn a failed or
-    # unavailable visual query into a click at a remembered percentage
-    # coordinate, even when a legacy caller leaves ``allow_landmarks=True``.
-    # Landmark compatibility is retained only for headless/no-pixel callers.
-    if allow_landmarks and not screenshot_b64:
-        for landmark, (x_ratio, y_ratio) in _COMMON_UI_LANDMARKS.items():
-            landmark_words = set(landmark.split())
-            if landmark in clean_query or landmark_words.issubset(set(clean_query.split())):
-                return int(x_ratio * width), int(y_ratio * height)
-
     return None
 
 
@@ -250,14 +238,6 @@ async def resolve_ui_target_async(
                     return coords
         except Exception as exc:
             logger.warning("grounding_fn_async_resolution_failed", query=query, error=str(exc))
-
-    # Static landmarks are incompatible with live pixels: the desktop may be
-    # any application/layout, so an unresolved VLM query must fail closed.
-    if allow_landmarks and not screenshot_b64:
-        for landmark, (x_ratio, y_ratio) in _COMMON_UI_LANDMARKS.items():
-            landmark_words = set(landmark.split())
-            if landmark in clean_query or landmark_words.issubset(set(clean_query.split())):
-                return int(x_ratio * width), int(y_ratio * height)
 
     return None
 

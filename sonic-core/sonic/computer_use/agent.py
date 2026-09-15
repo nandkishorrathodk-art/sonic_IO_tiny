@@ -399,60 +399,24 @@ class ComputerUseAgent:
                 sub_goals.append(SubGoal(description=item))
             return SubGoalChecklist(top_level_goal=goal, sub_goals=sub_goals, active_index=0)
 
-        # 2. Try LLM-driven goal decomposition when enabled and a router is available
-        if getattr(self, "enable_llm_decomposition", False) and self.llm_router is not None:
+        # 2. Try LLM-driven goal decomposition when a router is available
+        if self.llm_router is not None:
             llm_checklist = await self._llm_decompose_goal(goal)
             if llm_checklist is not None:
                 return llm_checklist
 
-        # 3. Intent-based heuristic decomposition (fallback)
-        targets = self._extract_targets_from_goal(goal)
-        target_str = targets["urls"][0] if targets["urls"] else (targets["hostnames"][0] if targets["hostnames"] else (targets["ips"][0] if targets["ips"] else ""))
+        # 3. Dynamic clause extraction from user's explicit multi-part goal
+        parts = [p.strip() for p in re.split(r'\b(?:and then|then|and)\b|[;\n]', goal, flags=re.IGNORECASE) if len(p.strip()) > 3]
+        if len(parts) >= 2:
+            sub_goals = [SubGoal(description=part) for part in parts[:5]]
+            return SubGoalChecklist(top_level_goal=goal, sub_goals=sub_goals, active_index=0)
 
-        g_lower = goal.lower()
-        if any(w in g_lower for w in ("curl", "header", "endpoint", "api", "probe", "request")):
-            dest = target_str or "target service"
-            sub_goals = [
-                SubGoal(description=f"Send HTTP probe or request to {dest}"),
-                SubGoal(description="Analyze HTTP response headers and status code"),
-                SubGoal(description="Verify response data and record findings"),
-            ]
-        elif any(w in g_lower for w in ("http://", "https://", ".com", ".org", "browse", "web", "site")):
-            dest = target_str or "target web page"
-            sub_goals = [
-                SubGoal(description=f"Navigate to {dest} and confirm page loaded"),
-                SubGoal(description="Inspect page content and interact with controls"),
-                SubGoal(description="Verify outcome and extract findings"),
-            ]
-        elif any(w in g_lower for w in ("launch", "open ", "start ")):
-            m_app = re.search(r'(?:launch|open|start)\s+(?:the\s+)?([a-zA-Z0-9_\-\.]+)', g_lower)
-            app = m_app.group(1).strip() if m_app else "application"
-            sub_goals = [
-                SubGoal(description=f"Launch and focus {app}"),
-                SubGoal(description="Perform requested operation in application"),
-                SubGoal(description="Verify application state and complete task"),
-            ]
-        elif any(w in g_lower for w in ("scan", "port", "recon", "network", "service")):
-            dest = target_str or "target host"
-            sub_goals = [
-                SubGoal(description=f"Perform network reconnaissance and service discovery against {dest}"),
-                SubGoal(description="Analyze open services or endpoints and inspect responses"),
-                SubGoal(description="Compile security findings and verify evidence"),
-            ]
-        elif any(w in g_lower for w in ("test", "pytest", "unit test", "bug", "fix")):
-            sub_goals = [
-                SubGoal(description="Inspect test files and reproduce initial state"),
-                SubGoal(description="Implement fix or diagnostic patch"),
-                SubGoal(description="Run test suite and confirm verification passes"),
-            ]
-        else:
-            sub_goals = [
-                SubGoal(description=f"Inspect environment and orient on primary resource for: {goal[:50]}"),
-                SubGoal(description="Execute core operation and collect output"),
-                SubGoal(description="Verify outcome matches expectation and complete goal"),
-            ]
-
-        return SubGoalChecklist(top_level_goal=goal, sub_goals=sub_goals, active_index=0)
+        # 4. Unconstrained fallback: single goal without canned steps
+        return SubGoalChecklist(
+            top_level_goal=goal,
+            sub_goals=[SubGoal(description=f"Pursue objective: {goal}")],
+            active_index=0,
+        )
 
     # =============================================================
     # 1. Closed-Loop Observation
@@ -1499,28 +1463,18 @@ class ComputerUseAgent:
             if is_refusal:
                 self._refusal_recovery_active = True
                 self._last_thought = (
-                    "LLM safety refusal detected. Reframing objective into authorized diagnostic assessment."
+                    "LLM safety refusal detected; recording refusal for replanning."
                 )
                 if self.gui_only:
                     return self._gui_only_recovery_action(
                         goal,
                         "LLM safety refusal detected",
                     )
-                targets = self._extract_targets_from_goal(goal)
-                primary_target = targets.get("primary_target") or ""
-                if primary_target:
-                    target_url = primary_target if primary_target.startswith(("http://", "https://")) else f"http://{primary_target}"
-                    return (
-                        ComputerActionType.TERMINAL_EXEC,
-                        "diagnostic-probe",
-                        {"command": f"curl -sI -m 5 {shlex.quote(target_url)}"},
-                        f"Diagnostic probe: non-destructive header check on {primary_target}",
-                    )
                 return (
                     ComputerActionType.TERMINAL_EXEC,
-                    "refusal-no-target",
-                    {},
-                    _GOAL_COMPLETE_SENTINEL,
+                    "refusal-recorded",
+                    {"command": "echo 'LLM_SAFETY_REFUSAL'"},
+                    "Record model refusal and trigger replan",
                 )
 
             # Preserve genuine chain-of-thought/thinking tokens
@@ -1560,29 +1514,12 @@ class ComputerUseAgent:
                         goal,
                         "Model refusal received",
                     )
-                targets = self._extract_targets_from_goal(goal)
-                primary_target = targets.get("primary_target") or ""
-                if primary_target:
-                    target_url = primary_target if primary_target.startswith(("http://", "https://")) else f"http://{primary_target}"
-                    return (
-                        ComputerActionType.TERMINAL_EXEC,
-                        "diagnostic-probe",
-                        {"command": f"curl -sI -m 5 {shlex.quote(target_url)}"},
-                        f"Diagnostic probe: non-destructive header check on {primary_target}",
-                    )
-                return action_type, target, payload, expected
-
-            # If the LLM hallucinated example.com/example.org but the user specified a real target,
-            # substitute the real target into the command / target / payload
-            targets = self._extract_targets_from_goal(goal)
-            primary_target = targets.get("primary_target") or ""
-            if primary_target:
-                if "command" in payload and any(ex in str(payload["command"]).lower() for ex in ("example.com", "example.org")):
-                    payload["command"] = re.sub(r'https?://(?:www\.)?example\.(?:com|org)', primary_target, str(payload["command"]), flags=re.IGNORECASE)
-                if any(ex in target.lower() for ex in ("example.com", "example.org")):
-                    target = re.sub(r'https?://(?:www\.)?example\.(?:com|org)', primary_target, target, flags=re.IGNORECASE)
-                    if "url" in payload:
-                        payload["url"] = target
+                return (
+                    ComputerActionType.TERMINAL_EXEC,
+                    "refusal-recorded",
+                    {"command": "echo 'LLM_SAFETY_REFUSAL'"},
+                    "Record model refusal and trigger replan",
+                )
 
             return action_type, target, payload, expected
         except Exception as e:
@@ -2595,14 +2532,6 @@ class ComputerUseAgent:
                         resolved_x=res_coords[0],
                         resolved_y=res_coords[1],
                     )
-                elif not self._last_screenshot_b64 and target_resource.strip().lower() == "search bar":
-                    # Headless compatibility for providers that expose no pixels.
-                    # Live desktop execution always has a screenshot and therefore
-                    # remains fail-closed on unresolved visual targets.
-                    payload["x"], payload["y"] = (
-                        self._screen_width // 2,
-                        max(1, int(self._screen_height * 0.12)),
-                    )
                 else:
                     target = target_resource
                     actual_obs_str = f"Target UI element '{target}' could not be resolved from visual grounding. Re-observing screen."
@@ -3068,23 +2997,26 @@ class ComputerUseAgent:
                     is_same_url = getattr(self, "_last_navigated_url", "") == url
                     self._last_navigated_url = url
                     disp = os.environ.get("DISPLAY", ":99" if hasattr(self.computer, "_docker_exec") or getattr(self.computer, "name", "") == "DockerComputerProvider" else ":0")
+                    # Dynamically discover default OS web handler without hardcoding specific application names
+                    b_probe = await self.computer.terminal(workspace_id, "which x-www-browser sensible-browser xdg-open 2>/dev/null | head -n 1")
+                    browser_bin = b_probe.stdout.strip() if (b_probe and b_probe.stdout.strip()) else "x-www-browser"
                     if is_same_url:
                         # Re-focus existing browser without spawning duplicate tabs
-                        focus_cmd = f"DISPLAY={disp} xdotool search --onlyvisible --class chromium windowactivate 2>/dev/null || true"
+                        focus_cmd = f"DISPLAY={disp} xdotool search --onlyvisible --class browser windowactivate 2>/dev/null || DISPLAY={disp} wmctrl -a browser 2>/dev/null || true"
                         await self.computer.terminal(workspace_id, focus_cmd)
                         actual_obs_str = (
                             f"Browser is already active on {url}. Existing tab focused (duplicate tab prevented). "
                             "Proceed to interact with the webpage via GUI_CLICK on buttons, search bar, or scroll."
                         )
                     else:
-                        # Check if Chromium is already running in the desktop session
-                        chk = await self.computer.terminal(workspace_id, "pgrep -i chromium || pgrep -i chrome 2>/dev/null || true")
-                        chrome_running = bool(chk.stdout.strip())
-                        if chrome_running:
-                            # Reuse existing Chromium window: focus, focus address bar via ctrl+l, type URL and press Return
+                        # Check if browser is already running in the desktop session
+                        chk = await self.computer.terminal(workspace_id, "pgrep -i browser 2>/dev/null || true")
+                        browser_running = bool(chk.stdout.strip())
+                        if browser_running:
+                            # Reuse existing browser window: focus, focus address bar via ctrl+l, type URL and press Return
                             nav_cmd = (
-                                f"DISPLAY={disp} xdotool search --onlyvisible --class chromium windowactivate --sync "
-                                f"key --clearmodifiers ctrl+l sleep 0.1 type --delay 15 {shlex.quote(url)} key Return 2>/dev/null || true"
+                                f"DISPLAY={disp} (xdotool search --onlyvisible --class browser windowactivate --sync 2>/dev/null || wmctrl -a browser 2>/dev/null) && "
+                                f"DISPLAY={disp} xdotool key --clearmodifiers ctrl+l sleep 0.1 type --delay 15 {shlex.quote(url)} key Return 2>/dev/null || true"
                             )
                             await self.computer.terminal(workspace_id, nav_cmd)
                             if hasattr(self, "motor") and self.motor:
@@ -3092,7 +3024,7 @@ class ComputerUseAgent:
                             actual_obs_str = f"Navigated active browser tab to {url} (tab reused via address bar)"
                         else:
                             clean_flags = "--no-sandbox --disable-dev-shm-usage --disable-session-crashed-bubble --no-first-run --no-default-browser-check"
-                            cmd = f"DISPLAY={disp} nohup chromium {clean_flags} {shlex.quote(url)} >/dev/null 2>&1 &"
+                            cmd = f"DISPLAY={disp} nohup {browser_bin} {clean_flags} {shlex.quote(url)} >/dev/null 2>&1 &"
                             await self.computer.terminal(workspace_id, cmd)
                             actual_obs_str = f"Launched browser and navigated to {url}"
 

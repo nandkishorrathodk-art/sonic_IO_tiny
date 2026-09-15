@@ -613,8 +613,11 @@ class MissionDirector:
                 obs = str(getattr(t, "actual_observation", "") or "").strip()
                 meta = getattr(t, "metadata", {}) or {}
                 has_findings = bool(meta.get("findings"))
+                cmd_str = str(getattr(t, "target_resource", "") or meta.get("command", "")).strip().lower()
+                is_orientation = any(cmd_str == o or cmd_str.startswith(f"{o} ") for o in ("pwd", "ls", "whoami", "id", "echo", "cd"))
                 if st in ("SUCCESS", "RECOVERED"):
-                    if has_findings or (obs and len(obs) > 5 and not obs.lower().startswith("error")):
+                    # Orientation commands without concrete findings do not count as proof confirming a vulnerability
+                    if has_findings or (obs and len(obs) > 5 and not obs.lower().startswith("error") and not is_orientation):
                         evidence_traces.append(t)
 
             if evidence_traces:

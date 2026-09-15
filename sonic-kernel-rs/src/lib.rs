@@ -12,6 +12,7 @@
 //! - `perception`: Multimodal PerceptionFusion (DOM + Screenshot + Network).
 //! - `evolution`: Guarded Canary Evolution Pipeline with safety immutability.
 
+pub mod error;
 pub mod safety;
 pub mod brain;
 pub mod world;
@@ -21,7 +22,10 @@ pub mod perception;
 pub mod evolution;
 pub mod memory;
 pub mod specialists;
+pub mod ipc;
 
+pub use error::{KernelError, KernelResult};
+pub use ipc::{IpcServer, JsonRpcRequest, JsonRpcResponse};
 pub use safety::{KernelVerdict, SafetyAuthorization, SafetyKernel, SealedPolicy};
 pub use brain::{DecisionAction, DecisionEngine, Experiment, ExperimentPlan, Hypothesis, HypothesisEngine, HypothesisStatus, ResearchBrain};
 pub use world::{AssetInventory, AssetNode, AttackGraph, AttackNode, AttackPath, AttackTransitionEdge};

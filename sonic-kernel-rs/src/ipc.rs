@@ -179,6 +179,36 @@ impl IpcServer {
                 serde_json::to_value(&rollout).map_err(|e| e.to_string())
             }
 
+            "find_attack_chains" => {
+                let start_node = req.params.get("start_node").and_then(|v| v.as_str()).unwrap_or("");
+                let target_node = req.params.get("target_node").and_then(|v| v.as_str()).unwrap_or("");
+                let mut graph = crate::world::AttackGraph::new();
+
+                if let Some(nodes_arr) = req.params.get("nodes").and_then(|v| v.as_array()) {
+                    for n in nodes_arr {
+                        let id = n.get("node_id").or_else(|| n.get("id")).and_then(|v| v.as_str()).unwrap_or("");
+                        let asset = n.get("asset_id").and_then(|v| v.as_str()).unwrap_or("asset-default");
+                        let state = n.get("observed_state").or_else(|| n.get("state")).and_then(|v| v.as_str()).unwrap_or("");
+                        let priv_level = n.get("privilege_obtained").or_else(|| n.get("privilege")).and_then(|v| v.as_str()).unwrap_or("");
+                        let conf = n.get("confidence").and_then(|v| v.as_f64()).unwrap_or(1.0) as f32;
+                        graph.add_node(id, asset, state, priv_level, conf);
+                    }
+                }
+
+                if let Some(trans_arr) = req.params.get("transitions").and_then(|v| v.as_array()) {
+                    for t in trans_arr {
+                        let from = t.get("from_node").or_else(|| t.get("from")).and_then(|v| v.as_str()).unwrap_or("");
+                        let to = t.get("to_node").or_else(|| t.get("to")).and_then(|v| v.as_str()).unwrap_or("");
+                        let action = t.get("action_signature").or_else(|| t.get("action")).and_then(|v| v.as_str()).unwrap_or("");
+                        let conf = t.get("confidence").and_then(|v| v.as_f64()).unwrap_or(1.0) as f32;
+                        graph.add_transition(from, to, action, conf);
+                    }
+                }
+
+                let chains = graph.find_attack_chains(start_node, target_node);
+                serde_json::to_value(&chains).map_err(|e| e.to_string())
+            }
+
             unknown => Err(format!("Unknown JSON-RPC method '{}'", unknown)),
         };
 

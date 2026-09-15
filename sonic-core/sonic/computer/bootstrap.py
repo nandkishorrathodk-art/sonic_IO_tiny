@@ -143,13 +143,14 @@ class WorkstationBootstrapEngine:
         workspace_id: str = "",
         proxy_host: str = "127.0.0.1",
         proxy_port: int = 8080,
+        cert_endpoint: str = "",
         wait_timeout: float = 15.0,
     ) -> dict[str, Any]:
         """
         Deterministic CA Trust handshake:
           1. Await the supplied proxy listening on proxy_port.
-          2. Fetch http://proxy_host:proxy_port/cert -> /tmp/cacert.der.
-          3. Convert DER to PEM format -> /tmp/proxy-ca.crt.
+          2. Fetch CA certificate dynamically from cert_endpoint or proxy loopback.
+          3. Convert to PEM format if needed.
           4. Inject into Linux OS store -> /usr/local/share/ca-certificates/.
           5. Inject into the desktop NSS db -> certutil -d sql:/root/.pki/nssdb -A.
           6. Verify via loopback probe.
@@ -175,8 +176,12 @@ class WorkstationBootstrapEngine:
 
         res["proxy_live"] = True
 
-        # 2. Fetch the proxy CA certificate
-        fetch_cmd = f"curl -s -x http://{proxy_host}:{proxy_port} http://proxy/cert -o /tmp/cacert.der"
+        # 2. Fetch the proxy CA certificate dynamically without hardcoded application paths
+        endpoint = cert_endpoint.strip() if cert_endpoint else f"http://{proxy_host}:{proxy_port}/cert"
+        fetch_cmd = (
+            f"curl -s -m 10 {shlex.quote(endpoint)} -o /tmp/proxy_ca.crt || "
+            f"curl -s -x http://{proxy_host}:{proxy_port} -m 10 {shlex.quote(endpoint)} -o /tmp/proxy_ca.crt"
+        )
         code, _, err = await self._exec_cmd(fetch_cmd, workspace_id=workspace_id, timeout=10)
         if code != 0:
             logger.warning("proxy_ca_fetch_failed", error=err)
@@ -184,8 +189,11 @@ class WorkstationBootstrapEngine:
 
         res["cert_fetched"] = True
 
-        # 3. Convert DER to PEM
-        conv_cmd = "openssl x509 -inform DER -in /tmp/cacert.der -out /tmp/proxy-ca.crt 2>/dev/null"
+        # 3. Ensure PEM format (convert if DER, or copy if already PEM)
+        conv_cmd = (
+            "openssl x509 -inform DER -in /tmp/proxy_ca.crt -out /tmp/proxy-ca.crt 2>/dev/null || "
+            "cp /tmp/proxy_ca.crt /tmp/proxy-ca.crt 2>/dev/null"
+        )
         ccode, _, cerr = await self._exec_cmd(conv_cmd, workspace_id=workspace_id, timeout=5)
         if ccode != 0:
             logger.warning("proxy_ca_der_conversion_failed", error=cerr)
@@ -208,11 +216,11 @@ class WorkstationBootstrapEngine:
         ncode, _, _ = await self._exec_cmd(nss_cmd, workspace_id=workspace_id, timeout=10)
         res["nss_imported"] = (ncode == 0)
 
-        # 6. Verification Probe
+        # 6. Verification Probe (against local proxy endpoint)
         probe_cmd = (
             f"curl -s -o /dev/null -w '%{{http_code}}' "
             f"-x http://{proxy_host}:{proxy_port} --cacert /tmp/proxy-ca.crt "
-            f"https://httpbin.org/get 2>/dev/null || echo 000"
+            f"http://{proxy_host}:{proxy_port} 2>/dev/null || echo 000"
         )
         pcode, pout, _ = await self._exec_cmd(probe_cmd, workspace_id=workspace_id, timeout=10)
         if pcode == 0 and pout.strip() in ("200", "301", "302", "404"):

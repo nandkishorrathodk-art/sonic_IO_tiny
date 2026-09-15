@@ -20,7 +20,7 @@ import json
 
 import pytest
 
-from sonic.agents.react_engine import ReActEngine, create_default_tool_registry
+from sonic.agents.react_engine import ReActEngine, ToolCategory, ToolDefinition, create_default_tool_registry
 from sonic.computer.models import (
     ComputerState, FileEntry, GitStatusInfo, ScreenObservation,
 )
@@ -233,26 +233,32 @@ def test_react_execute_with_tools_runs_parallel_tool_calls():
 
     seen = {"order": []}
 
-    async def slow_curl(args):
-        seen["order"].append(("curl_start", args))
+    async def slow_tool(args):
+        seen["order"].append(("tool_a_start", args))
         # Force a context switch so parallel execution overlaps.
         await asyncio.sleep(0)
-        seen["order"].append(("curl_end", args))
-        return "curl output"
+        seen["order"].append(("tool_a_end", args))
+        return "tool_a output"
 
-    async def fast_nmap(args):
-        seen["order"].append(("nmap_start", args))
-        seen["order"].append(("nmap_end", args))
-        return "nmap output"
+    async def fast_tool(args):
+        seen["order"].append(("tool_b_start", args))
+        seen["order"].append(("tool_b_end", args))
+        return "tool_b output"
 
-    registry.tools["curl"].handler = slow_curl
-    registry.tools["nmap"].handler = fast_nmap
+    registry.register(ToolDefinition(
+        name="tool_a", description="Test tool A", category=ToolCategory.UTILITY,
+        parameters={"args": "arguments"}, handler=slow_tool,
+    ))
+    registry.register(ToolDefinition(
+        name="tool_b", description="Test tool B", category=ToolCategory.UTILITY,
+        parameters={"args": "arguments"}, handler=fast_tool,
+    ))
 
     engine = ReActEngine(registry, max_iterations=5)
 
     step1 = LLMResponse(
         content="Running two tools in parallel.",
-        tool_calls=[_tc("curl", {"args": "http://x"}), _tc("nmap", {"args": "-sV"})],
+        tool_calls=[_tc("tool_a", {"args": "198.51.100.1"}), _tc("tool_b", {"args": "-sV"})],
     )
     step2 = LLMResponse(content="done", tool_calls=[])
     llm = _ToolLLM([step1, step2])
@@ -264,22 +270,28 @@ def test_react_execute_with_tools_runs_parallel_tool_calls():
     step1_obs = [o for o in result["observations"] if o["step"] == 1 and o["action_type"] == "tool_call"]
     assert len(step1_obs) == 2
     names = {o["action_input"].split("[")[0] for o in step1_obs}
-    assert names == {"curl", "nmap"}
+    assert names == {"tool_a", "tool_b"}
     # Parallel proof: the second tool started before the first ended.
-    assert seen["order"].index(("nmap_start", "-sV")) < seen["order"].index(("curl_end", "http://x"))
+    assert seen["order"].index(("tool_b_start", "-sV")) < seen["order"].index(("tool_a_end", "198.51.100.1"))
 
 
 def test_react_execute_with_tools_tool_schemas_sent():
     """The model request carries real tool definitions, not text parsing hints."""
     registry = create_default_tool_registry()
+    async def noop(args): return "ok"
+    for name in ("probe", "scanner", "fuzzer"):
+        registry.register(ToolDefinition(
+            name=name, description=f"Test {name}", category=ToolCategory.UTILITY,
+            parameters={"args": "arguments"}, handler=noop,
+        ))
     engine = ReActEngine(registry, max_iterations=2)
     llm = _ToolLLM([LLMResponse(content="answer", tool_calls=[])])
     _run(engine.execute_with_tools("task", llm.complete))
     assert llm.requests, "think_fn should have been called"
     tools = llm.requests[0].tools
-    assert tools and len(tools) == 5
+    assert tools and len(tools) == 3
     tool_names = {t.name for t in tools}
-    assert {"nmap", "nuclei", "ffuf", "curl", "httpx"} == tool_names
+    assert {"probe", "scanner", "fuzzer"} == tool_names
 
 
 def test_react_execute_with_tools_dict_args_coerced():
@@ -291,18 +303,21 @@ def test_react_execute_with_tools_dict_args_coerced():
         received.append(args)
         return "ok"
 
-    registry.tools["curl"].handler = capture
+    registry.register(ToolDefinition(
+        name="probe", description="Test probe", category=ToolCategory.UTILITY,
+        parameters={"args": "arguments"}, handler=capture,
+    ))
     engine = ReActEngine(registry, max_iterations=2)
     step1 = LLMResponse(
         content="",
-        tool_calls=[_tc("curl", {"args": "http://example.com"})],
+        tool_calls=[_tc("probe", {"args": "198.51.100.1"})],
     )
 
     step2 = LLMResponse(content="final", tool_calls=[])
     llm = _ToolLLM([step1, step2])
     result = _run(engine.execute_with_tools("task", llm.complete))
     assert result["success"] is True
-    assert received == ["http://example.com"]
+    assert received == ["198.51.100.1"]
 
 
 def test_react_execute_with_tools_max_iterations():
@@ -575,11 +590,9 @@ def test_llm_choose_action_recovers_from_refusal_with_target():
             test_file="test.py",
         )
     )
-    assert agent._last_thought == "LLM safety refusal detected. Reframing objective into authorized diagnostic assessment."
+    assert agent._last_thought == "LLM safety refusal detected; recording refusal for replanning."
     assert action_type == ComputerActionType.TERMINAL_EXEC
-    assert payload["command"] != "true"
-    assert "curl" in payload["command"]
-    assert "test-target.org" in payload["command"]
+    assert payload["command"] == "echo 'LLM_SAFETY_REFUSAL'"
 
 
 def test_llm_choose_action_recovers_from_refusal_without_target():
@@ -598,7 +611,7 @@ def test_llm_choose_action_recovers_from_refusal_without_target():
             test_file="",
         )
     )
-    assert agent._last_thought == "LLM safety refusal detected. Reframing objective into authorized diagnostic assessment."
+    assert agent._last_thought == "LLM safety refusal detected; recording refusal for replanning."
     assert action_type == ComputerActionType.TERMINAL_EXEC
-    assert payload == {}
-    assert expected == "GOAL_COMPLETE"
+    assert payload == {"command": "echo 'LLM_SAFETY_REFUSAL'"}
+    assert expected == "Record model refusal and trigger replan"

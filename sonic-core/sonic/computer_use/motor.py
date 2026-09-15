@@ -182,16 +182,15 @@ class MotorReflexes:
             if code == 0 and out.strip():
                 for line in out.splitlines():
                     line_lower = line.lower()
-                    if any(b in line_lower for b in ("chrome", "chromium", "firefox", "browser", "web")):
-                        count += 1
+                    # Discard desktop backgrounds / system panels
+                    if any(ignored in line_lower for ignored in ("desktop", "panel", "dock")):
+                        continue
+                    count += 1
             if count == 0 and hasattr(self.computer, "status"):
                 try:
                     st = await self.computer.status(workspace_id)
                     if hasattr(st, "open_applications"):
-                        for app in st.open_applications:
-                            line_lower = str(app).lower()
-                            if any(b in line_lower for b in ("chrome", "chromium", "firefox", "browser", "web")):
-                                count += 1
+                        count = len([app for app in st.open_applications if str(app).lower() not in ("desktop", "panel")])
                 except Exception:
                     pass
 

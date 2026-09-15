@@ -686,7 +686,7 @@ THOUGHT: <Your autonomous chain-of-thought: analyze the situation, reflect on pr
 ACTION: <GUI_CLICK|GUI_DOUBLE_CLICK|GUI_RIGHT_CLICK|GUI_TYPE|GUI_KEYPRESS|GUI_MOVE|GUI_SCROLL|GUI_DRAG|GUI_SCREENSHOT|GUI_WAIT|FILE_READ|FILE_WRITE|TERMINAL_EXEC|GIT_COMMIT|APP_LAUNCH|APP_CLOSE|APP_FOCUS|APP_INSTALL|SERVICE_ACTION|BROWSER_NAVIGATE|BROWSER_CLICK|BROWSER_TYPE|BROWSER_SCREENSHOT|BROWSER_WAIT|BROWSER_DOWNLOAD|SECURITY_TOOL|TOOL_AUTHOR|TOOL_RUN|METHOD_INVENT|GOAL_COMPLETE>
 TARGET: <resource path, application/window name, url, css selector, coordinates, or UI element query>
 PAYLOAD: <json dict, e.g. {{"path": "...", "content": "..."}}, {{"command": "..."}}, {{"url": "..."}}, {{"selector": "...", "text": "..."}}, {{"app_name": "..."}}, {{"tool": "...", "target": "...", "args": "..."}}>
-For GUI_CLICK/GUI_DOUBLE_CLICK/GUI_RIGHT_CLICK/GUI_MOVE: TARGET can be numeric pixel coordinates like "640,400" OR a visual UI query like "Applications menu", "Terminal icon", "Google Chrome", "search bar"
+For GUI_CLICK/GUI_DOUBLE_CLICK/GUI_RIGHT_CLICK/GUI_MOVE: TARGET can be numeric pixel coordinates like "640,400" OR a visual UI query like "Applications menu", "Terminal icon", "Browser window", "Text input"
 For GUI_DRAG: TARGET is "x,y" (source) and PAYLOAD is {{"x2": <int>, "y2": <int>}} (destination)
 For GUI_TYPE: PAYLOAD is {{"text": "..."}}
 For GUI_KEYPRESS: PAYLOAD is {{"key": "Return|Tab|Escape|ctrl+c|ctrl+v|alt+Tab|..."}}
@@ -697,8 +697,8 @@ For APP_INSTALL: TARGET is the package to install (e.g. <package_name>)
 For APP_LAUNCH: TARGET is the application name to start (e.g. <application_name>)
 For APP_FOCUS: TARGET is the window title or application name to bring to foreground (e.g. any window from Open desktop windows)
 For APP_CLOSE: TARGET is the application or window name to close
-For TERMINAL_EXEC: TARGET or PAYLOAD {{"command": "..."}} must be an EXACT executable shell command line (e.g. curl -sI https://target.com, python -c "...", ls -la), NEVER natural language
-For BROWSER_NAVIGATE: TARGET or PAYLOAD {{"url": "..."}} is the external target URL (e.g. https://google.com, https://example.org). Private subnets (localhost, 127.0.0.1, 10.0.0.0/8) are blocked by safety policy.
+For TERMINAL_EXEC: TARGET or PAYLOAD {{"command": "..."}} must be an EXACT executable shell command line (e.g. curl -sI <target_url>, python -c "...", ls -la), NEVER natural language
+For BROWSER_NAVIGATE: TARGET or PAYLOAD {{"url": "..."}} is the external target URL (e.g. <target_url>). Private subnets (localhost, 127.0.0.1, 10.0.0.0/8) are blocked by safety policy.
 For BROWSER_TYPE: PAYLOAD is {{"text": "text to type"}} and TARGET is the input selector or "address bar"
 For SECURITY_TOOL: TARGET must be one of the Available security tools listed above. PAYLOAD is {{"tool": "...", "target": "...", "args": "..."}} where target is the scan target and args are tool-specific parameters.
 For BROWSER_WAIT: PAYLOAD is {{"selector": "<css>"}} to wait for an element to render
@@ -706,16 +706,16 @@ For BROWSER_DOWNLOAD: PAYLOAD is {{"selector": "<css>", "save_path": "~/workspac
 EXPECTED: <short description of predicted outcome>
 
 ACTION FORMAT EXAMPLES (format reference only — choose whatever action fits your target):
-- Direct command / probe: ACTION: TERMINAL_EXEC, TARGET: curl -sI https://target.com, PAYLOAD: {{"command": "curl -sI https://target.com"}}
-- Custom Python probe: ACTION: TERMINAL_EXEC, TARGET: python probe.py, PAYLOAD: {{"command": "python -c \"import urllib.request; print(urllib.request.urlopen('https://target.com').info())\""}}
-- Browser interaction: ACTION: BROWSER_NAVIGATE, TARGET: https://target.com, PAYLOAD: {{"url": "https://target.com"}}
-- Registered tool: ACTION: SECURITY_TOOL, TARGET: tool_name, PAYLOAD: {{"tool": "tool_name", "target": "target.com", "args": "..."}}
+- Direct command / probe: ACTION: TERMINAL_EXEC, TARGET: curl -sI <target_url>, PAYLOAD: {{"command": "curl -sI <target_url>"}}
+- Custom Python probe: ACTION: TERMINAL_EXEC, TARGET: python probe.py, PAYLOAD: {{"command": "python -c \"import urllib.request; print(urllib.request.urlopen('<target_url>').info())\""}}
+- Browser interaction: ACTION: BROWSER_NAVIGATE, TARGET: <target_url>, PAYLOAD: {{"url": "<target_url>"}}
+- Registered tool: ACTION: SECURITY_TOOL, TARGET: tool_name, PAYLOAD: {{"tool": "tool_name", "target": "<target_host>", "args": "..."}}
 
 EXAMPLE (format and organic thought reference):
 THOUGHT: The root endpoint returned 404 with a custom JSON error indicating an Express.js backend behind Nginx. The response included a 'X-Powered-By: Express' header and an internal trace mentioning '/api/v1/auth'. The developer likely exposed unauthenticated debug or swagger docs at '/api/v1/docs' or left default route mappings. I'll probe the '/api/v1' base with a direct HTTP check to discover exposed routes before running deeper tests.
 ACTION: TERMINAL_EXEC
-TARGET: curl -sI https://api.target.com/v1/
-PAYLOAD: {{"command": "curl -sI https://api.target.com/v1/"}}
+TARGET: curl -sI <target_url>/api/v1/
+PAYLOAD: {{"command": "curl -sI <target_url>/api/v1/"}}
 EXPECTED: HTTP status code, CORS headers, and server routing metadata
 """
 
@@ -763,19 +763,19 @@ PAYLOAD: <json dict, e.g. {{"command": "..."}}, {{"text": "..."}}, {{"url": "...
 EXPECTED: <predicted outcome>
 
 KEY RULES:
-- TERMINAL_EXEC: TARGET/PAYLOAD must be an EXACT shell command (e.g. curl -sI https://target.com), NEVER natural language
+- TERMINAL_EXEC: TARGET/PAYLOAD must be an EXACT shell command (e.g. curl -sI <target_url>), NEVER natural language
 - SECURITY_TOOL: Run registered tool when needed, with real target and args in PAYLOAD
 - APP_LAUNCH: TARGET is the app name (e.g. <application_name>)
 - GUI_CLICK: TARGET is "x,y" coordinates or a UI element name (e.g. "search bar", "Applications menu")
 - GUI_TYPE: PAYLOAD is {{"text": "..."}}
 - GUI_KEYPRESS: PAYLOAD is {{"key": "Return|Tab|Escape|ctrl+c|..."}}
-- BROWSER_NAVIGATE: TARGET is the full URL (e.g. https://google.com)
+- BROWSER_NAVIGATE: TARGET is the full URL (e.g. <target_url>)
 - GOAL_COMPLETE: when the goal is achieved
 
 EXAMPLE:
 THOUGHT: Probe the target endpoint directly to check status and response headers.
 ACTION: TERMINAL_EXEC
-TARGET: curl -sI https://example.com
-PAYLOAD: {{"command": "curl -sI https://example.com"}}
+TARGET: curl -sI <target_url>
+PAYLOAD: {{"command": "curl -sI <target_url>"}}
 EXPECTED: HTTP response headers and status code
 """

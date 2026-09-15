@@ -8,14 +8,28 @@ from sonic.agents.browser_agent import BrowserAgent, PageSnapshot, DOMElement
 from sonic.integrations.bugbounty import BugBountyClient, BugBountyProgram, DraftReport
 
 
-def test_browser_agent_httpx_fallback():
+def test_browser_agent_httpx_fallback(monkeypatch):
     """Test browser agent works in httpx-only mode (no Playwright)."""
+    import httpx
+
+    class _MockResponse:
+        status_code = 200
+        text = "<html><body><h1>Herman Melville - Moby Dick</h1></body></html>"
+        content = text.encode("utf-8")
+        headers = {"content-type": "text/html"}
+        url = httpx.URL("http://198.51.100.1/test")
+
+    async def _mock_get(*args, **kwargs):
+        return _MockResponse()
+
+    monkeypatch.setattr(httpx.AsyncClient, "get", _mock_get)
+
     async def _run():
         agent = BrowserAgent(headless=True)
         await agent.launch()
+        agent._using_playwright = False
 
-        # Navigate to a known public URL using httpx fallback
-        snapshot = await agent.navigate("https://httpbin.org/html")
+        snapshot = await agent.navigate("http://198.51.100.1/test")
         assert snapshot.url is not None
         assert snapshot.status_code == 200
         assert len(snapshot.html_content) > 0

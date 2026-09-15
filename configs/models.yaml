@@ -224,15 +224,15 @@ routing_rules:
 
   vision:
     description: 'Multimodal vision, desktop screenshot parsing, visual UI grounding'
-    provider: nvidia
-    model: moonshotai/kimi-k3
-    fallback: [nvidia/meta/llama-3.2-11b-vision-instruct, groq/qwen/qwen3.8-27b]
+    provider: groq
+    model: qwen/qwen3.8-27b
+    fallback: [groq/qwen/qwen3.6-27b, nvidia/meta/llama-3.2-11b-vision-instruct]
 
   computer_use:
     description: 'Autonomous computer vision and desktop interaction'
-    provider: nvidia
-    model: moonshotai/kimi-k3
-    fallback: [nvidia/meta/llama-3.2-11b-vision-instruct, groq/qwen/qwen3.8-27b]
+    provider: groq
+    model: qwen/qwen3.8-27b
+    fallback: [groq/qwen/qwen3.6-27b, nvidia/meta/llama-3.2-11b-vision-instruct]
 
 # ---- Global Fallback Chain ----
 # If the preferred provider for a task fails, try these in order

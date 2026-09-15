@@ -2538,10 +2538,38 @@ async def _run_prompt_reasoning(tenant_id: str, session_id: str, prompt: str) ->
                         from sonic.config import CONFIGS_DIR
                         from sonic.llm.router import ModelRouter
 
+                        # Try to load from config file, but fall back to environment variables
                         config_path = Path("configs/models.yaml")
                         if not config_path.exists() and (CONFIGS_DIR / "models.yaml").exists():
                             config_path = CONFIGS_DIR / "models.yaml"
-                        llm_router = ModelRouter.from_config(config_path)
+                        
+                        # Use environment variables for agent configuration
+                        agent_api_key = os.environ.get("SONIC_AGENT_API_KEY") or os.environ.get("NVIDIA_API_KEY", "")
+                        agent_base_url = os.environ.get("SONIC_AGENT_BASE_URL") or os.environ.get("NVIDIA_BASE_URL", "https://integrate.api.nvidia.com/v1")
+                        agent_provider_name = os.environ.get("SONIC_AGENT_PROVIDER", "nvidia")
+                        model_to_use = os.environ.get("SONIC_AGENT_MODEL", "meta/llama-3.2-90b-vision-instruct")
+                        
+                        if config_path.exists():
+                            try:
+                                llm_router = ModelRouter.from_config(config_path)
+                            except Exception:
+                                # Fallback to environment-based provider
+                                from sonic.llm.providers.custom import CustomLLMProvider
+                                llm_router = CustomLLMProvider(
+                                    name=agent_provider_name,
+                                    base_url=agent_base_url,
+                                    api_key=agent_api_key,
+                                    default_model=model_to_use,
+                                )
+                        else:
+                            # No config file, use environment variables directly
+                            from sonic.llm.providers.custom import CustomLLMProvider
+                            llm_router = CustomLLMProvider(
+                                name=agent_provider_name,
+                                base_url=agent_base_url,
+                                api_key=agent_api_key,
+                                default_model=model_to_use,
+                            )
 
                         from sonic.execution.capability_router import CapabilityRouter
                         computer = CapabilityRouter.resolve_provider(computer, "agent")
@@ -2838,6 +2866,13 @@ async def _run_prompt_reasoning(tenant_id: str, session_id: str, prompt: str) ->
                             _persist_workstation_state()
                             return
                         else:
+                            # Enable dual-plane operational model per AGENTS.md:
+                            # - Workstation Application Plane (GUI, APP, BROWSER actions)
+                            # - Operator & Sandbox Plane (TERMINAL_EXEC, SECURITY_TOOL, FILE, GIT actions)
+                            from sonic.tools.registry import get_default_registry
+                            
+                            security_tools = get_default_registry(computer).as_dict()
+                            
                             agent = ComputerUseAgent(
                                 computer_provider=computer,
                                 autonomy_level=ComputerAutonomyLevel.L3_AUTONOMOUS,
@@ -2848,7 +2883,8 @@ async def _run_prompt_reasoning(tenant_id: str, session_id: str, prompt: str) ->
                                 safety=safety_policy,
                                 self_host=True,
                                 browser=browser_agent,
-                                gui_only=True,
+                                security_tools=security_tools,
+                                gui_only=False,
                                 enable_llm_decomposition=False,
                                 observe_desktop=True,
                                 initial_context={"program_profile": program_profile},
@@ -2888,12 +2924,27 @@ async def _run_prompt_reasoning(tenant_id: str, session_id: str, prompt: str) ->
                                 # Dynamic synthesis from real traces
                                 summary_msg = ""
                                 if traces:
-                                    findings_summary = "\n".join(
-                                        f"- Action: {t.action_type.value} on {t.target_resource} -> Output: {t.actual_observation[:300]}"
-                                        for t in traces if t.actual_observation
-                                    )
+                                    import sys
+                                    trace_strings = []
+                                    for t in traces:
+                                        if t.actual_observation:
+                                            try:
+                                                obs = t.actual_observation[:300]
+                                                if sys.platform == "win32":
+                                                    obs = obs.encode('utf-8', errors='replace').decode('utf-8')
+                                                trace_strings.append(f"- Action: {t.action_type.value} on {t.target_resource} -> Output: {obs}")
+                                            except Exception:
+                                                trace_strings.append(f"- Action: {t.action_type.value} on {t.target_resource} -> Output: [encoding error]")
+                                    findings_summary = "\n".join(trace_strings)
+                                    import sys
+                                    prompt_safe = prompt
+                                    if sys.platform == "win32":
+                                        try:
+                                            prompt_safe = prompt.encode('utf-8', errors='replace').decode('utf-8')
+                                        except Exception:
+                                            prompt_safe = "User request (encoding issue)"
                                     synth_prompt = (
-                                        f"User asked: '{prompt}'\n\n"
+                                        f"User asked: '{prompt_safe}'\n\n"
                                         f"Autonomous actions executed and real workstation observations:\n"
                                         f"{findings_summary or 'No output produced.'}\n\n"
                                         f"Provide an authentic, clear response directly answering the user's objective based strictly on the real observations above."
@@ -2911,19 +2962,40 @@ async def _run_prompt_reasoning(tenant_id: str, session_id: str, prompt: str) ->
                                         s_resp = await llm_router.complete(s_req)
                                         summary_msg = s_resp.content.strip()
                                     except Exception as s_err:
-                                        logger.warning("workstation_synthesis_failed", error=str(s_err))
+                                        import sys
+                                        error_str = str(s_err)
+                                        if sys.platform == "win32":
+                                            try:
+                                                error_str = error_str.encode('utf-8', errors='replace').decode('utf-8')
+                                            except Exception:
+                                                error_str = "Synthesis error (encoding issue)"
+                                        logger.warning("workstation_synthesis_failed", error=error_str)
 
                                 if not summary_msg:
                                     if getattr(agent, "goal_reached", False):
                                         summary_msg = f"Goal successfully achieved on workstation ({succeeded} actions completed)."
                                     elif traces:
-                                        summary_msg = f"Completed {succeeded} actions ({failed} failed):\n" + "\n".join(
-                                            f"• {t.action_type.value} on {t.target_resource}: {t.actual_observation[:120]}"
-                                            for t in traces if t.actual_observation
-                                        )
+                                        import sys
+                                        trace_summaries = []
+                                        for t in traces:
+                                            if t.actual_observation:
+                                                try:
+                                                    obs = t.actual_observation[:120]
+                                                    if sys.platform == "win32":
+                                                        obs = obs.encode('utf-8', errors='replace').decode('utf-8')
+                                                    trace_summaries.append(f"• {t.action_type.value} on {t.target_resource}: {obs}")
+                                                except Exception:
+                                                    trace_summaries.append(f"• {t.action_type.value} on {t.target_resource}: [encoding error]")
+                                        summary_msg = f"Completed {succeeded} actions ({failed} failed):\n" + "\n".join(trace_summaries)
                                     else:
                                         summary_msg = "No actions were required or executed for this objective."
 
+                            import sys
+                            if sys.platform == "win32":
+                                try:
+                                    summary_msg = summary_msg.encode('utf-8', errors='replace').decode('utf-8')
+                                except Exception:
+                                    summary_msg = "Summary available (encoding issue in display)"
                             state["thought_summary"] = summary_msg
                             _append_worklog(
                                 state, "response",
@@ -2933,9 +3005,16 @@ async def _run_prompt_reasoning(tenant_id: str, session_id: str, prompt: str) ->
                             _persist_workstation_state()
                             return
                     except Exception as agent_err:
-                        logger.warning("visual_computer_use_failed", error=str(agent_err))
+                        import sys
+                        error_str = str(agent_err)
+                        if sys.platform == "win32":
+                            try:
+                                error_str = error_str.encode('utf-8', errors='replace').decode('utf-8')
+                            except Exception:
+                                error_str = "Execution error (encoding issue)"
+                        logger.warning("visual_computer_use_failed", error=error_str)
                         _append_worklog(state, "error", "Execution Error",
-                            f"Agent execution encountered an error: {agent_err}")
+                            f"Agent execution encountered an error: {error_str}")
                         state["status"] = "ERROR"
                         state["current_action"] = "Execution error"
                         _persist_workstation_state()

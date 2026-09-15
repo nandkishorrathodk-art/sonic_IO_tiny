@@ -21,18 +21,26 @@ def build_security_tools(
     provider: ComputeProvider,
     enabled_tools: set[str] | None = None,
 ) -> dict[str, SecurityTool]:
-    """Return no implicit capabilities.
-
-    ``enabled_tools`` is retained only for API compatibility. Named external
-    tools are not resolved here; callers must register a concrete capability
-    explicitly after target-driven reasoning and safety review.
+    """Build the 4 real security tool adapters bound to the provider.
+    
+    Returns nmap, nuclei, ffuf, and http_client adapters for the dual-plane
+    operational model (Operator & Sandbox Plane execution).
     """
-    if enabled_tools:
-        raise ValueError(
-            "Built-in named capabilities are not available; register an "
-            "explicit runtime capability instead"
-        )
-    return {}
+    from sonic.tools.adapters.nmap_adapter import NmapAdapter
+    from sonic.tools.adapters.nuclei_adapter import NucleiAdapter
+    from sonic.tools.adapters.ffuf_adapter import FfufAdapter
+    from sonic.tools.adapters.http_adapter import HttpAdapter
+    
+    tools = {}
+    
+    # Register the 4 real adapters
+    tools["nmap"] = NmapAdapter(provider)
+    tools["nuclei"] = NucleiAdapter(provider)
+    tools["ffuf"] = FfufAdapter(provider)
+    tools["http_client"] = HttpAdapter(provider)
+    
+    logger.info("security_tools_built", count=len(tools), tools=list(tools.keys()))
+    return tools
 
 
 class SecurityToolRegistry:
@@ -45,8 +53,10 @@ class SecurityToolRegistry:
     ):
         self._provider = provider
         self._tools: dict[str, SecurityTool] = {}
-        if enabled_tools:
-            build_security_tools(provider, enabled_tools)
+        # Auto-register the 4 real adapters for dual-plane execution
+        built_tools = build_security_tools(provider, enabled_tools)
+        for name, tool in built_tools.items():
+            self.register(name, tool)
 
     def register(self, name: str, tool: SecurityTool) -> None:
         """Register (or replace) a tool by name. Extension point for plugins."""
@@ -78,9 +88,9 @@ def get_default_registry(
     provider: ComputeProvider,
     enabled_tools: set[str] | None = None,
 ) -> SecurityToolRegistry:
-    """Return an empty provider-scoped registry.
-
-    The provider is retained for runtime plugins, but no named capability is
-    auto-created or advertised.
+    """Return a provider-scoped registry with the 4 real security tools.
+    
+    The registry now includes nmap, nuclei, ffuf, and http_client adapters
+    for dual-plane execution (Operator & Sandbox Plane).
     """
     return SecurityToolRegistry(provider, enabled_tools=enabled_tools)

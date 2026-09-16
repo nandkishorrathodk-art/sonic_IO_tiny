@@ -183,12 +183,13 @@ class ActionPolicy:
             if not verdict.allowed:
                 return verdict
 
-        # 4. Egress + target-allowlist for security tools and browser navigation.
-        if action_type_name == "SECURITY_TOOL":
-            scan_target = payload.get("target") or target
-            verdict = self._check_egress(scan_target, "security tool")
-            if not verdict.allowed:
-                return verdict
+        # 4. Egress + target-allowlist for security tools, tool runs, method invent, and browser navigation.
+        if action_type_name in ("SECURITY_TOOL", "TOOL_RUN", "METHOD_INVENT"):
+            scan_target = payload.get("target") or payload.get("target_url") or target
+            if scan_target:
+                verdict = self._check_egress(scan_target, action_type_name.lower())
+                if not verdict.allowed:
+                    return verdict
         elif action_type_name == "BROWSER_NAVIGATE":
             url = payload.get("url") or target
             parsed = urlparse(str(url).strip())

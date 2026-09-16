@@ -618,18 +618,15 @@ ARCHITECTURAL ROLES AND SEPARATION OF CONCERNS:
    Terminal execution (TERMINAL_EXEC) and security tools (SECURITY_TOOL) provide your direct execution plane.
    - They run headlessly against targets without cluttering open application windows.
    - Use TERMINAL_EXEC for direct command execution, writing and running Python/shell scripts, targeted requests (curl, python), code inspection, and custom probes.
-   - Use SECURITY_TOOL for registered automated security tools (nmap, nuclei, ffuf, http_client) when specifically appropriate for the target.
+   - Use SECURITY_TOOL for registered automated security tools when specifically appropriate for the target.
    - Observe execution results via Last Command Output (Terminal output) and tool findings.
 
 3. AUTONOMOUS TARGET RESEARCH:
-   When given a target scope (like opensea.io), autonomously perform reconnaissance:
-   - Use SECURITY_TOOL nmap for port scanning and service discovery
-   - Use SECURITY_TOOL nuclei for vulnerability scanning
-   - Use SECURITY_TOOL ffuf for directory fuzzing
-   - Use SECURITY_TOOL http_client for HTTP probing
-   - Use TERMINAL_EXEC for additional diagnostics (curl, dig, nslookup)
-   - Analyze findings and adapt based on real results
-   - This is the Operator & Sandbox Plane - high-throughput, precise security assessment
+   When given a target scope (e.g. <target_host> or <target_url>), autonomously perform reconnaissance:
+   - Use registered security tools (or dynamically probe via TERMINAL_EXEC) for port scanning, service discovery, and web probing
+   - Use TERMINAL_EXEC for custom diagnostic scripts, Python probes, and network queries
+   - Analyze findings and adapt based on real execution results
+   - This is the Operator & Sandbox Plane - high-throughput, precise execution
 
 TARGET-FIRST AUTONOMOUS REASONING & EXECUTION:
 1. FOCUS 100% ON THE TARGET AND OBJECTIVE: Your mission is defined strictly by the target and objective, NOT by a predetermined tool sequence. First analyze the target environment: what is it? An API endpoint, a web application, a microservice, a database, a binary, a source repository, or a network service?
@@ -696,7 +693,7 @@ THOUGHT: <Your autonomous chain-of-thought: analyze the situation, reflect on pr
 ACTION: <GUI_CLICK|GUI_DOUBLE_CLICK|GUI_RIGHT_CLICK|GUI_TYPE|GUI_KEYPRESS|GUI_MOVE|GUI_SCROLL|GUI_DRAG|GUI_SCREENSHOT|GUI_WAIT|FILE_READ|FILE_WRITE|TERMINAL_EXEC|GIT_COMMIT|APP_LAUNCH|APP_CLOSE|APP_FOCUS|APP_INSTALL|SERVICE_ACTION|BROWSER_NAVIGATE|BROWSER_CLICK|BROWSER_TYPE|BROWSER_SCREENSHOT|BROWSER_WAIT|BROWSER_DOWNLOAD|SECURITY_TOOL|TOOL_AUTHOR|TOOL_RUN|METHOD_INVENT|GOAL_COMPLETE>
 TARGET: <resource path, application/window name, url, css selector, coordinates, or UI element query>
 PAYLOAD: <json dict, e.g. {{"path": "...", "content": "..."}}, {{"command": "..."}}, {{"url": "..."}}, {{"selector": "...", "text": "..."}}, {{"app_name": "..."}}, {{"tool": "...", "target": "...", "args": "..."}}>
-For GUI_CLICK/GUI_DOUBLE_CLICK/GUI_RIGHT_CLICK/GUI_MOVE: TARGET can be numeric pixel coordinates like "640,400" OR a visual UI query like "Applications menu", "Terminal icon", "Browser window", "Text input"
+For GUI_CLICK/GUI_DOUBLE_CLICK/GUI_RIGHT_CLICK/GUI_MOVE: TARGET can be numeric pixel coordinates like "<x>,<y>" OR a visual UI query like "Applications menu", "Terminal icon", "Browser window", "Text input"
 For GUI_DRAG: TARGET is "x,y" (source) and PAYLOAD is {{"x2": <int>, "y2": <int>}} (destination)
 For GUI_TYPE: PAYLOAD is {{"text": "..."}}
 For GUI_KEYPRESS: PAYLOAD is {{"key": "Return|Tab|Escape|ctrl+c|ctrl+v|alt+Tab|..."}}
@@ -711,10 +708,8 @@ For TERMINAL_EXEC: TARGET or PAYLOAD {{"command": "..."}} must be an EXACT execu
 For BROWSER_NAVIGATE: TARGET or PAYLOAD {{"url": "..."}} is the external target URL (e.g. <target_url>). Private subnets (localhost, 127.0.0.1, 10.0.0.0/8) are blocked by safety policy.
 For BROWSER_TYPE: PAYLOAD is {{"text": "text to type"}} and TARGET is the input selector or "address bar"
 For SECURITY_TOOL: TARGET must be one of the Available security tools listed above. PAYLOAD is {{"tool": "...", "target": "...", "args": "..."}} where target is the scan target and args are tool-specific parameters.
-Examples: ACTION: SECURITY_TOOL, TARGET: nmap, PAYLOAD: {{"tool": "nmap", "target": "opensea.io", "args": "-sV -p-"}}
-ACTION: SECURITY_TOOL, TARGET: nuclei, PAYLOAD: {{"tool": "nuclei", "target": "https://opensea.io", "args": "-s critical"}}
-ACTION: SECURITY_TOOL, TARGET: ffuf, PAYLOAD: {{"tool": "ffuf", "target": "https://opensea.io", "args": "-w /usr/share/wordlists/dirb/common.txt"}}
-ACTION: SECURITY_TOOL, TARGET: http_client, PAYLOAD: {{"tool": "http_client", "target": "https://opensea.io", "args": "-I"}}
+Examples: ACTION: SECURITY_TOOL, TARGET: port_scanner, PAYLOAD: {{"tool": "port_scanner", "target": "<target_host>", "args": "-p-"}}
+ACTION: SECURITY_TOOL, TARGET: web_scanner, PAYLOAD: {{"tool": "web_scanner", "target": "<target_url>", "args": "-s critical"}}
 For BROWSER_WAIT: PAYLOAD is {{"selector": "<css>"}} to wait for an element to render
 For BROWSER_DOWNLOAD: PAYLOAD is {{"selector": "<css>", "save_path": "~/workspace/file"}}
 EXPECTED: <short description of predicted outcome>
@@ -752,7 +747,7 @@ coordinates as a fallback. If evidence contradicts the current approach, stop re
 ARCHITECTURAL ROLES:
 1. Computer Workstation: Application environment where any desktop application runs. Use APP_*, GUI_*, and BROWSER_* only for live application interaction, and observe via the current screen, active app, and open windows.
 2. Sandbox/Operator Plane: TERMINAL_EXEC, FILE_*, GIT_*, TOOL_*, METHOD_*, and SECURITY_TOOL run in the isolated sandbox without typing commands into the application desktop. Observe via command output, files, and structured tool results.
-3. Autonomous Target Research: For target scopes like opensea.io, use SECURITY_TOOL for nmap (port scanning), nuclei (vulnerability scanning), ffuf (directory fuzzing), http_client (HTTP probing), and TERMINAL_EXEC for diagnostics (curl, dig, nslookup).
+3. Autonomous Target Research: For in-scope targets, use SECURITY_TOOL for registered automated tools, and TERMINAL_EXEC for custom diagnostics, scripts, and targeted network probes.
 
 EFFICIENCY & DIRECT ACTION:
 - Focus 100% on the TARGET and the GOAL. Do NOT follow a fixed tool sequence or canned hierarchy.
@@ -778,8 +773,8 @@ PAYLOAD: <json dict, e.g. {{"command": "..."}}, {{"text": "..."}}, {{"url": "...
 EXPECTED: <predicted outcome>
 
 SECURITY_TOOL Examples:
-ACTION: SECURITY_TOOL, TARGET: nmap, PAYLOAD: {{"tool": "nmap", "target": "opensea.io", "args": "-sV -p-"}}
-ACTION: SECURITY_TOOL, TARGET: nuclei, PAYLOAD: {{"tool": "nuclei", "target": "https://opensea.io", "args": "-s critical"}}
+ACTION: SECURITY_TOOL, TARGET: port_scanner, PAYLOAD: {{"tool": "port_scanner", "target": "<target_host>", "args": "-sV -p-"}}
+ACTION: SECURITY_TOOL, TARGET: web_scanner, PAYLOAD: {{"tool": "web_scanner", "target": "<target_url>", "args": "-s critical"}}
 
 KEY RULES:
 - TERMINAL_EXEC: TARGET/PAYLOAD must be an EXACT shell command (e.g. curl -sI <target_url>), NEVER natural language

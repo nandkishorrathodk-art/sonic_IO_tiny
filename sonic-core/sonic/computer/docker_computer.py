@@ -314,7 +314,7 @@ class DockerComputerProvider(ComputerProvider):
         ws = ComputerWorkspace(
             id=f"home-{tenant_id}",
             tenant_id=tenant_id,
-            name="MISSION_COMPUTER",
+            engagement_id=f"home-{tenant_id}",
             workspace_type=ComputerWorkspaceType.MISSION_COMPUTER,
             status=ComputerWorkspaceStatus.RUNNING,
         )
@@ -681,7 +681,7 @@ class DockerComputerProvider(ComputerProvider):
                             FileEntry(
                                 path=f"{path}/{fname}".replace("//", "/"),
                                 name=fname,
-                                is_directory=is_dir,
+                                is_dir=is_dir,
                                 size_bytes=int(parts[4]) if parts[4].isdigit() else 0,
                             )
                         )
@@ -691,10 +691,39 @@ class DockerComputerProvider(ComputerProvider):
         self,
         workspace_id: str,
         action: str,
-        args: list[str] | None = None,
-        actor: str = "operator",
-    ) -> GitStatusInfo:
-        cmd = f"git -C /root/workspace {action} " + " ".join(shlex.quote(a) for a in (args or []))
+        **kwargs: Any,
+    ) -> Any:
+        if action == "status":
+            code, out, _ = await self._docker_exec("git -C /root/workspace status --porcelain 2>/dev/null", timeout=15)
+            bcode, bout, _ = await self._docker_exec("git -C /root/workspace branch --show-current 2>/dev/null", timeout=15)
+            branch = bout.strip() if bcode == 0 and bout.strip() else "main"
+            clean = len(out.strip()) == 0
+            untracked = [line[3:] for line in out.splitlines() if line.startswith("??")]
+            modified = [line[3:] for line in out.splitlines() if not line.startswith("??")]
+            return GitStatusInfo(
+                branch=branch,
+                is_clean=clean,
+                untracked_files=untracked,
+                modified_files=modified,
+                staged_files=[],
+            )
+        elif action == "commit":
+            msg = kwargs.get("message", "chore: automated commit")
+            safe_msg = msg.replace("'", "'\\''")
+            code, _, _ = await self._docker_exec(f"git -C /root/workspace add -A && git -C /root/workspace commit -m '{safe_msg}'", timeout=15)
+            return code == 0
+        elif action in ["branch", "checkout"]:
+            branch_name = kwargs.get("branch_name") or kwargs.get("branch") or "main"
+            safe_branch = branch_name.replace("'", "")
+            code, _, _ = await self._docker_exec(f"git -C /root/workspace checkout -B '{safe_branch}'", timeout=15)
+            return code == 0
+        elif action == "diff":
+            bcode, bout, _ = await self._docker_exec("git -C /root/workspace branch --show-current 2>/dev/null", timeout=15)
+            branch = bout.strip() if bcode == 0 and bout.strip() else "HEAD"
+            code, out, _ = await self._docker_exec(f"git -C /root/workspace diff {branch}", timeout=15)
+            return out or "Working tree clean."
+        args = kwargs.get("args") or []
+        cmd = f"git -C /root/workspace {action} " + " ".join(shlex.quote(str(a)) for a in args)
         code, out, _ = await self._docker_exec(cmd, timeout=15)
         clean = "nothing to commit" in out.lower()
         branch = "main"

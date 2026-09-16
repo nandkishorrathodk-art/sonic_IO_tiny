@@ -371,7 +371,8 @@ pub fn parliament_consensus(weights: &[f32; 5], votes: &[NexusVoteRec]) -> Nexus
     let mut vetoed = false;
 
     for rec in votes {
-        let w = weights[rec.branch as usize] * rec.confidence;
+        let branch_weight = weights.get(rec.branch as usize).copied().unwrap_or(0.0);
+        let w = branch_weight * rec.confidence;
         total += w;
         match rec.vote {
             NexusVote::Support => support += w,

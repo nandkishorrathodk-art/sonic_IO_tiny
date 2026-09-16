@@ -86,28 +86,50 @@ window/accessibility data.
 
 ---
 
-## 5. Dual-Plane Architecture
+## 5. Dual-Plane Architecture — Full Computer Desktop (GUI) + Separate Terminal
 
-SONIC operates concurrently across two execution planes. Both are first-class,
-both execute real commands in the sandbox. Neither is a fallback for the other.
+SONIC is an autonomous AI Being operating its own Dedicated Personal Computer
+Workstation. It has complete computer agency: it knows what to do, reasons freely
+from real observations, and CAN USE THE ENTIRE COMPUTER without artificial puppet
+limitations. It operates concurrently across two first-class execution planes:
 
-### Workstation Application Plane (Computer-Use)
-- Full graphical desktop environment (X11/Wayland)
-- Operates ANY arbitrary desktop application: editors, analyzers, debuggers,
-  browsers, consoles — whatever the OS has installed
-- Interacts via visual perception: screenshots → reason → click/type
-- Multiple windows, dynamic tiling, no hardcoded application assumptions
+### 1. Workstation Application Plane (Full Computer Desktop GUI)
+- Full graphical desktop environment (X11/Wayland).
+- SONIC autonomously decides whether to open GUI applications, manage multiple windows
+  simultaneously, or interact with desktop controls based on the task.
+- Operates ANY arbitrary desktop application: browsers, code editors, network analyzers,
+  consoles, debuggers, graphical tools — whatever is installed on the OS.
+- Interacts via visual perception: live screenshots → multimodal reasoning → mouse clicks,
+  typing, hotkeys, dragging, scrolling, window tiling.
+- **GUI must NEVER be disabled or turned off**: SONIC must always have full visual and
+  interactive control of its desktop computer workstation.
 
-### Operator & Sandbox Plane (Direct Headless Execution)
-- `TERMINAL_EXEC`, `SECURITY_TOOL`, `FILE_*`, `GIT_*`, Toolsmith
-- High-throughput, precise tasks: custom scripts, socket listeners, source
-  auditing, AST manipulation, git commits, tool compilation
-- Runs directly in the sandbox without cluttering the GUI or wasting perception
-  tokens
+### 2. Operator & Sandbox Plane (Dedicated Headless Terminal)
+- Dedicated, separate high-speed headless execution plane for direct shell and tool tasks.
+- Runs `TERMINAL_EXEC`, `SECURITY_TOOL`, `FILE_*`, `GIT_*`, Toolsmith, and Method Lab.
+- High-throughput, precise tasks: custom scripts, socket listeners, source code auditing,
+  AST manipulation, git commits, tool compilation.
+- Runs directly in the sandbox without cluttering the desktop GUI or wasting perception tokens.
 
-The agent dynamically chooses which plane to use based on the current goal and
-observation. There is no "prefer terminal" or "prefer GUI" rule — the LLM
-decides.
+### Autonomous Decision & Full Computer Control (No Puppet Heuristics):
+- **Autonomous Choice**: SONIC itself decides whether to use GUI applications, multiple desktop
+  windows, or the separate terminal plane. There are zero scripted puppet rules forcing or
+  forbidding either plane.
+- **Full Computer Agency**: The entire computer is at SONIC's disposal. Desktop application
+  tasks execute on the desktop GUI plane, while background/CLI tasks execute in the separate
+  terminal sandbox plane.
+
+### Absolute Mandate:
+**Mana hai:**
+- Turning off GUI or setting flags that disable computer desktop control (`observe_desktop=False` or stripping GUI actions).
+- Making SONIC a scripted puppet with hardcoded step checklists or rigid application restrictions.
+- Disabling the separate headless terminal or security tool execution.
+- Making GUI and Terminal mutually exclusive (e.g. artificial siloing where choosing GUI blocks terminal commands like `gui_only=True`, or choosing terminal disables desktop perception).
+- Restricting SONIC from using the full computer workstation or arbitrary installed applications.
+
+**Karna hai:**
+- Keep BOTH planes concurrently available and active at all times: Full Graphical Computer Desktop (GUI) + Dedicated Headless Terminal.
+- Let SONIC autonomously choose the right plane and tools for each task based on live observations and goals.
 
 ---
 
@@ -159,7 +181,7 @@ All actions — operator-directed AND self-directed curiosity — pass through t
 ActionPolicy safety gate before execution. The safety envelope is sealed and
 tamper-evident.
 
-**Mana hai:**
+**Mana nhi hai  hai:**
 - Bypassing the policy for "just this one action"
 - Letting recovery logic circumvent the gate after a denied action
 - Mutating safety-relevant fields after sealing

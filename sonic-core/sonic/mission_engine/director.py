@@ -81,8 +81,13 @@ class MissionDirector:
         if state:
             await self.store.save_state(state)
             events = self.events.get(mission_id, [])
-            for evt in events:
+            if not hasattr(self, "_persisted_event_counts"):
+                self._persisted_event_counts: dict[str, int] = {}
+            last_count = self._persisted_event_counts.get(mission_id, 0)
+            new_events = events[last_count:]
+            for evt in new_events:
                 await self.store.append_event(evt)
+            self._persisted_event_counts[mission_id] = len(events)
             if self.deliverables.get(mission_id):
                 await self.store.save_deliverables(mission_id, self.deliverables[mission_id])
 
@@ -93,6 +98,9 @@ class MissionDirector:
             return None
         self.missions[mission_id] = state
         self.events[mission_id] = await self.store.load_events(mission_id)
+        if not hasattr(self, "_persisted_event_counts"):
+            self._persisted_event_counts = {}
+        self._persisted_event_counts[mission_id] = len(self.events[mission_id])
         self.deliverables[mission_id] = await self.store.load_deliverables(mission_id)
         logger.info("mission_restored", mission_id=mission_id, status=state.status)
         return state
@@ -486,11 +494,16 @@ class MissionDirector:
             from sonic.being.craft import BeingCraft
             from sonic.memory.vector import get_vector_memory
             from sonic.safety.sealed import seal_default
-            gui_only = callable(getattr(provider, "gui_action", None)) and callable(
-                getattr(provider, "screenshot", None)
-            )
+            from sonic.being.identity import get_or_create_being, get_being_store
+            # Dual-Plane Operational Model (Rule 5): both Graphical Desktop (GUI) and
+            # Dedicated Headless Terminal/Tool plane remain concurrently active.
+            gui_only = False
+            being = get_or_create_being(mission.tenant_id)
+            being_store = get_being_store()
+            being_mind = being_store.get_mind(being.being_id)
+
             toolsmith = ToolsmithLoop(
-                craft=BeingCraft(being_id=f"mission-{mission_id}"),
+                craft=BeingCraft(being_id=being.being_id),
                 llm=self.model_router,
                 registry=security_registry,
             )
@@ -501,7 +514,7 @@ class MissionDirector:
             )
             from sonic.being.lessons import LessonsLedger
             obj_tenant = getattr(state.objective, "tenant_id", "default") if hasattr(state, "objective") else "default"
-            lessons_ledger = LessonsLedger(tenant_id=obj_tenant, agent_id="computer-use-agent")
+            lessons_ledger = LessonsLedger(tenant_id=obj_tenant, agent_id=being.being_id)
             from sonic.evolution.engine import EvolutionEngine
             from sonic.evolution.strategy import DynamicStrategyEngine
             evolution_engine = EvolutionEngine(
@@ -531,13 +544,16 @@ class MissionDirector:
                         safety=safety_policy,
                         security_tools=sec_tools,
                         tenant_id=mission.tenant_id,
+                        being=being,
+                        being_mind=being_mind,
+                        agent_id=being.being_id,
                         max_phases=3,
                         sub_agent_steps=6,
                         toolsmith=toolsmith,
                         method_lab=method_lab,
                         lessons_ledger=lessons_ledger,
                         evolution_engine=evolution_engine,
-                        gui_only=gui_only,
+                        gui_only=False,
                     )
                     report = await boss.run(
                         workspace_id=ws.workspace_id,
@@ -557,7 +573,11 @@ class MissionDirector:
                     autonomy_level=self.autonomy_level,
                     mode=EngineeringMissionMode.ENGINEERING_MODE,
                     browser=None,
-                    gui_only=gui_only,
+                    gui_only=False,
+                    observe_desktop=True,
+                    tenant_id=mission.tenant_id,
+                    agent_id=being.being_id,
+                    being_mind=being_mind,
                     safety=safety_policy,
                     toolsmith=toolsmith,
                     method_lab=method_lab,
@@ -615,9 +635,10 @@ class MissionDirector:
                 has_findings = bool(meta.get("findings"))
                 cmd_str = str(getattr(t, "target_resource", "") or meta.get("command", "")).strip().lower()
                 is_orientation = any(cmd_str == o or cmd_str.startswith(f"{o} ") for o in ("pwd", "ls", "whoami", "id", "echo", "cd"))
+                has_receipt = bool(meta.get("reproduction_receipt") or meta.get("verified_finding"))
                 if st in ("SUCCESS", "RECOVERED"):
-                    # Orientation commands without concrete findings do not count as proof confirming a vulnerability
-                    if has_findings or (obs and len(obs) > 5 and not obs.lower().startswith("error") and not is_orientation):
+                    # Rule 6: Only real security tool findings or verified reproduction receipts confirm a vulnerability hypothesis
+                    if has_findings or has_receipt:
                         evidence_traces.append(t)
 
             if evidence_traces:

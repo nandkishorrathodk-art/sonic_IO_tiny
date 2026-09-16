@@ -67,7 +67,7 @@ class WorkstationBootstrapEngine:
         Audit only caller-requested capabilities and optionally remediate them.
         No application or scanner is implicitly installed.
         """
-        binaries = required_binaries or DEFAULT_REQUIRED_BINARIES
+        binaries = required_binaries if required_binaries is not None else DEFAULT_REQUIRED_BINARIES
         results: dict[str, Any] = {
             "audited": binaries,
             "present": [],
@@ -75,6 +75,8 @@ class WorkstationBootstrapEngine:
             "installed": [],
             "status": "READY",
         }
+        if not binaries:
+            return results
 
         # Probe which binaries are missing
         probe_cmd = "for b in " + " ".join(shlex.quote(b) for b in binaries) + "; do which \"$b\" 2>/dev/null || echo \"MISSING:$b\"; done"
@@ -177,7 +179,10 @@ class WorkstationBootstrapEngine:
         res["proxy_live"] = True
 
         # 2. Fetch the proxy CA certificate dynamically without hardcoded application paths
-        endpoint = cert_endpoint.strip() if cert_endpoint else f"http://{proxy_host}:{proxy_port}/cert"
+        if not cert_endpoint:
+            logger.info("proxy_ca_setup_skipped_no_cert_endpoint")
+            return res
+        endpoint = cert_endpoint.strip()
         fetch_cmd = (
             f"curl -s -m 10 {shlex.quote(endpoint)} -o /tmp/proxy_ca.crt || "
             f"curl -s -x http://{proxy_host}:{proxy_port} -m 10 {shlex.quote(endpoint)} -o /tmp/proxy_ca.crt"

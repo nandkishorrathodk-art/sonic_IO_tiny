@@ -91,6 +91,9 @@ class BossAgent:
         evolution_engine: Any = None,
         initial_context: dict[str, Any] | None = None,
         gui_only: bool = False,
+        being: Any = None,
+        being_mind: Any = None,
+        agent_id: str | None = None,
     ):
         self.computer = computer_provider
         self.llm_router = llm_router
@@ -101,6 +104,9 @@ class BossAgent:
         self.safety = safety
         self.security_tools = security_tools or {}
         self.tenant_id = tenant_id
+        self.being = being
+        self.being_mind = being_mind
+        self.agent_id = agent_id or (being.being_id if being else f"{tenant_id}-boss")
         self.max_phases = max_phases
         self.sub_agent_steps = sub_agent_steps
         # Explicit concurrency budget: the Boss may never create more live
@@ -770,6 +776,7 @@ Rules:
                 else self.safety
             )
 
+            sub_agent_id = f"{self.agent_id}-sub-{sub_agent_num}"
             agent = ComputerUseAgent(
                 computer_provider=self.computer,
                 autonomy_level=ComputerAutonomyLevel.L3_AUTONOMOUS,
@@ -780,14 +787,15 @@ Rules:
                 safety=safety_policy,
                 self_host=True if safety_policy else False,
                 tenant_id=self.tenant_id,
-                agent_id=f"sub-agent-{sub_agent_num}",
+                agent_id=sub_agent_id,
+                being_mind=self.being_mind,
                 enable_llm_decomposition=False,
                 browser=self.browser,
                 toolsmith=self.toolsmith,
                 method_lab=self.method_lab,
                 lessons_ledger=self.lessons_ledger,
                 evolution_engine=self.evolution_engine,
-                gui_only=self.gui_only,
+                gui_only=False,
                 observe_desktop=True,
                 initial_context=self.initial_context,
             )

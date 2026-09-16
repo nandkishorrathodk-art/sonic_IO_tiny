@@ -53,6 +53,14 @@ class CraftNote:
     updated_at: str = ""
 
 
+import re
+
+
+def _sanitize_craft_id(val: str) -> str:
+    cleaned = re.sub(r"[^a-zA-Z0-9_-]", "_", str(val).strip())
+    return cleaned or "default"
+
+
 class BeingCraft:
     """Host-side durable craft store for a being.
 
@@ -61,8 +69,8 @@ class BeingCraft:
     """
 
     def __init__(self, being_id: str, root: str | None = None):
-        self.being_id = being_id
-        self._root = root or os.path.join(_craft_root(), being_id)
+        self.being_id = _sanitize_craft_id(being_id)
+        self._root = root or os.path.join(_craft_root(), self.being_id)
         self._index: dict[str, CraftNote] = {}
         os.makedirs(self._root, exist_ok=True)
         self._load_index()
@@ -72,7 +80,8 @@ class BeingCraft:
         return os.path.join(self._root, "index.json")
 
     def _note_path(self, note_id: str) -> str:
-        return os.path.join(self._root, f"{note_id}.md")
+        safe_note = _sanitize_craft_id(note_id)
+        return os.path.join(self._root, f"{safe_note}.md")
 
     def _load_index(self) -> None:
         path = self._index_path()

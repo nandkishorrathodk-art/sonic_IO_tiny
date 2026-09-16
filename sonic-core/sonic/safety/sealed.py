@@ -41,7 +41,9 @@ always acts under a proven-intact envelope.
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
+import os
 from typing import Any
 
 from sonic.logger import get_logger
@@ -64,7 +66,10 @@ _SEALED_FIELDS = (
     "tenant_id",
     "_sealed",
     "_seal_hash",
+    "_seal_secret",
     "_blocked_networks_snapshot",
+    "_scope_checker_rules",
+    "_scope_checker_methods",
 )
 
 
@@ -104,6 +109,16 @@ class SealedActionPolicy(ActionPolicy):
         # Snapshot the egress blocked-networks so a runtime mutation of the
         # module-level list cannot widen what this policy permits.
         self._blocked_networks_snapshot: tuple = tuple(egress.BLOCKED_NETWORKS)
+        # Capture scope_checker rules and methods for tamper evidence
+        self._scope_checker_rules = []
+        self._scope_checker_methods = []
+        if self.scope_checker is not None:
+            try:
+                self._scope_checker_rules = getattr(self.scope_checker, "_INTRUSIVE_PATTERNS", [])
+                self._scope_checker_methods = [id(getattr(self.scope_checker, "classify_command_risk", None))]
+            except Exception:
+                pass
+        self._seal_secret: str = os.environ.get("SONIC_SEAL_SECRET", os.urandom(32).hex())
         self._seal_hash: str = ""
         self._sealed: bool = False
 

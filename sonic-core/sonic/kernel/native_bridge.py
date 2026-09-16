@@ -15,6 +15,7 @@ import json
 import os
 import shutil
 import subprocess
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -45,6 +46,7 @@ class NativeKernelClient:
         self.binary_path = binary_path or self._discover_binary()
         self._daemon_proc: subprocess.Popen | None = None
         self._native_disabled = False
+        self._rpc_lock = threading.RLock()
 
     def _discover_binary(self) -> str | None:
         env_path = os.environ.get("SONIC_KERNEL_BIN")
@@ -88,9 +90,10 @@ class NativeKernelClient:
         )
 
     def _get_or_spawn_daemon(self) -> subprocess.Popen | None:
-        """Maintains a long-lived streaming daemon for zero-overhead pipe communication."""
+        """Returns or transparently initializes the long-lived sonic-kernel daemon."""
         if self._native_disabled:
             return None
+
         if self._daemon_proc is not None:
             if self._daemon_proc.poll() is None:
                 return self._daemon_proc
@@ -104,7 +107,7 @@ class NativeKernelClient:
                 [self.binary_path, "--daemon"],
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
                 text=True,
                 bufsize=1,
             )
@@ -134,26 +137,27 @@ class NativeKernelClient:
             return None
 
         # 1. Microsecond streaming pipe over persistent daemon
-        daemon = self._get_or_spawn_daemon()
-        if daemon and daemon.stdin and daemon.stdout:
-            try:
-                daemon.stdin.write(payload + "\n")
-                daemon.stdin.flush()
-                line = daemon.stdout.readline()
-                if line and line.strip():
-                    data = json.loads(line.strip())
-                    if "result" in data:
-                        return data["result"]
-                    if "error" in data:
-                        logger.warning("Native kernel returned RPC error: %s", data["error"])
-                        return None
-            except Exception as pipe_err:
-                logger.debug("Persistent pipe streaming failed, restarting daemon: %s", pipe_err)
+        with self._rpc_lock:
+            daemon = self._get_or_spawn_daemon()
+            if daemon and daemon.stdin and daemon.stdout:
                 try:
-                    daemon.kill()
-                except Exception:
-                    pass
-                self._daemon_proc = None
+                    daemon.stdin.write(payload + "\n")
+                    daemon.stdin.flush()
+                    line = daemon.stdout.readline()
+                    if line and line.strip():
+                        data = json.loads(line.strip())
+                        if "result" in data:
+                            return data["result"]
+                        if "error" in data:
+                            logger.warning("Native kernel returned RPC error: %s", data["error"])
+                            return None
+                except Exception as pipe_err:
+                    logger.debug("Persistent pipe streaming failed, restarting daemon: %s", pipe_err)
+                    try:
+                        daemon.kill()
+                    except Exception:
+                        pass
+                    self._daemon_proc = None
 
         # 2. Fallback to one-shot subprocess invocation (preserves test patches and single-shot runs)
         try:

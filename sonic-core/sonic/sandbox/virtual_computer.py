@@ -470,12 +470,31 @@ class LocalSandbox(VirtualComputer):
         except Exception as e:
             return ExecResult(command=cmd_str, exit_code=-1, stdout="", stderr=str(e), duration_seconds=0)
 
+    def _resolve_safe_path(self, path: str) -> Path:
+        base = Path(self.base_dir).resolve()
+        raw_p = Path(path)
+        if raw_p.is_absolute():
+            resolved = raw_p.resolve()
+        else:
+            resolved = (base / raw_p).resolve()
+        try:
+            if not resolved.is_relative_to(base):
+                raise PermissionError(f"Path escape attempt blocked: {path} resolves outside sandbox root {base}")
+        except AttributeError:
+            if not str(resolved).startswith(str(base)):
+                raise PermissionError(f"Path escape attempt blocked: {path} resolves outside sandbox root {base}")
+        return resolved
+
     async def read_file(self, path: str) -> str:
-        p = Path(path)
+        if not self.allow_host_execution:
+            raise PermissionError("Direct host filesystem access is disabled outside authorized execution.")
+        p = self._resolve_safe_path(path)
         return p.read_text(encoding="utf-8", errors="replace") if p.is_file() else ""
 
     async def write_file(self, path: str, content: str | bytes) -> bool:
-        p = Path(path)
+        if not self.allow_host_execution:
+            raise PermissionError("Direct host filesystem access is disabled outside authorized execution.")
+        p = self._resolve_safe_path(path)
         p.parent.mkdir(parents=True, exist_ok=True)
         if isinstance(content, str):
             p.write_text(content, encoding="utf-8")
@@ -484,13 +503,15 @@ class LocalSandbox(VirtualComputer):
         return True
 
     async def list_files(self, path: str = ".") -> list[FileInfo]:
-        p = Path(path)
-        if not p.exists():
+        if not self.allow_host_execution:
+            return []
+        p = self._resolve_safe_path(path)
+        if not p.exists() or not p.is_dir():
             return []
         return [
             FileInfo(
                 path=str(c), name=c.name, is_dir=c.is_dir(),
-                size_bytes=c.stat().st_size, modified_at=""
+                size_bytes=c.stat().st_size if c.is_file() else 0, modified_at=""
             )
             for c in p.iterdir()
         ]

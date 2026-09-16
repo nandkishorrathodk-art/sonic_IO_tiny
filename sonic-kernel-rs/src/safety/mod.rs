@@ -65,9 +65,15 @@ pub fn extract_host_from_target(target: &str) -> String {
     } else {
         s
     };
-    let s = s.split('/').next().unwrap_or(s);
-    let s = s.split(':').next().unwrap_or(s);
-    s.trim_matches('[').trim_matches(']').to_lowercase()
+    let authority = s.split('/').next().unwrap_or(s);
+    let host_port = authority.rsplit('@').next().unwrap_or(authority);
+    if host_port.starts_with('[') {
+        if let Some(close_bracket) = host_port.find(']') {
+            return host_port[1..close_bracket].to_lowercase();
+        }
+    }
+    let host = host_port.split(':').next().unwrap_or(host_port);
+    host.trim_matches('[').trim_matches(']').to_lowercase()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

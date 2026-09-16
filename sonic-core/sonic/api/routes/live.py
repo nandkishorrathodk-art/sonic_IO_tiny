@@ -395,7 +395,7 @@ _runtime_config = {
     "llm_api_key_set": False,
     "daytona_url": "http://localhost:3986",
     "proxy_url": "",
-    "allowed_domains": ["*.example.com", "localhost", "127.0.0.1"],
+    "allowed_domains": ["localhost", "127.0.0.1"],
 }
 
 

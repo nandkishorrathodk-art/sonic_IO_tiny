@@ -596,22 +596,23 @@ class EngagementManager:
             except Exception as e:
                 logger.debug("toolsmith_wiring_skipped", error=str(e))
 
-            gui_only = callable(getattr(provider, "gui_action", None)) and callable(
-                getattr(provider, "screenshot", None)
-            )
+            # Dual-Plane Operational Model (Rule 5): both Graphical Desktop (GUI) and
+            # Dedicated Headless Terminal/Tool plane remain concurrently active.
+            gui_only = False
 
             eng = self.active_engagements.get(engagement_id, {})
             tenant_id = eng.get("tenant_id", "default")
 
             # Create the agent with direct reasoning and sealed safety boundary.
             # Uses the GUI-capable computer_provider (DockerComputerProvider/
-            # DaytonaComputerProvider) ??? screenshot/gui_action/launch_application
-            # all route to the real desktop, not the raw sandbox exec provider.
+            # DaytonaComputerProvider) where screenshot/gui_action/launch_application
+            # all route to the real desktop, while terminal commands run in the sandbox.
             agent = ComputerUseAgent(
                 computer_provider=provider,
                 safety=safety,
                 browser=None,
-                gui_only=gui_only,
+                gui_only=False,
+                observe_desktop=True,
                 tenant_id=tenant_id,
                 **extra_agent_kwargs,
             )

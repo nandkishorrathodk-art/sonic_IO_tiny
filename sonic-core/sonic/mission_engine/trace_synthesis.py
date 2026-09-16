@@ -77,10 +77,11 @@ def synthesize_deliverables(
     for t in traces:
         if not _is_success(t):
             continue
-        dtype = _ACTION_DELIVERABLE.get(t.action_type.value)
+        act_val = getattr(t.action_type, "value", str(t.action_type))
+        dtype = _ACTION_DELIVERABLE.get(act_val)
         if dtype is None:
             continue
-        key = (t.action_type.value, t.target_resource)
+        key = (act_val, t.target_resource)
         if key in seen:
             continue
         seen.add(key)
@@ -89,19 +90,20 @@ def synthesize_deliverables(
             mission_id=mission_id,
             title=title,
             deliverable_type=dtype,
-            content=t.actual_observation or f"{t.action_type.value} on {t.target_resource}",
+            content=t.actual_observation or f"{act_val} on {t.target_resource}",
             evidence_ids=[t.id],
         ))
     return deliverables
 
 
 def _deliverable_title(dtype: DeliverableType, t: ComputerDecisionTrace) -> str:
+    act_val = getattr(t.action_type, "value", str(t.action_type))
     if dtype == DeliverableType.ENGINEERING_PATCH:
         return f"Engineering patch: {t.target_resource}"
     if dtype == DeliverableType.GIT_COMMIT:
         return f"Git commit: {t.target_resource}"
     if dtype == DeliverableType.EVIDENCE_PACKAGE:
-        return f"Evidence package: {t.target_resource} ({t.action_type.value})"
+        return f"Evidence package: {t.target_resource} ({act_val})"
     return f"{dtype.value}: {t.target_resource}"
 
 
@@ -124,17 +126,17 @@ def synthesize_knowledge(
     failed = [t for t in traces if not _is_success(t)]
 
     what_we_know = [
-        f"{t.action_type.value} {t.target_resource}: {t.actual_observation[:160]}"
+        f"{getattr(t.action_type, 'value', str(t.action_type))} {t.target_resource}: {t.actual_observation[:160]}"
         for t in succ
     ] or ["No successful actions were recorded during the mission."]
 
     decisions = [
-        f"{t.action_type.value} on {t.target_resource} ({t.status})"
+        f"{getattr(t.action_type, 'value', str(t.action_type))} on {t.target_resource} ({t.status})"
         for t in traces
     ] or ["No actions were taken during the mission."]
 
     evidence = [
-        f"[{t.status}] {t.action_type.value} {t.target_resource}: {t.actual_observation[:200]}"
+        f"[{t.status}] {getattr(t.action_type, 'value', str(t.action_type))} {t.target_resource}: {t.actual_observation[:200]}"
         for t in traces
     ]
 
@@ -174,9 +176,9 @@ def milestone_status_from_traces(
         done = any(_is_success(t) for t in traces)
         return [], (100.0 if done and traces else 0.0)
 
-    succ_types = {t.action_type.value for t in traces if _is_success(t)}
+    succ_types = {getattr(t.action_type, "value", str(t.action_type)) for t in traces if _is_success(t)}
     succ_text = " ".join(
-        f"{t.action_type.value} {t.target_resource} {t.actual_observation}"
+        f"{getattr(t.action_type, 'value', str(t.action_type))} {t.target_resource} {t.actual_observation}"
         for t in traces if _is_success(t)
     ).lower()
 

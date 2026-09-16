@@ -119,9 +119,6 @@ async def _maybe_start_being_life_loop(settings):
         # Reuse a shared LLM router if available; curiosity needs an LLM.
         from sonic.llm.router import ModelRouter
         router = ModelRouter.for_default() if hasattr(ModelRouter, "for_default") else ModelRouter()
-        gui_only = callable(getattr(provider, "gui_action", None)) and callable(
-            getattr(provider, "screenshot", None)
-        )
         # Wire security tools so the being can actually run real scans
         # (nmap/nuclei/ffuf/http) during self-directed curiosity.
         from sonic.tools.registry import get_default_registry
@@ -134,17 +131,18 @@ async def _maybe_start_being_life_loop(settings):
             craft=BeingCraft(being_id=being.being_id),
             llm=router, registry=security_registry,
         )
-        # Method-invention loop (Phase B, AIOSR): the being synthesizes NOVEL
-        # offensive techniques (new methods, not just tools) from observation +
-        # failure + the known-technique ledger (VectorMemory). Confirmed only
-        # on real in-sandbox reproduction; confirmed techniques enter the ledger
-        # so novelty compounds across cycles.
+        # Method Lab loop (Phase B, AIOSR): the being invents NEW attack methods
+        # for defensive postures where existing tools fail.
         from sonic.being.method_lab import MethodLab
         method_lab = MethodLab(
-            llm=router, vector_memory=get_vector_memory(), toolsmith=toolsmith,
+            craft=BeingCraft(being_id=being.being_id),
+            llm=router, registry=security_registry,
         )
+        # Lessons Ledger (Phase C, AIOSR): the being learns from experience
+        # and adapts testing strategies across missions.
         from sonic.being.lessons import LessonsLedger
-        lessons_ledger = LessonsLedger(tenant_id=tenant_id, agent_id=being.being_id)
+        lessons_ledger = LessonsLedger(tenant_id=tenant_id)
+        # Self-Evolution Engine: Dynamic strategy adaptation and codebase upgrades.
         from sonic.evolution.engine import EvolutionEngine
         from sonic.evolution.strategy import DynamicStrategyEngine
         evolution_engine = EvolutionEngine(
@@ -160,7 +158,8 @@ async def _maybe_start_being_life_loop(settings):
             # Wire the browser so the being can navigate/click/type/screenshot as
             # a first-class reasoning action (was orphaned before).
             browser=None,
-            gui_only=gui_only,
+            gui_only=False,
+            observe_desktop=True,
             # Wire the toolsmith so the being can author + run its own tools.
             toolsmith=toolsmith,
             # Wire the method lab so the being can invent new techniques.

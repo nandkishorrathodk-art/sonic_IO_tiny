@@ -60,7 +60,7 @@ def extract_bbox_midpoint(
                     mid_x = int((x1 + x2) / 2.0)
                     mid_y = int((y1 + y2) / 2.0)
                 mid_pt = (min(max(0, mid_x), width), min(max(0, mid_y), height))
-                return None if mid_pt == (0, 0) else mid_pt
+                return mid_pt
             elif len(bbox_response) >= 2:
                 x, y = float(bbox_response[0]), float(bbox_response[1])
                 if max(x, y) <= 1.0:
@@ -72,7 +72,7 @@ def extract_bbox_midpoint(
                 else:
                     px, py = int(x), int(y)
                 pt = (min(max(0, px), width), min(max(0, py), height))
-                return None if pt == (0, 0) else pt
+                return pt
         except (ValueError, TypeError):
             pass
 
@@ -91,7 +91,7 @@ def extract_bbox_midpoint(
         if max(x1, y1, x2, y2) <= 1.0:
             mid_x = int(((x1 + x2) / 2.0) * width)
             mid_y = int(((y1 + y2) / 2.0) * height)
-        elif is_normalized_1000 or (is_normalized_1000 is not False and max(x1, y1, x2, y2) <= 1000):
+        elif is_normalized_1000 or (is_normalized_1000 is not False and max(x1, y1, x2, y2) <= 1000 and (x2 > width or y2 > height or match is not None)):
             # Model grounding bounding box tags or normalized scale use [0, 1000]
             mid_x = int(((x1 + x2) / 2.0 / 1000.0) * width)
             mid_y = int(((y1 + y2) / 2.0 / 1000.0) * height)
@@ -99,7 +99,7 @@ def extract_bbox_midpoint(
             mid_x = int((x1 + x2) / 2.0)
             mid_y = int((y1 + y2) / 2.0)
         mid_pt = (min(max(0, mid_x), width), min(max(0, mid_y), height))
-        return None if mid_pt == (0, 0) else mid_pt
+        return mid_pt
 
     elif len(numbers) >= 2:
         x, y = numbers[0], numbers[1]
@@ -113,7 +113,7 @@ def extract_bbox_midpoint(
             px = int(x)
             py = int(y)
         pt = (min(max(0, px), width), min(max(0, py), height))
-        return None if pt == (0, 0) else pt
+        return pt
 
     return None
 

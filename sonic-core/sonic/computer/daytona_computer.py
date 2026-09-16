@@ -134,9 +134,10 @@ class DaytonaComputerProvider(ComputerProvider):
             logger.info("workstation_state_loaded", workstations=list(self.workspaces.keys()))
 
     def _persist_state(self) -> None:
-        """Write the workspace index to disk so IDs survive a restart."""
+        """Write the workspace index to disk atomically so IDs survive a restart."""
         try:
-            Path(self._state_path).parent.mkdir(parents=True, exist_ok=True)
+            target = Path(self._state_path)
+            target.parent.mkdir(parents=True, exist_ok=True)
             records = {
                 ws_id: {
                     "tenant_id": ws.tenant_id,
@@ -151,7 +152,9 @@ class DaytonaComputerProvider(ComputerProvider):
                 }
                 for ws_id, ws in self.workspaces.items()
             }
-            Path(self._state_path).write_text(json.dumps(records, indent=2))
+            tmp_path = target.with_suffix(f".tmp.{os.getpid()}")
+            tmp_path.write_text(json.dumps(records, indent=2))
+            tmp_path.replace(target)
         except Exception as exc:
             logger.warning("workstation_state_persist_failed", error=str(exc))
 
@@ -279,6 +282,15 @@ class DaytonaComputerProvider(ComputerProvider):
                         return sandbox
                 except Exception as e:
                     logger.warning("daytona_resolve_sandbox_failed", target_id=target_id, error=str(e))
+                    err_msg = str(e).lower()
+                    is_not_found = (
+                        getattr(e, "status_code", None) == 404
+                        or "404" in err_msg
+                        or "not found" in err_msg
+                        or "does not exist" in err_msg
+                    )
+                    if not is_not_found:
+                        return None
                     # Auto-heal: If sandbox was deleted/expired on Daytona Cloud, check existing or auto-provision a fresh one
                     try:
                         logger.info("daytona_auto_healing_checking_existing_sandboxes")
@@ -838,11 +850,11 @@ class DaytonaComputerProvider(ComputerProvider):
             disp = self._get_display(workspace_id)
             if action_type == GUIActionType.SCROLL:
                 delta = getattr(action, 'scroll_delta', -3)
-                x = action.x or 640
-                y = action.y or 400
                 button = 4 if delta > 0 else 5
                 clicks = abs(delta)
-                cmd_parts = [f"DISPLAY={disp} xdotool mousemove {x} {y}"]
+                cmd_parts = []
+                if getattr(action, "x", None) is not None and getattr(action, "y", None) is not None:
+                    cmd_parts.append(f"DISPLAY={disp} xdotool mousemove {int(action.x)} {int(action.y)}")
                 for _ in range(clicks):
                     cmd_parts.append(f"DISPLAY={disp} xdotool click {button}")
                 scroll_cmd = " && ".join(cmd_parts)
@@ -927,27 +939,34 @@ class DaytonaComputerProvider(ComputerProvider):
         # 1. Try Daytona SDK execution
         if sandbox and hasattr(sandbox, "process"):
             try:
-                # The Daytona SDK ExecuteResponse has a single .result field that
-                # merges stdout+stderr. To separate them, wrap the command so stderr
-                # is captured to a temp file, then read it back.
-                marker = f"/tmp/.sonic_stderr_{int(start_time.timestamp() * 1000)}"
-                wrapped = f"{{ {command} ; }} 2> {marker}; __sonic_ec=$?; cat {marker} 2>/dev/null; rm -f {marker}; exit $__sonic_ec"
+                ts = int(start_time.timestamp() * 1000)
+                out_marker = f"/tmp/.sonic_stdout_{ts}"
+                err_marker = f"/tmp/.sonic_stderr_{ts}"
+                delim = "___SONIC_STDERR_DELIM___"
+                wrapped = (
+                    f"{{ {command} ; }} > {out_marker} 2> {err_marker}; "
+                    f"__sonic_ec=$?; cat {out_marker} 2>/dev/null; "
+                    f"echo '{delim}'; cat {err_marker} 2>/dev/null; "
+                    f"rm -f {out_marker} {err_marker}; exit $__sonic_ec"
+                )
                 res = await sandbox.process.exec(wrapped, timeout=timeout)
                 duration = (datetime.now(UTC) - start_time).total_seconds()
                 raw_result = res.result or ""
                 exit_code = getattr(res, "exit_code", 0)
 
-                # If the command failed, prepend exit_code to stdout for diagnostics
-                stdout = raw_result
-                if exit_code != 0 and stdout:
-                    stdout = f"[exit_code={exit_code}]\n{stdout}"
-                elif exit_code != 0:
-                    stdout = f"[exit_code={exit_code}]"
+                if delim in raw_result:
+                    parts = raw_result.split(delim, 1)
+                    stdout = parts[0]
+                    stderr = parts[1].lstrip("\r\n")
+                else:
+                    stdout = raw_result
+                    stderr = ""
+
                 return ExecResult(
                     command=command,
                     exit_code=exit_code,
                     stdout=stdout,
-                    stderr="",
+                    stderr=stderr,
                     duration_seconds=duration,
                     sandbox_id=workspace_id,
                 )

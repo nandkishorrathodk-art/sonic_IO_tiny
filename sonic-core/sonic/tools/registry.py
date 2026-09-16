@@ -28,16 +28,16 @@ def build_security_tools(
     """
     from sonic.tools.adapters.nmap_adapter import NmapAdapter
     from sonic.tools.adapters.nuclei_adapter import NucleiAdapter
-    from sonic.tools.adapters.ffuf_adapter import FfufAdapter
-    from sonic.tools.adapters.http_adapter import HttpAdapter
+    from sonic.tools.adapters.ffuf_adapter import FFUFAdapter
+    from sonic.tools.adapters.http_adapter import HTTPClientAdapter
     
     tools = {}
     
-    # Register the 4 real adapters
+    # Register the 4 real adapters for dual-plane execution
     tools["nmap"] = NmapAdapter(provider)
     tools["nuclei"] = NucleiAdapter(provider)
-    tools["ffuf"] = FfufAdapter(provider)
-    tools["http_client"] = HttpAdapter(provider)
+    tools["ffuf"] = FFUFAdapter(provider)
+    tools["http_client"] = HTTPClientAdapter(provider)
     
     logger.info("security_tools_built", count=len(tools), tools=list(tools.keys()))
     return tools

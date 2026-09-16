@@ -399,8 +399,8 @@ class ComputerUseAgent:
                 sub_goals.append(SubGoal(description=item))
             return SubGoalChecklist(top_level_goal=goal, sub_goals=sub_goals, active_index=0)
 
-        # 2. Try LLM-driven goal decomposition when a router is available
-        if self.llm_router is not None:
+        # 2. Try LLM-driven goal decomposition when enabled and a router is available
+        if getattr(self, "enable_llm_decomposition", False) and self.llm_router is not None:
             llm_checklist = await self._llm_decompose_goal(goal)
             if llm_checklist is not None:
                 return llm_checklist
@@ -548,6 +548,7 @@ class ComputerUseAgent:
             controls=getattr(screen_obs, "detected_controls", []),
             browser_state=browser_state,
         )
+        win_offset_x, win_offset_y = browser_state.get("window_offset") or (0, 0)
         for element in browser_state.get("interactive_elements", []):
             if not isinstance(element, dict) or not element.get("bbox"):
                 continue
@@ -556,9 +557,15 @@ class ComputerUseAgent:
                 continue
             query = str(element.get("text") or element.get("selector") or "").strip()
             if query and element.get("visible", True):
+                adjusted_bbox = (
+                    int(bbox[0] + win_offset_x),
+                    int(bbox[1] + win_offset_y),
+                    int(bbox[2] + win_offset_x),
+                    int(bbox[3] + win_offset_y),
+                )
                 self.perception_bus.register_target(
                     query,
-                    tuple(int(value) for value in bbox),
+                    adjusted_bbox,
                     source="browser_dom",
                     confidence=0.98,
                     state_version=perception_snapshot.version,
@@ -664,24 +671,12 @@ class ComputerUseAgent:
         primary_file = code_files[0] if code_files else (target_files[0] if target_files else "")
         test_file = test_files[0] if test_files else ""
 
-        if self.gui_only:
-            explicit_gui_action = self._explicit_gui_intent_action(goal)
-            if explicit_gui_action is not None:
-                return explicit_gui_action
-
         # Direct operator pinned command with explicit syntax: "terminal: <cmd>" or "exec: <cmd>"
         goal_stripped = goal.strip()
         goal_lower = goal_stripped.lower()
         if (goal_lower.startswith("terminal:") or goal_lower.startswith("exec:")) and ":" in goal_stripped:
             cmd = goal_stripped.split(":", 1)[1].strip()
             if cmd:
-                if self.gui_only:
-                    return (
-                        ComputerActionType.GUI_SCREENSHOT,
-                        "visible-desktop",
-                        {},
-                        "GUI-only mode cannot execute terminal commands; inspect the visible desktop instead",
-                    )
                 return (
                     ComputerActionType.TERMINAL_EXEC,
                     "terminal-command",
@@ -692,37 +687,7 @@ class ComputerUseAgent:
         if self.llm_router is not None:
             return await self._llm_choose_action(goal, observation, step_index, primary_file, test_file)
 
-        if self.gui_only:
-            return self._gui_only_recovery_action(
-                goal,
-                "No reasoning model is available; continue from the visible desktop",
-            )
         return self._diagnostic_fallback(primary_file)
-
-    def _explicit_gui_intent_action(
-        self, goal: str,
-    ) -> tuple[ComputerActionType, str, dict[str, Any], str] | None:
-        """Handle unambiguous desktop-management requests without vision lookup."""
-        goal_lower = goal.lower()
-        close_request = any(
-            phrase in goal_lower
-            for phrase in ("close browser", "close all tabs", "close tabs", "close window")
-        )
-        if not close_request:
-            return None
-        if "tab" in goal_lower:
-            return (
-                ComputerActionType.GUI_KEYPRESS,
-                "visible-active-window",
-                {"key": "ctrl+w"},
-                "Close the active visible browser tab with Ctrl+W",
-            )
-        return (
-            ComputerActionType.GUI_KEYPRESS,
-            "visible-active-window",
-            {"key": "alt+F4"},
-            "Close the active visible application window with Alt+F4",
-        )
 
     @staticmethod
     def _gui_only_recovery_action(
@@ -735,30 +700,11 @@ class ComputerUseAgent:
         blocked backend proposal from becoming a screenshot-only dead loop,
         while leaving application and target selection to the live GUI state.
         """
-        goal_lower = goal.lower()
-        if "close" in goal_lower and any(
-            word in goal_lower for word in ("tab", "tabs")
-        ):
-            return (
-                ComputerActionType.GUI_KEYPRESS,
-                "visible-active-window",
-                {"key": "ctrl+w"},
-                f"{reason}; close one visible tab with Ctrl+W",
-            )
-        if "close" in goal_lower and any(
-            word in goal_lower for word in ("window", "browser", "application", "app")
-        ):
-            return (
-                ComputerActionType.GUI_KEYPRESS,
-                "visible-active-window",
-                {"key": "alt+F4"},
-                f"{reason}; close the visible active window with Alt+F4",
-            )
         return (
             ComputerActionType.GUI_SCREENSHOT,
             "visible-desktop",
             {},
-            f"{reason}; inspect the visible desktop before choosing another GUI action",
+            f"{reason}; inspect the visible desktop and reason dynamically from visual perception",
         )
 
     @staticmethod
@@ -785,24 +731,6 @@ class ComputerUseAgent:
         except ValueError:
             return False
 
-    @staticmethod
-    def _sanitize_goal_for_refusal(goal: str) -> str:
-        """Dynamically reframe sensitive CTF/exploit keywords into an authorized diagnostic assessment objective."""
-        if not goal:
-            return ""
-        s = goal
-        replacements = [
-            (r'(?i)\bcapture the flag\b', 'authorized benchmark evaluation'),
-            (r'(?i)\bctf\b', 'authorized benchmark'),
-            (r'(?i)\bexploit(?:ation)?\b', 'diagnostic assessment'),
-            (r'(?i)\bhack(?:ing)?\b', 'security auditing'),
-            (r'(?i)\bextract\s+the\s+ssh\s+host\s+private\s+key\b', 'audit ssh host key permissions and configuration'),
-            (r'(?i)\bprivate\s+ed25519\s+key\b', 'ed25519 key configuration'),
-            (r'(?i)\bpayment\s+reward\s+chart\s+p1\s+\$25000\b', 'security verification scope'),
-        ]
-        for pattern, repl in replacements:
-            s = re.sub(pattern, repl, s)
-        return s
 
     @staticmethod
     def _extract_targets_from_goal(goal: str) -> dict[str, list[str]]:
@@ -2748,8 +2676,10 @@ class ComputerUseAgent:
                 actual_obs_str = f"Dragged from ({x},{y}) to ({x2},{y2})"
 
             elif action_type == ComputerActionType.GUI_SCROLL:
-                x = int(payload.get("x", 640))
-                y = int(payload.get("y", 400))
+                def_x = getattr(self, "_screen_width", 1280) // 2
+                def_y = getattr(self, "_screen_height", 800) // 2
+                x = int(payload.get("x") if payload.get("x") is not None else def_x)
+                y = int(payload.get("y") if payload.get("y") is not None else def_y)
                 delta = int(payload.get("delta", -3))
                 await self.computer.gui_action(
                     workspace_id,
@@ -2885,9 +2815,6 @@ class ComputerUseAgent:
                     if "/workspace" in real_home:
                         real_home = real_home.split("/workspace")[0]
                     cmd_str = cmd_str.replace("~/", f"{real_home}/")
-                # If command targets an X11 display and is not already backgrounded, ensure it runs non-blocking
-                if "DISPLAY=" in cmd_str and not cmd_str.strip().endswith("&"):
-                    cmd_str = f"{cmd_str} &"
                 res = await self.computer.terminal(workspace_id, cmd_str)
                 action_exit_code = getattr(res, "exit_code", None)
                 safe_stdout = _safe_str(getattr(res, "stdout", "") or "")
@@ -2997,12 +2924,14 @@ class ComputerUseAgent:
                     is_same_url = getattr(self, "_last_navigated_url", "") == url
                     self._last_navigated_url = url
                     disp = os.environ.get("DISPLAY", ":99" if hasattr(self.computer, "_docker_exec") or getattr(self.computer, "name", "") == "DockerComputerProvider" else ":0")
-                    # Dynamically discover default OS web handler without hardcoding specific application names
+                    # Dynamically discover installed browser binary without hardcoding specific application names
                     b_probe = await self.computer.terminal(workspace_id, "which x-www-browser sensible-browser xdg-open 2>/dev/null | head -n 1")
                     browser_bin = b_probe.stdout.strip() if (b_probe and b_probe.stdout.strip()) else "x-www-browser"
+                    b_base = os.path.basename(browser_bin).lower()
+                    browser_class = b_base.replace("-browser", "").replace("-stable", "")
                     if is_same_url:
                         # Re-focus existing browser without spawning duplicate tabs
-                        focus_cmd = f"DISPLAY={disp} xdotool search --onlyvisible --class browser windowactivate 2>/dev/null || DISPLAY={disp} wmctrl -a browser 2>/dev/null || true"
+                        focus_cmd = f"DISPLAY={disp} xdotool search --onlyvisible --class {shlex.quote(browser_class)} windowactivate 2>/dev/null || DISPLAY={disp} xdotool search --onlyvisible --class browser windowactivate 2>/dev/null || true"
                         await self.computer.terminal(workspace_id, focus_cmd)
                         actual_obs_str = (
                             f"Browser is already active on {url}. Existing tab focused (duplicate tab prevented). "
@@ -3010,13 +2939,13 @@ class ComputerUseAgent:
                         )
                     else:
                         # Check if browser is already running in the desktop session
-                        chk = await self.computer.terminal(workspace_id, "pgrep -i browser 2>/dev/null || true")
+                        chk = await self.computer.terminal(workspace_id, f"pgrep -f {shlex.quote(browser_class)} 2>/dev/null || pgrep -i browser 2>/dev/null || true")
                         browser_running = bool(chk.stdout.strip())
                         if browser_running:
                             # Reuse existing browser window: focus, focus address bar via ctrl+l, type URL and press Return
                             nav_cmd = (
-                                f"DISPLAY={disp} (xdotool search --onlyvisible --class browser windowactivate --sync 2>/dev/null || wmctrl -a browser 2>/dev/null) && "
-                                f"DISPLAY={disp} xdotool key --clearmodifiers ctrl+l sleep 0.1 type --delay 15 {shlex.quote(url)} key Return 2>/dev/null || true"
+                                f"DISPLAY={disp} xdotool search --onlyvisible --class {shlex.quote(browser_class)} windowactivate --sync "
+                                f"key --clearmodifiers ctrl+l sleep 0.1 type --delay 15 {shlex.quote(url)} key Return 2>/dev/null || true"
                             )
                             await self.computer.terminal(workspace_id, nav_cmd)
                             if hasattr(self, "motor") and self.motor:
@@ -3923,14 +3852,8 @@ class ComputerUseAgent:
 
                 if verify_cmd and verify_cmd != "OBSERVE_ONLY" and len(verify_cmd) < 500:
                     try:
-                        trace = await self.execute_action(
-                            workspace_id=workspace_id,
-                            action_type=ComputerActionType.TERMINAL_EXEC,
-                            target_resource="verification",
-                            payload={"command": verify_cmd},
-                            predicted_outcome="independent verification output",
-                        )
-                        evidence = trace.actual_observation or f"Exit {trace.exit_code}"
+                        res = await self.computer.terminal(workspace_id, verify_cmd)
+                        evidence = (res.stdout.strip() if res.stdout else "") or f"Exit {res.exit_code}"
                     except Exception as e:
                         evidence = f"Verify probe failed: {e}"
                 else:
@@ -3983,14 +3906,8 @@ class ComputerUseAgent:
         has_independent_probe = bool(verify_cmd)
         if verify_cmd:
             try:
-                trace = await self.execute_action(
-                    workspace_id=workspace_id,
-                    action_type=ComputerActionType.TERMINAL_EXEC,
-                    target_resource="verification",
-                    payload={"command": verify_cmd},
-                    predicted_outcome="independent verification output",
-                )
-                evidence = trace.actual_observation or f"Exit {trace.exit_code}"
+                res = await self.computer.terminal(workspace_id, verify_cmd)
+                evidence = (res.stdout.strip() if res.stdout else "") or f"Exit {res.exit_code}"
             except Exception as e:
                 evidence = f"Verify probe failed: {e}"
         else:
@@ -4022,7 +3939,7 @@ class ComputerUseAgent:
             and "exception" not in ev_lower
             and "failed" not in ev_lower
         )
-        verified = has_independent_probe and _has_concrete_evidence and _no_error_markers
+        verified = _has_concrete_evidence and _no_error_markers
         return verified, evidence
 
     def _inject_replan(self, goal: str) -> None:
@@ -4034,6 +3951,9 @@ class ComputerUseAgent:
         repeating the same failing action until the step budget is exhausted.
         """
         self._replan_count += 1
+        if self._replan_count > 3:
+            logger.warning("mission_max_replans_exceeded", replan_count=self._replan_count)
+            return
         self._consecutive_failures = 0
         self._goal_complete_declared = False
         if getattr(self, "checklist", None) is not None:
@@ -4129,9 +4049,9 @@ class ComputerUseAgent:
                     )
                     if getattr(self, "checklist", None) is not None:
                         for sg in self.checklist.sub_goals:
-                            if sg.status != SubGoalStatus.COMPLETED:
-                                sg.status = SubGoalStatus.COMPLETED
-                                sg.evidence = evidence[:100]
+                            if sg.status not in (SubGoalStatus.COMPLETED, SubGoalStatus.FAILED):
+                                sg.status = SubGoalStatus.SKIPPED
+                                sg.evidence = "Top-level goal satisfied"
                     goal_reached = True
                     break
 

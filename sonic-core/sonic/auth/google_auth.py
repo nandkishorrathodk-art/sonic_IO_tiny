@@ -53,7 +53,12 @@ except ImportError:
                 if not hmac.compare_digest(sig, expected_sig):
                     raise JWTError("Signature mismatch")
                 padded = body + "=" * ((4 - len(body) % 4) % 4)
-                return json.loads(base64.urlsafe_b64decode(padded.encode()).decode())
+                data = json.loads(base64.urlsafe_b64decode(padded.encode()).decode())
+                if "exp" in data:
+                    import time
+                    if time.time() > float(data["exp"]):
+                        raise JWTError("Token expired")
+                return data
 
 from sonic.auth.models import AuthToken, TokenPayload, User, UserRole
 from sonic.config import get_settings

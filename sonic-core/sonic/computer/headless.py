@@ -352,6 +352,15 @@ class HeadlessComputeProvider(ComputerProvider, ComputeProvider):
         Probe TCP ports asynchronously using native asyncio.open_connection.
         Does not require nmap, Docker, or root privileges.
         """
+        from sonic.sandbox.egress import is_target_allowed
+        allowed, reason = is_target_allowed(host)
+        if not allowed:
+            logger.warning("headless_scan_ports_blocked_by_egress", host=host, reason=reason)
+            return [
+                {"port": p, "state": "blocked", "open": False, "protocol": "tcp", "host": host, "error": reason}
+                for p in ports
+            ]
+
         async def _probe_port(p: int) -> dict[str, Any]:
             try:
                 conn = asyncio.open_connection(host, p)

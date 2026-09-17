@@ -9,6 +9,7 @@ Run:
 
 from __future__ import annotations
 
+import asyncio
 from contextlib import asynccontextmanager
 
 from dotenv import load_dotenv
@@ -215,9 +216,13 @@ async def lifespan(app: FastAPI):
     get_scope_checker()
     logger.info("safety_layer_loaded")
 
-    # Connect to Graph Memory (Neo4j)
+    # Connect to Graph Memory (Neo4j) with fast dev fallback to SQLite
     graph = get_graph_memory()
-    connected = await graph.connect()
+    try:
+        connected = await asyncio.wait_for(graph.connect(), timeout=2.0)
+    except Exception as exc:
+        logger.warning("graph_memory_connect_timeout_or_failed", error=str(exc))
+        connected = False
     if connected:
         logger.info("graph_memory_connected")
         # Initialize graph schema (constraints + indexes)

@@ -52,20 +52,23 @@ class GraphMemory:
         """Establish connection to Neo4j."""
         settings = get_settings()
         try:
+            import asyncio
             from neo4j import AsyncGraphDatabase
             self._driver = AsyncGraphDatabase.driver(
                 settings.neo4j_uri,
                 auth=(settings.neo4j_user, settings.neo4j_password),
+                connection_timeout=1.5,
+                max_connection_lifetime=300,
             )
             async with self._driver.session() as session:
-                result = await session.run("RETURN 1 AS ping")
-                await result.single()
+                result = await asyncio.wait_for(session.run("RETURN 1 AS ping"), timeout=1.5)
+                await asyncio.wait_for(result.single(), timeout=1.5)
 
             self._connected = True
             logger.info("graph_memory_connected", uri=settings.neo4j_uri)
             return True
         except Exception as e:
-            logger.error("graph_memory_connection_failed", error=str(e))
+            logger.warning("graph_memory_connection_failed", error=str(e))
             self._connected = False
             return False
 

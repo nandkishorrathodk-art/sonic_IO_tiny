@@ -22,17 +22,21 @@ def test_closed_loop_observe_act_observe():
         obs1 = await agent.observe(ws.id)
 
         # Step 2: Choose action
-        action_type, target, payload, expected = await agent.choose_action("Fix JWT bug", obs1, 1)
-        assert action_type == ComputerActionType.APP_LAUNCH
+        action_type, target, payload, expected = await agent.choose_action(
+            "terminal: printf continuum-ok",
+            obs1,
+            1,
+        )
+        assert action_type == ComputerActionType.TERMINAL_EXEC
 
         # Step 3: Execute Action
         trace = await agent.execute_action(ws.id, action_type, target, payload, expected)
         assert trace.status == "SUCCESS"
-        assert "code-server" in trace.actual_observation
+        assert "continuum-ok" in trace.actual_observation
 
         # Step 4: Second Observation
         obs2 = await agent.observe(ws.id)
-        assert obs2.active_application == "code-server"
+        assert obs2.screen.desktop_state == "NO_DISPLAY"
 
         await comp.destroy(ws.id)
 

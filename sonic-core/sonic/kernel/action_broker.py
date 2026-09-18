@@ -66,11 +66,6 @@ class ActionBroker:
             return str(parameters.get("command") or parameters.get("cmd") or "")
         if action_type in ("FILE_WRITE", "WRITE_FILE", "FILE_READ", "READ_FILE"):
             return str(parameters.get("path") or parameters.get("file_path") or "")
-        if action_type == "SECURITY_TOOL":
-            req = parameters.get("request")
-            if req and hasattr(req, "target"):
-                return str(req.target)
-            return str(parameters.get("target") or "")
         if action_type in ("BROWSER_NAVIGATE", "HTTP_REQUEST"):
             return str(parameters.get("url") or parameters.get("target") or "")
         return str(parameters.get("target") or parameters.get("command") or parameters.get("path") or parameters.get("url") or "")
@@ -101,8 +96,27 @@ class ActionBroker:
                     is_isolated=True,
                 )
             except Exception as exc:
-                logger.debug("Native kernel pre-screening error (failing-open to Python SafetyKernel): %s", exc)
-                native_verdict = None
+                logger.error(
+                    "action_broker_blocked_native_kernel_unavailable",
+                    action_type=action_type,
+                    tenant_id=self.tenant_id,
+                    error=str(exc),
+                )
+                auth = SafetyAuthorization(
+                    verdict=KernelVerdict.DENY,
+                    reason=f"Native safety kernel unavailable: {exc}",
+                    action_type=action_type,
+                    seal_intact=False,
+                )
+                result = BrokerResult(
+                    status=ActionExecutionStatus.BLOCKED,
+                    exit_code=126,
+                    stderr=auth.reason,
+                    authorization=auth,
+                    duration_ms=(time.monotonic() - start_time) * 1000.0,
+                )
+                self._history.append(result)
+                return result
 
             if native_verdict is not None:
                 if not native_verdict.seal_intact:
@@ -253,7 +267,7 @@ class ActionBroker:
                     authorization=auth,
                     duration_ms=(time.monotonic() - start_time) * 1000.0,
                 )
-            elif action_type == "SECURITY_TOOL":
+            elif False:
                 tool = parameters.get("tool")
                 tool_request = parameters.get("request")
                 if tool and hasattr(tool, "execute"):

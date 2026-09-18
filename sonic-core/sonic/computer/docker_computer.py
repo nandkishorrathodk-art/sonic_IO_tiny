@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import os
 import shlex
 import shutil
@@ -36,6 +37,7 @@ from sonic.computer.models import (
     ProcessInfo,
     ScreenObservation,
     ServiceInfo,
+    _now,
 )
 from sonic.computer.provider import ComputerProvider
 from sonic.logger import get_logger
@@ -98,6 +100,68 @@ class DockerComputerProvider(ComputerProvider):
         self._gui_lock = asyncio.Lock()
         self._last_screenshot: ScreenObservation | None = None
         self._last_screenshot_time: float = 0.0
+        self._state_path = os.environ.get(
+            "SONIC_WORKSTATION_STATE_PATH",
+            str(Path(os.environ.get("SONIC_DATA_DIR", "sonic_data")) / "docker_workstations.json"),
+        )
+        self._load_state()
+
+    def _load_state(self) -> None:
+        """Restore durable workspace metadata after a backend restart."""
+        try:
+            records = json.loads(Path(self._state_path).read_text())
+        except (FileNotFoundError, OSError, json.JSONDecodeError, ValueError):
+            return
+        for workspace_id, record in (records or {}).items():
+            try:
+                self.workspaces[workspace_id] = ComputerWorkspace(
+                    id=workspace_id,
+                    tenant_id=str(record.get("tenant_id", "default")),
+                    engagement_id=str(record.get("engagement_id", "")),
+                    workspace_type=ComputerWorkspaceType(
+                        record.get("workspace_type", ComputerWorkspaceType.MISSION_COMPUTER.value)
+                    ),
+                    profile=ComputerProfile(
+                        record.get("profile", ComputerProfile.KALI_SECURITY.value)
+                    ),
+                    provider_type=str(record.get("provider_type", self.name)),
+                    image=str(record.get("image", "sonic-workstation:latest")),
+                    status=ComputerWorkspaceStatus(
+                        record.get("status", ComputerWorkspaceStatus.STOPPED.value)
+                    ),
+                    created_at=str(record.get("created_at", "")) or _now(),
+                    last_active_at=str(record.get("last_active_at", "")) or _now(),
+                )
+            except Exception as exc:
+                logger.warning("docker_workspace_state_record_skipped", workspace_id=workspace_id, error=str(exc))
+        owners = {ws.tenant_id for ws in self.workspaces.values() if ws.id == self._default_workspace_id}
+        if len(owners) == 1:
+            self._workspace_owner = next(iter(owners))
+
+    def _persist_state(self) -> None:
+        """Atomically persist workspace identity and tenant ownership metadata."""
+        try:
+            target = Path(self._state_path)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            records = {
+                workspace_id: {
+                    "tenant_id": ws.tenant_id,
+                    "engagement_id": ws.engagement_id,
+                    "workspace_type": ws.workspace_type.value,
+                    "profile": ws.profile.value,
+                    "provider_type": ws.provider_type,
+                    "image": ws.image,
+                    "status": ws.status.value,
+                    "created_at": ws.created_at,
+                    "last_active_at": ws.last_active_at,
+                }
+                for workspace_id, ws in self.workspaces.items()
+            }
+            temporary = target.with_suffix(f".tmp.{os.getpid()}")
+            temporary.write_text(json.dumps(records, indent=2))
+            temporary.replace(target)
+        except OSError as exc:
+            logger.warning("docker_workspace_state_persist_failed", error=str(exc))
 
     def _ensure_default_workspace(self, tenant_id: str = "default", engagement_id: str = "default") -> ComputerWorkspace:
         if self._default_workspace_id not in self.workspaces:
@@ -284,6 +348,7 @@ class DockerComputerProvider(ComputerProvider):
                 self._container_running_cache = True
                 self._container_checked_at = asyncio.get_event_loop().time()
         ws.status = ComputerWorkspaceStatus.RUNNING
+        self._persist_state()
         return ws
 
     async def get_or_create_home(self, tenant_id: str) -> ComputerWorkspace:
@@ -298,21 +363,50 @@ class DockerComputerProvider(ComputerProvider):
                 and ws.workspace_type == ComputerWorkspaceType.MISSION_COMPUTER
                 and ws.status not in (ComputerWorkspaceStatus.DESTROYED, ComputerWorkspaceStatus.FAILED)
             ):
+                # Durable identity does not imply a live container. Refresh
+                # the lifecycle status from Docker before returning it.
+                ws.status = (
+                    ComputerWorkspaceStatus.RUNNING
+                    if await self._container_is_running()
+                    else ComputerWorkspaceStatus.STOPPED
+                )
+                self._persist_state()
                 logger.info(
                     "home_workstation_reused",
                     workspace_id=ws.id,
                     tenant_id=tenant_id,
                 )
+                self._workspace_owner = tenant_id
                 return ws
         ws = ComputerWorkspace(
             id=f"home-{tenant_id}",
             tenant_id=tenant_id,
             engagement_id=f"home-{tenant_id}",
             workspace_type=ComputerWorkspaceType.MISSION_COMPUTER,
-            status=ComputerWorkspaceStatus.RUNNING,
+            status=(
+                ComputerWorkspaceStatus.RUNNING
+                if await self._container_is_running()
+                else ComputerWorkspaceStatus.STOPPED
+            ),
         )
         self.workspaces[ws.id] = ws
         self._workspace_owner = tenant_id
+        self._persist_state()
+        return ws
+
+    async def reconnect(self, workspace_id: str, tenant_id: str) -> ComputerWorkspace:
+        """Reattach durable metadata only when the tenant still owns it."""
+        ws = self.workspaces.get(workspace_id)
+        if ws is None:
+            raise KeyError(f"workspace not found: {workspace_id}")
+        if ws.tenant_id != tenant_id:
+            raise PermissionError("workspace belongs to another tenant")
+        if await self._container_is_running():
+            ws.status = ComputerWorkspaceStatus.RUNNING
+        else:
+            ws.status = ComputerWorkspaceStatus.STOPPED
+        self._workspace_owner = tenant_id
+        self._persist_state()
         return ws
 
     async def destroy(self, workspace_id: str) -> bool:
@@ -321,6 +415,7 @@ class DockerComputerProvider(ComputerProvider):
             del self.workspaces[workspace_id]
         if workspace_id == self._default_workspace_id:
             self._workspace_owner = None
+        self._persist_state()
         return True
 
     async def close(self) -> None:

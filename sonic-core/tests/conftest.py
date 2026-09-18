@@ -25,7 +25,9 @@ import pytest
 
 def _docker_daemon_available() -> bool:
     """True only if the docker binary exists, the daemon answers `docker info`,
-    and the isolated sandbox network `sonic-sandbox-net` exists.
+    and the isolated sandbox network exists. Compose commonly prefixes network
+    names with the project name, so both the declared name and that form are
+    accepted.
     """
     if not shutil.which("docker"):
         return False
@@ -38,13 +40,22 @@ def _docker_daemon_available() -> bool:
         )
         if proc.returncode != 0 or not bool(proc.stdout.strip()):
             return False
-        net_proc = subprocess.run(
-            ["docker", "network", "inspect", "sonic-sandbox-net"],
+        networks = subprocess.run(
+            ["docker", "network", "ls", "--format", "{{.Name}}"],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             timeout=10,
         )
-        return net_proc.returncode == 0
+        if networks.returncode != 0:
+            return False
+        names = {
+            line.strip()
+            for line in networks.stdout.decode(errors="replace").splitlines()
+            if line.strip()
+        }
+        return "sonic-sandbox-net" in names or any(
+            name.endswith("_sonic-sandbox-net") for name in names
+        )
     except Exception:
         return False
 

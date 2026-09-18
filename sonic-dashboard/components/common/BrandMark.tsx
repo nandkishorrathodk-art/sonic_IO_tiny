@@ -44,7 +44,7 @@ export function BrandMark({ size = 32, withWordmark = false, href, className = "
             SONIC<span className="text-primary-500">-REDA</span>
           </span>
           <span className="text-[9px] font-mono uppercase tracking-[0.2em] text-muted-dim">
-            Autonomous Red Team
+            Virtual Workstation
           </span>
         </div>
       )}

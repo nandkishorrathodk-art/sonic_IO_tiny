@@ -10,7 +10,7 @@ VPS: the agent may act autonomously, but every action must pass the policy.
 The policy composes existing primitives instead of reinventing them:
     * path confinement ??? FILE_READ/FILE_WRITE confined to the workspace root
     * egress filter ??? reuses sonic.sandbox.egress.is_target_allowed for
-      SECURITY_TOOL targets and BROWSER_NAVIGATE urls (blocks private/metadata)
+      browser navigation and other network-facing actions (blocks private/metadata)
     * destructive-op gating ??? reuses sonic.safety.scope.classify_command_risk
       for TERMINAL_EXEC (L2 forbidden -> block; L1 -> needs approval)
     * action-type allowlist ??? unknown action types are DENIED by default
@@ -93,14 +93,6 @@ class ActionPolicy:
         "APP_LAUNCH", "APP_CLOSE", "APP_FOCUS", "APP_INSTALL", "SERVICE_ACTION",
         "BROWSER_NAVIGATE", "BROWSER_CLICK", "BROWSER_TYPE", "BROWSER_SCREENSHOT",
         "BROWSER_WAIT", "BROWSER_DOWNLOAD",
-        "SECURITY_TOOL",
-        # Toolsmith (Phase A, AIOSR): authoring writes source under the
-        # workspace toolsmith dir (path-confined like FILE_WRITE); running
-        # executes it in-sandbox (command-gated like TERMINAL_EXEC).
-        "TOOL_AUTHOR", "TOOL_RUN",
-        # Method-invention (Phase B, AIOSR): synthesizes a novel technique and
-        # runs its probe in-sandbox (same structural confinement as TOOL_RUN).
-        "METHOD_INVENT",
     })
 
     def __init__(
@@ -117,8 +109,8 @@ class ActionPolicy:
     ):
         self.workspace_root = Path(workspace_root).resolve()
         self.allowed_types = frozenset(allowed_action_types or self.DEFAULT_ALLOWED_TYPES)
-        # When non-empty, SECURITY_TOOL may only target hosts in this allowlist;
-        # empty means "rely on egress filter only" (no extra target restriction).
+        # Retained for backwards-compatible policy construction; general
+        # workstation actions do not use an external target allowlist.
         self.security_tool_targets = set(allow_security_tool_targets or [])
         self.max_actions_per_minute = max_actions_per_minute
         self.require_approval_for_intrusive = require_approval_for_intrusive
@@ -164,33 +156,22 @@ class ActionPolicy:
         if action_type_name not in self.allowed_types:
             return PolicyVerdict(False, f"action type not allowed: {action_type_name}")
 
-        # 2. Path confinement for file operations. TOOL_AUTHOR writes its
-        # source under a hardcoded workspace-subdir (toolsmith hardcodes
-        # /home/sonic/workspace/toolsmith/<name>.py), so confinement is
-        # structural ??? it does not need a payload path to validate.
+        # 2. Path confinement for file operations.
         if action_type_name in ("FILE_READ", "FILE_WRITE"):
             path = payload.get("path") or target
             verdict = self._check_path(path, action_type_name)
             if not verdict.allowed:
                 return verdict
 
-        # 3. Destructive-command gating for terminal execution + tool runs.
-        #    TOOL_RUN executes a hardcoded `python <workspace-toolsmith-path>`,
-        #    so the command is structural; we only gate user-supplied commands.
+        # 3. Destructive-command gating for terminal execution.
         if action_type_name == "TERMINAL_EXEC":
             command = payload.get("command") or payload.get("cmd") or target or ""
             verdict = self._check_command(command)
             if not verdict.allowed:
                 return verdict
 
-        # 4. Egress + target-allowlist for security tools, tool runs, method invent, and browser navigation.
-        if action_type_name in ("SECURITY_TOOL", "TOOL_RUN", "METHOD_INVENT"):
-            scan_target = payload.get("target") or payload.get("target_url") or target
-            if scan_target:
-                verdict = self._check_egress(scan_target, action_type_name.lower())
-                if not verdict.allowed:
-                    return verdict
-        elif action_type_name == "BROWSER_NAVIGATE":
+        # 4. Browser navigation is restricted to explicit web URLs.
+        if action_type_name == "BROWSER_NAVIGATE":
             url = payload.get("url") or target
             parsed = urlparse(str(url).strip())
             if parsed.scheme.lower() not in {"http", "https"}:

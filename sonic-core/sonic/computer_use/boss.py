@@ -90,7 +90,6 @@ class BossAgent:
         toolsmith: Any = None,
         method_lab: Any = None,
         lessons_ledger: Any = None,
-        evolution_engine: Any = None,
         initial_context: dict[str, Any] | None = None,
         gui_only: bool = False,
         being: Any = None,
@@ -126,21 +125,8 @@ class BossAgent:
         self.toolsmith = toolsmith
         self.method_lab = method_lab
         self.lessons_ledger = lessons_ledger
-        self.evolution_engine = evolution_engine
         self.initial_context = dict(initial_context or {})
         self.gui_only = gui_only
-        if self.evolution_engine is None:
-            try:
-                from sonic.evolution.engine import EvolutionEngine
-                from sonic.evolution.strategy import DynamicStrategyEngine
-                self.evolution_engine = EvolutionEngine(
-                    strategy_engine=DynamicStrategyEngine(),
-                    method_lab=self.method_lab,
-                    toolsmith=self.toolsmith,
-                    lessons_ledger=self.lessons_ledger,
-                )
-            except Exception as e:
-                logger.warning("boss_lazy_evolution_engine_failed", error=str(e))
 
         # State
         self.phases: list[Phase] = []
@@ -795,7 +781,6 @@ Rules:
                 toolsmith=self.toolsmith,
                 method_lab=self.method_lab,
                 lessons_ledger=self.lessons_ledger,
-                evolution_engine=self.evolution_engine,
                 gui_only=False,
                 observe_desktop=True,
                 initial_context=self.initial_context,

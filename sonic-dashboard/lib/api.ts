@@ -108,65 +108,6 @@ export const api = {
       timeout: 120000,
     }),
 
-  provisionResearchLab: (sessionId = "default") =>
-    apiClient<any>(`/workstation/research-lab/provision?session_id=${encodeURIComponent(sessionId)}`, {
-      method: "POST",
-      timeout: 120000,
-    }),
-
-  getResearchLabStatus: (sessionId = "default") =>
-    apiClient<any>(`/workstation/research-lab/status?session_id=${encodeURIComponent(sessionId)}`),
-
-  destroyResearchLab: (sessionId = "default") =>
-    apiClient<any>(`/workstation/research-lab?session_id=${encodeURIComponent(sessionId)}`, {
-      method: "DELETE",
-    }),
-
-  provisionTargetSandbox: (target: string, scopeConfig: Record<string, unknown>, sessionId = "default") =>
-    apiClient<any>(`/workstation/target-sandbox/provision?session_id=${encodeURIComponent(sessionId)}`, {
-      method: "POST",
-      body: JSON.stringify({ target, scope_config: scopeConfig }),
-      timeout: 120000,
-    }),
-
-  getTargetSandboxStatus: (sessionId = "default") =>
-    apiClient<any>(`/workstation/target-sandbox/status?session_id=${encodeURIComponent(sessionId)}`),
-
-  destroyTargetSandbox: (sessionId = "default") =>
-    apiClient<any>(`/workstation/target-sandbox?session_id=${encodeURIComponent(sessionId)}`, {
-      method: "DELETE",
-    }),
-
-  executeTargetSandboxCommand: (command: string, sessionId = "default", approved = false) =>
-    apiClient<any>(`/workstation/target-sandbox/command?session_id=${encodeURIComponent(sessionId)}`, {
-      method: "POST",
-      body: JSON.stringify({ command, approved }),
-    }),
-
-  startMission: (objective: string, sessionId = "default") =>
-    apiClient<any>(`/workstation/mission/start?session_id=${encodeURIComponent(sessionId)}`, {
-      method: "POST",
-      body: JSON.stringify({ objective }),
-    }),
-
-  getMissionEvents: (sessionId = "default", after = 0) =>
-    apiClient<any>(`/workstation/mission/events?session_id=${encodeURIComponent(sessionId)}&after=${after}`),
-
-  getMissionEvidence: (sessionId = "default") =>
-    apiClient<any>(`/workstation/mission/evidence?session_id=${encodeURIComponent(sessionId)}`),
-
-  approveMissionProbe: (actionId: string, approved = true, sessionId = "default") =>
-    apiClient<any>(`/workstation/mission/approve-probe?session_id=${encodeURIComponent(sessionId)}`, {
-      method: "POST",
-      body: JSON.stringify({ action_id: actionId, approved }),
-    }),
-
-  openMissionBrowser: (url: string, sessionId = "default", approved = false) =>
-    apiClient<any>(`/workstation/mission/browser-open?session_id=${encodeURIComponent(sessionId)}`, {
-      method: "POST",
-      body: JSON.stringify({ url, approved }),
-    }),
-
   getDesktopScreenshot: (sessionId = "default") =>
     apiClient<any>(`/workstation/desktop/screenshot?session_id=${encodeURIComponent(sessionId)}`),
 
@@ -242,21 +183,6 @@ export const api = {
       body: JSON.stringify({ command, session_id: sessionId }),
     }),
 
-  // Graph Memory
-  getGraph: () =>
-    apiClient<any>("/live/graph"),
-
-  // Evidence
-  getEvidence: () =>
-    apiClient<any>("/live/evidence"),
-
-  // Experiments / Self-Evolution
-  getExperiments: () =>
-    apiClient<any>("/live/experiments"),
-
-  runBenchmark: () =>
-    apiClient<any>("/live/experiments/benchmark", { method: "POST" }),
-
   // Settings
   getSettings: () =>
     apiClient<any>("/live/settings"),
@@ -267,45 +193,4 @@ export const api = {
       body: JSON.stringify(config),
     }),
 
-  // Self-Security Lab
-  runSecurityAudit: () =>
-    apiClient<any>("/security/audit", { method: "POST", timeout: 60000 }),
-
-  getSecurityTests: () =>
-    apiClient<any>("/security/tests"),
-
-  getSecurityFindings: () =>
-    apiClient<any>("/security/findings"),
-
-  getReleaseGate: () =>
-    apiClient<any>("/security/release-gate"),
-
-  getAttackSurface: () =>
-    apiClient<any>("/security/attack-surface"),
-
-  reproduceSecurityTest: (testId: string) =>
-    apiClient<any>(`/security/reproduce/${encodeURIComponent(testId)}`, { method: "POST", timeout: 60000 }),
-
-  // Experiment lifecycle
-  approveExperiment: (id: string) =>
-    apiClient<any>(`/experiments/${encodeURIComponent(id)}/approve`, { method: "POST" }),
-
-  rejectExperiment: (id: string, reason: string) =>
-    apiClient<any>(`/experiments/${encodeURIComponent(id)}/reject?reason=${encodeURIComponent(reason)}`, { method: "POST" }),
-
-  promoteExperiment: (id: string) =>
-    apiClient<any>(`/experiments/${encodeURIComponent(id)}/promote`, { method: "POST" }),
-
-  getExperimentWeaknesses: () =>
-    apiClient<any>("/experiments/weaknesses/summary"),
-
-  getExperimentHistory: () =>
-    apiClient<any>("/experiments/history/timeline"),
-
-  // Agents
-  getAgents: () =>
-    apiClient<any>("/agents/"),
-
-  getAgent: (agentId: string) =>
-    apiClient<any>(`/agents/${encodeURIComponent(agentId)}`),
 };

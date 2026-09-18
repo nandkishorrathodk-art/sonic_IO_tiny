@@ -2,7 +2,7 @@
 SONIC-REDA — Distributed Worker Engine (Worker Plane)
 ========================================================
 Consumes jobs from Redis queue, provisions/attaches to ComputeProvider sandboxes,
-executes security tools/browser tasks, and produces structured evidence.
+and executes ordinary browser or agent tasks.
 """
 
 from __future__ import annotations
@@ -35,12 +35,6 @@ class SonicWorker:
         self.provider = provider or get_compute_provider()
         self.worker_id = worker_id
         self._running = False
-        self._tools: dict[str, Any] = {}
-        try:
-            from sonic.tools.registry import build_security_tools
-            self._tools = build_security_tools(self.provider)
-        except Exception:
-            self._tools = {}
         self.browser = ContainerizedBrowser(self.provider)
 
     async def execute_job(self, job: Job) -> Job:
@@ -72,9 +66,7 @@ class SonicWorker:
         ))
 
         try:
-            if job.job_type == JobType.TOOL_EXECUTION:
-                result_data = await self._run_tool_job(job)
-            elif job.job_type == JobType.BROWSER_SESSION:
+            if job.job_type == JobType.BROWSER_SESSION:
                 result_data = await self._run_browser_job(job)
             elif job.job_type == JobType.AGENT_STEP:
                 result_data = await self._run_agent_step(job)
@@ -115,58 +107,6 @@ class SonicWorker:
 
         await self.queue.update_job(job)
         return job
-
-    async def _run_tool_job(self, job: Job) -> dict:
-        tool_name = job.payload.get("tool_name", "").lower()
-        tool = self._tools.get(tool_name) if self._tools else None
-
-        if tool:
-            from sonic.tools.base import ToolRequest, ToolResult, ToolStatus
-            req = ToolRequest(
-                tenant_id=job.tenant_id,
-                engagement_id=job.engagement_id,
-                workspace_id=job.workspace_id,
-                agent_id=job.agent_id,
-                tool_name=tool_name,
-                target=job.payload.get("target", ""),
-                options=job.payload.get("options", {}),
-                timeout_seconds=job.timeout_seconds,
-            )
-
-            res: ToolResult = await tool.execute(req)
-            if res.status == ToolStatus.BLOCKED:
-                raise RuntimeError(f"Tool execution blocked: {res.error_message}")
-            if res.status == ToolStatus.TIMED_OUT:
-                raise TimeoutError(f"Tool execution timed out: {res.error_message}")
-
-            return {
-                "tool": tool_name,
-                "status": res.status.value,
-                "exit_code": res.exit_code,
-                "findings_count": len(res.parsed_data),
-                "parsed_data": res.parsed_data,
-                "metrics": res.metrics.__dict__ if hasattr(res, "metrics") and hasattr(res.metrics, "__dict__") else {},
-                "evidence_count": len(res.evidence),
-            }
-
-        if self._tools and tool_name not in self._tools:
-            raise ValueError(f"Unknown security tool '{tool_name}'")
-
-        # Direct execution via sandbox provider terminal
-        target = job.payload.get("target", "")
-        cmd = f"{tool_name} {target}".strip()
-        res = await self.provider.execute(job.workspace_id, cmd, timeout=job.timeout_seconds)
-        if getattr(res, "exit_code", None) == 126:
-            raise RuntimeError(f"Tool execution blocked: {getattr(res, 'stderr', '') or 'exit code 126'}")
-        return {
-            "tool": tool_name,
-            "status": "success" if getattr(res, "exit_code", None) == 0 else "failed",
-            "exit_code": getattr(res, "exit_code", None),
-            "findings_count": 0,
-            "parsed_data": [],
-            "metrics": {},
-            "evidence_count": 0,
-        }
 
     async def _run_browser_job(self, job: Job) -> dict:
         raw_actions = job.payload.get("actions", [])
@@ -217,21 +157,13 @@ class SonicWorker:
 
         # Import agents lazily to avoid circular imports
         from sonic.agents.codefix import CodeFixAgent
-        from sonic.agents.dynamic_execution import DynamicExecutionAgent
-        from sonic.agents.exploit_validator import ExploitValidator
         from sonic.agents.hypothesis import HypothesisGenerator
-        from sonic.agents.recon import ReconAgent
         from sonic.agents.static_reasoning import StaticReasoningAgent
-        from sonic.agents.verifier import VerifierAgent
 
         agent_classes = {
-            "recon": ReconAgent,
             "static": StaticReasoningAgent,
-            "dynamic": DynamicExecutionAgent,
             "hypothesis": HypothesisGenerator,
-            "verifier": VerifierAgent,
             "codefix": CodeFixAgent,
-            "exploit_validator": ExploitValidator,
         }
 
         agent_cls = agent_classes.get(agent_type)

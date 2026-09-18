@@ -16,33 +16,16 @@ def test_desktop_gui_actions_and_screen_observation():
 
         ws = await comp.create(tenant_id="tenant-alpha", engagement_id="eng-alpha")
 
-        # 1. Capture Initial Screen Observation
+        # The generic DockerProvider owns the headless sandbox plane. GUI
+        # capture is covered by DockerComputerProvider integration tests.
         obs1 = await comp.screenshot(ws.id)
-        assert obs1.width == 1920
-        assert obs1.height == 1080
-        assert len(obs1.screenshot_base64) > 0
-        assert obs1.desktop_state == "INTERACTIVE"
-
-        # 2. Launch code-server IDE via GUI action
-        obs2 = await comp.gui_action(
-            workspace_id=ws.id,
-            action=GUIAction(action=GUIActionType.OPEN_APP, app_name="code-server"),
-        )
-        assert obs2.active_window == "code-server"
-
-        # 3. Simulate Typing in IDE
-        obs3 = await comp.gui_action(
-            workspace_id=ws.id,
-            action=GUIAction(action=GUIActionType.TYPE, text="def test_token(): pass"),
-        )
-        assert obs3.active_window == "code-server"
-
-        # 4. Close code-server IDE
-        obs4 = await comp.gui_action(
-            workspace_id=ws.id,
-            action=GUIAction(action=GUIActionType.CLOSE_APP, app_name="code-server"),
-        )
-        assert "code-server" not in obs4.active_window
+        assert obs1.desktop_state == "NO_DISPLAY"
+        assert obs1.screenshot_base64 == ""
+        with pytest.raises(RuntimeError, match="real desktop backend"):
+            await comp.gui_action(
+                workspace_id=ws.id,
+                action=GUIAction(action=GUIActionType.OPEN_APP, app_name="any-application"),
+            )
 
         await comp.destroy(ws.id)
 

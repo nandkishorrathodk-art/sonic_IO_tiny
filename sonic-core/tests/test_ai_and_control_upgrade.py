@@ -16,13 +16,20 @@ Control:
 from __future__ import annotations
 
 import asyncio
-import json
 
 import pytest
 
-from sonic.agents.react_engine import ReActEngine, ToolCategory, ToolDefinition, create_default_tool_registry
+from sonic.agents.react_engine import (
+    ReActEngine,
+    ToolCategory,
+    ToolDefinition,
+    create_default_tool_registry,
+)
 from sonic.computer.models import (
-    ComputerState, FileEntry, GitStatusInfo, ScreenObservation,
+    ComputerState,
+    FileEntry,
+    GitStatusInfo,
+    ScreenObservation,
 )
 from sonic.computer.provider import ComputerProvider
 from sonic.computer_use.agent import ComputerUseAgent
@@ -381,11 +388,12 @@ def test_coordinate_validation_tracks_screen_from_observe():
     assert agent._screen_height == 768
 
 
-def test_sandbox_agent_observation_does_not_capture_desktop():
+def test_legacy_observe_desktop_flag_does_not_disable_desktop_observation():
     comp = _StubComputer()
     agent = ComputerUseAgent(computer_provider=comp, observe_desktop=False)
     _run(agent.observe(comp.workspace_id))
-    assert agent._last_screenshot_b64 == ""
+    assert agent._screen_width == comp.width
+    assert agent._screen_height == comp.height
 
 
 def test_off_screen_click_is_blocked_not_executed():

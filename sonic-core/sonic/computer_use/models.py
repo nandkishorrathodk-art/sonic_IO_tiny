@@ -167,7 +167,6 @@ class ComputerAutonomyLevel(StrEnum):
 
 class EngineeringMissionMode(StrEnum):
     ENGINEERING_MODE = "ENGINEERING_MODE"            # Source inspection, debug, edit, test, commit
-    SECURITY_RESEARCH_MODE = "SECURITY_RESEARCH_MODE"  # Recon, assessment, browser, evidence
     DEBUG_MODE = "DEBUG_MODE"                        # Focused bug reproduction, hypothesis testing
     GENERAL_ENGINEERING_MODE = "GENERAL_ENGINEERING_MODE"  # DevOps, QA, Cloud, Scripting
 
@@ -215,17 +214,6 @@ class ComputerActionType(StrEnum):
     # Trigger a file download from a link/button (human: click download, save
     # file). The downloaded file lands in the sandbox workspace for later use.
     BROWSER_DOWNLOAD = "BROWSER_DOWNLOAD"
-    # Security-tool execution: structured, in-sandbox, fail-closed scanning.
-    SECURITY_TOOL = "SECURITY_TOOL"
-    # Toolsmith: the being authors a NEW tool for an observation gap (Phase A,
-    # AIOSR). TOOL_AUTHOR proposes+persists the source; TOOL_RUN executes a
-    # previously-authored tool in-sandbox. Neither claims success by decree.
-    TOOL_AUTHOR = "TOOL_AUTHOR"
-    TOOL_RUN = "TOOL_RUN"
-    # Method-invention (Phase B, AIOSR): the being synthesizes a NOVEL offensive
-    # technique (a new method, not just a new tool) from observation + failure +
-    # the known-technique ledger. Confirmed only on real in-sandbox reproduction.
-    METHOD_INVENT = "METHOD_INVENT"
 
 
 # ============================================
@@ -249,6 +237,10 @@ class ComputerWorldObservation(BaseModel):
     git_clean: bool = True
     perception_version: int = 0
     perception_latency_ns: int = 0
+    perception_changed_fields: list[str] = Field(default_factory=list)
+    structured_sources: list[str] = Field(default_factory=list)
+    visual_residuals: list[tuple[int, int, int, int]] = Field(default_factory=list)
+    visual_changed: bool = True
     timestamp: str = Field(default_factory=_now)
 
 
@@ -282,6 +274,12 @@ class ComputerDecisionTrace(BaseModel):
     thought_duration_seconds: float = 0.0
     exit_code: int | None = None
     verification_evidence: str = ""
+    prediction_committed: bool = False
+    predicted_from_version: int | None = None
+    committed_at_version: int | None = None
+    predicted_fields: list[str] = Field(default_factory=list)
+    reality_commit: bool = False
+    verification_source: str = ""
     timestamp: str = Field(default_factory=_now)
 
     @property

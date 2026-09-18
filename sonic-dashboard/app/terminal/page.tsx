@@ -13,7 +13,7 @@ export default function TerminalPage() {
   const [buffer, setBuffer] = useState<string[]>([
     "\x1b[1;36m╔══════════════════════════════════════════════════════════════╗\x1b[0m",
     "\x1b[1;36m║\x1b[0m  \x1b[1;33m⚡ SONIC-REDA\x1b[0m — \x1b[1;37mVirtual Computer Terminal\x1b[0m                    \x1b[1;36m║\x1b[0m",
-    "\x1b[1;36m║\x1b[0m  \x1b[90mIsolated Sandbox Shell • Docker Cyber Workstation\x1b[0m           \x1b[1;36m║\x1b[0m",
+    "\x1b[1;36m║\x1b[0m  \x1b[90mIsolated Sandbox Shell • Docker Workstation\x1b[0m                 \x1b[1;36m║\x1b[0m",
     "\x1b[1;36m╚══════════════════════════════════════════════════════════════╝\x1b[0m",
     "",
   ]);

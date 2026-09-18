@@ -72,6 +72,7 @@ class AttackGraph:
         self._adjacency: dict[str, list[AttackEdge]] = {}
         self._fast_graph: Any = None
         self._dirty: bool = True
+        self._shortest_path_cache: dict[tuple[str, str], AttackPath | None] = {}
 
     def add_node(
         self,
@@ -94,6 +95,7 @@ class AttackGraph:
         if node_id not in self._adjacency:
             self._adjacency[node_id] = []
         self._dirty = True
+        self._shortest_path_cache.clear()
         return node
 
     def add_edge(
@@ -121,6 +123,7 @@ class AttackGraph:
         self.edges.append(edge)
         self._adjacency[source_id].append(edge)
         self._dirty = True
+        self._shortest_path_cache.clear()
         return edge
 
     def find_all_paths(self, start_id: str, target_id: str) -> list[AttackPath]:
@@ -129,7 +132,12 @@ class AttackGraph:
 
     def shortest_path(self, start_id: str, target_id: str) -> AttackPath | None:
         """Find the shortest hop attack route via BFS (accelerated)."""
-        return fast_shortest_path(self, start_id, target_id)
+        cache_key = (start_id, target_id)
+        if cache_key in self._shortest_path_cache:
+            return self._shortest_path_cache[cache_key]
+        result = fast_shortest_path(self, start_id, target_id)
+        self._shortest_path_cache[cache_key] = result
+        return result
 
     def _unaccelerated_find_all_paths(self, start_id: str, target_id: str) -> list[AttackPath]:
         """Unaccelerated reference DFS pathfinding for benchmarking and verification."""
@@ -221,4 +229,3 @@ class AttackGraph:
             lines.append(f'    {edge.source_id} -->|"{safe_tech}"| {edge.target_id}')
 
         return "\n".join(lines)
-

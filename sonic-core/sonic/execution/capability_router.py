@@ -80,9 +80,9 @@ class CapabilityRouter:
                - Application and UI interactions (GUI_*, APP_*, interactive BROWSER_*)
                  are cleanly dispatched to ExecutionSubstrate.COMPUTER.
             2. SONIC OPERATOR TOOLKIT (External Headless Execution):
-               Where commands and security scans run externally against targets, NOT tied to
+               Where commands run headlessly, NOT tied to
                or cluttering the computer desktop.
-               - External shell commands and scanning tools (SECURITY_TOOL, TERMINAL_EXEC, FILE_*)
+               - External shell commands (TERMINAL_EXEC, FILE_*)
                  are cleanly dispatched to ExecutionSubstrate.HEADLESS.
 
         Routing Rules:
@@ -91,10 +91,9 @@ class CapabilityRouter:
                 * APP_* (launch, focus, close, install) -> COMPUTER
                 * BROWSER_* (click, type, screenshot, wait, download) -> COMPUTER
             - Operator Toolkit actions:
-                * SECURITY_TOOL (registered target-specific capability) -> HEADLESS
                 * TERMINAL_EXEC (shell commands) -> HEADLESS
                 * FILE_* (file read/write) -> HEADLESS
-                * TOOL_AUTHOR, TOOL_RUN, METHOD_INVENT, GIT_* -> HEADLESS
+                * GIT_*, SERVICE_ACTION -> HEADLESS
             - BROWSER_NAVIGATE:
                 * HEADLESS if static/fetch-only (cURL/HTTP probe)
                 * COMPUTER if interactive/GUI requested (rendering DOM/JS for user interaction)
@@ -120,12 +119,11 @@ class CapabilityRouter:
                 return ExecutionSubstrate.COMPUTER
             return ExecutionSubstrate.HEADLESS
 
-        # Terminal commands, file operations, security scanning, tool synthesis, etc.
+        # Terminal commands, file operations, git, and services.
         if (
             val == "TERMINAL_EXEC"
             or val.startswith("FILE_")
-            or val == "SECURITY_TOOL"
-            or val in ("TOOL_AUTHOR", "TOOL_RUN", "METHOD_INVENT", "GIT_BRANCH", "GIT_COMMIT", "SERVICE_ACTION")
+            or val in ("GIT_BRANCH", "GIT_COMMIT", "SERVICE_ACTION")
         ):
             return ExecutionSubstrate.HEADLESS
 

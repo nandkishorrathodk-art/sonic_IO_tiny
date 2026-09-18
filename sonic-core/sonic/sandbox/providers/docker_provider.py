@@ -46,7 +46,7 @@ class DockerProvider(ComputeProvider):
         self._states: dict[str, WorkspaceState] = {}
 
     async def _resolve_network(self) -> str | None:
-        """Return the designated sandbox network, or ``None`` if it is unavailable."""
+        """Resolve the declared network, including Docker Compose prefixes."""
         if self._network_ok is None:
             probe = await asyncio.create_subprocess_exec(
                 "docker", "network", "inspect", self.default_network,
@@ -54,8 +54,27 @@ class DockerProvider(ComputeProvider):
                 stderr=asyncio.subprocess.PIPE,
             )
             _, _ = await asyncio.wait_for(probe.communicate(), timeout=10)
-            self._network_ok = probe.returncode == 0
-        return self.default_network if self._network_ok else None
+            if probe.returncode == 0:
+                self._resolved_network = self.default_network
+                self._network_ok = True
+            else:
+                listed = await asyncio.create_subprocess_exec(
+                    "docker", "network", "ls", "--format", "{{.Name}}",
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+                stdout, _ = await asyncio.wait_for(listed.communicate(), timeout=10)
+                names = [
+                    line.strip()
+                    for line in stdout.decode("utf-8", errors="replace").splitlines()
+                    if line.strip()
+                ]
+                self._resolved_network = next(
+                    (name for name in names if name.endswith(f"_{self.default_network}")),
+                    None,
+                )
+                self._network_ok = self._resolved_network is not None
+        return getattr(self, "_resolved_network", None) if self._network_ok else None
 
     async def create_workspace(self, config: WorkspaceConfig) -> bool:
         """Create and start a new container workspace."""
@@ -91,7 +110,10 @@ class DockerProvider(ComputeProvider):
         for k, v in config.env_vars.items():
             cmd.extend(["-e", f"{k}={v}"])
 
-        cmd.extend([config.image, "tail", "-f", "/dev/null"])
+        # The workstation image has a GUI entrypoint that requires VNC
+        # configuration. The ComputeProvider owns the headless sandbox plane,
+        # so bypass that entrypoint and keep the isolated shell alive.
+        cmd.extend(["--entrypoint", "/bin/bash", config.image, "-c", "tail -f /dev/null"])
 
         try:
             proc = await asyncio.create_subprocess_exec(

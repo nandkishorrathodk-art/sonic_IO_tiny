@@ -34,7 +34,7 @@ def test_local_sandbox_host_execution_lock():
 def test_local_sandbox_file_operations(tmp_path):
     """Test LocalSandbox file read, write, and listing."""
     async def _run():
-        sandbox = LocalSandbox(allow_host_execution=True)
+        sandbox = LocalSandbox(allow_host_execution=True, base_dir=tmp_path)
         test_file = str(tmp_path / "sandbox_test.txt")
 
         ok = await sandbox.write_file(test_file, "isolated_evidence_payload")

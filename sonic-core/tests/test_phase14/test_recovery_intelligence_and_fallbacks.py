@@ -20,11 +20,11 @@ def test_recovery_intelligence_and_self_healing():
 
         # 1. Trigger GUI failure recovery
         rec_gui = await agent.recover(ws.id, ComputerActionType.APP_LAUNCH, "code-server not responding")
-        assert "Restarted Xvfb" in rec_gui
+        assert "desktop focus" in rec_gui
 
         # 2. Trigger missing file recovery
         rec_file = await agent.recover(ws.id, ComputerActionType.FILE_READ, "File not found")
-        assert "Re-created missing target file" in rec_file
+        assert "Recovery blocked" in rec_file
 
         # 3. Trigger terminal recovery
         rec_term = await agent.recover(ws.id, ComputerActionType.TERMINAL_EXEC, "Shell exited 1")

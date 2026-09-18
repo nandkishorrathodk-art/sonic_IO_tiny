@@ -20,7 +20,7 @@ class ComputerSkillLedger:
         safe_tenant = re.sub(r"[^A-Za-z0-9_.-]", "_", tenant_id or "default")
         base = Path(root or "sonic_data/skills")
         self.path = base / f"{safe_tenant}.json"
-        self._data: dict[str, Any] = {"applications": {}, "actions": []}
+        self._data: dict[str, Any] = {"applications": {}, "actions": [], "failures": []}
         self._load()
 
     def _load(self) -> None:
@@ -67,6 +67,20 @@ class ComputerSkillLedger:
             actions[:] = actions[-20:]
             self._save()
 
+    def record_failure(self, application: str, action: str, evidence: str) -> None:
+        """Persist a real failed approach without making it reusable."""
+        app = str(application or "").strip()
+        act = str(action or "").strip()
+        ev = str(evidence or "").strip()
+        if not act or not ev:
+            return
+        item = {"application": app[:120], "action": act[:160], "evidence": ev[:500]}
+        failures = self._data.setdefault("failures", [])
+        if item not in failures:
+            failures.append(item)
+            failures[:] = failures[-50:]
+            self._save()
+
     def context(self, limit: int = 20) -> str:
         lines: list[str] = []
         for name, record in list(self._data["applications"].items())[:limit]:
@@ -75,5 +89,11 @@ class ComputerSkillLedger:
             lines.append(
                 f"- {name}: observed {record.get('observations', 0)} times"
                 + (f"; verified actions: {learned}" if learned else "")
+            )
+        failures = self._data.get("failures", [])[-5:]
+        for item in failures:
+            lines.append(
+                f"- avoid {item.get('action', '')}"
+                + (f" ({item.get('evidence', '')[:120]})" if item.get("evidence") else "")
             )
         return "\n".join(lines)

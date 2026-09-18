@@ -20,17 +20,10 @@ load_dotenv()
 
 from sonic import __codename__, __version__
 from sonic.api.routes import (
-    agents,
     auth,
-    engagements,
-    experiments,
-    findings,
-    graph,
     health,
     jobs,
-    live,
     llm,
-    security,
     terminal,
     workstation,
 )
@@ -120,55 +113,14 @@ async def _maybe_start_being_life_loop(settings):
         # Reuse a shared LLM router if available; curiosity needs an LLM.
         from sonic.llm.router import ModelRouter
         router = ModelRouter.for_default() if hasattr(ModelRouter, "for_default") else ModelRouter()
-        # Wire security tools so the being can actually run real scans
-        # (nmap/nuclei/ffuf/http) during self-directed curiosity.
-        from sonic.tools.registry import get_default_registry
-        security_registry = get_default_registry(provider)
-        # Toolsmith loop (Phase A, AIOSR): the being authors NEW tools for
-        # observation gaps.
-        from sonic.being.craft import BeingCraft
-        from sonic.being.toolsmith import ToolsmithLoop
-        toolsmith = ToolsmithLoop(
-            craft=BeingCraft(being_id=being.being_id),
-            llm=router, registry=security_registry,
-        )
-        # Method Lab loop (Phase B, AIOSR): the being invents NEW attack methods
-        # for defensive postures where existing tools fail.
-        from sonic.being.method_lab import MethodLab
-        method_lab = MethodLab(
-            craft=BeingCraft(being_id=being.being_id),
-            llm=router, registry=security_registry,
-        )
-        # Lessons Ledger (Phase C, AIOSR): the being learns from experience
-        # and adapts testing strategies across missions.
-        from sonic.being.lessons import LessonsLedger
-        lessons_ledger = LessonsLedger(tenant_id=tenant_id)
-        # Self-Evolution Engine: Dynamic strategy adaptation and codebase upgrades.
-        from sonic.evolution.engine import EvolutionEngine
-        from sonic.evolution.strategy import DynamicStrategyEngine
-        evolution_engine = EvolutionEngine(
-            strategy_engine=DynamicStrategyEngine(),
-            method_lab=method_lab,
-            toolsmith=toolsmith,
-            lessons_ledger=lessons_ledger,
-        )
         agent = ComputerUseAgent(
             computer_provider=provider, llm_router=router,
-            security_tools=security_registry.as_dict(),
             safety=safety, self_host=True, tenant_id=tenant_id, agent_id=being.being_id,
             # Wire the browser so the being can navigate/click/type/screenshot as
             # a first-class reasoning action (was orphaned before).
             browser=None,
             gui_only=False,
             observe_desktop=True,
-            # Wire the toolsmith so the being can author + run its own tools.
-            toolsmith=toolsmith,
-            # Wire the method lab so the being can invent new techniques.
-            method_lab=method_lab,
-            # Wire the lessons ledger so cross-mission lessons compound across sessions.
-            lessons_ledger=lessons_ledger,
-            # Wire the self-evolution engine for dynamic strategy adaptation and codebase upgrades.
-            evolution_engine=evolution_engine,
             # Wire the being's persistent mind (mood) into reasoning — the LLM
             # actually sees curiosity_drive/focus/satiety when choosing actions.
             being_mind=get_being_store().get_mind(being.being_id),
@@ -291,16 +243,9 @@ app.add_middleware(
 app.include_router(health.router, tags=["Health"])
 app.include_router(auth.router, prefix="/auth", tags=["Authentication"])
 app.include_router(llm.router, prefix="/llm", tags=["LLM"])
-app.include_router(engagements.router, prefix="/engagements", tags=["Engagements"])
-app.include_router(agents.router, prefix="/agents", tags=["Agents"])
-app.include_router(graph.router, prefix="/graph", tags=["Graph Memory"])
-app.include_router(findings.router, prefix="/findings", tags=["Findings"])
-app.include_router(experiments.router, prefix="/experiments", tags=["Experiments"])
 app.include_router(terminal.router, prefix="/terminal", tags=["Terminal"])
-app.include_router(live.router, prefix="/live", tags=["Live Dashboard"])
 app.include_router(jobs.router, prefix="/jobs", tags=["Async Jobs"])
 app.include_router(workstation.router, tags=["Workstation"])
-app.include_router(security.router, prefix="/security", tags=["Self-Security Lab"])
 
 
 

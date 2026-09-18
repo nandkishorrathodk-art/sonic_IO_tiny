@@ -147,6 +147,9 @@ class ScreenObservation(BaseModel):
     active_window: str = "Desktop"
     visible_text: str = ""
     detected_controls: list[str] = Field(default_factory=list)
+    # Provider-supplied damage rectangles. Empty means the provider did not
+    # expose frame damage metadata; callers must not infer regions from pixels.
+    changed_regions: list[tuple[int, int, int, int]] = Field(default_factory=list)
     desktop_state: str = "INTERACTIVE"
     timestamp: str = Field(default_factory=_now)
 

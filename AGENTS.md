@@ -1,38 +1,136 @@
-# AGENTS.md — SONIC-REDA repository memory
+# AGENTS.md — SONIC repository memory
 
 ## Project overview
-SONIC is an **Autonomous Self-Evolving Penetration Architect (A-SEA)**: an
-AI-driven self-developing offensive-security being that operates its own
-sandboxed computer environment, autonomously performs authorized security
-assessments, discovers and tests new attack hypotheses, analyzes results,
-learns from failures and successes, authors its OWN tools (Toolsmith) and
-synthesizes NOVEL attack methods (Method Lab), and improves its own testing
-strategies, tools, and workflows over time — all within a sealed, tamper-evident
-safety envelope, with every "confirmed" / "working" claim backed by real
-in-sandbox reproduction (no success-by-decree).
-
-Formerly "SONIC-REDA (autonomous AI red-team system)". The identity was
-renamed to A-SEA to match the actual capability surface (researcher +
-architect, not just operator). All LLM prompts now use the A-SEA identity.
+SONIC is a general-purpose AI computer-using researcher/being. Its active
+product surface is limited to ordinary GUI computer work and isolated Sandbox
+work; offensive cybersecurity workflows, scanners, exploit research, and
+security-specific tool authoring are not part of this repository.
 
 Architecture: FastAPI backend (`sonic-core/`), Next.js dashboard
 (`sonic-dashboard/`), Docker sandbox execution, Neo4j graph memory,
 multi-tenant RBAC.
 
 ## Core Architecture: AI-Human Being with Dedicated Computer Workstation
-SONIC is designed as an autonomous **AI-Human Hacker Being** operating its own dedicated personal computer workstation, combining human-grade cognitive intuition with native execution capabilities.
+SONIC is designed as an autonomous AI-human researcher operating its own
+dedicated personal computer workstation, combining human-like reasoning with
+native execution capabilities.
+
+### Continuum foundation (current direction)
+The Computer plane is moving toward an event-driven perception continuum rather
+than a mandatory screenshot/OCR cycle. `computer_use/perception_bus.py` keeps a
+versioned live snapshot, deduplicates unchanged observations, accepts small
+state patches, and emits change events to low-latency consumers. Structured
+accessibility, application, browser, and process state should be preferred;
+screenshots and OCR remain fallback evidence for genuinely visual ambiguity.
+
+### Continuum delivery phases (saved roadmap)
+The following phases are the committed implementation sequence for the
+foundation. They describe measurable engineering work, not an ASI claim:
+
+0. **Scope and correctness** — keep only general Computer/Sandbox work,
+   authentication, tenant isolation, provider isolation, and real-result
+   verification.
+1. **Computer/Sandbox foundation** — GUI actions, screenshots, applications,
+   terminal, files, tests, git, interruption, and provider-failure handling.
+2. **Perception kernel** — versioned cached state, deduplication, incremental
+   patches, change subscriptions, and stale-target invalidation.
+3. **Honest latency measurement** — measure real perception, reasoning,
+   dispatch, verification, p50/p95, failures, and recovery; never fabricate
+   timings or outcomes.
+4. **Provider-neutral event adapters** — translate real desktop, window,
+   accessibility, browser, filesystem, process, and sandbox changes into
+   perception patches without crossing the Computer/Sandbox boundary. Docker
+   lifecycle events may populate only the explicit `runtime_state`; they must
+   not be misrepresented as filesystem or in-container process events.
+5. **Structured perception** — prefer accessibility and DOM/application state,
+   then window/process/filesystem state, with screenshot/OCR only for unresolved
+   visual ambiguity. The current implementation records truthful structured
+   sources (`browser_dom`, `window_state`, `process_state`, and
+   `filesystem_state`) so consumers can make that priority explicit.
+6. **Incremental visual residuals** — process changed screen regions instead of
+   repeatedly processing complete screenshots. Only provider-supplied
+   `ScreenObservation.changed_regions` are accepted; empty metadata means no
+   residual claim is made.
+7. **Reflex executor** — dispatch already-grounded, reversible, low-risk actions
+   locally while retaining policy and stale-state checks. The current
+   `ReflexExecutor` is wired into the live mission loop.
+8. **Fast/deep controller** — use fast execution for known state and deeper
+   reasoning for novelty, ambiguity, or repeated failure. `FastDeepController`
+   now explicitly returns `FAST` only for current, high-confidence reversible
+   targets; unresolved or non-reflex actions return `DEEP` without dispatch.
+9. **Predictive state** — prepare reversible next actions from predicted state,
+   committing only after the real state transition is observed. Prepared
+   actions are bound to their originating perception version; stale speculation
+   routes to deep reasoning instead of executing.
+10. **Reality commit** — independently verify each action and replan from actual
+    state transitions rather than model declarations. A prediction is committed
+    only when a successful action causes a relevant observed field change;
+    failed or unverified actions remain unverified even if the screen changes.
+11. **Owned-computer lifecycle** — persist workstation identity, workspace state,
+    reconnect/restart recovery, operator takeover, and resource visibility.
+    Durable identity is separate from liveness: Docker home workspaces refresh
+    their status from the real container before reuse and never claim
+    `RUNNING` solely because metadata exists.
+12. **Long-horizon researcher** — add general planning, memory-backed learning,
+    self-correction, and human escalation only when evidence requires it.
+13. **Production readiness** — pass the cleaned Computer/Sandbox foundation
+    suite, backend/dashboard contract checks, restart tests, isolation tests,
+    interruption tests, and empirical latency gates.
+
+The current implementation checkpoint includes provider-backed desktop,
+filesystem, process, and browser/DOM adapters, the empirical benchmark,
+grounded reflex execution, and the first Fast/Deep routing slice. A prepared
+reversible GUI action can bypass an unnecessary LLM round-trip only after the
+current perception version and target confidence are validated. Ambiguous,
+stale, irreversible, or unprepared actions continue through deep reasoning.
+Filesystem and process updates use incremental bus patches and do not require
+another screenshot. Browser updates use the existing browser observation
+surface; no synthetic accessibility events are invented.
+
+### Foundation validation checkpoint (2026-09-18)
+- Clean Computer/Sandbox suite: **521 passed, 27 skipped**.
+- Backend source compilation: passed.
+- Dashboard production build from `sonic-dashboard/`: passed.
+- `git diff --check`: passed.
+- Remaining skipped tests require live Docker/Daytona infrastructure.
+- Phase 7 has a grounded reflex slice and Phase 8 has a prepared-action
+  Fast/Deep routing slice; neither phase is complete. Phases 5-6 and 8-13
+  remain roadmap work; do not describe them as implemented until their code
+  paths and tests exist.
+- Phase 9 has predictive state capture and Phase 10 has an initial reality
+  commit slice: a pending fast action becomes VERIFIED only after a relevant
+  perception transition, and becomes UNVERIFIED when the next transition is
+  unrelated. These are initial slices, not complete phases.
+- Phase 11 has an initial Docker lifecycle slice: workspace metadata survives
+  provider restart through an atomic tenant-scoped state file, and explicit
+  reconnect refuses a different tenant. Live container reconnect remains
+  environment-gated.
+- The workstation prompt contract now distinguishes an accepted background
+  mission from an honest `workstation_unavailable` response when no provider
+  can provision a desktop; tests must not require a fake `Thinking...` state
+  in the unavailable-provider case.
+- Phase 12 has an initial generic learning slice: the tenant-scoped
+  `ComputerSkillLedger` persists verified action patterns and failed/unverified
+  approaches, and an agent can inject that context into deep reasoning. A
+  learned pattern remains advisory and must be validated against live state.
+- Structured browser controls are normalized into bounded DOM metadata, and
+  `PerceptionBus.visual_changed` lets consumers skip unchanged visual work.
 
 ### 1. Dual-Plane Operational Model (Full Computer Desktop + Dedicated Terminal)
 SONIC operates concurrently across two clean execution planes with **complete computer agency** — it can do everything on its computer and autonomously decides whether to use GUI applications, multiple desktop windows, or the separate terminal:
 - **Workstation Application Plane (Computer-Use)**: Interacts with the full graphical desktop environment (X11/Wayland via `GUI_*`, `APP_*`, `BROWSER_*`). It is capable of operating **ANY arbitrary desktop application, tool, editor, console, network analyzer, debugger, or browser** installed on the OS. It dynamically manages multiple windows, interacts with GUI controls via visual perception, and settles displays without assumptions of a single fixed tool. The GUI is NEVER disabled.
-- **Operator & Sandbox Plane (Direct Headless Execution)**: Dedicated, non-graphical execution plane (`TERMINAL_EXEC`, `SECURITY_TOOL`, `FILE_*`, `GIT_*`, Toolsmith, and native Rust `sonic-kernel-rs`). High-throughput, precise tasks (custom Python probes, socket listeners, source code auditing, AST manipulation, git commits, tool compilation) execute directly in the sandbox without cluttering the desktop GUI or wasting perception tokens.
-- **Autonomous Selection (Zero Puppet Scripts)**: SONIC itself decides which plane or tool to use based on observations and goals. There are no scripted puppet heuristics forcing or forbidding either plane.
+- **Operator & Sandbox Plane (Direct Headless Execution)**: Dedicated, non-graphical execution plane (`TERMINAL_EXEC`, `FILE_*`, `GIT_*`, and process execution). Terminal, file, and git work executes directly in the sandbox without typing commands into the desktop.
+- **Strict plane boundary**: The Computer plane owns GUI/application actions only. The Sandbox plane owns terminal, files, git, and headless process execution only. Both planes remain active concurrently; legacy `gui_only` and `observe_desktop=False` inputs must not disable either plane.
+- **Autonomous Selection (Zero Puppet Scripts)**: SONIC itself decides which plane to use based on observations and goals. There are no scripted puppet heuristics forcing or forbidding either plane.
 
 ### 2. Autonomous Epistemics & Self-Evolution
 - **Always-On Life & Curiosity Loop**: When no operator task is active, the being explores, hypothesizes, and learns autonomously under the sealed safety envelope.
 - **Durable Craft & Memory**: Persists identity, affect, learned knowledge, and authored artifacts across boots and restarts without amnesia.
-- **Empirical Falsification**: Zero success-by-decree. Hypotheses and security claims require verified reproduction receipts from real in-sandbox execution.
-- **Toolsmith & Method Lab**: Autonomously authors its own specialized scripts (Toolsmith) and synthesizes novel offensive techniques (Method Lab) rather than relying on static exploit libraries.
+- **Empirical Work**: Zero success-by-decree. Claims about completed tasks require
+  evidence from the real GUI or Sandbox result.
+- **Scope boundary**: Research means ordinary observation, software work,
+  document work, testing, and other operator-requested computer tasks. The
+  repository contains no active offensive-security workflow.
 
 ### 3. Strict Core Mandate & Prohibitions (Aisa Karna Mana Hai)
 1. **Zero Hardcoded Application Names**: Control flow, perception parsing, window tiling, intent routing, and prompt templates must NEVER hardcode or favor specific application or binary names (e.g. no chrome, chromium, firefox, burp, caido, wireshark, vscode). All applications must be dynamically discovered from the operating system environment (via `$PATH`, `which`, POSIX alternatives like `x-www-browser`/`sensible-browser`/`xdg-open`, desktop `.desktop` entries, and active OS window titles).
@@ -40,6 +138,9 @@ SONIC operates concurrently across two clean execution planes with **complete co
 3. **Zero External/Mock Domains & Endpoints**: Hardcoded external domains (e.g. `example.com`, `google.com`, `httpbin.org`, `target.com`) and fake proxy endpoints (e.g. `http://proxy/cert`) are strictly forbidden in production logic, prompts, and tests. All URLs must be operator-supplied, dynamically discovered in-scope targets, or RFC 5737 test documentation network addresses (`198.51.100.1`).
 4. **Dynamic Perception Grounding**: All UI interactions must derive strictly from real multimodal visual perception and dynamic window/accessibility coordinates. Static coordinate lookup tables, landmark percentage fallbacks, and canned prompt-based fallbacks are prohibited.
 5. **Zero Siloing or Disabling of Planes**: Turning off GUI (`observe_desktop=False`) or turning off terminal (`gui_only=True`) is strictly forbidden. Both planes must be active concurrently at all times.
+6. **Foundation scope**: Generic objectives are handled as ordinary GUI
+   computer-use or sandbox engineering tasks. Do not add offensive-security
+   actions, scanners, exploit chains, or target-assessment workflows.
 
 ## Layout
 - `sonic-core/` — Python backend (uv workspace, Python 3.12+). `pip install -e sonic-core[dev]`.
@@ -2122,12 +2223,3 @@ Transformed SONIC from a raw diff applier into an intelligent, goal-driven, vers
 ### 4. Verification Baseline (100% Green)
 - `sonic-core/tests/test_advanced_evolution.py` (9 tests) — **9 passed in 3.00s**.
 - Full regression suite across Evolution, Kernel, Safety, and Broker (42 tests) — **42 passed in 4.56s**.
-
-
-
-
-
-
-
-
-

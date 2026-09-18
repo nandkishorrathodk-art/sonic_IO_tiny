@@ -16,10 +16,10 @@ def test_application_install_block_and_uninstall():
         ws = await comp.create(tenant_id="tenant-alpha", engagement_id="eng-alpha")
 
         # 1. Install allowed package
-        ok_install, _ = await comp.install_application(ws.id, "ffuf")
+        ok_install, _ = await comp.install_application(ws.id, "curl")
         assert ok_install is True
         installed = await comp.application_list(ws.id)
-        assert "ffuf" in installed
+        assert "curl" in installed
 
         # 2. Block prohibited package
         blocked_ok, reason = await comp.install_application(ws.id, "cryptominer")
@@ -27,10 +27,10 @@ def test_application_install_block_and_uninstall():
         assert "prohibited" in reason.lower()
 
         # 3. Uninstall package
-        uninstalled = await comp.uninstall_application(ws.id, "ffuf")
+        uninstalled = await comp.uninstall_application(ws.id, "curl")
         assert uninstalled is True
         installed_after = await comp.application_list(ws.id)
-        assert "ffuf" not in installed_after
+        assert "curl" not in installed_after
 
         await comp.destroy(ws.id)
 

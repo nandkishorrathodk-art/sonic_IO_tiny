@@ -6,17 +6,17 @@ move, scroll, screenshot) to the computer provider, that the LLM prompt
 includes GUI actions in its schema, that the action parser handles coordinate
 formats, and that the safety policy allows GUI actions.
 """
-import asyncio
-import pytest
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
-from sonic.computer.models import GUIAction, GUIActionType, ScreenObservation
-from sonic.computer_use.models import ComputerActionType, ComputerWorldObservation
+import pytest
+
+from sonic.computer.models import GUIActionType, ScreenObservation
 from sonic.computer_use.agent import ComputerUseAgent
+from sonic.computer_use.models import ComputerActionType
 from sonic.safety.action_policy import ActionPolicy
 
-
 # ---- Helpers ----
+
 
 def _mock_provider():
     """Build a mock ComputerProvider with async methods."""
@@ -79,7 +79,7 @@ class TestGUIActionDispatch:
         assert "Pressed key: Return" in trace.actual_observation
 
     @pytest.mark.asyncio
-    async def test_gui_only_blocks_terminal_before_provider_execution(self):
+    async def test_legacy_gui_only_flag_does_not_disable_sandbox(self):
         provider = _mock_provider()
         agent = ComputerUseAgent(computer_provider=provider, gui_only=True)
 
@@ -88,9 +88,8 @@ class TestGUIActionDispatch:
             {"command": "uname -a"}, "Inspect the desktop host"
         )
 
-        assert trace.status == "BLOCKED"
-        assert trace.exit_code == 126
-        provider.terminal.assert_not_awaited()
+        assert trace.status == "SUCCESS"
+        provider.terminal.assert_awaited()
         provider.gui_action.assert_not_called()
 
     @pytest.mark.asyncio
@@ -100,41 +99,31 @@ class TestGUIActionDispatch:
             "Non-GUI proposal discarded",
         )
 
-        assert action_type == ComputerActionType.GUI_KEYPRESS
-        assert target == "visible-active-window"
-        assert payload == {"key": "ctrl+w"}
-        assert "Ctrl+W" in expected
+        assert action_type == ComputerActionType.GUI_SCREENSHOT
+        assert target == "visible-desktop"
+        assert payload == {}
+        assert "visible desktop" in expected
 
     @pytest.mark.asyncio
-    async def test_gui_only_close_tabs_intent_bypasses_vision_grounding(self):
-        provider = _mock_provider()
-        router = MagicMock()
-        agent = ComputerUseAgent(
-            computer_provider=provider,
-            llm_router=router,
-            gui_only=True,
+    async def test_legacy_gui_only_flag_does_not_force_a_recovery_action(self):
+        agent = ComputerUseAgent(computer_provider=_mock_provider(), gui_only=True)
+        action_type, target, payload, _ = agent._gui_only_recovery_action(
+            "close the active application",
+            "No direct action was selected",
         )
-
-        action_type, target, payload, _ = await agent.choose_action(
-            "hi sonic, close browser and close all tabs",
-            ComputerWorldObservation(),
-        )
-
-        assert action_type == ComputerActionType.GUI_KEYPRESS
-        assert target == "visible-active-window"
-        assert payload == {"key": "ctrl+w"}
-        router.complete.assert_not_called()
+        assert action_type == ComputerActionType.GUI_SCREENSHOT
+        assert target == "visible-desktop"
+        assert payload == {}
 
     @pytest.mark.asyncio
-    async def test_gui_only_observation_does_not_probe_files_git_or_terminal(self):
+    async def test_legacy_gui_only_flag_keeps_both_planes_observable(self):
         provider = _mock_provider()
         agent = ComputerUseAgent(computer_provider=provider, gui_only=True)
 
         await agent.observe("ws-1")
 
-        provider.terminal.assert_not_awaited()
-        provider.list_files.assert_not_awaited()
-        provider.git_action.assert_not_awaited()
+        provider.list_files.assert_awaited()
+        provider.git_action.assert_awaited()
 
     @pytest.mark.asyncio
     async def test_gui_only_browser_navigation_uses_visible_keyboard_actions(self):
@@ -173,7 +162,7 @@ class TestGUIActionDispatch:
         )
 
         assert trace.status in ("FAILED", "RECOVERED", "BLOCKED")
-        motor.backtrack.assert_not_awaited()
+        motor.backtrack.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_gui_double_click_dispatches(self):

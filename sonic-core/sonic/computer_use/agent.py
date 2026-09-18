@@ -27,9 +27,9 @@ from typing import Any
 from sonic.computer.models import (
     GUIAction,
     GUIActionType,
-    ScreenObservation,
 )
 from sonic.computer.provider import ComputerProvider
+from sonic.computer_use.fast_deep import FastDeepController, PreparedAction
 from sonic.computer_use.grounding import (
     draw_action_marker,
     query_multimodal_grounding,
@@ -50,6 +50,7 @@ from sonic.computer_use.models import (
 )
 from sonic.computer_use.motor import MotorReflexes
 from sonic.computer_use.perception_bus import PerceptionBus
+from sonic.computer_use.reflex_executor import ReflexExecutor
 from sonic.computer_use.scratchpad import HackerScratchpad
 from sonic.computer_use.wire_telemetry import WireTelemetryEngine
 from sonic.llm.prompts import COMPUTER_USE_SYSTEM_PROMPT
@@ -135,9 +136,19 @@ logger = _SafeLogger(get_logger(__name__))
 # A sentinel the LLM may emit to signal the goal is achieved, so the mission
 # loop can terminate early instead of running a fixed step count.
 _GOAL_COMPLETE_SENTINEL = "GOAL_COMPLETE"
+FOUNDATION_RUNTIME_MODE = True
 
 
 class ComputerUseAgent:
+    # Foundation mode keeps the general computer and sandbox substrate active
+    # while all offensive-security capabilities remain dormant.
+    FOUNDATION_MODE = FOUNDATION_RUNTIME_MODE
+    # Keep partially constructed agents usable for verification/recovery
+    # helpers. Tests, serializers, and orchestration adapters may instantiate
+    # an agent without running __init__ first.
+    gui_only: bool = False
+    observe_desktop: bool = True
+
     """
     Autonomous Computer-Using Engineer uniting Brain (Cognitive State,
     Hypothesis Portfolio, Epistemic Reasoning) and Body (SONIC Computer).
@@ -153,18 +164,17 @@ class ComputerUseAgent:
     def __init__(
         self,
         computer_provider: ComputerProvider,
+        sandbox_provider: Any | None = None,
         autonomy_level: ComputerAutonomyLevel = ComputerAutonomyLevel.L3_AUTONOMOUS,
         mode: EngineeringMissionMode = EngineeringMissionMode.ENGINEERING_MODE,
         max_actions: int = 50,
         max_recovery_attempts: int = 5,
         llm_router: Any | None = None,
         browser: Any | None = None,
-        security_tools: dict[str, Any] | None = None,
         safety: Any | None = None,
         self_host: bool = False,
-        toolsmith: Any | None = None,
-        method_lab: Any | None = None,
         lessons_ledger: Any | None = None,
+        skill_ledger: Any | None = None,
         tenant_id: str = "default",
         engagement_id: str = "default",
         agent_id: str = "computer-use-agent",
@@ -176,23 +186,21 @@ class ComputerUseAgent:
         motor: MotorReflexes | None = None,
         wire_telemetry: WireTelemetryEngine | None = None,
         being_mind: Any | None = None,
-        evolution_engine: Any | None = None,
         observe_desktop: bool = True,
         gui_only: bool = False,
         initial_context: dict[str, Any] | None = None,
         **kwargs: Any,
     ):
         self.computer = computer_provider
-        # Keep the application desktop optional. Sandbox/operator missions
-        # should not capture pixels merely because a workstation exists.
-        self.observe_desktop = observe_desktop
-        # The graphical computer plane can be locked away from PTY/shell
-        # execution. Backend operator tooling remains a separate plane.
-        self.gui_only = gui_only
-        if gui_only:
+        # Both planes are mandatory. Keep the legacy arguments for callers,
+        # but do not allow them to silently disable either execution plane.
+        self.sandbox = sandbox_provider or computer_provider
+        self.observe_desktop = True
+        self.gui_only = False
+        if not observe_desktop or gui_only:
             logger.warning(
-                "gui_only_mode_deprecated",
-                message="gui_only mode violates Mandate 5 (Dual-Plane Concurrency); both GUI and Terminal planes should remain concurrently active.",
+                "single_plane_mode_ignored",
+                message="ComputerUseAgent always keeps GUI observation and sandbox execution active.",
             )
         # Context supplied by the caller is advisory evidence, never a
         # replacement for the immutable operator objective.
@@ -200,6 +208,9 @@ class ComputerUseAgent:
         # Shared versioned perception state keeps semantic targets and
         # sub-agents on one live snapshot without repeatedly decoding pixels.
         self.perception_bus = PerceptionBus()
+        self.reflex_executor = ReflexExecutor(self, self.perception_bus)
+        self.fast_deep_controller = FastDeepController(self.reflex_executor)
+        self._prepared_action: PreparedAction | None = None
         self.autonomy_level = autonomy_level
         self.mode = mode
         self.max_actions = max_actions
@@ -208,39 +219,12 @@ class ComputerUseAgent:
         # Optional BrowserAgent so the same observe->reason->act loop can drive a
         # real web browser (navigate/click/type/screenshot) — unified computer-use.
         self.browser = browser
-        # Optional registry of SecurityTool adapters (name -> tool) the agent can
-        # invoke as a first-class reasoning action. Tools execute in-sandbox and
-        # fail closed; their structured findings feed back into the observation.
-        self.security_tools = security_tools or {}
-        # Optional ToolsmithLoop (Phase A, AIOSR): the being authors NEW tools
-        # for observation gaps. The authored tool is registered into the
-        # security_tools map ONLY after a real in-sandbox run succeeds.
-        self.toolsmith = toolsmith
-        # Optional MethodLab (Phase B, AIOSR): the being synthesizes NOVEL
-        # offensive techniques (new methods, not just tools) from observation +
-        # failure + the known-technique ledger. Confirmed only on reproduction.
-        self.method_lab = method_lab
         # Optional LessonsLedger (self-improvement learn→apply loop): persists
         # cross-mission lessons (failed approaches to avoid, successful ones to
         # reuse) and injects them into reasoning so the being does not forget
         # what it learned across missions. None = lessons not collected.
         self.lessons_ledger = lessons_ledger
-        # Optional Self-Evolution Engine: coordinates dynamic strategy, novel method invention,
-        # toolsmithing, cross-mission learning, and codebase evolution.
-        self.evolution_engine = evolution_engine
-        if self.evolution_engine is None:
-            try:
-                from sonic.evolution.engine import EvolutionEngine
-                from sonic.evolution.strategy import DynamicStrategyEngine
-                self.evolution_engine = EvolutionEngine(
-                    strategy_engine=DynamicStrategyEngine(),
-                    method_lab=self.method_lab,
-                    toolsmith=self.toolsmith,
-                    lessons_ledger=self.lessons_ledger,
-                )
-            except Exception as e:
-                logger.warning("lazy_evolution_engine_init_failed", error=str(e))
-        self._last_adapted_strategy: dict[str, Any] | None = None
+        self.skill_ledger = skill_ledger
         # Optional fail-closed safety envelope (PLAN Phase 6). Required in
         # self-host mode: the agent may NOT act autonomously without a policy.
         self.safety = safety
@@ -304,9 +288,6 @@ class ComputerUseAgent:
         # Last captured browser page state, carried into the next observation so
         # the LLM sees the current page even between browser actions.
         self._last_browser_snapshot: Any | None = None
-        # Last structured security-tool result, surfaced to the next reasoning
-        # step so the LLM acts on real scan findings rather than a claim.
-        self._last_tool_result: Any | None = None
         self._last_screenshot_b64: str = ""
         # Last observed screen dimensions, used to validate GUI coordinate
         # actions before they touch the provider. Updated on every observe() /
@@ -324,6 +305,10 @@ class ComputerUseAgent:
         self._last_gui_action_result: dict[str, Any] = {}
         self.checklist: SubGoalChecklist | None = None
 
+    def _sandbox_provider(self) -> Any:
+        """Return the headless execution plane without changing GUI ownership."""
+        return getattr(self, "sandbox", None) or self.computer
+
     def interrupt(self) -> None:
         """Signal the agent to stop its active mission loop immediately."""
         self._interrupted = True
@@ -339,12 +324,9 @@ class ComputerUseAgent:
             target_info = f" Target Host: {targets['hostnames'][0]}."
 
         action_examples = (
-            "Use only visible GUI actions such as launching/focusing an application, "
-            "clicking, typing, keypresses, scrolling, dragging, waiting, and observing."
-            if self.gui_only
-            else
-            "Each sub-goal must be a specific concrete action (for example, inspect a response, "
-            "author a probe, or launch an application and verify its window)."
+            "Each sub-goal must be a specific concrete action using the appropriate "
+            "GUI or sandbox plane (for example, inspect a file or launch an application "
+            "and verify its window)."
         )
         prompt = (
             f"Given this engineering or security mission:\n\"{goal}\"\n"
@@ -431,18 +413,7 @@ class ComputerUseAgent:
         interactive elements) is folded into the observation so the same
         reasoning loop can drive web interaction.
         """
-        if self.observe_desktop:
-            screen_obs = await self.computer.screenshot(workspace_id)
-        else:
-            screen_obs = ScreenObservation(
-                screenshot_base64="",
-                width=0,
-                height=0,
-                active_window="",
-                visible_text="",
-                detected_controls=[],
-                desktop_state="NOT_REQUESTED",
-            )
+        screen_obs = await self.computer.screenshot(workspace_id)
         # Store screenshot for vision-in-the-loop (VLM image input)
         self._last_screenshot_b64 = getattr(screen_obs, "screenshot_base64", "")
         # Track real screen dimensions so coordinate actions can be validated
@@ -456,12 +427,9 @@ class ComputerUseAgent:
         self._screen_width = int(getattr(screen_obs, "width", self._screen_width) or self._screen_width)
         self._screen_height = int(getattr(screen_obs, "height", self._screen_height) or self._screen_height)
         status = await self.computer.status(workspace_id)
-        if self.gui_only:
-            files = []
-            git_st = None
-        else:
-            files = await self.computer.list_files(workspace_id, ".")
-            git_st = await self.computer.git_action(workspace_id, "status")
+        sandbox = self._sandbox_provider()
+        files = await sandbox.list_files(workspace_id, ".")
+        git_st = await sandbox.git_action(workspace_id, "status")
 
         # Read live terminal state.
         # Prefer the agent's own recorded output from the last action so the
@@ -473,8 +441,6 @@ class ComputerUseAgent:
         if not hasattr(self, "_last_gui_action_result"):
             self._last_gui_action_result: dict[str, Any] = {}
         try:
-            if self.gui_only:
-                raise RuntimeError("GUI-only computer: terminal observation disabled")
             last_out = self._last_action_output
             terminal_output = ""
             if last_out and last_out.get("stdout", "").strip():
@@ -511,16 +477,12 @@ class ComputerUseAgent:
                     if "echo __sonic_obs_ready__" not in str(last_cmd):
                         terminal_output = _safe_str((last_stdout or "").strip())
             if not terminal_output:
-                term_res = await self.computer.terminal(workspace_id, "echo __sonic_obs_ready__")
+                term_res = await self._sandbox_provider().terminal(workspace_id, "echo __sonic_obs_ready__")
                 raw_stdout = getattr(term_res, "stdout", "") or ""
                 term_out = _safe_str(raw_stdout.strip())
                 terminal_output = term_out or f"Exit {getattr(term_res, 'exit_code', 0)}"
         except Exception:
-            terminal_output = (
-                "GUI-only computer: terminal observation disabled"
-                if self.gui_only
-                else f"Terminal Ready ({len(status.running_processes)} procs)"
-            )
+            terminal_output = f"Terminal Ready ({len(status.running_processes)} procs)"
 
         if not hasattr(self, "_last_navigated_url"):
             self._last_navigated_url = ""
@@ -538,6 +500,8 @@ class ComputerUseAgent:
             except Exception as e:
                 logger.warning("browser_observe_failed", error=str(e))
 
+        if not hasattr(self, "perception_bus"):
+            self.perception_bus = PerceptionBus()
         perception_snapshot = self.perception_bus.publish(
             screenshot_base64=self._last_screenshot_b64,
             width=self._screen_width,
@@ -548,6 +512,18 @@ class ComputerUseAgent:
             visible_text=getattr(screen_obs, "visible_text", ""),
             controls=getattr(screen_obs, "detected_controls", []),
             browser_state=browser_state,
+            visual_residuals=getattr(screen_obs, "changed_regions", ()),
+            structured_sources=(
+                "window_state",
+                "process_state",
+                "filesystem_state",
+                *(
+                    ("browser_dom",)
+                    if browser_state.get("interactive_elements")
+                    or browser_state.get("text")
+                    else ()
+                ),
+            ),
         )
         win_offset_x, win_offset_y = browser_state.get("window_offset") or (0, 0)
         for element in browser_state.get("interactive_elements", []):
@@ -591,6 +567,10 @@ class ComputerUseAgent:
             git_clean=git_st.is_clean if hasattr(git_st, "is_clean") else True,
             perception_version=perception_snapshot.version,
             perception_latency_ns=self.perception_bus.last_update_latency_ns,
+            perception_changed_fields=list(self.perception_bus.last_changed_fields),
+            structured_sources=list(perception_snapshot.structured_sources),
+            visual_residuals=list(perception_snapshot.visual_residuals),
+            visual_changed=self.perception_bus.visual_changed,
         )
 
     async def _observe_browser(self) -> dict[str, Any]:
@@ -689,6 +669,86 @@ class ComputerUseAgent:
             return await self._llm_choose_action(goal, observation, step_index, primary_file, test_file)
 
         return self._diagnostic_fallback(primary_file)
+
+    def prepare_reflex_action(
+        self,
+        action_type: ComputerActionType,
+        target: str,
+        payload: dict[str, Any],
+        predicted_outcome: str,
+    ) -> None:
+        """Queue one already-grounded action for the next live observation.
+
+        The action is consumed by ``run_mission`` only after the perception
+        version and target confidence are checked by ``ReflexExecutor``.
+        """
+        if action_type not in ReflexExecutor._REVERSIBLE:
+            raise ValueError("only reversible actions may be speculatively prepared")
+        self._prepared_action = PreparedAction(
+            action_type=action_type,
+            target=target,
+            payload=dict(payload),
+            predicted_outcome=predicted_outcome,
+            prepared_from_version=self.perception_bus.current().version,
+        )
+
+    async def _execute_prepared_reflex_action(
+        self,
+        workspace_id: str,
+    ) -> ComputerDecisionTrace | None:
+        action = getattr(self, "_prepared_action", None)
+        self._prepared_action = None
+        if action is None:
+            return None
+        controller = getattr(self, "fast_deep_controller", None)
+        if controller is None:
+            controller = FastDeepController(
+                getattr(self, "reflex_executor", ReflexExecutor(self, self.perception_bus))
+            )
+        _mode, trace = await controller.execute(workspace_id, action)
+        return trace
+
+    def _commit_pending_prediction(self) -> None:
+        """Commit a fast action only after a real perception transition."""
+        pending = getattr(self, "_pending_prediction", None)
+        if pending is None:
+            return
+        trace, before_version = pending
+        if trace.status not in (
+            ActionExecutionStatus.COMPLETED,
+            ActionExecutionStatus.SUCCESS,
+            ActionExecutionStatus.SUCCEEDED,
+        ):
+            trace.status = ActionExecutionStatus.UNVERIFIED
+            trace.verification_evidence = (
+                f"Action status {trace.status} cannot be reality-committed."
+            )
+            self._pending_prediction = None
+            return
+        snapshot = self.perception_bus.current()
+        if snapshot.version <= before_version:
+            return
+        changed = self.perception_bus.last_changed_fields
+        relevant = set(changed) & set(trace.predicted_fields)
+        if not relevant:
+            trace.status = ActionExecutionStatus.UNVERIFIED
+            trace.verification_evidence = (
+                f"Perception advanced to v{snapshot.version}, but no predicted "
+                "field changed; fast action remains uncommitted."
+            )
+            trace.verification_source = "perception_transition_without_predicted_change"
+            self._pending_prediction = None
+            return
+        trace.status = ActionExecutionStatus.VERIFIED
+        trace.prediction_committed = True
+        trace.reality_commit = True
+        trace.committed_at_version = snapshot.version
+        trace.verification_source = "independent_perception_transition"
+        trace.verification_evidence = (
+            f"Perception transitioned from v{before_version} to v{snapshot.version}; "
+            f"changed fields: {', '.join(sorted(relevant))}"
+        )[:500]
+        self._pending_prediction = None
 
     @staticmethod
     def _gui_only_recovery_action(
@@ -866,8 +926,7 @@ class ComputerUseAgent:
         git_branch_str = observation.git_branch or "UNKNOWN"
         primary_file_str = primary_file or "UNKNOWN"
         test_file_str = test_file or "UNKNOWN"
-        available_tools = ", ".join(sorted(self.security_tools.keys())) if self.security_tools else "UNKNOWN"
-
+        available_tools = "none"
         bs = observation.browser_state or {}
         browser_lines = ""
         active_url = bs.get("url") if (self.browser and bs.get("url") and bs.get("url") != "about:blank") else getattr(self, "_last_navigated_url", "")
@@ -908,24 +967,20 @@ class ComputerUseAgent:
                     "different control, or different interaction angle toward the target.\n"
                 )
 
-        tool_lines = ""
-        if self._last_tool_result is not None:
-            tr = self._last_tool_result
-            findings = getattr(tr, "parsed_data", []) or []
-            status = getattr(tr, "status", "?")
-            tool_name = getattr(tr, "tool_name", "?")
-            findings_excerpt = str(findings[:5])[:400]
-            tool_lines = (
-                f"Last security-tool result: tool={tool_name}, status={status}, "
-                f"findings_count={len(findings)}\n"
-                f"Findings excerpt: {findings_excerpt}\n"
-            )
-
         # Cross-mission lessons
         lessons_block = ""
         if self.lessons_ledger is not None:
             from sonic.being.lessons import inject_into_context
             lessons_block = inject_into_context(self.lessons_ledger.relevant(goal))
+        skill_block = ""
+        if self.skill_ledger is not None:
+            learned = self.skill_ledger.context(limit=10)
+            if learned:
+                skill_block = (
+                    "Verified computer skills and recent failure patterns "
+                    "(use only as hints; validate against live state):\n"
+                    f"{learned}\n"
+                )
 
         # Living state (BeingMind mood) — a real affect signal the LLM can
         # act on (fixed the audit: mood floats were never read by any prompt).
@@ -1006,18 +1061,6 @@ class ComputerUseAgent:
         active_sg_desc = active_sg.description if active_sg else goal
         checklist_str = self.checklist.render_prompt_markdown() if getattr(self, "checklist", None) else f"  Mission Goal: {goal}"
 
-        evolved_strategy_str = ""
-        if getattr(self, "_last_adapted_strategy", None):
-            plan = self._last_adapted_strategy
-            evolved_strategy_str = (
-                f"\n=== EVOLVED OFFENSIVE STRATEGY (Self-Evolution Engine) ===\n"
-                f"  Posture: {plan.get('posture')}\n"
-                f"  Rationale: {plan.get('rationale')}\n"
-                f"  Action Directive: {plan.get('action_mutation')}\n"
-                f"  AVOID Directive: {plan.get('avoid_directive')}\n"
-                f"=== END EVOLVED STRATEGY ===\n"
-            )
-
         cognitive_block = (
             "=== SITUATION FACTS ===\n"
             "WHAT DO I KNOW?\n"
@@ -1034,7 +1077,6 @@ class ComputerUseAgent:
             "  Choose the smallest safe action that can distinguish the leading hypotheses.\n"
             f"  {facts_str}\n"
             f"Failure log:\n{failure_str}\n"
-            f"{evolved_strategy_str}"
             f"Active sub-goal: {active_sg_desc}\n"
             f"Steps taken so far: {len(self.traces)}\n"
             f"Strategy A state: {strat_a_state.value if strat_a_state != StrategyState.EXHAUSTED else 'EXHAUSTED — pivot needed'}\n"
@@ -1070,13 +1112,10 @@ class ComputerUseAgent:
         )
 
         browser_content = browser_lines.strip() if browser_lines else "None"
-        tool_content = tool_lines.strip() if tool_lines else "None"
+        tool_content = "None"
         gui_policy_text = (
-            "GUI-ONLY MODE: use visible GUI applications and GUI actions only. "
-            "Do not use terminal, shell, file, script, package, security-tool, or backend actions."
-            if self.gui_only
-            else
-            "Operator toolkit is separate from the graphical desktop and may be used only when appropriate."
+            "The Computer/Application plane and Sandbox/Operator plane are both active "
+            "and must remain separate."
         )
 
         targets = self._extract_targets_from_goal(goal)
@@ -1125,6 +1164,7 @@ class ComputerUseAgent:
             f"Git branch: {git_branch_str}, clean: {observation.git_clean}\n"
             f"Primary file: {primary_file_str}, Test file: {test_file_str}\n"
             f"{lessons_block}"
+            f"{skill_block}"
             f"{living_block}"
         )
 
@@ -1206,12 +1246,8 @@ class ComputerUseAgent:
             )
 
         capability_directive = (
-            "Use only visible GUI applications and graphical controls; do not use terminal, "
-            "shell, scripts, files, packages, or backend tools.\n"
-            if self.gui_only
-            else
-            "You have full freedom to author custom code/tools (TOOL_AUTHOR), execute python snippets,\n"
-            "run curl or bash commands, inspect source, or interact via browser/GUI.\n"
+            "Use the graphical Computer plane for applications and the separate Sandbox "
+            "plane for terminal, files, services, and verification.\n"
         )
         target_header += (
             "================================================================================\n"
@@ -1226,10 +1262,11 @@ class ComputerUseAgent:
             "scope and directly support the operator objective.\n"
             "================================================================================\n\n"
         )
-        if self.initial_context:
+        initial_context = getattr(self, "initial_context", {})
+        if initial_context:
             obs_summary = (
                 "=== ADVISORY INITIAL CONTEXT (UNVERIFIED) ===\n"
-                f"{json.dumps(self.initial_context, ensure_ascii=True)[:1200]}\n"
+                f"{json.dumps(initial_context, ensure_ascii=True)[:1200]}\n"
                 "Validate these hints against live observations before acting.\n"
                 "==============================================\n\n"
                 + obs_summary
@@ -1319,19 +1356,10 @@ class ComputerUseAgent:
         else:
             user_text = obs_summary
 
-        available_actions = (
-            self._GUI_ONLY_ACTIONS
-            if self.gui_only
-            else frozenset(ComputerActionType)
-        )
-        action_schema = "|".join(
-            action.value for action in ComputerActionType if action in available_actions
-        )
+        action_schema = "|".join(action.value for action in ComputerActionType)
         efficiency_directive = (
-            "2. DIRECT & EFFICIENT: solve the objective with the fewest necessary visible GUI actions.\n"
-            if self.gui_only
-            else
-            "2. DIRECT & EFFICIENT: solve the objective in minimal actions. Combine commands with && if appropriate (e.g. `hostname && df -h`).\n"
+            "2. DIRECT & EFFICIENT: solve the objective in minimal actions while "
+            "keeping GUI and Sandbox operations on their respective planes.\n"
         )
         user_text += (
             "\n\n================================================================================\n"
@@ -1394,11 +1422,6 @@ class ComputerUseAgent:
                 self._last_thought = (
                     "LLM safety refusal detected; recording refusal for replanning."
                 )
-                if self.gui_only:
-                    return self._gui_only_recovery_action(
-                        goal,
-                        "LLM safety refusal detected",
-                    )
                 return (
                     ComputerActionType.TERMINAL_EXEC,
                     "refusal-recorded",
@@ -1421,28 +1444,9 @@ class ComputerUseAgent:
             action_type, target, payload, expected = self._parse_llm_action(
                 parse_target_str, primary_file
             )
-            if (
-                self.gui_only
-                and expected != _GOAL_COMPLETE_SENTINEL
-                and action_type not in self._GUI_ONLY_ACTIONS
-            ):
-                self._last_thought = (
-                    "The model proposed a non-GUI action; discard it and re-observe "
-                    "the visible desktop instead."
-                )
-                return self._gui_only_recovery_action(
-                    goal,
-                    "Non-GUI proposal discarded",
-                )
-
             if target == "diagnostic-verification" and "LLM safety refusal detected" in expected:
                 self._refusal_recovery_active = True
                 self._last_thought = "Model refusal received; continue from the live visible desktop."
-                if self.gui_only:
-                    return self._gui_only_recovery_action(
-                        goal,
-                        "Model refusal received",
-                    )
                 return (
                     ComputerActionType.TERMINAL_EXEC,
                     "refusal-recorded",
@@ -1455,11 +1459,6 @@ class ComputerUseAgent:
             self._last_thought_duration = round(time.perf_counter() - t_thought_start, 2)
             logger.warning("computer_llm_action_failed_diagnostic_fallback", error=str(e))
             self._last_thought = ""
-            if self.gui_only:
-                return self._gui_only_recovery_action(
-                    goal,
-                    "Reasoning failed",
-                )
             return self._diagnostic_fallback(primary_file)
 
     @staticmethod
@@ -1603,7 +1602,6 @@ class ComputerUseAgent:
             "EXEC": ComputerActionType.TERMINAL_EXEC,
             "NAVIGATE": ComputerActionType.BROWSER_NAVIGATE,
             "BROWSE": ComputerActionType.BROWSER_NAVIGATE,
-            "SCAN": ComputerActionType.SECURITY_TOOL,
             "APP_CLOSE": ComputerActionType.APP_CLOSE,
             "APP_FOCUS": ComputerActionType.APP_FOCUS,
             "APP_INSTALL": ComputerActionType.APP_INSTALL,
@@ -1614,13 +1612,6 @@ class ComputerUseAgent:
             "BROWSER_SCREENSHOT": ComputerActionType.BROWSER_SCREENSHOT,
             "BROWSER_WAIT": ComputerActionType.BROWSER_WAIT,
             "BROWSER_DOWNLOAD": ComputerActionType.BROWSER_DOWNLOAD,
-            "SECURITY_TOOL": ComputerActionType.SECURITY_TOOL,
-            "TOOL_AUTHOR": ComputerActionType.TOOL_AUTHOR,
-            "AUTHOR_TOOL": ComputerActionType.TOOL_AUTHOR,
-            "CREATE_TOOL": ComputerActionType.TOOL_AUTHOR,
-            "CODE_AUTHOR": ComputerActionType.TOOL_AUTHOR,
-            "TOOL_RUN": ComputerActionType.TOOL_RUN,
-            "METHOD_INVENT": ComputerActionType.METHOD_INVENT,
             "PYTHON": ComputerActionType.TERMINAL_EXEC,
             "PYTHON_EXEC": ComputerActionType.TERMINAL_EXEC,
             "PYTHON3": ComputerActionType.TERMINAL_EXEC,
@@ -1650,6 +1641,8 @@ class ComputerUseAgent:
             completion_phrases = (
                 "goal is complete", "goal has been achieved", "task is complete",
                 "task has been completed", "objective has been achieved",
+                "successfully gathered", "successfully collected",
+                "all requested information",
             )
             if any(cp in text_lower for cp in completion_phrases) and ("```" not in parse_target_text and "terminal_exec" not in text_lower):
                 return (
@@ -1777,24 +1770,6 @@ class ComputerUseAgent:
                 target = tgt_dict["app_name"]
             elif "url" in tgt_dict:
                 target = tgt_dict["url"]
-
-        if action_type == ComputerActionType.TOOL_AUTHOR:
-            if "source" not in payload and "SOURCE" in fields:
-                payload["source"] = fields["SOURCE"]
-            elif "code" not in payload and "CODE" in fields:
-                payload["code"] = fields["CODE"]
-                payload["source"] = fields["CODE"]
-            if "code" not in payload and "command" in payload:
-                payload["code"] = payload["command"]
-                payload.setdefault("source", payload["command"])
-            if "name" not in payload and target:
-                payload["name"] = target
-            if "observation" not in payload and "OBSERVATION" in fields:
-                payload["observation"] = fields["OBSERVATION"]
-
-        if action_type == ComputerActionType.TOOL_RUN:
-            if "tool" not in payload and target:
-                payload["tool"] = target
 
         if action_type == ComputerActionType.FILE_WRITE:
             if "content" not in payload and "CONTENT" in fields:
@@ -2061,8 +2036,6 @@ class ComputerUseAgent:
             tool_candidate = parts[0] if parts else (clean_cmd.split()[0] if clean_cmd.split() else "terminal")
             tool_candidate = re.sub(r'[^a-zA-Z0-9_.-]', '', tool_candidate)
             return tool_candidate or "terminal"
-        if action_type == ComputerActionType.SECURITY_TOOL:
-            return str(payload.get("tool") or target_resource or "security_tool")
         if action_type == ComputerActionType.APP_INSTALL:
             return str(payload.get("package") or payload.get("app_name") or target_resource or "installer")
         return action_type.value
@@ -2078,13 +2051,12 @@ class ComputerUseAgent:
         t = action_type.value
         if t in (
             "FILE_WRITE", "APP_INSTALL", "SERVICE_ACTION",
-            "TOOL_AUTHOR", "TOOL_RUN", "METHOD_INVENT",
             "GIT_COMMIT", "GIT_BRANCH",
         ):
             return "high"
         if t in (
             "TERMINAL_EXEC", "APP_LAUNCH", "APP_CLOSE", "APP_FOCUS",
-            "BROWSER_DOWNLOAD", "SECURITY_TOOL",
+            "BROWSER_DOWNLOAD",
         ):
             return "medium"
         if t in ("FILE_READ",):
@@ -2147,31 +2119,6 @@ class ComputerUseAgent:
 
         provider_name = self._get_provider_name()
         tool_name = self._extract_tool_name(action_type, target_resource, payload)
-
-        if self.gui_only and action_type not in self._GUI_ONLY_ACTIONS:
-            actual_obs_str = (
-                f"GUI-only computer blocked {action_type.value}. "
-                "Use visible desktop applications and GUI controls; terminal, "
-                "shell, file, security-tool, and backend execution are unavailable."
-            )
-            trace = ComputerDecisionTrace(
-                step_index=self.action_counter,
-                action_type=action_type,
-                target_resource=target_resource,
-                payload=str(payload),
-                predicted_outcome=predicted_outcome,
-                actual_observation=actual_obs_str,
-                expected_observation=predicted_outcome,
-                info_gain=0.0,
-                recovery_attempted=False,
-                status=ActionExecutionStatus.BLOCKED,
-                exit_code=126,
-                duration_seconds=round(time.perf_counter() - t_start, 3),
-                thought_duration_seconds=getattr(self, "_last_thought_duration", 0.0),
-            )
-            self.traces.append(trace)
-            self.history.append({"action": action_type.value, "result": actual_obs_str})
-            return trace
 
         # ----- PLAN Phase 6: fail-closed safety envelope -----
         # Every action — operator-issued OR self-directed (curiosity) — must pass
@@ -2374,6 +2321,8 @@ class ComputerUseAgent:
         # If numeric coordinates were not provided for a GUI action, attempt to
         # resolve the target resource query (e.g. "Applications menu", "Terminal icon")
         # to screen coordinates using the visual grounding engine.
+        if not hasattr(self, "perception_bus"):
+            self.perception_bus = PerceptionBus()
         resolved_via_grounding = False
         if action_type in (
             ComputerActionType.GUI_CLICK,
@@ -2603,24 +2552,14 @@ class ComputerUseAgent:
             elif action_type == ComputerActionType.GUI_TYPE:
                 text = str(payload.get("text") or payload.get("value") or payload.get("input") or "")
                 pre_screen_b64 = getattr(self, "_last_screenshot_b64", "")
-                obs_after = None
-                if hasattr(self, "motor") and self.motor:
-                    if self.gui_only:
-                        obs_after = await self.computer.gui_action(
-                            workspace_id,
-                            GUIAction(
-                                action=GUIActionType.TYPE,
-                                text=text,
-                                delay_ms=payload.get("delay_ms", 25),
-                            ),
-                        )
-                    else:
-                        await self.motor.human_type(workspace_id, text, delay_ms=payload.get("delay_ms", 25))
-                else:
-                    obs_after = await self.computer.gui_action(
-                        workspace_id,
-                        GUIAction(action=GUIActionType.TYPE, text=text),
-                    )
+                obs_after = await self.computer.gui_action(
+                    workspace_id,
+                    GUIAction(
+                        action=GUIActionType.TYPE,
+                        text=text,
+                        delay_ms=payload.get("delay_ms", 25),
+                    ),
+                )
                 if hasattr(self.computer, "screenshot") and not obs_after:
                     try:
                         obs_after = await self.computer.screenshot(workspace_id)
@@ -2769,7 +2708,7 @@ class ComputerUseAgent:
                         recovery_needed = True
                         status = ActionExecutionStatus.FAILED
                     else:
-                        ok, output = await self.computer.install_application(
+                        ok, output = await self._sandbox_provider().install_application(
                             workspace_id, package,
                         )
                         if ok:
@@ -2787,13 +2726,13 @@ class ComputerUseAgent:
 
             elif action_type == ComputerActionType.FILE_READ:
                 path = payload.get("path") or target_resource or "/home/sonic/workspace/README.md"
-                content = await self.computer.read_file(workspace_id, path)
+                content = await self._sandbox_provider().read_file(workspace_id, path)
                 actual_obs_str = f"Read {len(content)} bytes from {path}"
 
             elif action_type == ComputerActionType.FILE_WRITE:
                 path = payload.get("path") or target_resource or "/home/sonic/workspace/auth.py"
                 content = payload.get("content", "")
-                await self.computer.write_file(workspace_id, path, content)
+                await self._sandbox_provider().write_file(workspace_id, path, content)
                 actual_obs_str = f"Wrote patch ({len(content)} bytes) to {path}"
 
             elif action_type == ComputerActionType.TERMINAL_EXEC:
@@ -2811,7 +2750,7 @@ class ComputerUseAgent:
                     if "/workspace" in real_home:
                         real_home = real_home.split("/workspace")[0]
                     cmd_str = cmd_str.replace("~/", f"{real_home}/")
-                res = await self.computer.terminal(workspace_id, cmd_str)
+                res = await self._sandbox_provider().terminal(workspace_id, cmd_str)
                 action_exit_code = getattr(res, "exit_code", None)
                 safe_stdout = _safe_str(getattr(res, "stdout", "") or "")
                 safe_stderr = _safe_str(getattr(res, "stderr", "") or "")
@@ -2874,13 +2813,13 @@ class ComputerUseAgent:
 
             elif action_type == ComputerActionType.GIT_COMMIT:
                 msg = payload.get("message", "feat: automated patch")
-                await self.computer.git_action(workspace_id, "commit", message=msg)
+                await self._sandbox_provider().git_action(workspace_id, "commit", message=msg)
                 actual_obs_str = f"Committed change: {msg}"
 
             elif action_type == ComputerActionType.SERVICE_ACTION:
                 svc = payload.get("service", "xvfb")
                 act = payload.get("action", "restart")
-                svc_info = await self.computer.service_action(workspace_id, svc, act)
+                svc_info = await self._sandbox_provider().service_action(workspace_id, svc, act)
                 actual_obs_str = f"Service {svc} is {svc_info.status}"
 
             elif action_type == ComputerActionType.BROWSER_NAVIGATE:
@@ -2901,7 +2840,7 @@ class ComputerUseAgent:
                     self._last_browser_snapshot = snap
                     self._last_navigated_url = url
                     actual_obs_str = f"Navigated to {getattr(snap, 'url', url)} (title: {getattr(snap, 'title', '')})"
-                elif self.gui_only:
+                elif self.browser is None:
                     await self.computer.gui_action(
                         workspace_id,
                         GUIAction(action=GUIActionType.KEYPRESS, key="ctrl+l"),
@@ -2921,21 +2860,21 @@ class ComputerUseAgent:
                     self._last_navigated_url = url
                     disp = os.environ.get("DISPLAY", ":99" if hasattr(self.computer, "_docker_exec") or getattr(self.computer, "name", "") == "DockerComputerProvider" else ":0")
                     # Dynamically discover installed browser binary without hardcoding specific application names
-                    b_probe = await self.computer.terminal(workspace_id, "which x-www-browser sensible-browser xdg-open 2>/dev/null | head -n 1")
+                    b_probe = await self._sandbox_provider().terminal(workspace_id, "which x-www-browser sensible-browser xdg-open 2>/dev/null | head -n 1")
                     browser_bin = b_probe.stdout.strip() if (b_probe and b_probe.stdout.strip()) else "x-www-browser"
                     b_base = os.path.basename(browser_bin).lower()
                     browser_class = b_base.replace("-browser", "").replace("-stable", "")
                     if is_same_url:
                         # Re-focus existing browser without spawning duplicate tabs
                         focus_cmd = f"DISPLAY={disp} xdotool search --onlyvisible --class {shlex.quote(browser_class)} windowactivate 2>/dev/null || DISPLAY={disp} xdotool search --onlyvisible --class browser windowactivate 2>/dev/null || true"
-                        await self.computer.terminal(workspace_id, focus_cmd)
+                        await self._sandbox_provider().terminal(workspace_id, focus_cmd)
                         actual_obs_str = (
                             f"Browser is already active on {url}. Existing tab focused (duplicate tab prevented). "
                             "Proceed to interact with the webpage via GUI_CLICK on buttons, search bar, or scroll."
                         )
                     else:
                         # Check if browser is already running in the desktop session
-                        chk = await self.computer.terminal(workspace_id, f"pgrep -f {shlex.quote(browser_class)} 2>/dev/null || pgrep -i browser 2>/dev/null || true")
+                        chk = await self._sandbox_provider().terminal(workspace_id, f"pgrep -f {shlex.quote(browser_class)} 2>/dev/null || pgrep -i browser 2>/dev/null || true")
                         browser_running = bool(chk.stdout.strip())
                         if browser_running:
                             # Reuse existing browser window: focus, focus address bar via ctrl+l, type URL and press Return
@@ -2943,14 +2882,14 @@ class ComputerUseAgent:
                                 f"DISPLAY={disp} xdotool search --onlyvisible --class {shlex.quote(browser_class)} windowactivate --sync "
                                 f"key --clearmodifiers ctrl+l sleep 0.1 type --delay 15 {shlex.quote(url)} key Return 2>/dev/null || true"
                             )
-                            await self.computer.terminal(workspace_id, nav_cmd)
+                            await self._sandbox_provider().terminal(workspace_id, nav_cmd)
                             if hasattr(self, "motor") and self.motor:
                                 await self.motor.enforce_tab_budget(workspace_id, max_tabs=3)
                             actual_obs_str = f"Navigated active browser tab to {url} (tab reused via address bar)"
                         else:
                             clean_flags = "--no-sandbox --disable-dev-shm-usage --disable-session-crashed-bubble --no-first-run --no-default-browser-check"
                             cmd = f"DISPLAY={disp} nohup {browser_bin} {clean_flags} {shlex.quote(url)} >/dev/null 2>&1 &"
-                            await self.computer.terminal(workspace_id, cmd)
+                            await self._sandbox_provider().terminal(workspace_id, cmd)
                             actual_obs_str = f"Launched browser and navigated to {url}"
 
                 if hasattr(self, "scratchpad") and self.scratchpad:
@@ -3095,342 +3034,6 @@ class ComputerUseAgent:
                         actual_obs_str = f"Download failed: {selector}"
                         recovery_needed = True
 
-            elif action_type == ComputerActionType.SECURITY_TOOL:
-                tool_name = payload.get("tool", target_resource)
-                scan_target = payload.get("target", target_resource)
-                args = payload.get("args", "")
-                tool = self.security_tools.get(tool_name)
-                if tool is None and self.security_tools:
-                    actual_obs_str = f"Unknown security tool: {tool_name}"
-                    recovery_needed = True
-                    status = ActionExecutionStatus.FAILED
-                elif tool is None:
-                    # Native execution directly inside sandbox via TERMINAL_EXEC
-                    tool_name_raw = str(tool_name).strip()
-                    if " " in tool_name_raw:
-                        cmd_str = tool_name_raw
-                        if args and str(args).strip() not in cmd_str:
-                            cmd_str = f"{cmd_str} {str(args).strip()}"
-                    else:
-                        parts = [tool_name_raw]
-                        if args:
-                            parts.append(str(args).strip())
-                        if scan_target and str(scan_target).strip() != tool_name_raw and str(scan_target).strip() not in str(args):
-                            parts.append(str(scan_target).strip())
-                        cmd_str = " ".join(parts).strip()
-
-                    cmd_str = self._clean_terminal_command(cmd_str)
-                    if "/home/sonic" in cmd_str:
-                        real_home = getattr(self, "_last_working_dir", "") or "/home/daytona"
-                        if "/workspace" in real_home:
-                            real_home = real_home.split("/workspace")[0]
-                        cmd_str = cmd_str.replace("/home/sonic", real_home)
-                    if "~/" in cmd_str:
-                        real_home = getattr(self, "_last_working_dir", "") or "/home/daytona"
-                        if "/workspace" in real_home:
-                            real_home = real_home.split("/workspace")[0]
-                        cmd_str = cmd_str.replace("~/", f"{real_home}/")
-
-                    res = await self.computer.terminal(workspace_id, cmd_str)
-                    res_stdout = _safe_str(getattr(res, "stdout", "") or "")
-                    res_stderr = _safe_str(getattr(res, "stderr", "") or "")
-                    exit_c = getattr(res, "exit_code", 0)
-                    action_exit_code = exit_c
-
-                    out_str = res_stdout.strip()
-                    if res_stderr.strip():
-                        out_str = f"{out_str}\n{res_stderr.strip()}" if out_str else res_stderr.strip()
-                    actual_obs_str = out_str or f"Tool {tool_name} exit {exit_c}"
-
-                    from types import SimpleNamespace
-                    findings = []
-                    for line in res_stdout.splitlines():
-                        line_s = line.strip()
-                        if line_s:
-                            findings.append({"finding": line_s, "source": str(tool_name)})
-
-                    self._last_tool_result = SimpleNamespace(
-                        tool_name=str(tool_name),
-                        status="completed" if exit_c == 0 else "failed",
-                        exit_code=exit_c,
-                        raw_stdout=res_stdout,
-                        raw_stderr=res_stderr,
-                        parsed_data=findings,
-                        error_message=res_stderr if exit_c != 0 else None,
-                    )
-
-                    if exit_c != 0:
-                        err_class, _ = classify_failure(
-                            exit_code=exit_c,
-                            stdout=res_stdout,
-                            stderr=res_stderr,
-                            provider=provider_name,
-                            tool=tool_name,
-                        )
-                        fail_rec = self.failure_budget.record_failure(
-                            tool=tool_name,
-                            provider=provider_name,
-                            error_class=err_class,
-                            raw_error=res_stderr or res_stdout or f"Exit {exit_c}",
-                        )
-                        if self.failure_budget.is_strategy_exhausted(tool=tool_name, provider=provider_name):
-                            actual_obs_str = f"{actual_obs_str} | Strategy exhausted ({fail_rec.count} failures). Retrying is blocked."
-                            status = ActionExecutionStatus.FAILED
-                            recovery_needed = False
-                        elif exit_c in (125, 126):
-                            status = ActionExecutionStatus.BLOCKED
-                            recovery_needed = True
-                        elif exit_c == 124:
-                            status = ActionExecutionStatus.TIMED_OUT
-                            recovery_needed = True
-                        else:
-                            status = ActionExecutionStatus.FAILED
-                            recovery_needed = True
-                    else:
-                        self.failure_budget.record_success(tool=tool_name, provider=provider_name)
-
-                    if hasattr(self, "scratchpad") and self.scratchpad:
-                        self.scratchpad.extract_from_text(res_stdout, source="security_tool")
-                        if res_stderr:
-                            self.scratchpad.extract_from_text(res_stderr, source="security_tool_err")
-
-                    if hasattr(self, "wire_telemetry") and self.wire_telemetry:
-                        if "curl " in cmd_str or "http " in cmd_str:
-                            url_m = re.search(r'https?://[^\s"\']+', cmd_str)
-                            target_url = url_m.group(0) if url_m else "http://target"
-                            method = "POST" if ("-X POST" in cmd_str or "-d " in cmd_str or "--data" in cmd_str) else "GET"
-                            status_code = 200 if exit_c == 0 else 500
-                            status_m = re.search(r'\b([1-5]\d{2})\b', res_stdout[:50])
-                            if status_m:
-                                try:
-                                    status_code = int(status_m.group(1))
-                                except Exception:
-                                    pass
-                            self.wire_telemetry.record_wire_event(
-                                method=method,
-                                url=target_url,
-                                status_code=status_code,
-                                response_body=res_stdout[:300],
-                            )
-                else:
-                    from types import SimpleNamespace
-                    options = {"args": args} if args else {}
-                    req = SimpleNamespace(
-                        tenant_id=self.tenant_id,
-                        engagement_id=self.engagement_id,
-                        workspace_id=workspace_id,
-                        agent_id=self.agent_id,
-                        tool_name=tool_name,
-                        target=scan_target,
-                        options=options,
-                        timeout_seconds=120,
-                        execution_id=f"exec-{int(time.time() * 1000)}",
-                    )
-                    result = await tool.execute(req)
-                    self._last_tool_result = result
-                    findings = getattr(result, "parsed_data", []) or []
-                    raw_out = _safe_str(getattr(result, "raw_stdout", "") or getattr(result, "raw_output", "") or "")
-                    raw_err = _safe_str(getattr(result, "raw_stderr", "") or getattr(result, "error", "") or getattr(result, "error_message", "") or "")
-                    actual_obs_str = (
-                        f"Tool {tool_name} status={getattr(result, 'status', '?')} "
-                        f"findings={len(findings)}"
-                    )
-                    if raw_out.strip() and not findings:
-                        actual_obs_str = f"{actual_obs_str}\n{raw_out.strip()}"
-                    # Fail-closed: a blocked/failed tool is a recovery trigger.
-                    status_val = str(getattr(result, "status", "")).lower()
-                    if status_val in ("blocked", "failed", "timed_out"):
-                        exit_c = 126 if status_val == "blocked" else (124 if status_val == "timed_out" else 1)
-                        action_exit_code = exit_c
-                        err_class, _ = classify_failure(
-                            exit_code=exit_c,
-                            stdout="",
-                            stderr=raw_err,
-                            provider=provider_name,
-                            tool=tool_name,
-                        )
-                        fail_rec = self.failure_budget.record_failure(
-                            tool=tool_name,
-                            provider=provider_name,
-                            error_class=err_class,
-                            raw_error=raw_err,
-                        )
-                        if self.failure_budget.is_strategy_exhausted(tool=tool_name, provider=provider_name):
-                            actual_obs_str = f"{actual_obs_str} | Strategy exhausted ({fail_rec.count} failures). Retrying is blocked."
-                            status = ActionExecutionStatus.FAILED
-                            recovery_needed = False
-                        elif status_val == "blocked":
-                            status = ActionExecutionStatus.BLOCKED
-                            recovery_needed = True
-                        elif status_val == "timed_out":
-                            status = ActionExecutionStatus.TIMED_OUT
-                            recovery_needed = True
-                        else:
-                            status = ActionExecutionStatus.FAILED
-                            recovery_needed = True
-                    else:
-                        action_exit_code = 0
-                        self.failure_budget.record_success(tool=tool_name, provider=provider_name)
-
-            elif action_type == ComputerActionType.TOOL_AUTHOR:
-                # Toolsmith (Phase A, AIOSR): the being authors a NEW tool for an
-                # observation gap or custom capability. The source is persisted
-                # to BeingCraft; the tool is NOT registered until confirmed in-sandbox.
-                # No "tool authored and working" claim by decree.
-                if self.toolsmith is None and self.computer is not None and self.llm_router is not None:
-                    try:
-                        from sonic.being.craft import BeingCraft
-                        from sonic.being.toolsmith import ToolsmithLoop
-                        from sonic.tools.registry import SecurityToolRegistry
-                        reg = SecurityToolRegistry(provider=self.computer)
-                        self.toolsmith = ToolsmithLoop(
-                            craft=BeingCraft(being_id=getattr(self, "agent_id", "computer-use-agent")),
-                            llm=self.llm_router,
-                            registry=reg,
-                        )
-                    except Exception as e:
-                        logger.warning("lazy_toolsmith_init_failed", error=str(e))
-
-                if self.toolsmith is None:
-                    # Direct script/code authoring fallback: write custom code or script directly to workspace
-                    code = payload.get("source") or payload.get("code") or payload.get("content")
-                    if code:
-                        tool_name = payload.get("name") or target_resource or "custom_tool"
-                        tool_name = re.sub(r'[^a-zA-Z0-9_-]', '_', tool_name).strip('_') or "custom_tool"
-                        ext = ".py" if ("import " in code or "def " in code) else ".sh"
-                        script_path = f"/home/sonic/workspace/{tool_name}{ext}"
-                        try:
-                            await self.computer.write_file(workspace_id, script_path, code)
-                            actual_obs_str = (
-                                f"Authored custom script at '{script_path}', but it is "
-                                "UNVERIFIED: no Toolsmith sandbox reproduction or registration was performed."
-                            )
-                            # Writing source is not evidence that a capability
-                            # works. Keep the action non-successful so it
-                            # cannot advance a mission or claim progress.
-                            status = ActionExecutionStatus.FAILED
-                            recovery_needed = True
-                        except Exception as e:
-                            actual_obs_str = f"Failed writing authored script '{script_path}': {e}"
-                            recovery_needed = True
-                    else:
-                        actual_obs_str = "Toolsmith not configured (no tool authoring)"
-                        recovery_needed = True
-                else:
-                    observation = payload.get("observation", "") or target_resource
-                    failed = payload.get("failed_attempts", [])
-                    name = payload.get("name") or payload.get("tool")
-                    source = payload.get("source") or payload.get("code")
-                    rationale = payload.get("rationale", "")
-                    authored = await self.toolsmith.author_tool(
-                        observation=observation,
-                        failed_attempts=list(failed) if failed else None,
-                        name=name,
-                        source=source,
-                        rationale=rationale,
-                    )
-                    if authored is None:
-                        actual_obs_str = "Toolsmith: no novel tool warranted (honest skip)"
-                    else:
-                        actual_obs_str = (
-                            f"Authored tool '{authored.name}' (unconfirmed; "
-                            f"run TOOL_RUN to verify): {authored.rationale}"
-                        )
-                        if payload.get("auto_verify") or payload.get("run"):
-                            target = payload.get("target") or getattr(authored, "target", None)
-                            confirmed = await self.toolsmith.confirm_and_register(
-                                authored, self.computer, workspace_id, target=target,
-                            )
-                            if confirmed.reproduced:
-                                adapter = self.toolsmith.registry.get(confirmed.name) if getattr(self.toolsmith, "registry", None) else None
-                                if adapter is None:
-                                    from sonic.being.toolsmith import AuthoredToolAdapter
-                                    adapter = AuthoredToolAdapter(confirmed, self.computer)
-                                self.security_tools[confirmed.name] = adapter
-                                actual_obs_str = (
-                                    f"Tool '{confirmed.name}' CONFIRMED and registered "
-                                    f"(exit={confirmed.run_exit_code})"
-                                )
-                            else:
-                                actual_obs_str = (
-                                    f"Tool '{confirmed.name}' NOT confirmed "
-                                    f"(exit={confirmed.run_exit_code}); not registered"
-                                )
-                                recovery_needed = True
-
-            elif action_type == ComputerActionType.TOOL_RUN:
-                # Run a previously-authored tool in-sandbox and register it into
-                # the security_tools map ONLY on a real successful run. Honesty
-                # guard lives in ToolsmithLoop.confirm_and_register.
-                if self.toolsmith is None:
-                    actual_obs_str = "Toolsmith not configured (no tool running)"
-                    recovery_needed = True
-                else:
-                    tool_name = payload.get("tool", target_resource)
-                    authored = next(
-                        (t for t in self.toolsmith.authored if t.name == tool_name), None
-                    )
-                    if authored is None:
-                        actual_obs_str = f"No authored tool named '{tool_name}' to run"
-                        recovery_needed = True
-                    else:
-                        target = payload.get("target") or getattr(authored, "target", None)
-                        confirmed = await self.toolsmith.confirm_and_register(
-                            authored, self.computer, workspace_id, target=target,
-                        )
-                        if confirmed.reproduced:
-                            # Make the confirmed tool callable via SECURITY_TOOL.
-                            adapter = self.toolsmith.registry.get(confirmed.name) if getattr(self.toolsmith, "registry", None) else None
-                            if adapter is None:
-                                from sonic.being.toolsmith import AuthoredToolAdapter
-                                adapter = AuthoredToolAdapter(confirmed, self.computer)
-                            self.security_tools[confirmed.name] = adapter
-                            actual_obs_str = (
-                                f"Tool '{confirmed.name}' CONFIRMED and registered "
-                                f"(exit={confirmed.run_exit_code})"
-                            )
-                        else:
-                            actual_obs_str = (
-                                f"Tool '{confirmed.name}' NOT confirmed "
-                                f"(exit={confirmed.run_exit_code}); not registered"
-                            )
-                            recovery_needed = True
-
-            elif action_type == ComputerActionType.METHOD_INVENT:
-                # Method-invention (Phase B, AIOSR): synthesize a NOVEL
-                # offensive technique (a new METHOD, not just a tool) from the
-                # observation + a prior failure + the known-technique ledger.
-                # Confirmed ONLY on real in-sandbox reproduction — never by decree.
-                if self.method_lab is None:
-                    actual_obs_str = "MethodLab not configured (no technique invention)"
-                    recovery_needed = True
-                else:
-                    observation = payload.get("observation", "") or target_resource
-                    failure = payload.get("failure", "")
-                    technique = await self.method_lab.invent(
-                        observation=observation, failure=failure,
-                    )
-                    if technique is None:
-                        actual_obs_str = "MethodLab: no novel technique warranted (honest skip)"
-                    else:
-                        # Run the probe in-sandbox; confirm only on a real finding.
-                        target = payload.get("target", "") or technique.target_hint
-                        confirmed = await self.method_lab.confirm(
-                            technique, self.computer, workspace_id, target=target,
-                        )
-                        if confirmed.confirmed:
-                            actual_obs_str = (
-                                f"Technique '{confirmed.name}' ({confirmed.family}) "
-                                f"CONFIRMED — {len(confirmed.findings)} finding(s); "
-                                f"novelty={confirmed.novelty_vs_ledger:.2f} vs ledger"
-                            )
-                        else:
-                            actual_obs_str = (
-                                f"Technique '{confirmed.name}' NOT confirmed "
-                                f"(exit={confirmed.run_exit_code}); not added to ledger"
-                            )
-                            recovery_needed = True
-
         except Exception as e:
             actual_obs_str = f"Error: {str(e)}"
             recovery_needed = True
@@ -3459,29 +3062,12 @@ class ComputerUseAgent:
                 if status in (ActionExecutionStatus.COMPLETED, ActionExecutionStatus.SUCCESS):
                     status = ActionExecutionStatus.FAILED
 
-        # Closed-loop Target Feedback to Self-Evolution Engine
-        if status in (ActionExecutionStatus.FAILED, ActionExecutionStatus.RECOVERED) and getattr(self, "evolution_engine", None) is not None:
-            try:
-                target_str = target_resource or str(self._last_action_output.get("target", "")) or self._last_navigated_url or "target"
-                evo_result = await self.evolution_engine.handle_target_failure(
-                    raw_output=actual_obs_str,
-                    exit_code=action_exit_code if action_exit_code is not None else 1,
-                    target=str(target_str),
-                    current_approach=f"{action_type.value if hasattr(action_type, 'value') else action_type} on {target_str}",
-                    goal=getattr(self, "current_goal", "") or "",
-                    provider=self.computer,
-                    workspace_id=workspace_id,
-                )
-                self._last_adapted_strategy = evo_result
-            except Exception as e:
-                logger.warning("evolution_engine_failure_dispatch_failed", error=str(e))
-
         # Automatic Hacker Scratchpad loot/token extraction
         if hasattr(self, "scratchpad") and self.scratchpad:
             self.scratchpad.extract_from_text(actual_obs_str, source=action_type.value.lower())
 
         # Reflexive backtracking on blocking modal overlays
-        if not self.gui_only and hasattr(self, "motor") and self.motor:
+        if hasattr(self, "motor") and self.motor:
             lower_obs = actual_obs_str.lower()
             if any(term in lower_obs for term in ("modal_blocked", "blocked by modal", "overlay detected", "dismiss modal")):
                 await self.motor.backtrack(workspace_id, reason="modal_blocked")
@@ -3504,10 +3090,9 @@ class ComputerUseAgent:
             thought_duration_seconds=getattr(self, "_last_thought_duration", 0.0),
         )
         self.traces.append(trace)
-        # Store the real action output so observe() reads real terminal data
-        # instead of a dummy probe. Strictly for sandbox command executions (TERMINAL_EXEC, SECURITY_TOOL).
+        # Store the real action output so observe() reads real terminal data.
         # GUI and Browser actions must NOT write into _last_action_output!
-        if action_type in (ComputerActionType.TERMINAL_EXEC, ComputerActionType.SECURITY_TOOL):
+        if action_type == ComputerActionType.TERMINAL_EXEC:
             cmd_display = ""
             if isinstance(payload, dict):
                 cmd_display = str(payload.get("command") or payload.get("tool") or payload.get("tool_name") or "")
@@ -3571,7 +3156,7 @@ class ComputerUseAgent:
         """Programmatically author, verify, and register a custom tool into the agent's toolkit."""
         trace = await self.execute_action(
             workspace_id=workspace_id,
-            action_type=ComputerActionType.TOOL_AUTHOR,
+            action_type=ComputerActionType.TERMINAL_EXEC,
             target_resource=name or "custom_tool",
             payload={
                 "observation": observation,
@@ -3601,26 +3186,6 @@ class ComputerUseAgent:
         self.recovery_events += 1
         logger.warning("computer_recovery_triggered", action=failed_action_type, error=error_context)
 
-        if self.gui_only:
-            try:
-                await self.computer.gui_action(
-                    workspace_id,
-                    GUIAction(action=GUIActionType.KEYPRESS, key="Escape"),
-                )
-            except Exception:
-                pass
-            try:
-                comp_status = await self.computer.status(workspace_id)
-                active_app = getattr(comp_status, "active_application", None)
-                if active_app and str(active_app).lower() not in ("desktop", "none", ""):
-                    await self.computer.gui_action(
-                        workspace_id,
-                        GUIAction(action=GUIActionType.SELECT_WINDOW, app_name=active_app),
-                    )
-            except Exception:
-                pass
-            return "GUI-only recovery: dismissed visible modal and refreshed application focus"
-
         # Recovery strategy 1: Non-destructive desktop recovery for GUI actions
         if failed_action_type in [
             ComputerActionType.APP_LAUNCH, ComputerActionType.GUI_CLICK,
@@ -3634,7 +3199,7 @@ class ComputerUseAgent:
                 "display connection", "cannot open display", "x server died",
                 "display failure", "failed to connect to display", "connection refused by server",
             )):
-                await self.computer.service_action(workspace_id, "xvfb", "restart")
+                await self._sandbox_provider().service_action(workspace_id, "xvfb", "restart")
                 return "Restarted Xvfb and refreshed display session"
 
             # Non-destructive recovery:
@@ -3669,7 +3234,7 @@ class ComputerUseAgent:
         # Recovery strategy 3: Terminal PTY reset and diagnostic guidance
         if failed_action_type == ComputerActionType.TERMINAL_EXEC:
             err_lower = (error_context or "").lower()
-            await self.computer.terminal(workspace_id, "stty sane 2>/dev/null || true")
+            await self._sandbox_provider().terminal(workspace_id, "stty sane 2>/dev/null || true")
             if any(term in err_lower for term in ("127", "not found", "command not found")):
                 return (
                     "Reset terminal shell session: Command not found in container (exit 127). "
@@ -3792,29 +3357,6 @@ class ComputerUseAgent:
 
         Returns (verified, evidence). verified=True only on real evidence.
         """
-        if self.gui_only:
-            obs = await self.observe(workspace_id)
-            visible = " ".join(
-                part for part in (
-                    obs.active_application,
-                    obs.visible_text,
-                    getattr(obs.screen, "visible_text", ""),
-                )
-                if part
-            )
-            evidence = (
-                f"Visible GUI state: application={obs.active_application!r}; "
-                f"windows={obs.windows!r}; text={visible[:1500]!r}"
-            )
-            goal_terms = [
-                term for term in re.findall(r"[a-zA-Z0-9]{3,}", goal.lower())
-                if term not in {"open", "look", "find", "the", "and", "use", "for"}
-            ]
-            visible_lower = visible.lower()
-            matched = sum(1 for term in goal_terms if term in visible_lower)
-            verified = bool(goal_terms) and matched >= max(1, len(goal_terms) // 3)
-            return verified, evidence
-
         do_llm = use_llm if use_llm is not None else getattr(self, "enable_llm_verification", False)
 
         if do_llm and self.llm_router is not None:
@@ -3848,7 +3390,7 @@ class ComputerUseAgent:
 
                 if verify_cmd and verify_cmd != "OBSERVE_ONLY" and len(verify_cmd) < 500:
                     try:
-                        res = await self.computer.terminal(workspace_id, verify_cmd)
+                        res = await self._sandbox_provider().terminal(workspace_id, verify_cmd)
                         evidence = (res.stdout.strip() if res.stdout else "") or f"Exit {res.exit_code}"
                     except Exception as e:
                         evidence = f"Verify probe failed: {e}"
@@ -3902,7 +3444,7 @@ class ComputerUseAgent:
         has_independent_probe = bool(verify_cmd)
         if verify_cmd:
             try:
-                res = await self.computer.terminal(workspace_id, verify_cmd)
+                res = await self._sandbox_provider().terminal(workspace_id, verify_cmd)
                 evidence = (res.stdout.strip() if res.stdout else "") or f"Exit {res.exit_code}"
             except Exception as e:
                 evidence = f"Verify probe failed: {e}"
@@ -3997,12 +3539,11 @@ class ComputerUseAgent:
             else:
                 self.checklist = None
 
-        # Backend bootstrap may inspect/install packages through a shell. It is
-        # intentionally unavailable on the GUI-only Computer plane.
-        if not self.gui_only and not getattr(self, "_bootstrap_performed", False):
+        # Bootstrap belongs to the headless Sandbox plane, never the GUI plane.
+        if not getattr(self, "_bootstrap_performed", False):
             try:
                 from sonic.computer.bootstrap import WorkstationBootstrapEngine
-                bootstrap = WorkstationBootstrapEngine(self.computer)
+                bootstrap = WorkstationBootstrapEngine(self._sandbox_provider())
                 b_res = await bootstrap.ensure_workstation_ready(workspace_id=workspace_id)
                 logger.info(
                     "mission_workstation_bootstrap_audit",
@@ -4025,6 +3566,27 @@ class ComputerUseAgent:
 
             # 1. OBSERVE
             obs = await self.observe(workspace_id)
+            self._commit_pending_prediction()
+
+            # Fast path: a previously grounded reversible action can execute
+            # without another model round-trip. None means deep reasoning must
+            # choose an action from the fresh observation.
+            reflex_trace = await self._execute_prepared_reflex_action(workspace_id)
+            if reflex_trace is not None:
+                self._pending_prediction = (
+                    reflex_trace,
+                    reflex_trace.predicted_from_version
+                    if reflex_trace.predicted_from_version is not None
+                    else self.perception_bus.current().version,
+                )
+                if step_callback is not None:
+                    try:
+                        cb_res = step_callback(reflex_trace)
+                        if asyncio.iscoroutine(cb_res):
+                            await cb_res
+                    except Exception as cb_err:
+                        logger.warning("run_mission_reflex_callback_failed", error=str(cb_err))
+                continue
 
             # 2. REASON & CHOOSE ACTION
             action_type, target, payload, expected = await self.choose_action(goal, obs, step)
@@ -4259,6 +3821,24 @@ class ComputerUseAgent:
             new_lessons = extract_lessons(self.traces, goal, self.agent_id)
             if new_lessons:
                 self.lessons_ledger.record(new_lessons)
+
+        if self.skill_ledger is not None:
+            for trace in self.traces:
+                action = getattr(trace.action_type, "value", str(trace.action_type))
+                application = str(
+                    getattr(trace, "target_resource", "")
+                    or getattr(self, "active_application", "")
+                )
+                evidence = str(getattr(trace, "verification_evidence", "") or "")
+                status = getattr(trace.status, "value", str(trace.status))
+                if status == "VERIFIED" and evidence:
+                    self.skill_ledger.record_success(application, action, evidence)
+                elif status in {"FAILED", "RECOVERED", "UNVERIFIED"}:
+                    self.skill_ledger.record_failure(
+                        application,
+                        action,
+                        getattr(trace, "actual_observation", "") or status,
+                    )
 
         # Deterministic summary of mission outcome from worker's own actions
         self.mission_summary = ""

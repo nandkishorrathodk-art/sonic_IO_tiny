@@ -2,7 +2,7 @@
 
 export type SystemStatus = "CONNECTING" | "LIVE" | "DISCONNECTED" | "OFFLINE" | "ERROR";
 
-export type WorkstationTab = "desktop" | "code" | "changes" | "research" | "evidence" | "evolution" | "mission";
+export type WorkstationTab = "desktop" | "code" | "changes";
 
 export interface WorklogItem {
   id: string;

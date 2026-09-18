@@ -3,14 +3,14 @@ import "./globals.css";
 
 export const metadata: Metadata = {
   title: {
-    default: "SONIC-REDA — Autonomous AI Red Team Workstation",
-    template: "%s · SONIC-REDA",
+    default: "SONIC — Virtual Workstation",
+    template: "%s · SONIC",
   },
   description:
-    "Next-generation autonomous AI red-team agent: full virtual computer control, evidence-backed kill-chains, and self-evolving multi-agent swarm intelligence.",
-  applicationName: "SONIC-REDA",
-  authors: [{ name: "SONIC-REDA" }],
-  keywords: ["autonomous agent", "red team", "security", "AI", "pentest", "evidence"],
+    "A general-purpose virtual workstation and isolated sandbox environment.",
+  applicationName: "SONIC",
+  authors: [{ name: "SONIC" }],
+  keywords: ["virtual workstation", "sandbox", "computer", "terminal"],
 };
 
 export const viewport: Viewport = {

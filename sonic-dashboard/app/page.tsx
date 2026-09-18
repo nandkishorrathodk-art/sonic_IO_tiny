@@ -5,10 +5,6 @@ import {
   FileText,
   Monitor,
   PanelRightClose,
-  Share2,
-  FileCheck2,
-  Dna,
-  Compass,
 } from "lucide-react";
 import { api } from "../lib/api";
 import {
@@ -27,19 +23,11 @@ import { WorkstationSidebar } from "../components/workstation/WorkstationSidebar
 import { WorklogFeed } from "../components/worklog/WorklogFeed";
 import { ComputerSurface } from "../components/computer/ComputerSurface";
 import { CodeViewer } from "../components/code/CodeViewer";
-import { ResearchView } from "../components/research/ResearchView";
-import { EvidenceView } from "../components/evidence/EvidenceView";
-import { EvolutionView } from "../components/evolution/EvolutionView";
-import { MissionView } from "../components/mission/MissionView";
 
 const TABS: { id: WorkstationTab; label: string; icon: React.ReactNode }[] = [
   { id: "desktop", label: "Computer", icon: <Monitor className="w-3.5 h-3.5 text-success" /> },
   { id: "code", label: "Code", icon: <FileText className="w-3.5 h-3.5 text-secondary-400" /> },
   { id: "changes", label: "Changes", icon: <FileText className="w-3.5 h-3.5 text-warning" /> },
-  { id: "research", label: "Research", icon: <Share2 className="w-3.5 h-3.5 text-accent-400" /> },
-  { id: "evidence", label: "Evidence", icon: <FileCheck2 className="w-3.5 h-3.5 text-success" /> },
-  { id: "evolution", label: "Evolution", icon: <Dna className="w-3.5 h-3.5 text-primary-400" /> },
-  { id: "mission", label: "Mission", icon: <Compass className="w-3.5 h-3.5 text-primary-400" /> },
 ];
 
 export default function SonicDevinWorkstation() {
@@ -165,8 +153,6 @@ export default function SonicDevinWorkstation() {
 
     try {
       const res = await api.sendPrompt(prompt, currentTargetSession, mode.toLowerCase());
-      if (mode === "Autonomous") setActiveTab("mission");
-
       // If user interrupted or navigated away during prompt send, abort immediately
       if (abortPollRef.current || activePromptSessionRef.current !== currentTargetSession) {
         setLoading(false);
@@ -387,10 +373,6 @@ export default function SonicDevinWorkstation() {
                   {activeTab === "changes" && (
                     <CodeViewer activeFile={activeFile} fileContent={fileContent} gitDiff={gitDiff} viewMode="changes" onRefreshDiff={fetchDiff} />
                   )}
-                  {activeTab === "research" && <ResearchView />}
-                  {activeTab === "evidence" && <EvidenceView sessionId={sessionId} />}
-                  {activeTab === "evolution" && <EvolutionView sessionId={sessionId} />}
-                  {activeTab === "mission" && <MissionView workstationState={workstationState} sessionId={sessionId} />}
                 </div>
               </div>
             )}

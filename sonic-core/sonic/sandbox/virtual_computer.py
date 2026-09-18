@@ -418,11 +418,19 @@ class LocalSandbox(VirtualComputer):
     to prevent accidental host compromise.
     """
 
-    def __init__(self, allow_host_execution: bool = False):
+    def __init__(
+        self,
+        allow_host_execution: bool = False,
+        base_dir: str | Path | None = None,
+    ):
         self.allow_host_execution = allow_host_execution
         self.state = WorkspaceState.RUNNING
         configured_dir = os.environ.get("SONIC_LOCAL_SANDBOX_DIR")
-        self.base_dir = Path(configured_dir or (Path(tempfile.gettempdir()) / "sonic-local-sandbox")).resolve()
+        self.base_dir = Path(
+            base_dir
+            if base_dir is not None
+            else (configured_dir or (Path(tempfile.gettempdir()) / "sonic-local-sandbox"))
+        ).resolve()
         self.base_dir.mkdir(parents=True, exist_ok=True)
 
     async def initialize(self) -> bool:

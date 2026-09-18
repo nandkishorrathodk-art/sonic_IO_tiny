@@ -73,9 +73,9 @@ export default function LoginPage() {
 
       {/* Top nav */}
       <header className="h-16 border-b border-ink-800/80 backdrop-blur-md bg-ink-950/60 px-6 flex items-center justify-between z-10">
-        <BrandMark withWordmark href="/landing" />
+        <BrandMark withWordmark href="/" />
         <div className="flex items-center gap-3 text-xs font-mono">
-          <Link href="/landing" className="btn-ghost">Overview</Link>
+          <Link href="/" className="btn-ghost">Workstation</Link>
           <Link href="/" className="btn-secondary !px-4 !py-2 text-xs">
             <span>Direct Workstation</span>
             <ArrowRight className="w-3.5 h-3.5" />
@@ -140,7 +140,7 @@ export default function LoginPage() {
             <div className="space-y-1.5">
               <label className="text-muted-bright font-medium flex items-center gap-1.5">
                 <UserCheck className="w-3.5 h-3.5 text-success" />
-                <span>Security Clearance Role</span>
+                <span>Workspace Role</span>
               </label>
               <div className="grid grid-cols-3 gap-2">
                 {ROLES.map((r) => (
@@ -174,14 +174,14 @@ export default function LoginPage() {
 
           <div className="flex items-center justify-center gap-1.5 text-[10px] font-mono text-muted-dim">
             <ShieldCheck className="w-3 h-3 text-success" />
-            <span>Fail-Closed Host Security Guard Active</span>
+            <span>Isolated Workspace Guard Active</span>
           </div>
         </div>
       </main>
 
       <footer className="h-12 border-t border-ink-800/80 px-6 flex items-center justify-between text-[11px] font-mono text-muted-dim z-10">
         <div>SONIC-REDA Autonomy Core v1.3.0</div>
-        <Link href="/landing" className="hover:text-slate-300 transition">Back to overview</Link>
+        <Link href="/" className="hover:text-slate-300 transition">Back to workstation</Link>
       </footer>
     </div>
   );

@@ -43,12 +43,20 @@ export function getUserSession(): UserSession | null {
 }
 
 /**
- * Ensures a valid JWT token is stored in localStorage.
- * If absent, fetches a signed JWT from /auth/dev-token.
+ * Ensures a token exists for API calls.
+ *
+ * The development token endpoint is intentionally unavailable in production.
+ * Never probe it from a production browser: doing so creates noisy 404s and
+ * hides the real requirement to authenticate through the configured login flow.
  */
 export async function ensureAuthToken(apiBase: string): Promise<string> {
   const existing = getAuthToken();
   if (existing) return existing;
+
+  const isDevelopment =
+    process.env.NODE_ENV !== "production" ||
+    process.env.NEXT_PUBLIC_SONIC_ENV === "development";
+  if (!isDevelopment) return "";
 
   try {
     const res = await fetch(`${apiBase}/auth/dev-token`, { method: "POST" });
@@ -62,7 +70,7 @@ export async function ensureAuthToken(apiBase: string): Promise<string> {
       }
     }
   } catch (err) {
-    console.error("Failed to auto-provision session token:", err);
+    console.error("Failed to auto-provision development session token:", err);
   }
   return "";
 }

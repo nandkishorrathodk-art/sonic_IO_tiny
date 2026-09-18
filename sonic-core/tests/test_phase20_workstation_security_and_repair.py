@@ -13,6 +13,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from sonic.api.main import app
+from sonic.api.routes.workstation import _tenant_workstations
 from sonic.auth.google_auth import create_jwt_token
 from sonic.auth.models import User, UserRole
 
@@ -20,6 +21,13 @@ from sonic.auth.models import User, UserRole
 @pytest.fixture
 def client():
     return TestClient(app)
+
+
+@pytest.fixture(autouse=True)
+def isolated_workstation_state():
+    _tenant_workstations.clear()
+    yield
+    _tenant_workstations.clear()
 
 
 @pytest.fixture
@@ -133,14 +141,9 @@ def test_workstation_auditor_blocked_from_mutations(client, auditor_headers):
     """RBAC: read-only AUDITOR role must be rejected (403) from all workstation mutation routes."""
     mutation_routes = [
         ("post", "/workstation/desktop/provision", {}),
-        ("post", "/workstation/research-lab/provision", {}),
-        ("delete", "/workstation/research-lab", None),
-        ("post", "/workstation/target-sandbox/provision", {"target": "10.0.0.1", "scope_config": {"authorized": True}}),
-        ("delete", "/workstation/target-sandbox", None),
         ("post", "/workstation/desktop/action", {"action": "click", "coordinates": [10, 10]}),
         ("post", "/workstation/file", {"path": "sonic-core/sonic/__init__.py", "content": "x"}),
         ("post", "/workstation/command", {"command": "whoami"}),
-        ("post", "/workstation/mission/start", {"objective": "test"}),
         ("post", "/workstation/prompt", {"prompt": "test"}),
         ("delete", "/workstation/session?session_id=sess", None),
     ]
@@ -173,8 +176,8 @@ def test_workstation_screenshot_no_workspace_returns_no_display(client, auth_hea
     assert data["screenshot_base64"] == ""
 
 
-def test_workstation_desktop_action_no_workspace_degrades(client, auth_headers):
-    """Desktop action with no provisioned workstation returns success with a NO_DISPLAY observation."""
+def test_workstation_desktop_action_no_workspace_blocks(client, auth_headers):
+    """Desktop action without a substrate remains fail-closed."""
     res = client.post(
         "/workstation/desktop/action",
         headers=auth_headers,
@@ -182,5 +185,6 @@ def test_workstation_desktop_action_no_workspace_degrades(client, auth_headers):
     )
     assert res.status_code == 200
     data = res.json()
-    assert data["status"] == "success"
+    assert data["status"] == "BLOCKED"
+    assert data["observation"]["desktop_state"] == "NO_DISPLAY"
     assert data["observation"]["desktop_state"] == "NO_DISPLAY"

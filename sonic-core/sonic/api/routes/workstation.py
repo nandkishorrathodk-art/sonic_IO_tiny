@@ -2,7 +2,7 @@
 SONIC-REDA — Hardened Real-Time AI Workstation API (Phase 20 & 21)
 ==================================================================
 Serves authentic repository files, live git diffs, Daytona Cloud & Container
-graphical desktop telemetry, and tenant-isolated mission state to SONIC Workstation.
+graphical desktop telemetry and tenant-isolated workstation state.
 
 SECURITY INVARIANTS:
     1. Zero Host Shell Execution: All execution MUST route through ComputeProvider / Daytona / Docker sandbox.
@@ -15,7 +15,6 @@ SECURITY INVARIANTS:
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import json
 import os
 import posixpath
@@ -25,10 +24,8 @@ import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from sonic.auth.middleware import require_auth, require_operator
@@ -36,18 +33,13 @@ from sonic.auth.models import User
 from sonic.computer.daytona_computer import DaytonaComputerProvider
 from sonic.computer.docker_computer import DockerComputerProvider
 from sonic.computer.models import (
-    ComputerProfile,
     ComputerWorkspaceStatus,
-    ComputerWorkspaceType,
     GUIAction,
     GUIActionType,
 )
 from sonic.logger import get_logger
-from sonic.mission_engine.executor import MissionToolExecutor
-from sonic.mission_engine.planner import MissionPlanner, PlannedAction
-from sonic.mission_engine.tool_registry import ToolRisk
 from sonic.safety.runtime_stop import get_runtime_stop_state
-from sonic.safety.scope import SafetyVerdict, get_scope_checker
+from sonic.safety.scope import get_scope_checker
 
 logger = get_logger(__name__)
 
@@ -121,30 +113,14 @@ class FileWriteRequest(BaseModel):
     content: str
 
 
-class TargetSandboxProvisionRequest(BaseModel):
-    target: str
-    # Scope must be explicit. Empty scope is intentionally rejected.
-    scope_config: dict[str, Any] = Field(default_factory=dict)
 
 
-class TargetSandboxCommandRequest(BaseModel):
-    command: str
-    timeout: int = 120
-    approved: bool = False
 
 
-class MissionStartRequest(BaseModel):
-    objective: str
 
 
-class BrowserOpenRequest(BaseModel):
-    url: str
-    approved: bool = False
 
 
-class MissionProbeApproveRequest(BaseModel):
-    action_id: str
-    approved: bool = True
 
 
 # -------------------------------------------------------------
@@ -308,10 +284,9 @@ def _get_or_create_session(tenant_id: str, session_id: str = "default") -> dict[
             "latest_commit": "",
             "active_file": "",
             "elapsed_seconds": 0,
-            "thought_summary": "Ready for security research and engineering tasks.",
+            "thought_summary": "Ready for computer and sandbox work.",
             "current_action": "Ready when you are.",
             "worklog": [],
-            "evidence": [],
             "desktop": {
                 "os_name": "Linux Cyber Workstation (Docker XFCE4)",
                 "workspace_id": active_ws,
@@ -328,59 +303,11 @@ def _get_or_create_session(tenant_id: str, session_id: str = "default") -> dict[
                 "running_apps": [],
                 "active_services": [],
             },
-            # A separate, disposable execution plane for authorized research,
-            # regression tests, and candidate evaluation. It is never used as
-            # the user's persistent desktop.
-            "research_lab": {
-                "workspace_id": "",
-                "sandbox_id": "",
-                "image": "",
-                "status": "NO_ACTIVE_LAB",
-                "purpose": "disposable_authorized_evaluation",
-                "created_at": "",
-            },
-            "target_sandbox": {
-                "workspace_id": "",
-                "sandbox_id": "",
-                "target": "",
-                "image": "",
-                "status": "NO_ACTIVE_TARGET_SANDBOX",
-                "scope_verified": False,
-                "created_at": "",
-            },
-            "mission": {
-                "mission_id": "",
-                "objective": "",
-                "status": "IDLE",
-                "target_sandbox_id": "",
-                "started_at": "",
-                "completed_at": "",
-                "events": [],
-            },
         }
         _persist_workstation_state()
 
     session = _tenant_workstations[tenant_id][session_id]
-    # Lightweight migration for sessions persisted before the research-lab
-    # split was introduced.
-    session.setdefault("research_lab", {
-        "workspace_id": "",
-        "sandbox_id": "",
-        "image": "",
-        "status": "NO_ACTIVE_LAB",
-        "purpose": "disposable_authorized_evaluation",
-        "created_at": "",
-    })
     session.setdefault("desktop", {})
-    session.setdefault("evidence", [])
-    session.setdefault("target_sandbox", {
-        "workspace_id": "", "sandbox_id": "", "target": "", "image": "",
-        "status": "NO_ACTIVE_TARGET_SANDBOX", "scope_verified": False, "created_at": "",
-    })
-    session.setdefault("mission", {
-        "mission_id": "", "objective": "", "status": "IDLE",
-        "target_sandbox_id": "", "started_at": "", "completed_at": "", "events": [],
-    })
     # Sessions created by older builds may contain a demo-style title. Keep a
     # genuinely idle conversation visually empty until the user sends a prompt.
     if not session.get("worklog") and session.get("mission_name") in {
@@ -405,8 +332,12 @@ def _get_or_create_session(tenant_id: str, session_id: str = "default") -> dict[
 
 def _session_workspace_id(user: User, session_id: str) -> str:
     """Return only a workspace explicitly owned by this tenant/session."""
-    tenant_id = getattr(user, "tenant_id", None) or user.email
-    return _session_workspace_id_for_tenant(tenant_id, session_id)
+    return _session_workspace_id_for_tenant(_tenant_key(user), session_id)
+
+
+def _tenant_key(user: User) -> str:
+    """Return the canonical partition key for all workstation state."""
+    return str(getattr(user, "tenant_id", None) or user.email)
 
 
 def _session_workspace_id_for_tenant(tenant_id: str, session_id: str) -> str:
@@ -454,21 +385,8 @@ def _session_workspace_id_for_tenant(tenant_id: str, session_id: str) -> str:
     return ""
 
 
-def _session_lab_id(user: User, session_id: str) -> str:
-    """Return only the disposable research lab owned by this tenant/session."""
-    state = _tenant_workstations.get(user.email, {}).get(session_id)
-    if not state:
-        return ""
-    lab = state.get("research_lab", {})
-    return str(lab.get("workspace_id") or lab.get("sandbox_id") or "")
 
 
-def _session_target_id(user: User, session_id: str) -> str:
-    state = _tenant_workstations.get(user.email, {}).get(session_id)
-    if not state:
-        return ""
-    target = state.get("target_sandbox", {})
-    return str(target.get("workspace_id") or target.get("sandbox_id") or "")
 
 
 _WORKSPACE_ROOT = "/home/sonic/workspace"
@@ -504,204 +422,10 @@ def _append_worklog(state: dict[str, Any], item_type: str, title: str, content: 
     return item
 
 
-def _mission_event(state: dict[str, Any], event_type: str, title: str, content: str, **extra: Any) -> dict[str, Any]:
-    mission = state.setdefault("mission", {})
-    event = {
-        "id": f"me-{uuid.uuid4().hex[:10]}",
-        "type": event_type,
-        "title": title,
-        "content": content,
-        "timestamp": _timestamp(),
-        **extra,
-    }
-    mission.setdefault("events", []).append(event)
-    state.setdefault("worklog", []).append(event)
-    _persist_workstation_state()
-    return event
 
 
-def _record_mission_evidence(state: dict[str, Any], mission_id: str, target: str, execution: Any) -> dict[str, Any]:
-    """Persist an evidence record derived only from a real tool execution."""
-    payload = {
-        "mission_id": mission_id,
-        "target": target,
-        "tool": execution.tool,
-        "action_id": execution.action_id,
-        "status": execution.status,
-        "exit_code": execution.exit_code,
-        "output": execution.output[:12000],
-        "evidence": execution.evidence,
-    }
-    digest = hashlib.sha256(json.dumps(payload, sort_keys=True, ensure_ascii=True).encode("utf-8")).hexdigest()
-    record = {
-        "id": f"ev-{uuid.uuid4().hex[:10]}",
-        **payload,
-        "sha256": digest,
-        "verified": execution.status == "SUCCESS",
-        "captured_at": _timestamp(),
-    }
-    state.setdefault("evidence", []).append(record)
-    _persist_workstation_state()
-    return record
 
 
-async def _run_mission_preflight(tenant_id: str, session_id: str, mission_id: str) -> None:
-    """Run only read-only discovery in the authorized target sandbox.
-
-    Exploit/probe actions remain behind the explicit target-command approval
-    endpoint. This task establishes the real observation/action event loop
-    without silently attacking an unapproved target.
-    """
-    state = _get_or_create_session(tenant_id, session_id)
-    mission = state["mission"]
-    target_info = state.get("target_sandbox", {})
-    target_id = str(target_info.get("workspace_id") or target_info.get("sandbox_id") or "")
-    if mission.get("mission_id") != mission_id:
-        return
-    mission["status"] = "RUNNING"
-    _mission_event(state, "plan", "Mission plan created", "Starting read-only target sandbox preflight.", workspace_id=target_id)
-    if not target_id:
-        mission["status"] = "BLOCKED"
-        _mission_event(state, "error", "Mission blocked", "No authorized target sandbox is attached to this session.")
-        return
-
-    from sonic.tools.registry import get_default_registry
-
-    comp = get_daytona_computer()
-    planner = MissionPlanner()
-    try:
-        plan = planner.build_plan(
-            mission_id=mission_id,
-            objective=mission.get("objective", ""),
-            target=state.get("target_sandbox", {}).get("target", ""),
-            target_workspace_id=target_id,
-        )
-    except Exception as exc:
-        mission["status"] = "BLOCKED"
-        _mission_event(state, "error", "Mission planning failed", str(exc))
-        return
-
-    _mission_event(state, "plan", "Typed action plan ready", f"{len(plan.actions)} allowlisted actions generated.", plan=plan.model_dump())
-    # Wire the real scanner registry so target_security_scan probes can
-    # dispatch through the fail-closed executor rather than a raw terminal call.
-    # The executor keeps every approval-required probe operator-gated.
-    try:
-        security_tools = get_default_registry(comp)
-    except Exception as registry_err:
-        logger.warning("mission_security_tools_registry_failed", error=str(registry_err))
-        security_tools = None
-    mission_target = str(state.get("target_sandbox", {}).get("target", "") or mission.get("target", "") or "").strip()
-    executor = MissionToolExecutor(comp, security_tools=security_tools, scoped_target=mission_target, tenant_id=tenant_id)
-
-    # Concrete probes generated by the planner are surfaced immediately as
-    # operator-approval proposals — the operator sees real commands, not an
-    # opaque ``echo APPROVAL_REQUIRED``.
-    probe_actions = [
-        a for a in plan.actions
-        if a.tool == "target_security_scan"
-    ]
-    if probe_actions:
-        mission["proposed_actions"] = [a.model_dump() for a in probe_actions]
-        probe_lines = "\n".join(
-            f"• {a.input.get('tool')} {a.input.get('target')}"
-            for a in probe_actions
-        )
-        _mission_event(
-            state,
-            "approval",
-            "Concrete probe proposals ready",
-            f"{len(probe_actions)} concrete approval-required probe(s) derived from the objective:\n{probe_lines}",
-            proposed_actions=[a.model_dump() for a in probe_actions],
-        )
-
-    pending_actions = [a for a in plan.actions if a.tool != "target_security_scan"]
-    completed_action_ids: set[str] = set()
-    follow_up_added = False
-    evidence_outputs: dict[str, str] = {}
-    while pending_actions:
-        action = pending_actions.pop(0)
-        label = action.tool
-        try:
-            execution = await executor.execute(
-                action,
-                target_workspace_id=target_id,
-                actor=tenant_id,
-                approved=False,
-            )
-            _mission_event(
-                state,
-                "observation" if execution.status == "SUCCESS" else execution.status.lower(),
-                f"Target {label} preflight",
-                execution.output[:4000] or "(no output)",
-                action=action.model_dump(),
-                result=execution.model_dump(),
-            )
-            if execution.status == "SUCCESS":
-                completed_action_ids.add(action.action_id)
-                evidence_outputs[action.action_id] = execution.output or ""
-                evidence = _record_mission_evidence(
-                    state,
-                    mission_id,
-                    str(target_info.get("target", "")),
-                    execution,
-                )
-                _mission_event(
-                    state,
-                    "evidence",
-                    "Evidence captured",
-                    f"Verified {execution.tool} result recorded with SHA-256 custody digest {evidence['sha256'][:16]}…",
-                    evidence_id=evidence["id"],
-                )
-            if execution.status == "AWAITING_APPROVAL":
-                mission["status"] = "AWAITING_APPROVAL"
-                state["current_action"] = f"Action {label} requires operator approval."
-                _mission_event(state, "approval", "Operator approval required", f"Action {label} requires operator approval before active execution.")
-                break
-            elif execution.status != "SUCCESS":
-                mission["status"] = "BLOCKED"
-                _mission_event(state, "error", "Mission preflight failed", f"{label} returned {execution.status}.")
-                return
-        except Exception as exc:
-            mission["status"] = "BLOCKED"
-            _mission_event(state, "error", "Mission execution failed", str(exc))
-            return
-
-        # Re-plan only after real evidence from the whole current batch. The
-        # planner can add a bounded, read-only follow-up batch derived from what
-        # the completed actions actually observed; it cannot invent a new tool
-        # or an unapproved active probe.
-        if not pending_actions and not follow_up_added:
-            follow_up_added = True
-            follow_up = planner.build_follow_up_actions(
-                plan,
-                completed_action_ids,
-                evidence_brief=[out[:300] for out in evidence_outputs.values() if out],
-            )
-            if follow_up:
-                pending_actions.extend(follow_up)
-                _mission_event(
-                    state,
-                    "replan",
-                    "Evidence-based discovery follow-up",
-                    f"Initial observations complete; queued {len(follow_up)} additional read-only actions.",
-                    actions=[item.model_dump() for item in follow_up],
-                )
-
-    mission["completed_at"] = _timestamp()
-    state["status"] = "IDLE"
-    if plan.requires_active_testing:
-        mission["status"] = "AWAITING_APPROVAL"
-        probe_count = len(probe_actions)
-        proposals_note = (
-            f" {probe_count} concrete probe proposal(s) await your approval (see mission events)."
-            if probe_count else ""
-        )
-        state["current_action"] = f"Read-only discovery complete; operator approval required for active testing.{proposals_note}"
-        _mission_event(state, "approval", "Awaiting operator approval", f"Discovery loop completed.{proposals_note} Execute an approved target-sandbox command to proceed.")
-    else:
-        mission["status"] = "COMPLETED"
-        state["current_action"] = "Read-only discovery loop completed with evidence."
-        _mission_event(state, "completed", "Discovery mission completed", "All planned read-only discovery actions completed and evidence was captured.")
 
 
 # -------------------------------------------------------------
@@ -717,7 +441,7 @@ async def get_workstation_state(
     user: User = Depends(require_auth),
 ):
     """Returns the live, tenant-scoped workstation mission state."""
-    state = _get_or_create_session(user.email, session_id)
+    state = _get_or_create_session(_tenant_key(user), session_id)
     workspace_id = _session_workspace_id(user, session_id)
 
     # 10.0s cache key per user and session to avoid overwhelming sandbox execution with rapid polls
@@ -791,10 +515,10 @@ async def get_workstation_state(
 @router.get("/workstation/sessions")
 async def list_workstation_sessions(user: User = Depends(require_auth)):
     """Returns all active and historical sessions for the authenticated tenant."""
-    tenant_sessions = _tenant_workstations.get(user.email, {})
+    tenant_sessions = _tenant_workstations.get(_tenant_key(user), {})
     if not tenant_sessions:
-        _get_or_create_session(user.email, "default")
-        tenant_sessions = _tenant_workstations.get(user.email, {})
+        _get_or_create_session(_tenant_key(user), "default")
+        tenant_sessions = _tenant_workstations.get(_tenant_key(user), {})
 
     result = []
     for sid, sdata in tenant_sessions.items():
@@ -804,7 +528,7 @@ async def list_workstation_sessions(user: User = Depends(require_auth)):
             "session_id": sid,
             "mission_name": sdata.get("mission_name") or "New conversation",
             "status": sdata.get("status", "IDLE"),
-            "workspace_id": _session_workspace_id_for_tenant(user.email, sid),
+            "workspace_id": _session_workspace_id_for_tenant(_tenant_key(user), sid),
             "git_branch": sdata.get("git_branch") or "",
             "log_count": len(sdata.get("worklog", [])),
             "last_action": sdata.get("current_action") or "Ready when you are.",
@@ -818,12 +542,12 @@ async def delete_workstation_session(
     user: User = Depends(require_operator),
 ):
     """Deletes a mission session from the tenant's history."""
-    if user.email in _tenant_workstations and session_id in _tenant_workstations[user.email]:
+    tenant_id = _tenant_key(user)
+    if tenant_id in _tenant_workstations and session_id in _tenant_workstations[tenant_id]:
         comp = get_daytona_computer()
         workspace_ids = {
             ws for ws in (
-                _session_target_id(user, session_id),
-                _session_lab_id(user, session_id),
+                "",
                 _session_workspace_id(user, session_id),
             ) if ws
         }
@@ -834,14 +558,14 @@ async def delete_workstation_session(
                 logger.warning("workstation_session_cleanup_failed", workspace_id=workspace_id, error=str(exc))
 
         if session_id != "default":
-            del _tenant_workstations[user.email][session_id]
+            del _tenant_workstations[tenant_id][session_id]
             _persist_workstation_state()
             return {"status": "deleted", "session_id": session_id}
         else:
             # Reset default session to clean state
-            _tenant_workstations[user.email]["default"] = {
+            _tenant_workstations[tenant_id]["default"] = {
                 "session_id": "default",
-                "tenant_id": user.email,
+                "tenant_id": tenant_id,
                 "mission_name": "New conversation",
                 "status": "IDLE",
                 "target_repo": "",
@@ -868,32 +592,6 @@ async def delete_workstation_session(
                     "running_apps": [],
                     "active_services": [],
                 },
-                "research_lab": {
-                    "workspace_id": "",
-                    "sandbox_id": "",
-                    "image": "",
-                    "status": "NO_ACTIVE_LAB",
-                    "purpose": "disposable_authorized_evaluation",
-                    "created_at": "",
-                },
-                "target_sandbox": {
-                    "workspace_id": "",
-                    "sandbox_id": "",
-                    "target": "",
-                    "image": "",
-                    "status": "NO_ACTIVE_TARGET_SANDBOX",
-                    "scope_verified": False,
-                    "created_at": "",
-                },
-                "mission": {
-                    "mission_id": "",
-                    "objective": "",
-                    "status": "IDLE",
-                    "target_sandbox_id": "",
-                    "started_at": "",
-                    "completed_at": "",
-                    "events": [],
-                },
             }
             _persist_workstation_state()
             return {"status": "reset", "session_id": "default"}
@@ -906,7 +604,7 @@ async def provision_desktop(
     user: User = Depends(require_operator),
 ):
     """Provision a real tenant-owned Daytona graphical workstation."""
-    state = _get_or_create_session(user.email, session_id)
+    state = _get_or_create_session(_tenant_key(user), session_id)
     desktop = state["desktop"]
     if desktop.get("workspace_id"):
         return {"status": "already_provisioned", "desktop": desktop}
@@ -914,7 +612,7 @@ async def provision_desktop(
     comp = get_daytona_computer()
     try:
         workspace = await comp.create(
-            tenant_id=user.email,
+            tenant_id=_tenant_key(user),
             engagement_id=session_id,
         )
     except Exception as exc:
@@ -938,213 +636,18 @@ async def provision_desktop(
     return {"status": "provisioned", "workspace": workspace.model_dump(), "desktop": desktop}
 
 
-@router.post("/workstation/research-lab/provision")
-async def provision_research_lab(
-    session_id: str = Query("default"),
-    user: User = Depends(require_operator),
-):
-    """Create a separate disposable Daytona lab for authorized testing/evaluation."""
-    state = _get_or_create_session(user.email, session_id)
-    lab = state["research_lab"]
-    if lab.get("workspace_id"):
-        return {"status": "already_provisioned", "research_lab": lab}
-
-    comp = get_daytona_computer()
-    try:
-        workspace = await comp.create(
-            tenant_id=user.email,
-            engagement_id=f"{session_id}:research",
-            workspace_type=ComputerWorkspaceType.RESEARCH_LAB,
-            profile=ComputerProfile.KALI_SECURITY,
-        )
-    except Exception as exc:
-        lab["status"] = "PROVISION_FAILED"
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
-
-    lab.update({
-        "workspace_id": workspace.id,
-        "sandbox_id": workspace.id,
-        "image": workspace.image,
-        "status": workspace.status.value,
-        "created_at": workspace.created_at,
-    })
-    state["current_action"] = "Disposable research lab ready; persistent desktop remains isolated."
-    _append_worklog(
-        state,
-        "action",
-        "Research Lab Provisioned",
-        f"Authorized evaluation sandbox {workspace.id} created for this session.",
-    )
-    _persist_workstation_state()
-    return {"status": "provisioned", "workspace": workspace.model_dump(), "research_lab": lab}
 
 
-@router.get("/workstation/research-lab/status")
-async def get_research_lab_status(
-    session_id: str = Query("default"),
-    user: User = Depends(require_auth),
-):
-    """Return disposable lab state without exposing another tenant's sandbox."""
-    state = _get_or_create_session(user.email, session_id)
-    lab = state["research_lab"]
-    workspace_id = _session_lab_id(user, session_id)
-    if workspace_id:
-        try:
-            remote = await get_daytona_computer().status(workspace_id)
-            lab["status"] = remote.status.value
-        except Exception:
-            lab["status"] = "UNREACHABLE"
-    else:
-        lab["status"] = "NO_ACTIVE_LAB"
-    return lab
 
 
-@router.delete("/workstation/research-lab")
-async def destroy_research_lab(
-    session_id: str = Query("default"),
-    user: User = Depends(require_operator),
-):
-    """Destroy only this session's disposable lab; the agent desktop is retained."""
-    state = _get_or_create_session(user.email, session_id)
-    lab = state["research_lab"]
-    workspace_id = _session_lab_id(user, session_id)
-    if workspace_id:
-        destroyed = await get_daytona_computer().destroy(workspace_id)
-        if not destroyed:
-            raise HTTPException(status_code=502, detail="Daytona did not confirm research lab destruction")
-    lab.update({"workspace_id": "", "sandbox_id": "", "status": "DESTROYED"})
-    _persist_workstation_state()
-    return {"status": "destroyed", "research_lab": lab}
 
 
-@router.post("/workstation/target-sandbox/provision")
-async def provision_target_sandbox(
-    req: TargetSandboxProvisionRequest,
-    session_id: str = Query("default"),
-    user: User = Depends(require_operator),
-):
-    """Provision an isolated sandbox only for an explicitly scoped target."""
-    target_value = req.target.strip()
-    target_host = urlparse(target_value if "://" in target_value else f"//{target_value}").hostname or target_value
-    if not target_host or not req.scope_config:
-        raise HTTPException(status_code=400, detail="Target and non-empty engagement scope are required")
-    scope = get_scope_checker()
-    if not scope.is_target_in_scope(target_host, req.scope_config):
-        raise HTTPException(status_code=403, detail="Target is outside the supplied engagement scope")
-
-    # Egress guard: refuse to bind a sandbox to a private/loopback/metadata target.
-    from sonic.sandbox.egress import is_target_allowed
-    egress_ok, egress_reason = is_target_allowed(target_host)
-    if not egress_ok:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Target rejected by egress policy: {egress_reason}",
-        )
-
-    state = _get_or_create_session(user.email, session_id)
-    target_box = state["target_sandbox"]
-    if target_box.get("workspace_id"):
-        if target_box.get("target") != target_host:
-            raise HTTPException(status_code=409, detail="A different target sandbox is already attached to this session")
-        return {"status": "already_provisioned", "target_sandbox": target_box}
-
-    try:
-        workspace = await get_daytona_computer().create(
-            tenant_id=user.email,
-            engagement_id=f"{session_id}:target",
-            workspace_type=ComputerWorkspaceType.TARGET_SANDBOX,
-            profile=ComputerProfile.KALI_SECURITY,
-        )
-    except Exception as exc:
-        target_box["status"] = "PROVISION_FAILED"
-        _persist_workstation_state()
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
-
-    target_box.update({
-        "workspace_id": workspace.id,
-        "sandbox_id": workspace.id,
-        "target": target_host,
-        "scope_config": req.scope_config,
-        "image": workspace.image,
-        "status": workspace.status.value,
-        "scope_verified": True,
-        "created_at": workspace.created_at,
-    })
-    _append_worklog(
-        state,
-        "action",
-        "Target Sandbox Provisioned",
-        f"Target {target_host} bound to isolated sandbox {workspace.id}.",
-    )
-    _persist_workstation_state()
-    return {"status": "provisioned", "workspace": workspace.model_dump(), "target_sandbox": target_box}
 
 
-@router.get("/workstation/target-sandbox/status")
-async def get_target_sandbox_status(
-    session_id: str = Query("default"),
-    user: User = Depends(require_auth),
-):
-    state = _get_or_create_session(user.email, session_id)
-    target_box = state["target_sandbox"]
-    workspace_id = _session_target_id(user, session_id)
-    if workspace_id:
-        try:
-            target_box["status"] = (await get_daytona_computer().status(workspace_id)).status.value
-        except Exception:
-            target_box["status"] = "UNREACHABLE"
-    return target_box
 
 
-@router.post("/workstation/target-sandbox/command")
-async def execute_target_sandbox_command(
-    req: TargetSandboxCommandRequest,
-    session_id: str = Query("default"),
-    user: User = Depends(require_operator),
-):
-    """Execute an approved command against this session's scoped target lab."""
-    _assert_runtime_execution_enabled(user.email)
-    state = _get_or_create_session(user.email, session_id)
-    target_box = state["target_sandbox"]
-    workspace_id = _session_target_id(user, session_id)
-    if not workspace_id:
-        raise HTTPException(status_code=409, detail="No target sandbox is provisioned for this session")
-    if not target_box.get("scope_verified", False):
-        raise HTTPException(status_code=403, detail="Target sandbox has no verified engagement scope")
-    if not req.command.strip():
-        raise HTTPException(status_code=400, detail="Command cannot be empty")
-    # Classify risk from the actual command content — not a hardcoded level
-    risk = get_scope_checker().classify_command_risk(req.command)
-    verdict = get_scope_checker().check_action(req.command, risk)
-    if verdict == SafetyVerdict.BLOCKED:
-        raise HTTPException(status_code=403, detail=f"Target command blocked by safety policy — destructive operation detected ({risk.value})")
-    if verdict == SafetyVerdict.NEEDS_APPROVAL and not req.approved:
-        raise HTTPException(status_code=409, detail=f"Target command classified as {risk.value} (intrusive) — requires explicit operator approval")
-    if verdict != SafetyVerdict.ALLOWED:
-        raise HTTPException(status_code=403, detail=f"Target command blocked by safety policy ({verdict.value})")
-    result = await get_daytona_computer().terminal(workspace_id, req.command, timeout=req.timeout, actor=user.email)
-    return {
-        "status": "completed",
-        "workspace_id": workspace_id,
-        "exit_code": result.exit_code,
-        "output": (result.stdout + ("\n" + result.stderr if result.stderr else "")).strip(),
-    }
 
 
-@router.delete("/workstation/target-sandbox")
-async def destroy_target_sandbox(
-    session_id: str = Query("default"),
-    user: User = Depends(require_operator),
-):
-    state = _get_or_create_session(user.email, session_id)
-    target_box = state["target_sandbox"]
-    workspace_id = _session_target_id(user, session_id)
-    if workspace_id:
-        if not await get_daytona_computer().destroy(workspace_id):
-            raise HTTPException(status_code=502, detail="Daytona did not confirm target sandbox destruction")
-    target_box.update({"workspace_id": "", "sandbox_id": "", "status": "DESTROYED", "scope_verified": False})
-    _persist_workstation_state()
-    return {"status": "destroyed", "target_sandbox": target_box}
 
 
 @router.post("/workstation/session/interrupt")
@@ -1153,7 +656,7 @@ async def interrupt_workstation_session(
     user: User = Depends(require_operator),
 ):
     """Signals any running autonomous computer-use mission to pause/stop immediately."""
-    state = _get_or_create_session(user.email, session_id)
+    state = _get_or_create_session(_tenant_key(user), session_id)
     state["interrupted"] = True
     state["status"] = "PAUSED"
     state["current_action"] = "Paused by user (Takeover active)."
@@ -1174,7 +677,7 @@ async def get_desktop_status(
     not from a persisted string: if the container/VM is missing the status
     reflects that (DEGRADED/STOPPED and empty apps/URLs).
     """
-    state = _get_or_create_session(user.email, session_id)
+    state = _get_or_create_session(_tenant_key(user), session_id)
     desktop = state["desktop"]
     comp = get_daytona_computer()
     running_processes = []
@@ -1235,7 +738,7 @@ async def execute_desktop_action(
     if not workspace_id:
         # Keep the UI responsive, but never report an action as successful when
         # there is no desktop substrate to receive it.
-        _get_or_create_session(user.email, req.session_id or "default")["desktop"]["active_window"] = "None"
+        _get_or_create_session(_tenant_key(user), req.session_id or "default")["desktop"]["active_window"] = "None"
         return {
             "status": "BLOCKED",
             "action": req.action,
@@ -1290,7 +793,7 @@ async def execute_desktop_action(
         app_name=req.app_name or req.target,
     )
     obs = await comp.gui_action(workspace_id=workspace_id, action=gui_act, actor=user.email)
-    state = _get_or_create_session(user.email, req.session_id or "default")
+    state = _get_or_create_session(_tenant_key(user), req.session_id or "default")
     real_active_window = obs.active_window or "None"
     state["desktop"]["active_window"] = real_active_window
 
@@ -1617,236 +1120,14 @@ async def execute_workstation_command(
     }
 
 
-@router.post("/workstation/mission/start")
-async def start_workstation_mission(
-    req: MissionStartRequest,
-    session_id: str = Query("default"),
-    user: User = Depends(require_operator),
-):
-    """Start a tenant-scoped mission with a real target-sandbox preflight."""
-    if not (req.objective or "").strip():
-        raise HTTPException(status_code=400, detail="Mission objective cannot be empty")
-    target_id = _session_target_id(user, session_id)
-    state = _get_or_create_session(user.email, session_id)
-    if not target_id or not state.get("target_sandbox", {}).get("scope_verified", False):
-        raise HTTPException(status_code=409, detail="Provision and scope-verify a target sandbox before starting a mission")
-    mission = state["mission"]
-    if mission.get("status") == "RUNNING":
-        raise HTTPException(status_code=409, detail="A mission is already running for this session")
-
-    mission_id = f"mission-{uuid.uuid4().hex[:10]}"
-    mission.update({
-        "mission_id": mission_id,
-        "objective": req.objective.strip(),
-        "status": "QUEUED",
-        "target_sandbox_id": target_id,
-        "started_at": _timestamp(),
-        "completed_at": "",
-        "events": [],
-    })
-    state["mission_name"] = req.objective.strip()
-    state["status"] = "RUNNING"
-    state["current_action"] = "Starting mission target-sandbox preflight..."
-    _mission_event(state, "mission", "Mission accepted", req.objective.strip(), mission_id=mission_id, workspace_id=target_id)
-    _track_background_task(asyncio.create_task(_run_mission_preflight(user.email, session_id, mission_id)))
-    return {"status": "queued", "mission": mission}
 
 
-@router.get("/workstation/mission/events")
-async def get_workstation_mission_events(
-    session_id: str = Query("default"),
-    after: int = Query(0, ge=0),
-    user: User = Depends(require_auth),
-):
-    """Stream mission events as newline-delimited JSON for the dashboard."""
-    state = _get_or_create_session(user.email, session_id)
-
-    async def event_stream():
-        cursor = after
-        idle_count = 0
-        while True:
-            events = state.get("mission", {}).get("events", [])
-            while cursor < len(events):
-                yield json.dumps(events[cursor], ensure_ascii=True) + "\n"
-                cursor += 1
-                idle_count = 0
-
-            status = state.get("mission", {}).get("status")
-            if status in {"AWAITING_APPROVAL", "BLOCKED", "FAILED", "COMPLETED"}:
-                if cursor >= len(events):
-                    break
-
-            await asyncio.sleep(0.5)
-            idle_count += 1
-            # Send periodic keep-alive comment every 15s to keep connection alive
-            if idle_count % 30 == 0:
-                yield json.dumps({"type": "keep_alive", "timestamp": _timestamp()}, ensure_ascii=True) + "\n"
-            # Cap idle duration at 10 minutes (1200 ticks of 0.5s) to prevent leaking idle streams
-            if idle_count > 1200:
-                break
-
-    return StreamingResponse(event_stream(), media_type="application/x-ndjson")
 
 
-@router.get("/workstation/mission/evidence")
-async def get_workstation_mission_evidence(
-    session_id: str = Query("default"),
-    user: User = Depends(require_auth),
-):
-    """Return only real evidence captured by this tenant's mission tools."""
-    state = _get_or_create_session(user.email, session_id)
-    return {
-        "evidence": state.get("evidence", []),
-        "count": len(state.get("evidence", [])),
-        "session_id": session_id,
-    }
 
 
-@router.post("/workstation/mission/browser-open")
-async def open_mission_browser(
-    req: BrowserOpenRequest,
-    session_id: str = Query("default"),
-    user: User = Depends(require_operator),
-):
-    """Open a scoped target URL in the persistent Agent Desktop browser."""
-    if not (req.url or "").strip():
-        raise HTTPException(status_code=400, detail="URL cannot be empty")
-    state = _get_or_create_session(user.email, session_id)
-    desktop_id = _session_workspace_id(user, session_id)
-    target = state.get("target_sandbox", {}).get("target", "")
-    if not desktop_id:
-        raise HTTPException(status_code=409, detail="No persistent Agent Desktop is provisioned")
-    if not target:
-        raise HTTPException(status_code=409, detail="No authorized target is bound to this session")
-    action = PlannedAction(
-        tool="desktop_browser_open",
-        input={"url": req.url, "allowed_target": target},
-        risk=ToolRisk.APPROVAL_REQUIRED,
-        requires_approval=True,
-    )
-    result = await MissionToolExecutor(get_daytona_computer(), tenant_id=user.email).execute(
-        action,
-        target_workspace_id=_session_target_id(user, session_id),
-        desktop_workspace_id=desktop_id,
-        actor=user.email,
-        approved=req.approved,
-    )
-    _mission_event(state, "tool", "Desktop browser action", result.output or result.status, action=action.model_dump(), result=result.model_dump())
-    return result.model_dump()
 
 
-@router.post("/workstation/mission/approve-probe")
-async def approve_workstation_mission_probe(
-    req: MissionProbeApproveRequest,
-    session_id: str = Query("default"),
-    user: User = Depends(require_operator),
-):
-    """Execute or dismiss an operator-gated probe proposed during mission preflight."""
-    state = _get_or_create_session(user.email, session_id)
-    mission = state.get("mission", {})
-    target_id = _session_target_id(user, session_id)
-    proposed_actions = mission.get("proposed_actions", [])
-
-    matching_action_dict = None
-    for a in proposed_actions:
-        if a.get("action_id") == req.action_id:
-            matching_action_dict = a
-            break
-
-    if not matching_action_dict:
-        raise HTTPException(status_code=404, detail=f"Proposed probe action '{req.action_id}' not found in mission")
-
-    if not req.approved:
-        # Operator rejected/dismissed this probe
-        mission["proposed_actions"] = [a for a in proposed_actions if a.get("action_id") != req.action_id]
-        tool_name = matching_action_dict.get("input", {}).get("tool", "probe")
-        probe_target = matching_action_dict.get("input", {}).get("target", "")
-        _mission_event(
-            state,
-            "approval",
-            "Probe proposal dismissed",
-            f"Probe {tool_name} on {probe_target} was dismissed by operator.",
-            action_id=req.action_id,
-        )
-        if not mission["proposed_actions"] and mission.get("status") == "AWAITING_APPROVAL":
-            mission["status"] = "DISMISSED"
-            state["current_action"] = "All proposed actions resolved."
-        _persist_workstation_state()
-        return {"status": "dismissed", "action_id": req.action_id, "mission_status": mission.get("status")}
-
-    # Operator approved this probe: dispatch it through MissionToolExecutor
-    comp = get_daytona_computer()
-    from sonic.tools.registry import get_default_registry
-    try:
-        security_tools = get_default_registry(comp)
-    except Exception as registry_err:
-        logger.warning("mission_security_tools_registry_failed", error=str(registry_err))
-        security_tools = None
-
-    mission_target = str(state.get("target_sandbox", {}).get("target", "") or mission.get("target", "") or "").strip()
-    executor = MissionToolExecutor(comp, security_tools=security_tools, scoped_target=mission_target, tenant_id=user.email)
-
-    action = PlannedAction(**matching_action_dict)
-    tool_name = action.input.get("tool", action.tool)
-    probe_target = action.input.get("target", mission_target)
-    _mission_event(
-        state,
-        "action",
-        f"Approved probe dispatch: {tool_name}",
-        f"Executing approved {tool_name} probe on target {probe_target}.",
-        action_id=action.action_id,
-    )
-
-    execution = await executor.execute(
-        action,
-        target_workspace_id=target_id,
-        actor=user.email,
-        approved=True,
-    )
-
-    _mission_event(
-        state,
-        "observation" if execution.status == "SUCCESS" else execution.status.lower(),
-        f"Approved probe {tool_name} result",
-        execution.output[:4000] or "(no output)",
-        action=action.model_dump(),
-        result=execution.model_dump(),
-    )
-
-    if execution.status == "SUCCESS":
-        target_info = state.get("target_sandbox", {})
-        evidence = _record_mission_evidence(
-            state,
-            mission.get("mission_id", "default"),
-            str(target_info.get("target", "")),
-            execution,
-        )
-        _mission_event(
-            state,
-            "evidence",
-            "Evidence captured from approved probe",
-            f"Verified {execution.tool} result recorded with SHA-256 custody digest {evidence['sha256'][:16]}…",
-            evidence_id=evidence["id"],
-        )
-
-    # Remove from proposed actions list
-    mission["proposed_actions"] = [a for a in proposed_actions if a.get("action_id") != req.action_id]
-    if not mission["proposed_actions"]:
-        if execution.status == "SUCCESS":
-            mission["status"] = "COMPLETED"
-            state["current_action"] = "All approved probe actions completed."
-        else:
-            mission["status"] = "BLOCKED"
-            state["current_action"] = f"Approved probe ended with {execution.status}; no successful completion claim was made."
-    _persist_workstation_state()
-
-    return {
-        "status": execution.status,
-        "action_id": req.action_id,
-        "output": execution.output,
-        "exit_code": execution.exit_code,
-        "mission_status": mission.get("status"),
-    }
 
 
 
@@ -1967,14 +1248,10 @@ def _is_action_prompt(prompt: str) -> bool:
     has_explicit_command = bool(
         re.fullmatch(r"(?:pwd|hostname|whoami|date|uname|ls(?:\s+[-\w]+)?)", cleaned)
     )
-    has_target_or_artifact = bool(
-        re.search(r"https?://|(?:^|[\s/])(?:[a-zA-Z]:[\\/])|"
-                  r"\b[a-z0-9-]+\.[a-z]{2,}(?:\.[a-z]{2,})?\b|"
-                  r"\b(?:target|program|application|repository|repo|file|binary|"
-                  r"host|domain|url|ip address|port|service|sandbox|desktop|browser|"
-                  r"news|khabar)\b", cleaned)
-    )
-    return has_explicit_action or has_explicit_command or has_target_or_artifact
+    # A bare domain, file name, or application name is context, not an
+    # instruction. Requiring an explicit verb prevents foundation-mode prompts
+    # such as "opensea.io" from being misinterpreted as a security assessment.
+    return has_explicit_action or has_explicit_command
 
 
 def _requires_desktop_observation(prompt: str) -> bool:
@@ -1990,7 +1267,10 @@ def _requires_desktop_observation(prompt: str) -> bool:
         "double-click", "right-click", "type into", "keyboard", "window",
         "browser", "app", "application", "focus ", "scroll", "drag", "download",
     )
-    return any(term in lower for term in desktop_terms)
+    return any(term in lower for term in desktop_terms) or (
+        re.search(r"\b(?:open|launch|start)\b", lower) is not None
+        and re.search(r"\b(?:inspect|look at|observe|view|use)\b", lower) is not None
+    )
 
 
 def _is_observation_only_prompt(prompt: str) -> bool:
@@ -2012,14 +1292,6 @@ def _is_observation_only_prompt(prompt: str) -> bool:
     )
 
 
-def _is_research_prompt(prompt: str) -> bool:
-    """Keep the removed parallel-research shortcut import-compatible.
-
-    Research objectives now use the normal target-driven mission path rather
-    than a hidden keyword dispatch. Returning False prevents legacy callers
-    from reactivating the retired shortcut.
-    """
-    return False
 
 
 def _is_complex_or_multi_part_objective(prompt: str) -> bool:
@@ -2096,266 +1368,6 @@ def _infer_program_profile(prompt: str, state: dict[str, Any] | None = None) -> 
 
 
 
-async def _run_parallel_research_swarm(
-    state: dict[str, Any],
-    tenant_id: str,
-    session_id: str,
-    prompt: str,
-) -> None:
-    """
-    Executes the 6+1 Parallel Specialists Swarm via AsyncResearchOrchestrator:
-      - NetworkSpecialist
-      - WebSpecialist
-      - ApiSpecialist
-      - AuthSpecialist
-      - BusinessLogicSpecialist
-      - CloudSpecialist
-      - FalsificationSpecialist
-    Live streams entries into state["worklog"] with exact prefixes.
-    Updates state["graph"] with AttackGraph nodes & transitions.
-    Records execution metrics: parallel_wall_time, sum_of_task_times, parallelism_factor.
-    """
-    from sonic.research.attack_graph import AttackGraph, AttackNodeType
-    from sonic.research.event_bus import (
-        EndpointDiscoveredEvent,
-        HypothesisProposedEvent,
-        ResearchEventBus,
-        ResearchStateChangedEvent,
-        TargetDiscoveredEvent,
-        VulnerabilityVerifiedEvent,
-    )
-    from sonic.research.orchestrator import (
-        AsyncResearchOrchestrator,
-        ResearchBlackboard,
-    )
-    from sonic.research.specialist import (
-        ApiSpecialist,
-        AuthSpecialist,
-        BusinessLogicSpecialist,
-        CloudSpecialist,
-        FalsificationSpecialist,
-        NetworkSpecialist,
-        WebSpecialist,
-    )
-
-    state["status"] = "RESEARCHING"
-    state["current_action"] = "Parallel Research Swarm Active (6+1 Specialists)"
-    _append_worklog(
-        state,
-        "action",
-        "Parallel Swarm Activated",
-        f"Initializing 6+1 Parallel Specialists swarm for: {prompt[:120]}",
-    )
-
-    # Extract target if present
-    target_match = re.search(
-        r'(https?://[^\s]+|(?:[a-zA-Z0-9-]+\.)+[a-zA-Z]{2,}|(?:\d{1,3}\.){3}\d{1,3})',
-        prompt,
-    )
-    target_raw = target_match.group(1).rstrip("/;,.") if target_match else "127.0.0.1"
-    target_url = target_raw if target_raw.startswith("http") else f"http://{target_raw}"
-    target_host = target_raw.replace("https://", "").replace("http://", "").split("/")[0].split(":")[0]
-
-    event_bus = ResearchEventBus()
-    blackboard = ResearchBlackboard()
-    attack_graph = AttackGraph()
-
-    def _sync_graph() -> None:
-        state["graph"] = {
-            "nodes": [n.model_dump() for n in attack_graph.nodes.values()],
-            "edges": [e.model_dump() for e in attack_graph.edges],
-            "mermaid": attack_graph.to_mermaid(),
-        }
-
-    _sync_graph()
-
-    # Track logged agent starts to ensure live streaming entries
-    logged_starts: set[str] = set()
-
-    async def _on_state_change(event: ResearchStateChangedEvent) -> None:
-        if event.new_state == "researching":
-            name = event.agent_name
-            if name == "NetworkSpecialist" and name not in logged_starts:
-                logged_starts.add(name)
-                _append_worklog(state, "action", "NetworkSpecialist", "[NetworkSpecialist] Scanning ports...")
-            elif name == "WebSpecialist" and name not in logged_starts:
-                logged_starts.add(name)
-                _append_worklog(state, "action", "WebSpecialist", "[WebSpecialist] Crawling endpoints...")
-            elif name == "ApiSpecialist" and name not in logged_starts:
-                logged_starts.add(name)
-                _append_worklog(state, "action", "ApiSpecialist", "[ApiSpecialist] Analyzing parameters...")
-            elif name == "AuthSpecialist" and name not in logged_starts:
-                logged_starts.add(name)
-                _append_worklog(state, "action", "AuthSpecialist", "[AuthSpecialist] Inspecting tokens...")
-            elif name == "FalsificationSpecialist" and name not in logged_starts:
-                logged_starts.add(name)
-                _append_worklog(state, "action", "FalsificationSpecialist", "[FalsificationSpecialist] Testing hypothesis...")
-            elif name == "BusinessLogicSpecialist" and name not in logged_starts:
-                logged_starts.add(name)
-                _append_worklog(state, "action", "BusinessLogicSpecialist", "[BusinessLogicSpecialist] Analyzing business workflows...")
-            elif name == "CloudSpecialist" and name not in logged_starts:
-                logged_starts.add(name)
-                _append_worklog(state, "action", "CloudSpecialist", "[CloudSpecialist] Evaluating cloud metadata...")
-            _persist_workstation_state()
-
-    async def _on_target_discovered(event: TargetDiscoveredEvent) -> None:
-        node_id = f"target-{event.target}-{event.port or 'host'}"
-        label = f"{event.target}:{event.port}" if event.port else event.target
-        ntype = AttackNodeType.ENTRY_POINT if event.port in (80, 443, 8080) else AttackNodeType.ASSET
-        if node_id not in attack_graph.nodes:
-            attack_graph.add_node(node_id, label, ntype, severity="info", metadata=event.metadata)
-        _sync_graph()
-        _append_worklog(state, "discovery", f"Target: {label}", f"Discovered service {event.service or 'service'} on {label}")
-        _persist_workstation_state()
-
-    async def _on_endpoint_discovered(event: EndpointDiscoveredEvent) -> None:
-        ep_hash = hashlib.sha256(f"{event.method}:{event.url}".encode()).hexdigest()[:8]
-        node_id = f"ep-{ep_hash}"
-        if node_id not in attack_graph.nodes:
-            attack_graph.add_node(node_id, f"{event.method} {event.url}", AttackNodeType.ENTRY_POINT, severity="low")
-            for t_node in list(attack_graph.nodes.values()):
-                if t_node.id.startswith("target-") and t_node.id != node_id:
-                    try:
-                        attack_graph.add_edge(t_node.id, node_id, "Exposes route", confidence=1.0)
-                        break
-                    except Exception:
-                        pass
-        _sync_graph()
-        _append_worklog(state, "discovery", f"Endpoint: {event.url}", f"{event.method} {event.url} (params: {event.params})")
-        _persist_workstation_state()
-
-    async def _on_hypothesis_proposed(event: HypothesisProposedEvent) -> None:
-        node_id = f"hypo-{event.hypothesis_id}"
-        if node_id not in attack_graph.nodes:
-            attack_graph.add_node(node_id, event.statement, AttackNodeType.VULNERABILITY, severity="medium")
-            for ep_node in list(attack_graph.nodes.values()):
-                if ep_node.id.startswith("ep-"):
-                    try:
-                        attack_graph.add_edge(ep_node.id, node_id, "Candidate vulnerability hypothesis", confidence=event.confidence)
-                        break
-                    except Exception:
-                        pass
-        _sync_graph()
-        _append_worklog(state, "hypothesis", f"Hypothesis: {event.vulnerability_class or 'Vulnerability'}", event.statement)
-        _persist_workstation_state()
-
-    async def _on_vuln_verified(event: VulnerabilityVerifiedEvent) -> None:
-        node_id = f"vuln-{event.vulnerability_id}"
-        if node_id not in attack_graph.nodes:
-            ntype = AttackNodeType.OBJECTIVE if event.severity in ("critical", "high") else AttackNodeType.VULNERABILITY
-            attack_graph.add_node(node_id, event.title or event.vulnerability_class, ntype, severity=event.severity)
-            for h_node in list(attack_graph.nodes.values()):
-                if h_node.id.startswith("hypo-"):
-                    try:
-                        attack_graph.add_edge(h_node.id, node_id, "Verified with proof", confidence=1.0)
-                        break
-                    except Exception:
-                        pass
-        _sync_graph()
-        _append_worklog(state, "vulnerability", f"Verified Vulnerability: {event.title or event.vulnerability_class}", f"Severity: {event.severity} | Target: {event.target}")
-        _persist_workstation_state()
-
-    # Wire event subscriptions
-    event_bus.subscribe(ResearchStateChangedEvent, _on_state_change)
-    event_bus.subscribe(TargetDiscoveredEvent, _on_target_discovered)
-    event_bus.subscribe(EndpointDiscoveredEvent, _on_endpoint_discovered)
-    event_bus.subscribe(HypothesisProposedEvent, _on_hypothesis_proposed)
-    event_bus.subscribe(VulnerabilityVerifiedEvent, _on_vuln_verified)
-
-    # Initialize the 6+1 Specialists
-    specialists = [
-        NetworkSpecialist(name="NetworkSpecialist", target=target_host, objective=f"Scanning ports and services on {target_host}"),
-        WebSpecialist(name="WebSpecialist", target_url=target_url, objective=f"Crawling endpoints and attack surface on {target_url}"),
-        ApiSpecialist(name="ApiSpecialist", target_url=f"{target_url}/api", objective=f"Analyzing parameters and schemas on {target_url}"),
-        AuthSpecialist(name="AuthSpecialist", target_url=f"{target_url}/auth", objective=f"Inspecting tokens and authentication boundaries on {target_url}"),
-        BusinessLogicSpecialist(name="BusinessLogicSpecialist", target_url=target_url, objective=f"Analyzing workflow state machines on {target_url}"),
-        CloudSpecialist(name="CloudSpecialist", target_host=target_host, objective=f"Evaluating cloud metadata and storage for {target_host}"),
-        FalsificationSpecialist(name="FalsificationSpecialist", objective="Testing hypotheses and adversarial falsification"),
-    ]
-
-    orchestrator = AsyncResearchOrchestrator(
-        event_bus=event_bus,
-        blackboard=blackboard,
-        max_concurrent_specialists=10,
-    )
-
-    # Pre-seed initial streaming entries into state["worklog"]
-    for spec in specialists:
-        name = spec.name
-        if name == "NetworkSpecialist" and name not in logged_starts:
-            logged_starts.add(name)
-            _append_worklog(state, "action", "NetworkSpecialist", "[NetworkSpecialist] Scanning ports...")
-        elif name == "WebSpecialist" and name not in logged_starts:
-            logged_starts.add(name)
-            _append_worklog(state, "action", "WebSpecialist", "[WebSpecialist] Crawling endpoints...")
-        elif name == "ApiSpecialist" and name not in logged_starts:
-            logged_starts.add(name)
-            _append_worklog(state, "action", "ApiSpecialist", "[ApiSpecialist] Analyzing parameters...")
-        elif name == "AuthSpecialist" and name not in logged_starts:
-            logged_starts.add(name)
-            _append_worklog(state, "action", "AuthSpecialist", "[AuthSpecialist] Inspecting tokens...")
-        elif name == "FalsificationSpecialist" and name not in logged_starts:
-            logged_starts.add(name)
-            _append_worklog(state, "action", "FalsificationSpecialist", "[FalsificationSpecialist] Testing hypothesis...")
-        elif name == "BusinessLogicSpecialist" and name not in logged_starts:
-            logged_starts.add(name)
-            _append_worklog(state, "action", "BusinessLogicSpecialist", "[BusinessLogicSpecialist] Analyzing business workflows...")
-        elif name == "CloudSpecialist" and name not in logged_starts:
-            logged_starts.add(name)
-            _append_worklog(state, "action", "CloudSpecialist", "[CloudSpecialist] Evaluating cloud metadata...")
-
-    # Resolve execution provider via CapabilityRouter
-    from sonic.execution.capability_router import CapabilityRouter
-    daytona_comp = get_daytona_computer()
-    resolved_comp = CapabilityRouter.resolve_provider(daytona_comp, "research")
-    tools = {}
-
-    # Run all specialists concurrently
-    initial_context = {
-        "target": target_host,
-        "target_url": target_url,
-        "target_host": target_host,
-        "delay": 0.05,
-        "tools": tools,
-        "security_tools": tools,
-        "provider": resolved_comp,
-    }
-    result = await orchestrator.run(
-        initial_specialists=specialists,
-        initial_context=initial_context,
-        timeout_seconds=30.0,
-    )
-
-    # Concurrently record execution metrics
-    parallel_wall_time = result.parallel_wall_time
-    sum_of_task_times = result.sum_of_task_times
-    parallelism_factor = result.parallelism_factor
-
-    state["parallel_wall_time"] = parallel_wall_time
-    state["sum_of_task_times"] = sum_of_task_times
-    state["parallelism_factor"] = parallelism_factor
-    state["metrics"] = {
-        "parallel_wall_time": parallel_wall_time,
-        "sum_of_task_times": sum_of_task_times,
-        "parallelism_factor": parallelism_factor,
-        "completed_specialists": result.completed_specialists,
-        "total_specialists": result.total_specialists,
-    }
-
-    _sync_graph()
-    state["status"] = "IDLE"
-    state["current_action"] = "Ready when you are."
-
-    summary = (
-        f"Autonomous research completed via 6+1 Parallel Specialists swarm in {parallel_wall_time:.2f}s "
-        f"(Sum of tasks: {sum_of_task_times:.2f}s, Concurrency Factor: {parallelism_factor}x). "
-        f"Specialists: {result.completed_specialists}/{result.total_specialists} completed. "
-        f"Attack Graph: {len(attack_graph.nodes)} nodes, {len(attack_graph.edges)} transitions. "
-        f"Verified vulnerabilities: {result.verified_vulnerabilities_count}, Falsified: {result.falsified_hypotheses_count}."
-    )
-    state["thought_summary"] = summary
-    _append_worklog(state, "response", "SONIC Swarm Intelligence", summary)
-    _persist_workstation_state()
 
 
 def _generate_grounded_workstation_response(
@@ -2428,6 +1440,35 @@ def _claims_missing_desktop_observation(text: str) -> bool:
     )
 
 
+def _local_conversational_response(prompt: str) -> str:
+    """Answer simple conversation without requiring an LLM provider."""
+    normalized = re.sub(r"\s+", " ", prompt.strip().lower())
+    if re.fullmatch(r"(?:who are you|what is sonic|what are you)", normalized):
+        return (
+            "I am SONIC, an AI assistant using the Copilot SDK in VS Code. "
+            "I can help operate the connected computer, sandbox, files, tests, and git."
+        )
+    if normalized in {"what can you do", "what do you do", "what are your capabilities"}:
+        return (
+            "I can inspect and operate the connected desktop, execute isolated sandbox "
+            "commands, work with files and git, and verify real results before reporting them."
+        )
+    if normalized in {"status", "what are you doing", "what is happening"}:
+        return (
+            "The control plane is ready. I will use the connected workstation for GUI work "
+            "and the isolated sandbox for terminal, files, tests, and git."
+        )
+    if normalized in {"hi", "hello", "hey", "hi sonic", "hello sonic", "hey sonic"}:
+        return (
+            "Hello. I am ready to help with the connected workstation, "
+            "sandbox, files, tests, or git."
+        )
+    return (
+        "I understood this as a conversation, not an execution command. "
+        "Give me a specific desktop, sandbox, file, test, or git objective when you want me to act."
+    )
+
+
 async def _run_prompt_reasoning(tenant_id: str, session_id: str, prompt: str) -> None:
     """Resolve an objective asynchronously so a slow provider cannot block the UI request."""
     state = _get_or_create_session(tenant_id, session_id)
@@ -2442,6 +1483,16 @@ async def _run_prompt_reasoning(tenant_id: str, session_id: str, prompt: str) ->
     program_profile = _infer_program_profile(prompt, state)
     state["program_profile"] = program_profile
     try:
+        # Greetings and ordinary conversation must not depend on an external
+        # model or open a desktop mission. This keeps the control plane useful
+        # when no LLM credentials are configured.
+        if not action_prompt and not observation_only:
+            message = _local_conversational_response(prompt)
+            state["thought_summary"] = message
+            _append_worklog(state, "response", "SONIC Response", message)
+            _persist_workstation_state()
+            return
+
         scope_manifest = program_profile.get("scope_manifest")
         if (
             execution_prompt
@@ -2525,7 +1576,10 @@ async def _run_prompt_reasoning(tenant_id: str, session_id: str, prompt: str) ->
                 # --- Phase 8: Use ComputerUseAgent for visual computer use ---
                 if desktop_id:
                     try:
-                        from sonic.computer_use.agent import ComputerUseAgent
+                        from sonic.computer_use.agent import (
+                            FOUNDATION_RUNTIME_MODE,
+                            ComputerUseAgent,
+                        )
                         from sonic.computer_use.models import (
                             ComputerAutonomyLevel,
                             EngineeringMissionMode,
@@ -2750,14 +1804,14 @@ async def _run_prompt_reasoning(tenant_id: str, session_id: str, prompt: str) ->
                                     logger.debug("workstation_graph_memory_update_failed", error=str(mem_err))
 
                         from sonic.being.identity import get_being_store, get_or_create_being
-                        from sonic.tools.registry import get_default_registry
-
-                        security_tools = get_default_registry(computer).as_dict()
+                        # Foundation mode deliberately does not construct or
+                        # expose offensive-security adapters.
+                        security_tools: dict[str, Any] = {}
                         being = get_or_create_being(tenant_id)
                         being_store = get_being_store()
                         mind = being_store.get_mind(being.being_id)
 
-                        if _is_complex_or_multi_part_objective(prompt):
+                        if not FOUNDATION_RUNTIME_MODE and _is_complex_or_multi_part_objective(prompt):
                             from sonic.computer_use.boss import BossAgent
 
                             boss = BossAgent(
@@ -2784,7 +1838,7 @@ async def _run_prompt_reasoning(tenant_id: str, session_id: str, prompt: str) ->
                                 data = data or {}
                                 if event_type == "boss_thinking":
                                     content = data.get("content", "")
-                                    _mission_event(
+                                    _append_worklog(
                                         state,
                                         "thought",
                                         f"Boss Thinking ({data.get('thinking_type', 'Planning')})",
@@ -2795,7 +1849,7 @@ async def _run_prompt_reasoning(tenant_id: str, session_id: str, prompt: str) ->
                                 elif event_type == "sub_dispatch":
                                     sub_num = data.get("sub_agent_number")
                                     title = f"Dispatching SubAgent #{sub_num}" if sub_num is not None else "Dispatching SubAgent"
-                                    _mission_event(
+                                    _append_worklog(
                                         state,
                                         "action",
                                         title,
@@ -2811,7 +1865,7 @@ async def _run_prompt_reasoning(tenant_id: str, session_id: str, prompt: str) ->
                                 elif event_type == "sub_report":
                                     sub_num = data.get("sub_agent_number")
                                     title = f"SubAgent #{sub_num} Report" if sub_num is not None else "SubAgent Report"
-                                    _mission_event(
+                                    _append_worklog(
                                         state,
                                         "info",
                                         title,
@@ -2826,7 +1880,7 @@ async def _run_prompt_reasoning(tenant_id: str, session_id: str, prompt: str) ->
                                         duration_seconds=data.get("duration_seconds"),
                                     )
                                 elif event_type == "phase_complete":
-                                    _mission_event(
+                                    _append_worklog(
                                         state,
                                         "info",
                                         f"Phase {data.get('phase_number')} Complete ({data.get('name')})",
@@ -2837,7 +1891,7 @@ async def _run_prompt_reasoning(tenant_id: str, session_id: str, prompt: str) ->
                                         success_count=data.get("success_count"),
                                     )
                                 elif event_type == "boss_report":
-                                    _mission_event(
+                                    _append_worklog(
                                         state,
                                         "response",
                                         "SONIC Boss Report",
@@ -2878,7 +1932,7 @@ async def _run_prompt_reasoning(tenant_id: str, session_id: str, prompt: str) ->
                         else:
                             # Full Dual-Plane Operational Model (Rule 5):
                             # Plane 1: Workstation Application Plane (GUI, APP, BROWSER, mouse, keyboard) - observe_desktop=True
-                            # Plane 2: Operator & Sandbox Plane (TERMINAL_EXEC, SECURITY_TOOL, FILE, GIT) - security_tools
+                            # Sandbox plane actions remain separate from desktop actions.
                             # Both planes run concurrently; neither plane is ever disabled or turned off.
                             agent = ComputerUseAgent(
                                 computer_provider=computer,
@@ -3177,8 +2231,44 @@ async def send_workstation_prompt(
 ):
     """Accept an objective immediately and process model reasoning in the background."""
     session_id = req.session_id or "default"
-    state = _get_or_create_session(user.email, session_id)
+    state = _get_or_create_session(_tenant_key(user), session_id)
     prompt_text = (req.prompt or "").strip()
+    if not prompt_text:
+        raise HTTPException(status_code=400, detail="Prompt cannot be empty")
+
+    desktop = state.setdefault("desktop", {})
+    if not _session_workspace_id(user, session_id):
+        try:
+            workspace = await get_daytona_computer().create(
+                tenant_id=_tenant_key(user),
+                engagement_id=session_id,
+            )
+        except Exception as exc:
+            state["status"] = "BLOCKED"
+            state["current_action"] = "Workstation provisioning failed; no action was executed."
+            message = (
+                "The workstation sandbox could not be provisioned. "
+                "No command, browser action, or target assessment was executed."
+            )
+            _append_worklog(state, "error", "Workstation Unavailable", f"{message} Cause: {exc}")
+            _persist_workstation_state()
+            return {
+                "status": "blocked",
+                "reason": "workstation_unavailable",
+                "message": message,
+                "state": state,
+            }
+        desktop.update({
+            "workspace_id": workspace.id,
+            "sandbox_id": workspace.id,
+            "image": workspace.image,
+            "status": workspace.status.value,
+            "resolution": {"width": 1280, "height": 800},
+            "display": ":99",
+            "novnc_port": 6080,
+        })
+        _persist_workstation_state()
+
     state["mission_name"] = prompt_text or "New conversation"
     state["status"] = "RUNNING"
     state["current_action"] = "Thinking..."
@@ -3190,44 +2280,10 @@ async def send_workstation_prompt(
     )
     _persist_workstation_state()
 
-    # Autonomous mode means a mission, not a one-shot chat completion. It can
-    # start only after the operator has explicitly provisioned a scoped target
-    # sandbox; otherwise no external action is inferred from free-form text.
-    if (req.mode or "").lower() == "autonomous":
-        target_id = _session_target_id(user, session_id)
-        target_box = state.get("target_sandbox", {})
-        if not target_id or not target_box.get("scope_verified", False):
-            state["status"] = "BLOCKED"
-            state["current_action"] = "Autonomous mission blocked — provision and scope-verify a target sandbox first."
-            message = "Autonomous mode needs an explicitly scoped target sandbox. Open the Mission tab, provision the authorized target, then resend this objective."
-            _append_worklog(state, "response", "SONIC Response", message)
-            _persist_workstation_state()
-            return {"status": "blocked", "reason": "scoped_target_required", "message": message, "state": state}
-        if state.get("mission", {}).get("status") == "RUNNING":
-            raise HTTPException(status_code=409, detail="A mission is already running for this session")
-
-        mission_id = f"mission-{uuid.uuid4().hex[:10]}"
-        state["mission"].update({
-            "mission_id": mission_id,
-            "objective": prompt_text,
-            "status": "QUEUED",
-            "target_sandbox_id": target_id,
-            "started_at": _timestamp(),
-            "completed_at": "",
-            "events": [],
-        })
-        state["status"] = "RUNNING"
-        state["current_action"] = "Executing autonomous mission for evidence-based discovery..."
-        _mission_event(state, "mission", "Autonomous mission accepted", prompt_text, mission_id=mission_id, workspace_id=target_id)
-        _track_background_task(asyncio.create_task(_run_foreground_operator_task(
-            _run_mission_preflight(user.email, session_id, mission_id)
-        )))
-        return {"status": "accepted", "reasoning": "mission_started", "message": "Autonomous mission accepted for the scoped target.", "state": state}
-
     # Never hold the HTTP request open on an external LLM.  The dashboard can
     # refresh workstation state while this task records the real result.
     _track_background_task(asyncio.create_task(_run_foreground_operator_task(
-        _run_prompt_reasoning_with_timeout(user.email, session_id, prompt_text)
+        _run_prompt_reasoning_with_timeout(_tenant_key(user), session_id, prompt_text)
     )))
     return {
         "status": "accepted",
@@ -3286,7 +2342,7 @@ async def create_workstation_snapshot(
     user: User = Depends(require_operator),
 ):
     """Create a persistent snapshot record of the workstation session state."""
-    state = _get_or_create_session(user.email, session_id)
+    state = _get_or_create_session(_tenant_key(user), session_id)
     snapshots = state.setdefault("_snapshots", [])
     snapshot = {
         "name": name,
@@ -3308,5 +2364,5 @@ async def list_workstation_snapshots(
     user: User = Depends(require_auth),
 ):
     """List all named snapshots recorded for a workstation session."""
-    state = _get_or_create_session(user.email, session_id)
+    state = _get_or_create_session(_tenant_key(user), session_id)
     return {"snapshots": state.get("_snapshots", [])}

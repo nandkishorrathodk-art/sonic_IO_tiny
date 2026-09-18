@@ -9,6 +9,7 @@ Proves:
 """
 
 from unittest.mock import patch
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -78,7 +79,9 @@ def test_workstation_command_executes_in_sandbox(client, auth_headers):
     )
     if res.status_code == 200:
         data = res.json()
-        assert data["execution_environment"] == "docker_sandbox"
+        # The command runs in an isolated sandbox plane — the provisioned desktop
+        # when present, otherwise the independent headless sandbox. Never host.
+        assert data["execution_environment"] in ("docker_sandbox", "headless_sandbox")
         assert "Linux" in data["output"]
     else:
         # If docker is not running on test machine, must fail closed with 503

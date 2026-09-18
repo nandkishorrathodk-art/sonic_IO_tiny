@@ -48,6 +48,74 @@ router = APIRouter()
 _primary_computer_instance: Any | None = None
 _daytona_provider_instance: Any | None = None
 
+# Any tenant that explicitly provisions a desktop uses the graphical plane; a
+# tenant that never does keeps the sandbox plane on its own headless container.
+_desktop_intent: set[str] = set()
+
+
+def _mark_desktop_intent(tenant_id: str) -> None:
+    _desktop_intent.add(tenant_id)
+
+
+async def _resolve_sandbox_plane(tenant_id: str, session_id: str, *, provision: bool) -> Any | None:
+    """Resolve an operator-plane provider for sandbox (terminal/file/git) work.
+
+    Prefers the tenant's provisioned GUI workstation when one exists, but is NOT
+    dependent on it: when no desktop is provisioned (and the tenant has not
+    expressed desktop intent) the sandbox plane runs on its own headless
+    container, so terminal/file/git work is never blocked by the GUI plane.
+    Returns None (fail-closed) when no usable sandbox could be resolved.
+    """
+    # 1. Prefer the tenant's already-provisioned graphical workstation.
+    desktop_id = _session_workspace_id_for_tenant(tenant_id, session_id)
+    if not desktop_id:
+        default_desktop = _session_workspace_id_for_tenant(tenant_id, "default")
+        if default_desktop:
+            desktop_id = default_desktop
+    if desktop_id:
+        return get_daytona_computer()
+
+    # 2. Desktop is expected but provisioning failed/was refused -> fail closed.
+    if tenant_id in _desktop_intent:
+        return None
+
+    # 3. Independent headless sandbox plane.
+    from sonic.execution.sandbox_plane import SandboxComputePlane
+    from sonic.sandbox.factory import get_compute_provider
+
+    container_name = f"sonic-sandbox-{_tenant_hash(tenant_id)}"
+    image = os.environ.get("SONIC_SANDBOX_IMAGE", "debian:12-slim")
+    plane = SandboxComputePlane(
+        compute=get_compute_provider(),
+        workspace_id=container_name,
+        tenant_id=tenant_id,
+        workspace_root=_WORKSPACE_ROOT,
+        image=image,
+    )
+    ok = await (plane.ensure() if provision else plane.attach())
+    if not ok:
+        return None
+    return plane
+
+
+def _tenant_hash(tenant_id: str) -> str:
+    import hashlib as _hashlib
+
+    return _hashlib.sha256(str(tenant_id).encode()).hexdigest()[:12]
+
+
+def _sandbox_workspace_id(comp: Any, user: User, session_id: str) -> str:
+    """Resolve the container id to run sandbox commands against.
+
+    SandboxComputePlane carries its own ``workspace_id``; a computer provider
+    (provisioned desktop) is addressed by the tenant/session workspace id.
+    """
+    return (
+        getattr(comp, "workspace_id", "")
+        or getattr(comp, "container_name", "")
+        or _session_workspace_id(user, session_id)
+    )
+
 
 def _assert_runtime_execution_enabled(tenant_id: str) -> None:
     stop_state = get_runtime_stop_state()
@@ -603,11 +671,16 @@ async def provision_desktop(
     session_id: str = Query("default"),
     user: User = Depends(require_operator),
 ):
-    """Provision a real tenant-owned Daytona graphical workstation."""
+    """Provision a real tenant-owned graphical workstation."""
     state = _get_or_create_session(_tenant_key(user), session_id)
     desktop = state["desktop"]
     if desktop.get("workspace_id"):
         return {"status": "already_provisioned", "desktop": desktop}
+
+    # From here on the tenant has explicitly asked for the graphical plane, so a
+    # failed desktop provision must fail closed rather than silently running
+    # sandbox work on a headless fallback.
+    _mark_desktop_intent(_tenant_key(user))
 
     comp = get_daytona_computer()
     try:
@@ -984,11 +1057,14 @@ async def get_workstation_tree(
     session_id: str = Query("default"),
     user: User = Depends(require_auth),
 ):
-    """Lists files from the authenticated remote workstation filesystem."""
-    workspace_id = _session_workspace_id(user, session_id)
-    if not workspace_id:
+    """Lists files from the authenticated sandbox workspace (read-only)."""
+    comp = await _resolve_sandbox_plane(_tenant_key(user), session_id, provision=False)
+    if comp is None:
         return {"files": []}
-    result = await get_daytona_computer().list_files(workspace_id, _WORKSPACE_ROOT)
+    try:
+        result = await comp.list_files(_sandbox_workspace_id(comp, user, session_id), _WORKSPACE_ROOT)
+    except Exception:
+        return {"files": []}
     return {"files": [entry.path for entry in result]}
 
 
@@ -998,16 +1074,16 @@ async def get_workstation_file(
     session_id: str = Query("default"),
     user: User = Depends(require_auth),
 ):
-    """Reads a file from the authenticated remote workstation filesystem."""
+    """Reads a file from the authenticated sandbox workspace (read-only)."""
     # Validate the path BEFORE checking provisioning so an out-of-workspace
     # traversal attempt is rejected as 403 regardless of sandbox state.
     remote_path = _workspace_file_path(path)
-    workspace_id = _session_workspace_id(user, session_id)
-    if not workspace_id:
-        raise HTTPException(status_code=409, detail="No Daytona workstation is provisioned for this session")
+    comp = await _resolve_sandbox_plane(_tenant_key(user), session_id, provision=False)
+    if comp is None:
+        raise HTTPException(status_code=409, detail="No sandbox workspace is available for this session")
     try:
-        content = await get_daytona_computer().read_file(workspace_id, remote_path)
-        if content.startswith(f"# Error reading file {remote_path}"):
+        content = await comp.read_file(_sandbox_workspace_id(comp, user, session_id), remote_path)
+        if not content or content.startswith(f"# Error reading file {remote_path}"):
             raise HTTPException(status_code=404, detail=f"File '{path}' not found in workstation")
         lines = content.splitlines()
         return {
@@ -1029,15 +1105,17 @@ async def save_workstation_file(
     session_id: str = Query("default"),
     user: User = Depends(require_operator),
 ):
-    """Writes a file only inside the authenticated remote workstation."""
+    """Writes a file only inside the authenticated sandbox workspace."""
     remote_path = _workspace_file_path(req.path)
-    workspace_id = _session_workspace_id(user, session_id)
-    if not workspace_id:
-        raise HTTPException(status_code=409, detail="No Daytona workstation is provisioned for this session")
+    comp = await _resolve_sandbox_plane(_tenant_key(user), session_id, provision=True)
+    if comp is None:
+        raise HTTPException(status_code=409, detail="No sandbox workspace is available for this session")
     try:
-        saved = await get_daytona_computer().write_file(workspace_id, remote_path, req.content, actor=user.email)
+        saved = await comp.write_file(
+            _sandbox_workspace_id(comp, user, session_id), remote_path, req.content, actor=user.email
+        )
         if not saved:
-            raise HTTPException(status_code=502, detail="Daytona filesystem rejected the write")
+            raise HTTPException(status_code=502, detail="Workstation filesystem rejected the write")
         return {"status": "saved", "path": req.path, "bytes": len(req.content)}
     except HTTPException:
         raise
@@ -1050,17 +1128,17 @@ async def get_workstation_git_diff(
     session_id: str = Query("default"),
     user: User = Depends(require_auth),
 ):
-    """Returns git diff from the authenticated remote workstation."""
-    workspace_id = _session_workspace_id(user, session_id)
-    if not workspace_id:
+    """Returns git diff from the authenticated sandbox workspace (read-only)."""
+    comp = await _resolve_sandbox_plane(_tenant_key(user), session_id, provision=False)
+    if comp is None:
         return {
             "diff": "Working tree clean. No active workstation provisioned.",
             "success": True,
         }
     try:
-        comp = get_daytona_computer()
-        diff = await comp.terminal(workspace_id, "git diff HEAD 2>/dev/null || git diff 2>/dev/null || true", actor=user.email)
-        status_result = await comp.terminal(workspace_id, "git status --short 2>/dev/null || true", actor=user.email)
+        run_id = _sandbox_workspace_id(comp, user, session_id)
+        diff = await comp.terminal(run_id, "git diff HEAD 2>/dev/null || git diff 2>/dev/null || true", actor=user.email)
+        status_result = await comp.terminal(run_id, "git status --short 2>/dev/null || true", actor=user.email)
         if diff.exit_code == 126 or status_result.exit_code == 126:
             # Read-only telemetry endpoint: unreachable sandbox degrades gracefully.
             return {
@@ -1096,22 +1174,22 @@ async def execute_workstation_command(
     if not (req.command or "").strip():
         raise HTTPException(status_code=400, detail="Command cannot be empty")
 
-    # Execute only against the authenticated tenant/session's Daytona workspace.
-    # A shared Docker container is never a safe fallback for a tenant-scoped
-    # request because it can cross session boundaries and is not the agent's
-    # actual workstation. No provisioned sandbox => sandbox UNAVAILABLE =>
-    # fail-closed 503 (never host execution).
-    workspace_id = _session_workspace_id(user, req.session_id or "default")
-    if not workspace_id:
-        # No provisioned workstation is itself a fail-closed condition: we must
-        # never fall back to host or shared-container execution, and a 409 here
-        # would let a caller distinguish "no sandbox" from "sandbox down". Both
-        # are unsafe, so surface the documented 503 fail-closed response.
+    # The sandbox (operator) plane is independent of the graphical plane: when
+    # no desktop is provisioned it runs on its own headless container, so
+    # terminal work is never blocked by GUI provisioning. A provisioned desktop
+    # is still preferred. No usable sandbox => fail-closed 503 (never host
+    # execution).
+    comp = await _resolve_sandbox_plane(_tenant_key(user), req.session_id or "default", provision=True)
+    if comp is None:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Command execution failed-closed: no Daytona workstation is provisioned for this session. Direct host OS execution is strictly prohibited.",
+            detail="Command execution failed-closed: no sandbox workspace could be resolved for this session. Direct host OS execution is strictly prohibited.",
         )
-    comp = get_daytona_computer()
+    workspace_id = (
+        getattr(comp, "workspace_id", "")
+        or getattr(comp, "container_name", "")
+        or _session_workspace_id(user, req.session_id or "default")
+    )
     try:
         res = await comp.terminal(workspace_id, req.command, timeout=req.timeout or 30, actor=user.email)
     except Exception:
@@ -1128,7 +1206,18 @@ async def execute_workstation_command(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Command execution failed-closed:the tenant-owned workstation sandbox is unreachable. Direct host OS execution is strictly prohibited.",
         )
-    env_label = "docker_sandbox" if isinstance(comp, DockerComputerProvider) else f"daytona_cloud_sandbox ({workspace_id[:8]})"
+    # Label by the resolved plane's own declaration rather than a strict
+    # isinstance, so adapters/proxies report the correct execution plane.
+    env_label = getattr(comp, "plane_kind", None)
+    if not env_label:
+        from sonic.execution.sandbox_plane import SandboxComputePlane
+
+        if isinstance(comp, SandboxComputePlane):
+            env_label = "headless_sandbox"
+        elif isinstance(comp, DockerComputerProvider):
+            env_label = "docker_sandbox"
+        else:
+            env_label = f"daytona_cloud_sandbox ({workspace_id[:8]})"
     return {
         "command": req.command,
         "exit_code": res.exit_code,
@@ -2332,11 +2421,11 @@ async def list_workstation_services(
     service_names: str | None = Query(None, description="Comma-separated service names to probe"),
     user: User = Depends(require_auth),
 ):
-    """List background services managed inside the workstation sandbox."""
-    workspace_id = _session_workspace_id(user, session_id)
-    if not workspace_id:
+    """List background services managed inside the sandbox workspace."""
+    comp = await _resolve_sandbox_plane(_tenant_key(user), session_id, provision=False)
+    if comp is None:
         return {"services": [], "note": "No active workstation workspace for this session."}
-    comp = get_daytona_computer()
+    workspace_id = _sandbox_workspace_id(comp, user, session_id)
     services = []
 
     # Query running services dynamically from the OS service table

@@ -15,7 +15,6 @@ Opt-in live integration:
 
 from __future__ import annotations
 
-import asyncio
 import os
 import shutil
 import subprocess
@@ -123,6 +122,53 @@ def _isolate_durable_state(tmp_path, monkeypatch):
         "SONIC_WORKSTATION_STATE_PATH", str(tmp_path / "docker_workstations.json")
     )
     monkeypatch.setenv("SONIC_DATA_DIR", str(tmp_path / "sonic_data"))
+
+
+def _sandbox_containers() -> set[str]:
+    """Names of headless sandbox containers currently present (best-effort)."""
+    if not shutil.which("docker"):
+        return set()
+    try:
+        proc = subprocess.run(
+            ["docker", "ps", "-a", "--format", "{{.Names}}"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            timeout=10,
+        )
+        if proc.returncode != 0:
+            return set()
+        return {
+            line.strip()
+            for line in proc.stdout.decode(errors="replace").splitlines()
+            if line.strip().startswith("sonic-sandbox-")
+        }
+    except Exception:
+        return set()
+
+
+@pytest.fixture(autouse=True)
+def _reap_test_sandbox_containers():
+    """Remove headless sandbox containers a test provisioned.
+
+    Sandbox-plane tests exercise the real provisioning path, which creates a
+    per-tenant container. Without this, every suite run leaks containers. Only
+    containers created during the test are removed; pre-existing ones (e.g. a
+    developer's provisioned workspace) are left alone.
+    """
+    before = _sandbox_containers()
+    yield
+    if not shutil.which("docker"):
+        return
+    for name in _sandbox_containers() - before:
+        try:
+            subprocess.run(
+                ["docker", "rm", "-f", name],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=20,
+            )
+        except Exception:
+            pass
 
 
 def pytest_configure(config):

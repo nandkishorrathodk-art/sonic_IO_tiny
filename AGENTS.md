@@ -2292,3 +2292,62 @@ green.
 **Lesson:** "nothing works" was not a broken two-plane design — it was
 test-suite state pollution plus a stale-claim lock and a workspace-root
 mismatch. Always run the suite with isolated durable-state paths.
+
+## Phase 41 — Sandbox/Operator plane decoupled from the GUI workstation (DONE)
+Closed the architectural coupling the user identified: "GUI par kaam kiya to koi
+kaam nahi karta, sandbox par focus kiya to GUI nahi karta." The terminal/file/git
+plane previously resolved its `workspace_id` ONLY from a provisioned graphical
+desktop, so a missing/broken desktop took the whole operator plane down with it.
+
+### Root cause
+Every sandbox endpoint (`/workstation/command`, `/file`, `/tree`, `/git-diff`,
+`/services`) did `_session_workspace_id(user, session)` and 503'd/emptied when
+no desktop was provisioned. There was no independent headless sandbox plane in
+the route at all.
+
+### Fix — a real second plane
+- **New `sonic/execution/sandbox_plane.py` — `SandboxComputePlane`:** a thin
+  operator-plane adapter exposing the sandbox subset of the ComputerProvider
+  surface (`terminal`, `execute`, `read_file`, `write_file`, `list_files`,
+  `service_action`) over any `ComputeProvider` (Docker / remote). It exposes NO
+  screenshot/GUI method, keeping the plane boundary explicit. `ensure()`
+  provisions its own per-tenant headless container (idempotent, fail-closed);
+  `attach()` inspects an existing container without provisioning.
+- **`api/routes/workstation.py` — `_resolve_sandbox_plane(tenant, session, provision)`:**
+  1. prefer the tenant's provisioned graphical workstation when one exists;
+  2. if the tenant explicitly requested a desktop (tracked via
+     `_desktop_intent`, set in `provision_desktop`) and it is unavailable, fail
+     closed (503) — no silent headless fallback after desktop intent;
+  3. otherwise run on an independent headless per-tenant container
+     (`sonic-sandbox-<sha256(tenant)[:12]>`, image `SONIC_SANDBOX_IMAGE`).
+- Command/file/tree/git/services endpoints now go through it. Commands run in
+  the workspace root (`cwd=/home/sonic/workspace`) so `pwd`/relative paths match
+  the documented operator workspace. `execution_environment` reports
+  `headless_sandbox` vs `docker_sandbox` via `plane_kind`.
+
+### Test hygiene (found while verifying)
+Sandbox-plane tests exercise real provisioning and leaked containers each run.
+- `conftest.py` gained an autouse `_reap_test_sandbox_containers` fixture that
+  removes only the `sonic-sandbox-*` containers created during the test.
+- Dropped the long-standing unused `import asyncio` in conftest.
+
+### Done-gate (`test_sandbox_plane_independence.py`, 7 tests)
+sandbox plane resolves with no desktop; a provisioned desktop is preferred;
+desktop-intent without a desktop fails closed (no fallback); `/workstation/command`
+runs on the sandbox plane with no desktop; command fails closed 503 when no plane
+is resolvable; file read/write work without a desktop; per-tenant sandbox ids are
+distinct. `test_phase20` updated: the command now runs in an isolated sandbox
+plane (`docker_sandbox` OR `headless_sandbox`), never the host.
+
+### Verification
+- Live: no desktop -> `headless_sandbox` (`/home/sonic/workspace`); provision
+  -> 200; after provision -> `docker_sandbox` (prefers GUI) + real INTERACTIVE
+  screenshot.
+- `python -m pytest sonic-core/tests/` -> **551 passed, 27 skipped, 0 failed**;
+  no container leak across the run.
+- `ruff check sonic-core/sonic sonic-cli/sonic_cli` -> clean; compileall OK;
+  `git diff --check` clean; dashboard `next build` OK.
+
+**Result:** the two planes are now genuinely independent. Terminal/file/git work
+runs headless without a GUI, GUI work runs on the desktop, and the two no longer
+block each other.

@@ -620,6 +620,23 @@ async def provision_desktop(
         state["current_action"] = "Daytona workstation provisioning failed."
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
+    # Fail-closed: create() returns a FAILED/STOPPED workspace when no live
+    # container could be started (e.g. image missing, daemon refused). Never
+    # persist that as a usable desktop — it would make every later command
+    # resolve a workspace that does not exist and fail obscurely.
+    if workspace.status not in (ComputerWorkspaceStatus.RUNNING, ComputerWorkspaceStatus.READY):
+        desktop["status"] = "PROVISION_FAILED"
+        state["status"] = "BLOCKED"
+        state["current_action"] = "Workstation container could not be started."
+        _persist_workstation_state()
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Workstation container could not be started; no live desktop is available. "
+                "Start the sonic-desktop-workstation container (docker compose up -d workstation) and retry."
+            ),
+        )
+
     desktop.update({
         "workspace_id": workspace.id,
         "sandbox_id": workspace.id,
@@ -1633,7 +1650,18 @@ async def _run_prompt_reasoning(tenant_id: str, session_id: str, prompt: str) ->
                         # advisory context and must be validated by the agent.
                         effective_goal = prompt
 
-                        ws_root = "/root" if os.environ.get("SONIC_USE_DAYTONA_CLOUD") != "1" else "/home/daytona"
+                        # Path confinement must match the workspace the
+                        # provider actually exposes. DockerComputerProvider's
+                        # canonical root is /home/sonic/workspace (_WORKSPACE_ROOT
+                        # / ComputerWorkspace.workspace_path); only the legacy
+                        # Daytona cloud provider uses /home/daytona. Using /root
+                        # here blocked every legitimate FILE_READ/WRITE as an
+                        # "escapes workspace" violation.
+                        ws_root = (
+                            "/home/daytona"
+                            if os.environ.get("SONIC_USE_DAYTONA_CLOUD") == "1"
+                            else _WORKSPACE_ROOT
+                        )
                         target_box = state.get("target_sandbox", {})
                         # The provisioned target and scope are authoritative.
                         # Never let a later free-form prompt retarget the

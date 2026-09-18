@@ -46,6 +46,11 @@ dev = [
     "ruff>=0.8.6",
     "mypy>=1.14.1",
     "httpx>=0.28.1",  # for TestClient
+    # Hot-path acceleration tests (test_cython_acceleration.py) import these
+    # at module scope; without them a clean `pip install -e ".[dev]"` fails
+    # collection instead of validating the pure-Python fallback.
+    "numpy>=1.26",
+    "cython>=3.0",
 ]
 
 [tool.setuptools.packages.find]

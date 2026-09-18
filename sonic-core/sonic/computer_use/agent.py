@@ -2317,6 +2317,46 @@ class ComputerUseAgent:
             self.history.append({"action": f"{action_type.value} {target_resource}", "result": actual_obs_str})
             return trace
 
+        if (
+            action_type not in self._GUI_ONLY_ACTIONS
+            and len(self._recent_action_signatures) >= 4
+            and all(s == action_sig for s in self._recent_action_signatures[-4:])
+        ):
+            # Non-GUI repeats (file reads, terminal commands) had no breaker:
+            # without an LLM the diagnostic fallback re-issued the identical
+            # FILE_READ until the step budget was exhausted, wasting the whole
+            # mission on one action. Break it here too.
+            actual_obs_str = (
+                f"[ACTION LOOP DETECTED]: '{action_type.value}' on '{target_resource}' "
+                "repeated 4 times consecutively with no state change. "
+                "This action is BLOCKED. Choose a different approach or conclude."
+            )
+            status = ActionExecutionStatus.BLOCKED
+            logger.warning(
+                "action_loop_breaker_triggered",
+                action=action_type.value,
+                target=target_resource,
+                consecutive_count=4,
+            )
+            trace = ComputerDecisionTrace(
+                step_index=self.action_counter,
+                action_type=action_type,
+                target_resource=target_resource,
+                payload=str(payload),
+                predicted_outcome=predicted_outcome,
+                actual_observation=actual_obs_str,
+                expected_observation=predicted_outcome,
+                info_gain=0.0,
+                recovery_attempted=False,
+                status=status,
+                thought=getattr(self, "_last_thought", ""),
+                duration_seconds=round(time.perf_counter() - t_start, 3),
+                thought_duration_seconds=getattr(self, "_last_thought_duration", 0.0),
+            )
+            self.traces.append(trace)
+            self.history.append({"action": f"{action_type.value} {target_resource}", "result": actual_obs_str})
+            return trace
+
         # ----- Visual Grounding Target Resolution -----
         # If numeric coordinates were not provided for a GUI action, attempt to
         # resolve the target resource query (e.g. "Applications menu", "Terminal icon")

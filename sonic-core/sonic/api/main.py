@@ -23,6 +23,7 @@ from sonic.api.routes import (
     auth,
     health,
     jobs,
+    live,
     llm,
     terminal,
     workstation,
@@ -245,6 +246,7 @@ app.include_router(auth.router, prefix="/auth", tags=["Authentication"])
 app.include_router(llm.router, prefix="/llm", tags=["LLM"])
 app.include_router(terminal.router, prefix="/terminal", tags=["Terminal"])
 app.include_router(jobs.router, prefix="/jobs", tags=["Async Jobs"])
+app.include_router(live.router, tags=["Live"])
 app.include_router(workstation.router, tags=["Workstation"])
 
 

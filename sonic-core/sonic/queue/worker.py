@@ -8,7 +8,6 @@ and executes ordinary browser or agent tasks.
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import Any
 
 from sonic.browser.container_runtime import BrowserAction, ContainerizedBrowser
 from sonic.logger import get_logger

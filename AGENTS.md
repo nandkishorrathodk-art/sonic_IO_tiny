@@ -2223,3 +2223,72 @@ Transformed SONIC from a raw diff applier into an intelligent, goal-driven, vers
 ### 4. Verification Baseline (100% Green)
 - `sonic-core/tests/test_advanced_evolution.py` (9 tests) — **9 passed in 3.00s**.
 - Full regression suite across Evolution, Kernel, Safety, and Broker (42 tests) — **42 passed in 4.56s**.
+
+## Phase 40 — "Kuch bhi kaam nahi kar raha" workstation-plane blockers (DONE)
+User report: SONIC ke saath koi bhi kaam tik se nahi chal raha — GUI par focus
+karo to GUI/terminal dono dead, terminal par focus karo to GUI dead. Root-caused
+to concrete defects (not an architectural rewrite):
+
+### Bug 1 — Tests poisoned the real durable state file (PRIMARY blocker)
+`sonic-core/tests/test_docker_computer_provider.py` (marked `no_live_infra`)
+called `DockerComputerProvider().create("tenant-1","eng-1")` without isolating
+`SONIC_WORKSTATION_STATE_PATH`. With a live Docker daemon up it wrote
+`{"sonic-desktop-workstation": {"tenant_id": "tenant-1", ...}}` into the REAL
+`sonic_data/docker_workstations.json`. On next boot `_load_state()` set
+`_workspace_owner = "tenant-1"`, so the configured `default` tenant could NEVER
+provision again (`RuntimeError: shared Docker workstation is already owned by
+another tenant`). No desktop -> no GUI, no terminal; every request 503'd.
+- Fix: `sonic-core/tests/conftest.py` autouse fixture `_isolate_durable_state`
+  pins `SONIC_WORKSTATION_STATE_PATH` + `SONIC_DATA_DIR` into `tmp_path`.
+
+### Bug 2 — Stale ownership claim blocked a stopped desktop
+`DockerComputerProvider.create()` / `get_or_create_home()` refused ANY
+cross-tenant access based on persisted ownership even when the container was not
+running, locking the resource permanently.
+- Fix (`computer/docker_computer.py`): ownership is authoritative only while
+  `_container_is_running()` is true; a stopped desktop reclaims to the caller,
+  a LIVE desktop still refuses cross-tenant takeover.
+
+### Bug 3 — Phantom "RUNNING" desktop on a failed start
+`create()` ignored `docker start`'s return code and set `ws.status = RUNNING`
+unconditionally, persisting a workspace that did not exist.
+- Fix (`docker_computer.py` + `api/routes/workstation.py`): re-verify the real
+  container state; on failure return STOPPED/FAILED; `provision_desktop` rejects
+  a non-RUNNING/READY workspace with 503 instead of persisting it.
+
+### Bug 4 — Safety path confinement used the wrong workspace root
+`_run_prompt_reasoning` used `ws_root = "/root"` for the native Docker
+workstation, but the canonical root is `/home/sonic/workspace`. EVERY
+legitimate `FILE_READ`/`FILE_WRITE` was blocked as "escapes workspace".
+- Fix: `ws_root = _WORKSPACE_ROOT` (/home/sonic/workspace) for Docker;
+  /home/daytona only for the legacy cloud path.
+
+### Bug 5 — No loop breaker for repeated non-GUI actions
+Only GUI clicks had a repeat circuit breaker; without an LLM the diagnostic
+fallback re-issued the identical FILE_READ every step (observed 8x).
+- Fix (`computer_use/agent.py`): identical non-GUI action repeated 4x
+  consecutively is BLOCKED with `[ACTION LOOP DETECTED]`.
+
+### Bug 6 — /live/settings 404 (dashboard Settings page always errored)
+- Fix: new `api/routes/live.py` (GET/POST /live/settings), registered in
+  main.py. Secrets never echoed (`llm_api_key_set` boolean only); POST is
+  OPERATOR-gated.
+
+### Bug 7 — CI lint/collection failures on a clean install
+- `queue/worker.py`: unused `from typing import Any` (ruff F401).
+- `test_cython_acceleration.py` needs numpy + cython, undeclared in dev extra.
+- Fix: removed the unused import; added `numpy>=1.26`, `cython>=3.0` to `dev`.
+
+### Done-gate (`test_workstation_plane_blockers.py`, 5 tests)
+stale claim reclaimed when stopped; LIVE desktop still refuses takeover;
+get_or_create_home reclaims; a refused docker start is never RUNNING; workspace
+root is /home/sonic/workspace and traversal stays blocked.
+
+### Verification (live, native Docker workstation)
+544 passed, 27 skipped, 0 failed; ruff clean; compileall OK; git diff --check
+clean; dashboard next build OK; live provision/command/screenshot/settings all
+green.
+
+**Lesson:** "nothing works" was not a broken two-plane design — it was
+test-suite state pollution plus a stale-claim lock and a workspace-root
+mismatch. Always run the suite with isolated durable-state paths.

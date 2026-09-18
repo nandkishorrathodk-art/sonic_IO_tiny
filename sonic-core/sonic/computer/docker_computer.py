@@ -315,7 +315,19 @@ class DockerComputerProvider(ComputerProvider):
         workspace_type: ComputerWorkspaceType = ComputerWorkspaceType.MISSION_COMPUTER,
         profile: ComputerProfile = ComputerProfile.KALI_SECURITY,
     ) -> ComputerWorkspace:
-        if self._workspace_owner and self._workspace_owner != tenant_id:
+        # A single Docker desktop is a genuinely shared resource ONLY while it
+        # is actually running. Ownership persisted from a previous backend
+        # boot (or written by a test run) must not permanently lock a different
+        # tenant out of a container that is currently stopped — that made the
+        # whole workstation/terminal plane unusable with no way to recover.
+        # Reclaim a stale claim when no live desktop exists; keep refusing a
+        # cross-tenant takeover of a container that IS running.
+        container_running = await self._container_is_running()
+        if (
+            self._workspace_owner
+            and self._workspace_owner != tenant_id
+            and container_running
+        ):
             raise RuntimeError(
                 "shared Docker workstation is already owned by another tenant; "
                 "provision a dedicated workstation"
@@ -324,25 +336,33 @@ class DockerComputerProvider(ComputerProvider):
         self._workspace_owner = tenant_id
         ws.tenant_id = tenant_id
         ws.engagement_id = engagement_id
-        if not await self._container_is_running():
+        if not container_running:
             provisioned = await self._provision_workstation()
             if not provisioned:
-                # Try to start existing container if it exists but is stopped
+                # Try to start existing container if it exists but is stopped.
+                # Verify the real result — a non-zero `docker start` (no such
+                # container, daemon refused) must NOT be reported as RUNNING.
+                started = False
                 try:
-                    await asyncio.to_thread(
+                    result = await asyncio.to_thread(
                         subprocess.run,
                         ["docker", "start", self.container_name],
                         stdout=subprocess.PIPE,
                         stderr=subprocess.DEVNULL,
                         timeout=10,
                     )
-                    # Give container time to start
-                    await asyncio.sleep(2)
-                    self._container_running_cache = True
-                    self._container_checked_at = asyncio.get_event_loop().time()
+                    started = result.returncode == 0
+                    if started:
+                        await asyncio.sleep(2)
                 except Exception:
-                    # Fail-closed: never report a desktop that was not actually provisioned.
+                    started = False
+                self._container_running_cache = await self._container_is_running() if started else False
+                self._container_checked_at = asyncio.get_event_loop().time()
+                if not self._container_running_cache:
+                    # Fail-closed: never report a desktop that was not actually
+                    # provisioned, and never persist a phantom workspace.
                     ws.status = ComputerWorkspaceStatus.STOPPED if _docker_binary() else ComputerWorkspaceStatus.FAILED
+                    self._persist_state()
                     return ws
             else:
                 self._container_running_cache = True
@@ -353,7 +373,14 @@ class DockerComputerProvider(ComputerProvider):
 
     async def get_or_create_home(self, tenant_id: str) -> ComputerWorkspace:
         """Return the tenant's long-lived MISSION_COMPUTER home (persistent body)."""
-        if self._workspace_owner and self._workspace_owner != tenant_id:
+        # Mirror create(): a persisted cross-tenant claim is only authoritative
+        # while the desktop is actually live. A stopped container must not
+        # permanently deny its home to the configured tenant.
+        if (
+            self._workspace_owner
+            and self._workspace_owner != tenant_id
+            and await self._container_is_running()
+        ):
             raise RuntimeError(
                 "shared Docker workstation is already owned by another tenant"
             )

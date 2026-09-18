@@ -107,5 +107,23 @@ def _gate_live_compute(request):
         pytest.skip("Live Daytona integration test (set SONIC_RUN_LIVE_DAYTONA=1 to run)")
 
 
+@pytest.fixture(autouse=True)
+def _isolate_durable_state(tmp_path, monkeypatch):
+    """Keep every test's durable provider state inside its own tmp directory.
+
+    Several providers (``DockerComputerProvider``, ``DockerProvider``) persist
+    workspace ownership to ``sonic_data/docker_workstations.json``. Without
+    isolation a live-infra test that runs ``create()`` writes a *test* tenant
+    (e.g. ``tenant-1``) into the real repo state file, which then permanently
+    locks the real backend's tenant out of provisioning ("already owned by
+    another tenant"). Tests that need an explicit path still override these
+    with their own monkeypatch, which runs after this fixture.
+    """
+    monkeypatch.setenv(
+        "SONIC_WORKSTATION_STATE_PATH", str(tmp_path / "docker_workstations.json")
+    )
+    monkeypatch.setenv("SONIC_DATA_DIR", str(tmp_path / "sonic_data"))
+
+
 def pytest_configure(config):
     config.addinivalue_line("markers", "no_live_infra: provider state/safety logic only, no live sandbox")

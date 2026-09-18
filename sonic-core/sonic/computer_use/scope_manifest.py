@@ -6,10 +6,9 @@ selected by the operator may become an active target.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
 import re
+from dataclasses import dataclass
 from urllib.parse import urlparse
-
 
 _URL_RE = re.compile(r"https?://[^\s,<>\"']+", re.IGNORECASE)
 _HOST_RE = re.compile(

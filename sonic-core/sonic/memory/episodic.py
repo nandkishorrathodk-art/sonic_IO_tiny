@@ -14,7 +14,6 @@ import sqlite3
 import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import Any
 
 from sonic.memory.sqlite_graph import _default_db_path
 

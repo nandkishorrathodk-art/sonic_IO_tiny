@@ -56,7 +56,7 @@ async def _maybe_start_being_life_loop(settings):
         logger.info("being_life_loop_disabled", reason="SONIC_ENABLE_BEING_LIFE_LOOP!=1")
         return None
     try:
-        from sonic.being.identity import get_or_create_being, get_being_store
+        from sonic.being.identity import get_being_store, get_or_create_being
         from sonic.being.life_loop import BeingLifeLoop
         from sonic.computer_use.agent import ComputerUseAgent
         from sonic.computer_use.curiosity import CuriosityLoop
@@ -105,7 +105,7 @@ async def _maybe_start_being_life_loop(settings):
             logger.warning("being_life_loop_no_home", being_id=being.being_id)
             return None
 
-        from sonic.safety.sealed import seal_default, SealedActionPolicy
+        from sonic.safety.sealed import SealedActionPolicy, seal_default
         # Tamper-evident safety envelope: config is frozen + hash-sealed, so a
         # self-evolving being cannot widen its own guards at runtime.
         # In development mode, allow intrusive commands without approval for smoother testing
@@ -217,6 +217,7 @@ async def lifespan(app: FastAPI):
     logger.info("safety_layer_loaded")
 
     # Connect to Graph Memory (Neo4j) with fast dev fallback to SQLite
+    from sonic.memory.router import get_smart_memory, set_active_memory
     graph = get_graph_memory()
     try:
         connected = await asyncio.wait_for(graph.connect(), timeout=2.0)
@@ -227,9 +228,9 @@ async def lifespan(app: FastAPI):
         logger.info("graph_memory_connected")
         # Initialize graph schema (constraints + indexes)
         await graph.init_schema()
+        set_active_memory(graph)
         logger.info("graph_schema_initialized")
     else:
-        from sonic.memory.router import get_smart_memory
         smart_mem = await get_smart_memory()
         logger.info("persistent_sqlite_graph_memory_ready", backend=type(smart_mem).__name__)
 

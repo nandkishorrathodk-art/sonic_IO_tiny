@@ -19,8 +19,10 @@ from __future__ import annotations
 
 import re
 from enum import StrEnum
-from ipaddress import ip_address as _ip_addr, ip_network as _ip_net
+from ipaddress import ip_address as _ip_addr
+from ipaddress import ip_network as _ip_net
 from pathlib import Path
+from typing import Any
 from urllib.parse import urlparse
 
 import yaml

@@ -204,16 +204,16 @@ def list_leads(
         table.add_column("Description", style="white")
         table.add_column("Source", style="cyan")
         table.add_column("Timestamp", style="yellow")
-        for l in leads:
-            if isinstance(l, dict):
+        for lead in leads:
+            if isinstance(lead, dict):
                 table.add_row(
-                    str(l.get("id", l.get("observation_id", ""))),
-                    str(l.get("description", l.get("summary", "")))[:50],
-                    str(l.get("source", "")),
-                    str(l.get("timestamp", l.get("created_at", "")))[:19],
+                    str(lead.get("id", lead.get("observation_id", ""))),
+                    str(lead.get("description", lead.get("summary", "")))[:50],
+                    str(lead.get("source", "")),
+                    str(lead.get("timestamp", lead.get("created_at", "")))[:19],
                 )
             else:
-                table.add_row(str(l))
+                table.add_row(str(getattr(lead, "id", "")), str(getattr(lead, "description", ""))[:50], str(getattr(lead, "source", "")), "")
         console.print(table)
 
 

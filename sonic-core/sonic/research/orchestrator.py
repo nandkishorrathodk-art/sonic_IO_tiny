@@ -21,9 +21,7 @@ from pydantic import BaseModel, Field
 
 from sonic.logger import get_logger
 from sonic.research.epistemic import (
-    CompetingHypothesis,
     Unknown,
-    UnknownStatus,
 )
 from sonic.research.event_bus import (
     AnomalyDetectedEvent,
@@ -42,12 +40,8 @@ from sonic.research.specialist import (
     BusinessLogicSpecialist,
     CloudSpecialist,
     FalsificationSpecialist,
-    NetworkSpecialist,
     SpecialistAgent,
-    SpecialistBlockedError,
-    SpecialistBudget,
     SpecialistState,
-    SpecialistTimeoutError,
     WebSpecialist,
     classify_specialist_failure,
 )

@@ -381,7 +381,8 @@ class DynamicStrategyEngine:
             try:
                 # Check if it's the Being lessons ledger or Memory lessons ledger
                 if hasattr(lessons_ledger, "record"):
-                    from sonic.being.lessons import Lesson as BeingLesson, LessonKind
+                    from sonic.being.lessons import Lesson as BeingLesson
+                    from sonic.being.lessons import LessonKind
                     lesson = BeingLesson(
                         lesson_id=f"dyn-lsn-{abs(hash(tool + target + signal.value)) % 10**8}",
                         kind=LessonKind.AVOID,

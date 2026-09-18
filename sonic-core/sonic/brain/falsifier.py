@@ -16,10 +16,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Any
 
 from sonic.brain.experiment import Experiment, ExperimentResult
-from sonic.brain.hypothesis import HypothesisEngine, HypothesisStatus
+from sonic.brain.hypothesis import HypothesisEngine
 from sonic.logger import get_logger
 
 logger = get_logger(__name__)

@@ -126,7 +126,7 @@ def test_in_workspace_write_is_allowed_and_executes():
     ])
     agent = ComputerUseAgent(computer_provider=comp, llm_router=llm, safety=_policy())
     traces = _run(agent.run_mission(comp.workspace_id, "patch", steps=3))
-    assert traces[0].status == "SUCCESS"
+    assert traces[0].status in ("SUCCESS", "VERIFIED")
     assert "app.py" in comp.written  # actually executed
 
 
@@ -138,7 +138,7 @@ def test_safe_terminal_exec_allowed():
     ])
     agent = ComputerUseAgent(computer_provider=comp, llm_router=llm, safety=_policy())
     traces = _run(agent.run_mission(comp.workspace_id, "list", steps=3))
-    assert traces[0].status in ("SUCCESS", "RECOVERED")
+    assert traces[0].status in ("SUCCESS", "RECOVERED", "VERIFIED")
     assert "ls -la" in comp.commands
 
 

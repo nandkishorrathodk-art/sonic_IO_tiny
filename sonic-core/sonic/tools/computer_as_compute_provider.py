@@ -20,7 +20,6 @@ from typing import Any
 from sonic.computer.models import ComputerWorkspaceStatus
 from sonic.sandbox.provider import ComputeProvider, ExecResult, WorkspaceConfig, WorkspaceState
 
-
 _STATUS_MAP = {
     ComputerWorkspaceStatus.CREATING: WorkspaceState.CREATING,
     ComputerWorkspaceStatus.STARTING: WorkspaceState.CREATING,

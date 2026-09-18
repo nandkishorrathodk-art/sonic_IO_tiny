@@ -18,7 +18,7 @@ from enum import StrEnum
 from typing import Any
 
 from sonic.evidence.custody import CustodyChain
-from sonic.evidence.models import EvidenceItem, FindingSeverity, ProvenancedFinding
+from sonic.evidence.models import ProvenancedFinding
 from sonic.logger import get_logger
 
 logger = get_logger(__name__)

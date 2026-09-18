@@ -43,7 +43,6 @@ from sonic.computer.models import (
     ScreenObservation,
     ServiceInfo,
     _new_id,
-    _now,
 )
 from sonic.computer.provider import ComputerProvider
 from sonic.logger import get_logger
@@ -53,7 +52,6 @@ from sonic.sandbox.provider import (
     ExecResult,
     WorkspaceConfig,
     WorkspaceState,
-    WorkspaceType,
 )
 
 logger = get_logger(__name__)
@@ -307,7 +305,7 @@ class HeadlessComputeProvider(ComputerProvider, ComputeProvider):
                     process.communicate(),
                     timeout=timeout if timeout > 0 else 60,
                 )
-            except (TimeoutError, asyncio.TimeoutError):
+            except TimeoutError:
                 with suppress(Exception):
                     process.kill()
                 return ExecResult(
@@ -375,7 +373,7 @@ class HeadlessComputeProvider(ComputerProvider, ComputeProvider):
                     "protocol": "tcp",
                     "host": host,
                 }
-            except (TimeoutError, asyncio.TimeoutError):
+            except TimeoutError:
                 return {
                     "port": p,
                     "state": "timeout",

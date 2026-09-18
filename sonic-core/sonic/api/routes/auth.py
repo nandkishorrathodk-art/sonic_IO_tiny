@@ -21,8 +21,8 @@ from fastapi.responses import RedirectResponse
 from sonic.auth.google_auth import (
     authenticate_with_google,
     consume_oauth_state,
-    create_oauth_state,
     create_jwt_token,
+    create_oauth_state,
     get_google_login_url,
 )
 from sonic.auth.middleware import require_auth

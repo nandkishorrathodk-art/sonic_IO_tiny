@@ -16,13 +16,10 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-import html
 import json
 import os
 import posixpath
 import re
-import shlex
-import sys
 import time
 import uuid
 from datetime import UTC, datetime
@@ -35,11 +32,10 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from sonic.auth.middleware import require_auth, require_operator
-from sonic.auth.models import User, UserRole
+from sonic.auth.models import User
 from sonic.computer.daytona_computer import DaytonaComputerProvider
 from sonic.computer.docker_computer import DockerComputerProvider
 from sonic.computer.models import (
-    ApplicationPolicy,
     ComputerProfile,
     ComputerWorkspaceStatus,
     ComputerWorkspaceType,
@@ -50,8 +46,8 @@ from sonic.logger import get_logger
 from sonic.mission_engine.executor import MissionToolExecutor
 from sonic.mission_engine.planner import MissionPlanner, PlannedAction
 from sonic.mission_engine.tool_registry import ToolRisk
-from sonic.safety.scope import SafetyVerdict, get_scope_checker
 from sonic.safety.runtime_stop import get_runtime_stop_state
+from sonic.safety.scope import SafetyVerdict, get_scope_checker
 
 logger = get_logger(__name__)
 
@@ -189,7 +185,7 @@ async def _run_prompt_reasoning_with_timeout(
             _run_prompt_reasoning(tenant_id, session_id, prompt),
             timeout=75,
         )
-    except asyncio.TimeoutError:
+    except TimeoutError:
         state["status"] = "ERROR"
         state["current_action"] = "Reasoning timed out; no desktop action was completed."
         message = (
@@ -2121,9 +2117,7 @@ async def _run_parallel_research_swarm(
     """
     from sonic.research.attack_graph import AttackGraph, AttackNodeType
     from sonic.research.event_bus import (
-        AnomalyDetectedEvent,
         EndpointDiscoveredEvent,
-        HypothesisFalsifiedEvent,
         HypothesisProposedEvent,
         ResearchEventBus,
         ResearchStateChangedEvent,
@@ -2543,13 +2537,13 @@ async def _run_prompt_reasoning(tenant_id: str, session_id: str, prompt: str) ->
                         config_path = Path("configs/models.yaml")
                         if not config_path.exists() and (CONFIGS_DIR / "models.yaml").exists():
                             config_path = CONFIGS_DIR / "models.yaml"
-                        
+
                         # Use environment variables for agent configuration
                         agent_api_key = os.environ.get("SONIC_AGENT_API_KEY") or os.environ.get("NVIDIA_API_KEY", "")
                         agent_base_url = os.environ.get("SONIC_AGENT_BASE_URL") or os.environ.get("NVIDIA_BASE_URL", "https://integrate.api.nvidia.com/v1")
                         agent_provider_name = os.environ.get("SONIC_AGENT_PROVIDER", "nvidia")
                         model_to_use = os.environ.get("SONIC_AGENT_MODEL", "meta/llama-3.2-90b-vision-instruct")
-                        
+
                         if config_path.exists():
                             try:
                                 llm_router = ModelRouter.from_config(config_path)
@@ -2726,7 +2720,12 @@ async def _run_prompt_reasoning(tenant_id: str, session_id: str, prompt: str) ->
                                 # Add to persistent Graph Memory
                                 try:
                                     from sonic.memory.router import get_smart_memory
-                                    from sonic.memory.schemas import AssetNode, FindingNode, FindingSeverity, RelationshipType
+                                    from sonic.memory.schemas import (
+                                        AssetNode,
+                                        FindingNode,
+                                        FindingSeverity,
+                                        RelationshipType,
+                                    )
                                     mem = await get_smart_memory()
                                     target_clean = target_resource.replace("https://", "").replace("http://", "").split("/")[0].split(":")[0]
                                     if target_clean and len(target_clean) > 2:
@@ -2750,9 +2749,9 @@ async def _run_prompt_reasoning(tenant_id: str, session_id: str, prompt: str) ->
                                 except Exception as mem_err:
                                     logger.debug("workstation_graph_memory_update_failed", error=str(mem_err))
 
+                        from sonic.being.identity import get_being_store, get_or_create_being
                         from sonic.tools.registry import get_default_registry
-                        from sonic.being.identity import get_or_create_being, get_being_store
-                        
+
                         security_tools = get_default_registry(computer).as_dict()
                         being = get_or_create_being(tenant_id)
                         being_store = get_being_store()
@@ -2960,7 +2959,11 @@ async def _run_prompt_reasoning(tenant_id: str, session_id: str, prompt: str) ->
                                         f"Provide an authentic, clear response directly answering the user's objective based strictly on the real observations above."
                                     )
                                     try:
-                                        from sonic.llm.schemas import LLMRequest, Message, MessageRole
+                                        from sonic.llm.schemas import (
+                                            LLMRequest,
+                                            Message,
+                                            MessageRole,
+                                        )
                                         s_req = LLMRequest(
                                             messages=[
                                                 Message(role=MessageRole.SYSTEM, content="You are SONIC, an autonomous systems and security architect. Summarize the verified findings and actions taken accurately and concisely in the user's language."),
@@ -3251,7 +3254,7 @@ async def list_workstation_services(
         return {"services": [], "note": "No active workstation workspace for this session."}
     comp = get_daytona_computer()
     services = []
-    
+
     # Query running services dynamically from the OS service table
     target_names: list[str] = []
     if service_names:

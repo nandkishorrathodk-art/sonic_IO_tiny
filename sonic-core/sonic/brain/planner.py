@@ -27,8 +27,8 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any
 
-from sonic.brain.experiment import Experiment, ExperimentDesigner
-from sonic.brain.hypothesis import Hypothesis, HypothesisEngine, HypothesisStatus
+from sonic.brain.experiment import Experiment
+from sonic.brain.hypothesis import Hypothesis
 from sonic.brain.world_model import DynamicWorldModel
 
 

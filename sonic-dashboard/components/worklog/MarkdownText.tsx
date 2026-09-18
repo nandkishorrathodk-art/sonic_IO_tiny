@@ -197,10 +197,12 @@ function parseInlineStyles(text: string): React.ReactNode[] {
     } else if (token.startsWith("[") && token.includes("](")) {
       const linkMatch = token.match(/\[([^\]]+)\]\(([^)]+)\)/);
       if (linkMatch) {
+        const rawUrl = linkMatch[2].trim();
+        const safeHref = /^https?:\/\//i.test(rawUrl) ? rawUrl : "#";
         parts.push(
           <a
             key={`link-${idx}`}
-            href={linkMatch[2]}
+            href={safeHref}
             target="_blank"
             rel="noopener noreferrer"
             className="text-secondary-400 hover:text-secondary-300 underline font-medium"

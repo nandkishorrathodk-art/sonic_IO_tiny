@@ -46,11 +46,21 @@ if TYPE_CHECKING:
 try:
     from sonic.research._fast_graph import (  # type: ignore[import-not-found]
         CYTHON_COMPILED as _COMPILED_FLAG,
+    )
+    from sonic.research._fast_graph import (
         FastAttackGraph as _CompiledFastAttackGraph,
+    )
+    from sonic.research._fast_graph import (
         fast_find_all_paths as _compiled_fast_find_all_paths,
-        fast_shortest_path as _compiled_fast_shortest_path,
+    )
+    from sonic.research._fast_graph import (
         fast_parliament_consensus as _compiled_fast_parliament_consensus,
+    )
+    from sonic.research._fast_graph import (
         fast_roll_forward_gain as _compiled_fast_roll_forward_gain,
+    )
+    from sonic.research._fast_graph import (
+        fast_shortest_path as _compiled_fast_shortest_path,
     )
     CYTHON_COMPILED = _COMPILED_FLAG
 except ImportError:
@@ -255,8 +265,8 @@ def fast_shortest_path(graph: AttackGraph, start_id: str, target_id: str) -> Att
             fast_graph = _CompiledFastAttackGraph(graph)
         else:
             fast_graph = FastAttackGraph(graph)
-        setattr(graph, "_fast_graph", fast_graph)
-        setattr(graph, "_dirty", False)
+        graph._fast_graph = fast_graph
+        graph._dirty = False
 
     return fast_graph.shortest_path(start_id, target_id)
 
@@ -274,8 +284,8 @@ def fast_find_all_paths(graph: AttackGraph, start_id: str, target_id: str) -> li
             fast_graph = _CompiledFastAttackGraph(graph)
         else:
             fast_graph = FastAttackGraph(graph)
-        setattr(graph, "_fast_graph", fast_graph)
-        setattr(graph, "_dirty", False)
+        graph._fast_graph = fast_graph
+        graph._dirty = False
 
     return fast_graph.find_all_paths(start_id, target_id)
 

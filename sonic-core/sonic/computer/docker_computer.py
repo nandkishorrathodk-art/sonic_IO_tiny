@@ -13,13 +13,11 @@ with a full, unrestricted, self-contained cyber environment:
 from __future__ import annotations
 
 import asyncio
-import base64
 import hashlib
 import os
 import shlex
 import shutil
 import subprocess
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -27,9 +25,6 @@ from sonic.computer.models import (
     ApplicationPolicy,
     ComputerAuditEvent,
     ComputerProfile,
-    ComputerRiskLevel,
-    ComputerSession,
-    ComputerSessionMode,
     ComputerState,
     ComputerWorkspace,
     ComputerWorkspaceStatus,
@@ -41,8 +36,6 @@ from sonic.computer.models import (
     ProcessInfo,
     ScreenObservation,
     ServiceInfo,
-    _new_id,
-    _now,
 )
 from sonic.computer.provider import ComputerProvider
 from sonic.logger import get_logger
@@ -232,7 +225,7 @@ class DockerComputerProvider(ComputerProvider):
                 stderr_str = stderr_data.decode("utf-8", errors="replace")
                 self._last_exec = (cmd, exit_code, stdout_str, stderr_str)
                 return exit_code, stdout_str, stderr_str
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 try:
                     proc.kill()
                     await asyncio.sleep(0.05)
@@ -274,7 +267,7 @@ class DockerComputerProvider(ComputerProvider):
                 try:
                     await asyncio.to_thread(
                         subprocess.run,
-                        [docker, "start", self.container_name],
+                        ["docker", "start", self.container_name],
                         stdout=subprocess.PIPE,
                         stderr=subprocess.DEVNULL,
                         timeout=10,
@@ -392,7 +385,7 @@ class DockerComputerProvider(ComputerProvider):
                     title = parts[3].strip()
                     if title and title not in ("xfce4-panel", "Desktop") and title not in open_windows:
                         open_windows.append(title)
-        
+
         # Always ensure Desktop is in the list for running containers
         if "Desktop" not in open_windows:
             open_windows.insert(0, "Desktop")

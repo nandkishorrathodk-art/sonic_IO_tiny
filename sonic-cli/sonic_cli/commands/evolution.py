@@ -324,7 +324,7 @@ def evolution_patch(
         from sonic.evolution.codebase_evolver import CodebaseEvolver, EvolutionSummaryReport
     except ImportError:
         console.print("[red]sonic-core package not found in current environment.[/red]")
-        raise typer.Exit(code=1)
+        raise typer.Exit(code=1) from None
 
     diff_content = ""
     if diff_file:

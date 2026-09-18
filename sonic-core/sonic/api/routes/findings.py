@@ -26,8 +26,8 @@ from pydantic import BaseModel
 
 from sonic.auth.middleware import require_auth, require_operator
 from sonic.auth.models import User
-from sonic.memory.schemas import FindingStatus
 from sonic.memory.router import get_memory_sync
+from sonic.memory.schemas import FindingStatus
 
 router = APIRouter()
 

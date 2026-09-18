@@ -36,7 +36,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from sonic.evolution.pipeline import EvolutionPipeline, EvolutionStage, ImprovementProposal
+from sonic.evolution.pipeline import EvolutionPipeline, EvolutionStage
 from sonic.logger import get_logger
 
 logger = get_logger(__name__)

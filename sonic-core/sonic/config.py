@@ -147,7 +147,7 @@ class Settings(BaseSettings):
         failure; in development it is permitted but flagged for rotation.
         """
         secret = self.jwt_secret
-        if secret in self._INSECURE_JWT_SECRETS:
+        if secret in self._INSECURE_JWT_SECRETS or secret.startswith("CHANGE-ME"):
             if self.is_production:
                 return False, (
                     "jwt_secret is unset or default in production. Set a strong "

@@ -42,6 +42,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import ipaddress
 import json
 import os
 from typing import Any
@@ -52,6 +53,14 @@ from sonic.safety.scope import ScopeChecker
 from sonic.sandbox import egress
 
 logger = get_logger(__name__)
+
+# Mandatory metadata & loopback blocked networks even under private scope
+_METADATA_AND_LOOPBACK = (
+    ipaddress.ip_network("127.0.0.0/8"),
+    ipaddress.ip_network("169.254.0.0/16"),
+    ipaddress.ip_network("::1/128"),
+    ipaddress.ip_network("fe80::/10"),
+)
 
 # Fields whose values determine a verdict. After sealing these MUST NOT change.
 _SEALED_FIELDS = (
@@ -169,8 +178,10 @@ class SealedActionPolicy(ActionPolicy):
             intrusive_inst = getattr(self.scope_checker, "_INTRUSIVE_PATTERNS", None)
             if intrusive_inst is not None:
                 payload["scope_instance_intrusive_patterns"] = sorted([getattr(p, "pattern", str(p)) for p in intrusive_inst])
-        return hashlib.sha256(
-            json.dumps(payload, sort_keys=True).encode()
+        return hmac.new(
+            self._seal_secret.encode(),
+            json.dumps(payload, sort_keys=True).encode(),
+            hashlib.sha256,
         ).hexdigest()
 
     # ------------------------------------------------------------------
@@ -181,43 +192,43 @@ class SealedActionPolicy(ActionPolicy):
         if name in ("_rate",):
             object.__setattr__(self, name, value)
             return
-        # After sealing, refuse mutation of safety-relevant fields or seal state.
-        if getattr(self, "_sealed", False) and (
-            name in _SEALED_FIELDS or name in ("_sealed", "_seal_hash", "_blocked_networks_snapshot")
-        ):
-            logger.warning("safety_policy_mutation_blocked", field=name)
-            raise AttributeError("sealed policy is immutable after seal()")
-        # Always keep the target set frozen.
-        if name == "security_tool_targets" and not isinstance(value, frozenset):
-            value = frozenset(value)
+        if getattr(self, "_sealed", False):
+            raise AttributeError(
+                f"sealed policy is immutable after seal(); attempted to set {name!r}={value!r}"
+            )
         object.__setattr__(self, name, value)
 
     # ------------------------------------------------------------------
-    # Tamper-evident evaluation
+    # Integrity check on every evaluate()
     # ------------------------------------------------------------------
-    def evaluate(self, action_type_name: str, target: str, payload: dict[str, Any]) -> PolicyVerdict:
-        """Fail-closed if the seal no longer matches the current config."""
-        if self._sealed and self._compute_seal_hash() != self._seal_hash:
-            logger.error(
-                "safety_policy_tampered",
-                expected=self._seal_hash[:12],
-                actual=self._compute_seal_hash()[:12],
-            )
-            return PolicyVerdict(
-                False, "safety policy seal mismatch ??? refusing to act (tamper-evident)"
-            )
-        return super().evaluate(action_type_name, target, payload)
+    def evaluate(
+        self,
+        action_type: Any,
+        target_resource: str,
+        payload: dict[str, Any] | None = None,
+    ) -> PolicyVerdict:
+        if self._sealed:
+            current_hash = self._compute_seal_hash()
+            if current_hash != self._seal_hash:
+                logger.error(
+                    "safety_policy_tampered",
+                    expected=self._seal_hash,
+                    computed=current_hash,
+                )
+                return PolicyVerdict(
+                    False,
+                    "safety policy integrity check failed: seal mismatch (policy was tampered)",
+                )
+        return super().evaluate(action_type, target_resource, payload)
 
-    def clone_for_agent(self, agent_id: str = "") -> SealedActionPolicy:
-        """Clone policy with an independent rate window for a concurrent subagent, sealed if parent is sealed."""
+    def _clone(self) -> SealedActionPolicy:
+        """Create an unsealed clone suitable for per-agent rate window isolation."""
         cloned = SealedActionPolicy(
-            workspace_root=str(self.workspace_root),
-            allowed_action_types=set(self.allowed_types),
-            allow_security_tool_targets=set(self.security_tool_targets),
+            workspace_root=self.workspace_root,
             max_actions_per_minute=self.max_actions_per_minute,
             require_approval_for_intrusive=self.require_approval_for_intrusive,
-            scope_checker=self.scope_checker,
-            scope_config=self.scope_config,
+            allowed_types=set(self.allowed_types),
+            allow_security_tool_targets=set(self.security_tool_targets),
             allow_private_networks=self.allow_private_networks,
         )
         if self._sealed:
@@ -232,6 +243,16 @@ class SealedActionPolicy(ActionPolicy):
         if verdict is not None:
             return verdict
         if getattr(self, "allow_private_networks", False):
+            # Cloud Metadata and loopback must ALWAYS remain blocked even under private scope
+            try:
+                ok, reason = egress.is_target_allowed(
+                    target,
+                    blocked_networks=_METADATA_AND_LOOPBACK,
+                )
+                if not ok:
+                    return PolicyVerdict(False, f"{label} egress denied: {reason}")
+            except Exception as e:
+                return PolicyVerdict(False, f"egress check failed: {e}")
             return PolicyVerdict(True, f"{label} target allowed by private-network scope policy")
         try:
             ok, reason = egress.is_target_allowed(

@@ -77,7 +77,7 @@ class ExperimentDesigner:
                 **ctx,
             },
             expected_observable_difference=(
-                f"Probe produces distinct state transition or data leak diverging from baseline behavior."
+                "Probe produces distinct state transition or data leak diverging from baseline behavior."
             ),
             cost_estimate=hypothesis.cost_estimate,
         )

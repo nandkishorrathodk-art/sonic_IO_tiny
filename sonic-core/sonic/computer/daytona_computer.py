@@ -25,6 +25,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+from sonic.computer.docker_sandbox import DockerContainerSandbox
 from sonic.computer.models import (
     ApplicationPolicy,
     ComputerAuditEvent,
@@ -45,7 +46,6 @@ from sonic.computer.models import (
     _new_id,
     _now,
 )
-from sonic.computer.docker_sandbox import DockerContainerSandbox
 from sonic.computer.provider import ComputerProvider
 from sonic.logger import get_logger
 from sonic.sandbox.provider import ExecResult

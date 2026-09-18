@@ -169,10 +169,10 @@ class MotorReflexes:
             res = self.computer.get_open_tab_count(workspace_id)
             count = await res if asyncio.iscoroutine(res) else res
         elif hasattr(self.computer, "open_tabs"):
-            val = getattr(self.computer, "open_tabs")
+            val = self.computer.open_tabs
             count = len(val) if isinstance(val, (list, tuple, set)) else int(val)
         elif hasattr(self.computer, "tab_count"):
-            val = getattr(self.computer, "tab_count")
+            val = self.computer.tab_count
             count = val() if callable(val) else int(val)
         else:
             disp = self._get_display(workspace_id)

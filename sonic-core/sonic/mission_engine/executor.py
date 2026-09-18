@@ -3,21 +3,19 @@
 from __future__ import annotations
 
 import ipaddress
-import shlex
+import uuid
+from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import urlparse
 
 from pydantic import BaseModel, Field
 
-import uuid
-from dataclasses import dataclass, field
-
 from sonic.computer.daytona_computer import DaytonaComputerProvider
 from sonic.computer.models import GUIAction, GUIActionType
 from sonic.mission_engine.planner import PlannedAction
 from sonic.mission_engine.tool_registry import MissionToolRegistry, ToolPlane, ToolRisk
-from sonic.safety.scope import RiskLevel, SafetyVerdict, get_scope_checker
 from sonic.safety.runtime_stop import get_runtime_stop_state
+from sonic.safety.scope import RiskLevel, SafetyVerdict, get_scope_checker
 
 
 @dataclass

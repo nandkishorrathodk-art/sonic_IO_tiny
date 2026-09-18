@@ -11,10 +11,8 @@ from __future__ import annotations
 
 import asyncio
 import base64
-import os
 import shlex
 import shutil
-from typing import Any
 
 from sonic.logger import get_logger
 
@@ -53,7 +51,7 @@ class DockerContainerProcess:
                 result=stdout_data.decode("utf-8", errors="replace"),
                 error=stderr_data.decode("utf-8", errors="replace"),
             )
-        except asyncio.TimeoutError:
+        except TimeoutError:
             return DockerProcessResult(exit_code=124, result="", error="Command timed out")
         except Exception as e:
             return DockerProcessResult(exit_code=1, result="", error=str(e))

@@ -53,7 +53,7 @@ class MetaOrchestrator(BaseAgent):
         scope = task.get("scope", {})
         engagement_id = task.get("engagement_id", "") or f"eng-{uuid.uuid4().hex[:12]}"
         tenant_id = task.get("tenant_id", "") or getattr(self, "tenant_id", "") or "default"
-        worker_fn = task.get("worker_fn", None)
+        worker_fn = task.get("worker_fn")
 
         logger.info("orchestrator_starting", target=target, engagement_id=engagement_id)
 

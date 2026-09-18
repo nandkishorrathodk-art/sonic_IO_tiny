@@ -8,8 +8,8 @@ Applications, Git, Services, and Process management on top of ComputeProviders.
 
 from __future__ import annotations
 
-from abc import ABC, abstractmethod
 import shlex
+from abc import ABC, abstractmethod
 from typing import Any
 
 from sonic.computer.models import (

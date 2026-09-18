@@ -42,7 +42,6 @@ from sonic.memory.schemas import (
     FindingStatus,
 )
 from sonic.safety.scope import ScopeChecker
-from sonic.sandbox.provider import ComputeProvider
 
 
 class EngagementManager:
@@ -668,7 +667,11 @@ class EngagementManager:
                     findings.append(finding_dict)
                     if self.memory:
                         try:
-                            from sonic.memory.schemas import FindingNode, FindingSeverity, FindingStatus
+                            from sonic.memory.schemas import (
+                                FindingNode,
+                                FindingSeverity,
+                                FindingStatus,
+                            )
                             await self.memory.create_finding(FindingNode(
                                 title=title,
                                 description=desc,

@@ -13,7 +13,7 @@ import asyncio
 import base64
 import io
 import re
-from typing import Any, Optional, Tuple
+from typing import Any
 
 try:
     from PIL import Image, ImageDraw
@@ -26,14 +26,15 @@ from sonic.logger import get_logger
 logger = get_logger(__name__)
 
 # UI targets must be resolved from the current DOM/accessibility tree or screenshot pixels.
+_COMMON_UI_LANDMARKS: dict[str, Any] = {}
 
 
 def extract_bbox_midpoint(
     bbox_response: Any,
     width: int = 1280,
     height: int = 800,
-    is_normalized_1000: Optional[bool] = None,
-) -> Optional[Tuple[int, int]]:
+    is_normalized_1000: bool | None = None,
+) -> tuple[int, int] | None:
     """Extract (x, y) pixel midpoint from multimodal model grounding output.
     
     Supports:
@@ -120,7 +121,7 @@ def extract_bbox_midpoint(
 
 def draw_action_marker(
     image_b64: str,
-    coordinates: Tuple[int, int],
+    coordinates: tuple[int, int],
     label: str = "CLICK",
     color: str = "#00ffcc",
     radius: int = 14,
@@ -161,12 +162,12 @@ def draw_action_marker(
 
 def resolve_ui_target(
     query: str,
-    screenshot_b64: Optional[str] = None,
+    screenshot_b64: str | None = None,
     width: int = 1280,
     height: int = 800,
-    grounding_fn: Optional[Any] = None,
+    grounding_fn: Any | None = None,
     allow_landmarks: bool = True,
-) -> Optional[Tuple[int, int]]:
+) -> tuple[int, int] | None:
     """Resolves a natural language UI target query to absolute screen coordinates (x, y).
 
     Resolution pipeline:
@@ -203,12 +204,12 @@ def resolve_ui_target(
 
 async def resolve_ui_target_async(
     query: str,
-    screenshot_b64: Optional[str] = None,
+    screenshot_b64: str | None = None,
     width: int = 1280,
     height: int = 800,
-    grounding_fn: Optional[Any] = None,
+    grounding_fn: Any | None = None,
     allow_landmarks: bool = True,
-) -> Optional[Tuple[int, int]]:
+) -> tuple[int, int] | None:
     """Asynchronous variant of resolve_ui_target supporting coroutine grounding functions."""
     if not query:
         return None
@@ -248,7 +249,7 @@ async def query_multimodal_grounding(
     screenshot_b64: str,
     width: int = 1280,
     height: int = 800,
-) -> Optional[Tuple[int, int]]:
+) -> tuple[int, int] | None:
     """Ground a visual UI query using the configured multimodal vision model (e.g. moonshotai/kimi-k3)."""
     if not llm_router or not screenshot_b64:
         return None
@@ -276,10 +277,10 @@ async def query_multimodal_grounding(
 
 def crop_toolbar_region(
     screenshot_b64: str,
-    bbox: Optional[Tuple[int, int, int, int]] = None,
+    bbox: tuple[int, int, int, int] | None = None,
     width: int = 1280,
     height: int = 800,
-) -> Tuple[str, Tuple[int, int]]:
+) -> tuple[str, tuple[int, int]]:
     """
     Hierarchical micro-crop targeting of high-density UI toolbars (e.g. dense GUI components, navigation bars, buttons).
 
@@ -315,8 +316,8 @@ def crop_toolbar_region(
 
 
 def map_crop_to_screen(
-    local_coords: Tuple[int, int],
-    offset: Tuple[int, int],
-) -> Tuple[int, int]:
+    local_coords: tuple[int, int],
+    offset: tuple[int, int],
+) -> tuple[int, int]:
     """Translate coordinates detected inside a micro-crop back to absolute desktop screen coordinates."""
     return local_coords[0] + offset[0], local_coords[1] + offset[1]

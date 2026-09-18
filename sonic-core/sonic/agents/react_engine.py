@@ -23,17 +23,17 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any
 
-from sonic.logger import get_logger
 from sonic.llm.prompts import react_system_prompt
-from sonic.llm.providers.custom import parse_tool_arguments
 from sonic.llm.schemas import (
     LLMRequest,
     LLMResponse,
     Message,
     MessageRole,
-    ToolCall as LLMToolCall,
+)
+from sonic.llm.schemas import (
     ToolDefinition as LLMToolDefinition,
 )
+from sonic.logger import get_logger
 from sonic.sandbox.virtual_computer import DaytonaSandbox
 
 logger = get_logger(__name__)

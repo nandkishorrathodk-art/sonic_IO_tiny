@@ -39,8 +39,6 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-from sonic.llm.prompts import asea_identity
-
 from sonic.agents.cognitive_state import (
     CognitiveState,
     Unknown,
@@ -53,6 +51,7 @@ from sonic.agents.task_graph import (
     TaskPriority,
     TaskStatus,
 )
+from sonic.llm.prompts import asea_identity
 from sonic.logger import get_logger
 
 logger = get_logger(__name__)

@@ -9,10 +9,11 @@ from __future__ import annotations
 
 import asyncio
 from collections import defaultdict
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
-from typing import Any, Callable, Coroutine
+from typing import Any
 
 
 class EventTopic(StrEnum):
@@ -68,7 +69,7 @@ class EventBus:
                         loop.create_task(res)
                     except RuntimeError:
                         pass
-            except Exception as e:
+            except Exception:
                 # Handlers must not break publishing flow
                 pass
         return event

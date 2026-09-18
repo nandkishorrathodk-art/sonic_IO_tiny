@@ -25,7 +25,7 @@ from typing import Any
 from sonic.computer.headless import HeadlessComputeProvider
 from sonic.computer_use.models import ComputerActionType
 from sonic.logger import get_logger
-from sonic.sandbox.provider import ComputeProvider, ExecResult
+from sonic.sandbox.provider import ExecResult
 
 logger = get_logger(__name__)
 

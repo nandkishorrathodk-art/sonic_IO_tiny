@@ -32,7 +32,7 @@ from pathlib import Path
 
 from sonic.evolution.codebase_evolver import CodebaseEvolver, EvolutionSummaryReport
 from sonic.evolution.evolution_journal import EvolutionJournal
-from sonic.evolution.goal_director import EvolutionGoalDirector, GoalCategory, GoalStatus
+from sonic.evolution.goal_director import EvolutionGoalDirector, GoalStatus
 from sonic.evolution.pipeline import EvolutionStage
 from sonic.evolution.version_tracker import VersionTracker
 

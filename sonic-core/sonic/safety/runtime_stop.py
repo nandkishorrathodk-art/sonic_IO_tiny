@@ -1,6 +1,8 @@
 """Authoritative runtime stop state for execution safety."""
 from __future__ import annotations
+
 from threading import RLock
+
 
 class RuntimeStopState:
     """Process-local, tenant-aware emergency stop latch."""

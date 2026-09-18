@@ -15,12 +15,11 @@ from __future__ import annotations
 
 import time
 import uuid
-from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 from sonic.logger import get_logger
 

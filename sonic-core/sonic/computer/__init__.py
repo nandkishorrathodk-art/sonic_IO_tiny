@@ -6,6 +6,8 @@ code-server IDE, Browser, Applications, Git, and Services.
 """
 
 from sonic.computer.benchmark import AutonomousEngineerBenchmark, ComputerBenchmarkMetrics
+from sonic.computer.bootstrap import WorkstationBootstrapEngine
+from sonic.computer.headless import HeadlessComputeProvider
 from sonic.computer.models import (
     ApplicationPolicy,
     ComputerAuditEvent,
@@ -25,8 +27,6 @@ from sonic.computer.models import (
     ScreenObservation,
     ServiceInfo,
 )
-from sonic.computer.bootstrap import WorkstationBootstrapEngine
-from sonic.computer.headless import HeadlessComputeProvider
 from sonic.computer.provider import ComputerProvider, UnifiedComputerProvider
 
 __all__ = [

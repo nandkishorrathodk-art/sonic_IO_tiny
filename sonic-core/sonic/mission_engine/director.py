@@ -11,7 +11,7 @@ from __future__ import annotations
 import time
 from typing import Any
 
-from sonic.brain.hypothesis import Hypothesis, HypothesisEngine, HypothesisStatus
+from sonic.brain.hypothesis import HypothesisEngine
 from sonic.computer.models import ComputerWorkspaceType
 from sonic.computer.provider import UnifiedComputerProvider
 from sonic.computer_use.agent import ComputerUseAgent
@@ -485,16 +485,16 @@ class MissionDirector:
             # Ensure ws has workspace_id attribute
             if not hasattr(ws, "workspace_id"):
                 try:
-                    setattr(ws, "workspace_id", getattr(ws, "id", str(ws)))
+                    ws.workspace_id = getattr(ws, "id", str(ws))
                 except Exception:
                     pass
 
-            from sonic.being.toolsmith import ToolsmithLoop
-            from sonic.being.method_lab import MethodLab
             from sonic.being.craft import BeingCraft
+            from sonic.being.identity import get_being_store, get_or_create_being
+            from sonic.being.method_lab import MethodLab
+            from sonic.being.toolsmith import ToolsmithLoop
             from sonic.memory.vector import get_vector_memory
             from sonic.safety.sealed import seal_default
-            from sonic.being.identity import get_or_create_being, get_being_store
             # Dual-Plane Operational Model (Rule 5): both Graphical Desktop (GUI) and
             # Dedicated Headless Terminal/Tool plane remain concurrently active.
             gui_only = False

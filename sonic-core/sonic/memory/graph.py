@@ -53,6 +53,7 @@ class GraphMemory:
         settings = get_settings()
         try:
             import asyncio
+
             from neo4j import AsyncGraphDatabase
             self._driver = AsyncGraphDatabase.driver(
                 settings.neo4j_uri,

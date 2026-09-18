@@ -26,19 +26,19 @@ def build_security_tools(
     Returns nmap, nuclei, ffuf, and http_client adapters for the dual-plane
     operational model (Operator & Sandbox Plane execution).
     """
-    from sonic.tools.adapters.nmap_adapter import NmapAdapter
-    from sonic.tools.adapters.nuclei_adapter import NucleiAdapter
     from sonic.tools.adapters.ffuf_adapter import FFUFAdapter
     from sonic.tools.adapters.http_adapter import HTTPClientAdapter
-    
+    from sonic.tools.adapters.nmap_adapter import NmapAdapter
+    from sonic.tools.adapters.nuclei_adapter import NucleiAdapter
+
     tools = {}
-    
+
     # Register the 4 real adapters for dual-plane execution
     tools["nmap"] = NmapAdapter(provider)
     tools["nuclei"] = NucleiAdapter(provider)
     tools["ffuf"] = FFUFAdapter(provider)
     tools["http_client"] = HTTPClientAdapter(provider)
-    
+
     logger.info("security_tools_built", count=len(tools), tools=list(tools.keys()))
     return tools
 

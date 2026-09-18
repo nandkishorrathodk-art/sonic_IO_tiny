@@ -658,6 +658,19 @@ class CustomLLMProvider(LLMProvider):
         if not content and reasoning_content:
             content = reasoning_content
 
+        # Extract tool calls
+        tool_calls = []
+        raw_tcs = msg.get("tool_calls") or []
+        for tc in raw_tcs:
+            fn = tc.get("function", {})
+            args = fn.get("arguments", "")
+            parsed_args = args if isinstance(args, dict) else parse_tool_arguments(args)
+            tool_calls.append(ToolCall(
+                id=tc.get("id", ""),
+                name=fn.get("name", ""),
+                arguments=parsed_args,
+            ))
+
         usage_data = data.get("usage", {})
         usage = TokenUsage(
             prompt_tokens=usage_data.get("prompt_tokens", 0),
@@ -668,6 +681,7 @@ class CustomLLMProvider(LLMProvider):
         return LLMResponse(
             content=content,
             reasoning_content=reasoning_content,
+            tool_calls=tool_calls,
             model=model,
             provider=self.provider_name,
             usage=usage,
@@ -762,9 +776,18 @@ class CustomLLMProvider(LLMProvider):
             data = resp.json()
 
         content = ""
+        tool_calls = []
         for block in data.get("content", []):
             if block.get("type") == "text":
                 content += block.get("text", "")
+            elif block.get("type") == "tool_use":
+                raw_input = block.get("input", {})
+                parsed_args = raw_input if isinstance(raw_input, dict) else parse_tool_arguments(str(raw_input))
+                tool_calls.append(ToolCall(
+                    id=block.get("id", ""),
+                    name=block.get("name", ""),
+                    arguments=parsed_args,
+                ))
 
         usage_data = data.get("usage", {})
         usage = TokenUsage(
@@ -777,6 +800,7 @@ class CustomLLMProvider(LLMProvider):
 
         return LLMResponse(
             content=content,
+            tool_calls=tool_calls,
             model=model,
             provider=self.provider_name,
             usage=usage,

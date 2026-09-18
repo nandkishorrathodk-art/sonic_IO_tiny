@@ -54,10 +54,16 @@ _ACTION_DELIVERABLE: dict[str, DeliverableType] = {
 }
 
 _SUCCESS_STATES = {"SUCCESS", "COMPLETED", "RECOVERED", "VERIFIED"}
+_ARTIFACT_SUCCESS_STATES = {"SUCCESS", "COMPLETED", "VERIFIED"}
 
 
 def _is_success(trace: ComputerDecisionTrace) -> bool:
     return str(getattr(trace.status, "value", trace.status)) in _SUCCESS_STATES or trace.status in _SUCCESS_STATES
+
+
+def _is_artifact_success(trace: ComputerDecisionTrace) -> bool:
+    val = str(getattr(trace.status, "value", trace.status))
+    return val in _ARTIFACT_SUCCESS_STATES or trace.status in _ARTIFACT_SUCCESS_STATES
 
 
 def synthesize_deliverables(
@@ -75,7 +81,7 @@ def synthesize_deliverables(
     seen: set[tuple[str, str]] = set()  # (action_type, target) dedupe
 
     for t in traces:
-        if not _is_success(t):
+        if not _is_artifact_success(t):
             continue
         act_val = getattr(t.action_type, "value", str(t.action_type))
         dtype = _ACTION_DELIVERABLE.get(act_val)

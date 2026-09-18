@@ -13,8 +13,8 @@ from sonic.brain.decision import (
 from sonic.brain.experiment import Experiment, ExperimentDesigner, ExperimentResult
 from sonic.brain.falsifier import EpistemicVerdict, FalsificationJudge, JudgeEvaluation
 from sonic.brain.hypothesis import Hypothesis, HypothesisEngine, HypothesisStatus
-from sonic.brain.unknowns import UnknownDomain, UnknownEntity, UnknownTracker
 from sonic.brain.planner import TemporalStackingGovernor, ThinkingTier, ThinkingTierDecision
+from sonic.brain.unknowns import UnknownDomain, UnknownEntity, UnknownTracker
 from sonic.brain.world_model import (
     ActorNode,
     CrossDomainAbstractionGraph,

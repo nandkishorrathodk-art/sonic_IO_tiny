@@ -21,7 +21,9 @@ import asyncio
 import json
 import re
 import time
-from typing import Any, Callable, Optional
+from collections.abc import Callable
+from datetime import UTC
+from typing import Any
 
 import structlog
 
@@ -257,8 +259,8 @@ class BossAgent:
         self,
         workspace_id: str,
         objective: str | Any,
-        phase_callback: Optional[Callable] = None,
-        interrupt_check: Optional[Callable] = None,
+        phase_callback: Callable | None = None,
+        interrupt_check: Callable | None = None,
     ) -> BossReport:
         """Run the full Boss Agent orchestration loop.
 
@@ -338,7 +340,7 @@ class BossAgent:
 
             # Dispatch SubAgents in concurrent dependency waves
             completed_sub_ids = {r.sub_mission_id for p in self.phases for r in p.results if r.success}
-            pending_subs = list(sorted(current_phase.sub_missions, key=lambda s: -s.priority))
+            pending_subs = sorted(current_phase.sub_missions, key=lambda s: -s.priority)
 
             while pending_subs:
                 if self._interrupted or (callable(interrupt_check) and interrupt_check()):
@@ -751,7 +753,7 @@ Rules:
         self,
         workspace_id: str,
         sub_mission: SubMission,
-        phase_callback: Optional[Callable] = None,
+        phase_callback: Callable | None = None,
         sub_agent_num: int = 0,
     ) -> SubMissionResult:
         """Create a focused ComputerUseAgent and run it on a sub-mission.
@@ -767,7 +769,6 @@ Rules:
                 ComputerAutonomyLevel,
                 EngineeringMissionMode,
             )
-
             from sonic.safety.action_policy import ActionPolicy
 
             safety_policy = (
@@ -776,7 +777,7 @@ Rules:
                 else self.safety
             )
 
-            sub_agent_id = f"{self.agent_id}-sub-{sub_agent_num}"
+            sub_agent_id = f"sub-agent-{sub_agent_num}"
             agent = ComputerUseAgent(
                 computer_provider=self.computer,
                 autonomy_level=ComputerAutonomyLevel.L3_AUTONOMOUS,
@@ -859,7 +860,7 @@ Rules:
                     ),
                     timeout=sub_timeout,
                 )
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 logger.warning("sub_agent_timed_out", sub_id=sub_mission.id, agent_num=sub_agent_num)
                 traces = getattr(agent, "history", [])
                 return SubMissionResult(
@@ -1449,12 +1450,12 @@ If the objective is complete or no more work is needed, return:
 
     @staticmethod
     def _now() -> str:
-        from datetime import datetime, timezone
-        return datetime.now(timezone.utc).isoformat()
+        from datetime import datetime
+        return datetime.now(UTC).isoformat()
 
     @staticmethod
     async def _emit(
-        callback: Optional[Callable], event_type: str, data: dict
+        callback: Callable | None, event_type: str, data: dict
     ) -> None:
         """Emit an event to the phase callback."""
         if callback is None:

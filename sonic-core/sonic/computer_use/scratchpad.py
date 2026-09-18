@@ -8,7 +8,6 @@ credentials, parameters, discovered endpoints, and strategic observations.
 from __future__ import annotations
 
 import re
-from typing import Any
 from urllib.parse import urlsplit
 
 from pydantic import BaseModel, Field

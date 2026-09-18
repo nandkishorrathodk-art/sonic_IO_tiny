@@ -52,7 +52,7 @@ class Hypothesis(BaseModel):
         else:
             self.contradicting_evidence.append(evidence_summary)
             self.confidence = max(0.01, self.confidence - delta)
-        
+
         # Uncertainty shrinks as evidence accumulates
         total_evidence = len(self.supporting_evidence) + len(self.contradicting_evidence)
         self.uncertainty = max(0.05, 1.0 / (1.0 + 0.5 * total_evidence))

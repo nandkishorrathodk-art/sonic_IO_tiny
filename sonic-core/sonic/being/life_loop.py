@@ -28,11 +28,11 @@ roring `ComputerUseAgent(self_host=True)`'s hard requirement.
 from __future__ import annotations
 
 import asyncio
-import time
 from collections import OrderedDict, defaultdict
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import Any, Awaitable, Callable
+from typing import Any
 
 from sonic.being.identity import (
     Being,
@@ -44,10 +44,10 @@ from sonic.logger import get_logger
 
 logger = get_logger(__name__)
 
-_active_life_loop: "BeingLifeLoop | None" = None
+_active_life_loop: BeingLifeLoop | None = None
 
 
-def register_life_loop(loop: "BeingLifeLoop") -> None:
+def register_life_loop(loop: BeingLifeLoop) -> None:
     """Expose the process-local idle actor to the foreground control plane."""
     global _active_life_loop
     _active_life_loop = loop

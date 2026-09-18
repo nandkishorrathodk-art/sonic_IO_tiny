@@ -24,7 +24,9 @@ import pytest
 
 
 def _docker_daemon_available() -> bool:
-    """True only if the docker binary exists AND the daemon answers `docker info`."""
+    """True only if the docker binary exists, the daemon answers `docker info`,
+    and the isolated sandbox network `sonic-sandbox-net` exists.
+    """
     if not shutil.which("docker"):
         return False
     try:
@@ -34,7 +36,15 @@ def _docker_daemon_available() -> bool:
             stderr=subprocess.PIPE,
             timeout=10,
         )
-        return proc.returncode == 0 and bool(proc.stdout.strip())
+        if proc.returncode != 0 or not bool(proc.stdout.strip()):
+            return False
+        net_proc = subprocess.run(
+            ["docker", "network", "inspect", "sonic-sandbox-net"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=10,
+        )
+        return net_proc.returncode == 0
     except Exception:
         return False
 

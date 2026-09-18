@@ -27,6 +27,12 @@ MemoryBackend = GraphMemory | InMemoryGraph | SqliteGraph
 _active_memory: MemoryBackend | None = None
 
 
+def set_active_memory(mem: MemoryBackend) -> None:
+    """Explicitly register the active memory backend."""
+    global _active_memory
+    _active_memory = mem
+
+
 async def get_smart_memory() -> MemoryBackend:
     """
     Get the best available memory backend.

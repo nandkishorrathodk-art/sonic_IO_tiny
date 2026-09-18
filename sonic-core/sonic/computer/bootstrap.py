@@ -17,10 +17,8 @@ from sonic.logger import get_logger
 
 logger = get_logger(__name__)
 
-# Essential toolchain binaries for the cyber workstation
-# Empty by design: a workstation must not be turned into a fixed tool bundle.
-# Callers may pass the exact capability needed for a target.
-DEFAULT_REQUIRED_BINARIES: list[str] = []
+# Essential POSIX toolchain binaries for the workstation
+DEFAULT_REQUIRED_BINARIES: list[str] = ["curl", "git", "python3"]
 
 
 class WorkstationBootstrapEngine:
@@ -179,10 +177,7 @@ class WorkstationBootstrapEngine:
         res["proxy_live"] = True
 
         # 2. Fetch the proxy CA certificate dynamically without hardcoded application paths
-        if not cert_endpoint:
-            logger.info("proxy_ca_setup_skipped_no_cert_endpoint")
-            return res
-        endpoint = cert_endpoint.strip()
+        endpoint = cert_endpoint.strip() if cert_endpoint else f"http://{proxy_host}:{proxy_port}/cert"
         fetch_cmd = (
             f"curl -s -m 10 {shlex.quote(endpoint)} -o /tmp/proxy_ca.crt || "
             f"curl -s -x http://{proxy_host}:{proxy_port} -m 10 {shlex.quote(endpoint)} -o /tmp/proxy_ca.crt"

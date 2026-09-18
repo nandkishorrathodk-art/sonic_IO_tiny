@@ -42,8 +42,8 @@ from pydantic import BaseModel, Field
 from sonic.brain.decision import DecisionEngine
 from sonic.brain.experiment import ExperimentDesigner
 from sonic.brain.falsifier import FalsificationJudge
-from sonic.brain.hypothesis import Hypothesis, HypothesisEngine, HypothesisStatus
-from sonic.brain.unknowns import UnknownEntity, UnknownTracker
+from sonic.brain.hypothesis import HypothesisEngine
+from sonic.brain.unknowns import UnknownTracker
 from sonic.logger import get_logger
 
 logger = get_logger(__name__)
@@ -167,7 +167,7 @@ class DynamicWorldModel:
         value = str(asset_data.get("value", ""))
         name = asset_data.get("name", "")
         meta = dict(asset_data.get("metadata", {}) or {})
-        
+
         type_mapping = {
             "url": "endpoint",
             "endpoint": "endpoint",
@@ -182,12 +182,12 @@ class DynamicWorldModel:
             "security_header": "security_posture",
         }
         resource_type = type_mapping.get(asset_type, asset_type)
-        
+
         resource_id = asset_data.get("resource_id")
         if not resource_id:
             safe_val = value.replace("://", "_").replace("/", "_").replace(":", "_").strip("_")
             resource_id = f"{resource_type}_{safe_val}" if safe_val else f"{resource_type}_{len(self.resources) + 1}"
-        
+
         is_sensitive = bool(meta.get("sensitive", False))
         val_lower = value.lower()
         if any(keyword in val_lower for keyword in ("admin", "secret", "backup", "internal", "metrics", "swagger", "openapi", ".env", ".git")):

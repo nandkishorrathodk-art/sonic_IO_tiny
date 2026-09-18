@@ -19,16 +19,16 @@ import json
 from typing import Any
 
 from sonic.agents.base import BaseAgent
-from sonic.llm.prompts import VERIFIER_SYSTEM
+from sonic.agents.http_probe import HTTPProbe, ProbeResult, ProbeTest
 from sonic.evidence.independent_verifier import AdversarialReviewer, IndependentVerifier
 from sonic.evidence.models import (
     ProvenancedFinding,
 )
 from sonic.evidence.reproduction_engine import ReproductionEngine
+from sonic.llm.prompts import VERIFIER_SYSTEM
 from sonic.logger import get_logger
 from sonic.memory.schemas import FindingStatus
 from sonic.safety.rate_limiter import get_rate_limiter
-from sonic.agents.http_probe import HTTPProbe, ProbeResult, ProbeTest
 
 logger = get_logger(__name__)
 

@@ -12,6 +12,13 @@ Scientific investigation substrate for autonomous security research:
     - Asynchronous multi-agent specialist architecture & parallel orchestration
 """
 
+from sonic.research.attack_graph import (
+    AttackEdge,
+    AttackGraph,
+    AttackNode,
+    AttackNodeType,
+    AttackPath,
+)
 from sonic.research.event_bus import (
     AnomalyDetectedEvent,
     EndpointDiscoveredEvent,
@@ -23,6 +30,8 @@ from sonic.research.event_bus import (
     TargetDiscoveredEvent,
     VulnerabilityVerifiedEvent,
 )
+from sonic.research.failure_budget import FailureBudgetTracker
+from sonic.research.failure_classifier import classify_failure
 from sonic.research.orchestrator import (
     AsyncResearchOrchestrator,
     ConflictRecord,
@@ -30,13 +39,6 @@ from sonic.research.orchestrator import (
     ObservationClaim,
     ResearchBlackboard,
     ResearchResult,
-)
-from sonic.research.attack_graph import (
-    AttackEdge,
-    AttackGraph,
-    AttackNode,
-    AttackNodeType,
-    AttackPath,
 )
 from sonic.research.specialist import (
     ApiSpecialist,
@@ -54,9 +56,6 @@ from sonic.research.specialist import (
     WebSpecialist,
     classify_specialist_failure,
 )
-from sonic.research.failure_classifier import classify_failure
-from sonic.research.failure_budget import FailureBudgetTracker
-
 
 __all__ = [
     # Event Bus & Typed Events

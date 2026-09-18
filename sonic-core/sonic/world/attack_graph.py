@@ -8,7 +8,6 @@ rather than treating findings as isolated vulnerabilities.
 from __future__ import annotations
 
 import uuid
-from collections import deque
 from datetime import UTC, datetime
 from typing import Any
 

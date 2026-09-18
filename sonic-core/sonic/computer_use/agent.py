@@ -22,7 +22,7 @@ import os
 import re
 import shlex
 import time
-from typing import Any, Optional
+from typing import Any
 
 from sonic.computer.models import (
     GUIAction,
@@ -33,7 +33,6 @@ from sonic.computer.provider import ComputerProvider
 from sonic.computer_use.grounding import (
     draw_action_marker,
     query_multimodal_grounding,
-    resolve_ui_target,
     resolve_ui_target_async,
 )
 from sonic.computer_use.models import (
@@ -44,22 +43,19 @@ from sonic.computer_use.models import (
     ComputerUseMetrics,
     ComputerWorldObservation,
     EngineeringMissionMode,
-    FailureClassification,
-    FailureRecord,
     StrategyState,
     SubGoal,
     SubGoalChecklist,
     SubGoalStatus,
 )
-from sonic.computer_use.perception_bus import PerceptionBus
 from sonic.computer_use.motor import MotorReflexes
+from sonic.computer_use.perception_bus import PerceptionBus
 from sonic.computer_use.scratchpad import HackerScratchpad
 from sonic.computer_use.wire_telemetry import WireTelemetryEngine
-from sonic.research.failure_budget import FailureBudgetTracker
-from sonic.research.failure_classifier import classify_failure
-
 from sonic.llm.prompts import COMPUTER_USE_SYSTEM_PROMPT
 from sonic.logger import get_logger
+from sonic.research.failure_budget import FailureBudgetTracker
+from sonic.research.failure_classifier import classify_failure
 
 
 def _extract_command_from_sig(sig_payload_str: str) -> str:
@@ -193,6 +189,11 @@ class ComputerUseAgent:
         # The graphical computer plane can be locked away from PTY/shell
         # execution. Backend operator tooling remains a separate plane.
         self.gui_only = gui_only
+        if gui_only:
+            logger.warning(
+                "gui_only_mode_deprecated",
+                message="gui_only mode violates Mandate 5 (Dual-Plane Concurrency); both GUI and Terminal planes should remain concurrently active.",
+            )
         # Context supplied by the caller is advisory evidence, never a
         # replacement for the immutable operator objective.
         self.initial_context = dict(initial_context or {})
@@ -520,7 +521,7 @@ class ComputerUseAgent:
                 if self.gui_only
                 else f"Terminal Ready ({len(status.running_processes)} procs)"
             )
-        
+
         if not hasattr(self, "_last_navigated_url"):
             self._last_navigated_url = ""
         if not hasattr(self, "_recent_action_signatures"):
@@ -1649,10 +1650,6 @@ class ComputerUseAgent:
             completion_phrases = (
                 "goal is complete", "goal has been achieved", "task is complete",
                 "task has been completed", "objective has been achieved",
-                "all requested information has been", "the system hostname is",
-                "the disk space is", "the following information was gathered",
-                "both the hostname and disk space", "here is the information",
-                "summary of the system",
             )
             if any(cp in text_lower for cp in completion_phrases) and ("```" not in parse_target_text and "terminal_exec" not in text_lower):
                 return (
@@ -1730,7 +1727,6 @@ class ComputerUseAgent:
                     target = f"https://{target}"
 
         payload_str = fields.get("PAYLOAD", "{}")
-        import json
 
         def _extract_payload_dict(raw: str) -> dict[str, Any]:
             if not raw:
@@ -3986,8 +3982,8 @@ class ComputerUseAgent:
         workspace_id: str,
         goal: str,
         steps: int = 5,
-        step_callback: Optional[Any] = None,
-        interrupt_check: Optional[Any] = None,
+        step_callback: Any | None = None,
+        interrupt_check: Any | None = None,
     ) -> list[ComputerDecisionTrace]:
         """Runs an end-to-end closed-loop autonomous engineering mission."""
         t_start = time.perf_counter()

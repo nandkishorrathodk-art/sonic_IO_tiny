@@ -14,10 +14,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
-from typing import Any
 
 from sonic.evidence.custody import CustodyChain
-from sonic.evidence.models import EvidenceItem, ProvenancedFinding
+from sonic.evidence.models import ProvenancedFinding
 from sonic.logger import get_logger
 
 logger = get_logger(__name__)

@@ -29,7 +29,6 @@ from pathlib import Path
 from typing import Any
 
 from sonic.evolution.codebase_evolver import (
-    _PROTECTED_COMPONENTS,
     CodebaseEvolver,
     EvolutionSummaryReport,
     SafetyInvariantViolation,
@@ -70,7 +69,7 @@ class GoalStatus(StrEnum):
     FAILED = "failed"
 
 
-def create_self_update_goal(director: "EvolutionGoalDirector") -> EvolutionGoal:
+def create_self_update_goal(director: EvolutionGoalDirector) -> EvolutionGoal:
     """Queue the durable maintenance goal used by the evolution engine."""
     return director.submit_goal(
         title="Self-Update: maintain autonomous assessment reliability",

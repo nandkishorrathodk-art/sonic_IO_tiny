@@ -10,7 +10,7 @@ export default function SettingsPage() {
   const [llmApiKey, setLlmApiKey] = useState("");
   const [llmModel, setLlmModel] = useState("gpt-4o");
   const [daytonaUrl, setDaytonaUrl] = useState("http://localhost:12000");
-  const [allowedDomains, setAllowedDomains] = useState("*.example.com, localhost, 127.0.0.1");
+  const [allowedDomains, setAllowedDomains] = useState("localhost, 127.0.0.1");
 
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
